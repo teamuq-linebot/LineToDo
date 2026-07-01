@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { MessageDTO } from '../../types/api'
+import { formatCallRecord } from '../../lib/callRecord'
 
 /**
  * SourceMessagesModal — 來源訊息彈窗。
@@ -249,7 +250,7 @@ export function SourceMessagesModal({
         </>
       )
     }
-    return <span className="sm-text">{m.text}</span>
+    return <span className="sm-text">{formatCallRecord(m.text)}</span>
   }
 
   return createPortal(

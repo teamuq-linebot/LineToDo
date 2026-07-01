@@ -36,6 +36,8 @@ export interface InsertMessagesResult {
   attempted: number
   /** 實際新插入（去重後真正落庫）的列數 */
   inserted: number
+  /** 對既有列補上媒體欄（key_material/orig_filename/file_size）的列數（UPDATE changes 加總）。不與 inserted 混計。 */
+  mediaBackfilled: number
   /** 本 batch 觸及的 chatId 集合（已 upsert 進 chats） */
   chatIds: string[]
 }
@@ -52,7 +54,8 @@ export function insertMessages(
   batch: RawLineMessage[],
   db: Database = getDb()
 ): InsertMessagesResult {
-  if (batch.length === 0) return { attempted: 0, inserted: 0, chatIds: [] }
+  if (batch.length === 0)
+    return { attempted: 0, inserted: 0, mediaBackfilled: 0, chatIds: [] }
 
   const now = new Date().toISOString()
 
@@ -63,6 +66,17 @@ export function insertMessages(
      VALUES
        (@msgId, @chatId, @ts, @timeIso, @direction, @sender, @text, @contentType, 0, @ingestedAt,
         @keyMaterial, @origFilename, @fileSize)`
+  )
+
+  // 既有列補媒體欄（backfill）：INSERT OR IGNORE 會整列略過既有 msg_id，
+  // 導致舊媒體列的 key_material/orig_filename/file_size 永遠停在 NULL。
+  // 對帶 keyMaterial 的媒體訊息額外跑此守衛式 UPDATE，只補「key_material 仍為 NULL」的列：
+  //   - 新插入列：key_material 已由 INSERT 設值 → 不命中 → no-op。
+  //   - 既有 NULL 列：命中 → 補上媒體欄。
+  const backfillMedia = db.prepare(
+    `UPDATE messages
+        SET key_material = @keyMaterial, orig_filename = @origFilename, file_size = @fileSize
+      WHERE msg_id = @msgId AND key_material IS NULL`
   )
 
   // 同 batch 內可能含同一 chat 多則 → 先去重 chat upsert，且記錄最新顯示名。
@@ -80,6 +94,7 @@ export function insertMessages(
     }
 
     let inserted = 0
+    let mediaBackfilled = 0
     const seenInBatch = new Set<string>()
     let attempted = 0
     for (const m of msgs) {
@@ -88,6 +103,9 @@ export function insertMessages(
       if (seenInBatch.has(msgId)) continue
       seenInBatch.add(msgId)
       attempted += 1
+      const keyMaterial = m.keyMaterial ?? null
+      const origFilename = m.fileName ?? null
+      const fileSize = m.fileSize ?? null
       const info = insertMsg.run({
         msgId,
         chatId: m.chatId,
@@ -98,17 +116,21 @@ export function insertMessages(
         text: m.text ?? null,
         contentType: typeof m.contentType === 'number' ? m.contentType : 0,
         ingestedAt: now,
-        keyMaterial: m.keyMaterial ?? null,
-        origFilename: m.fileName ?? null,
-        fileSize: m.fileSize ?? null
+        keyMaterial,
+        origFilename,
+        fileSize
       })
       inserted += info.changes
+      // 只對媒體訊息（帶 keyMaterial）跑補欄 UPDATE；非媒體訊息跳過，省去不必要開銷。
+      if (keyMaterial !== null) {
+        mediaBackfilled += backfillMedia.run({ msgId, keyMaterial, origFilename, fileSize }).changes
+      }
     }
-    return { attempted, inserted }
+    return { attempted, inserted, mediaBackfilled }
   })
 
-  const { attempted, inserted } = run(batch)
-  return { attempted, inserted, chatIds: [...chatLatest.keys()] }
+  const { attempted, inserted, mediaBackfilled } = run(batch)
+  return { attempted, inserted, mediaBackfilled, chatIds: [...chatLatest.keys()] }
 }
 
 /** 寫入單則（便利包裝；內部走 insertMessages）。 */

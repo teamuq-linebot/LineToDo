@@ -547,3 +547,49 @@ export async function reviewLastDays(
   emit({ processed: total, total, phase: 'done' })
   return result
 }
+
+export interface BackfillMediaKeysResult {
+  /** 取回窗口訊息數（= watch_json.py --since 回傳的訊息筆數）。 */
+  scanned: number
+  /** 既有列被補上媒體欄的筆數（取自 insertMessages 回傳的 media 補欄計數）。 */
+  mediaBackfilled: number
+}
+
+export interface BackfillMediaKeysDeps {
+  /** 取窗口訊息。預設 spawn watch_json.py --since；測試可注入固定陣列。 */
+  fetchWindow?: (sinceMs: number) => Promise<{ messages: RawLineMessage[]; error?: string }>
+  db?: Database
+  now?: () => number
+}
+
+/**
+ * 輕量 backfill：重讀「近 days 天」LINE 訊息並落庫，只補既有列的媒體欄
+ * （key_material/orig_filename/file_size）。**不跑 LLM 抽取、不需 qwen 金鑰**，
+ * 與 reviewLastDays（會跑 LLM、有 API 成本）不同。
+ *
+ * 重用 reviewLastDays 的窗口來源 spawnSinceSource（spawn watch_json.py --since，
+ * --limit 20000 升冪截斷；7 天一般不觸頂）取回窗口訊息，取回後直接 insertMessages——
+ * 落庫端（BF-1）已讓 insertMessages 對既有列補媒體欄。
+ */
+export async function backfillMediaKeys(
+  days = DEFAULT_DAYS,
+  deps: BackfillMediaKeysDeps = {}
+): Promise<BackfillMediaKeysResult> {
+  const db = deps.db ?? getDb()
+  const nowFn = deps.now ?? (() => Date.now())
+  const fetchWindow = deps.fetchWindow ?? spawnSinceSource
+
+  const nowMs = nowFn()
+  const sinceMs = nowMs - days * 24 * 60 * 60 * 1000
+
+  const win = await fetchWindow(sinceMs)
+  if (win.error) {
+    throw new Error(`撈窗口訊息失敗: ${win.error}`)
+  }
+
+  const ins = insertMessages(win.messages, db)
+  // mediaBackfilled 取自 insertMessages 回傳（BF-1 並行批新增的 media 補欄計數）。
+  const mediaBackfilled = (ins as { mediaBackfilled?: number }).mediaBackfilled ?? 0
+
+  return { scanned: win.messages.length, mediaBackfilled }
+}

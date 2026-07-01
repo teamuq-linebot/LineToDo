@@ -1,5 +1,6 @@
 import type { RawLineMessage, LineBridgeStatus } from '../types/api'
 import { useLineStream } from '../hooks/useLineStream'
+import { formatCallRecord } from '../lib/callRecord'
 
 /**
  * MessageStream — 「即時訊息流」清單。
@@ -36,7 +37,7 @@ function MessageRow({ m }: { m: RawLineMessage }): JSX.Element {
         {m.chat}
       </span>
       <span className="msg-sender">{m.sender}</span>
-      <span className="msg-text">{m.text}</span>
+      <span className="msg-text">{formatCallRecord(m.text)}</span>
     </li>
   )
 }

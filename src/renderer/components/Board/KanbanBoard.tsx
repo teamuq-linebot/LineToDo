@@ -86,6 +86,10 @@ export function KanbanBoard(): JSX.Element {
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null)
   const [reviewNote, setReviewNote] = useState<string | null>(null)
 
+  // 「補媒體金鑰（近 7 天）」狀態（輕量 backfill：不跑 LLM、不需金鑰）。
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillNote, setBackfillNote] = useState<string | null>(null)
+
   // 初次掛載：查 pipeline 狀態取得 hasApiKey（決定按鈕是否提示填金鑰）。
   useEffect(() => {
     let alive = true
@@ -131,6 +135,27 @@ export function KanbanBoard(): JSX.Element {
     } finally {
       setReviewing(false)
       setProgress(null)
+    }
+  }
+
+  async function onBackfillMediaKeys(): Promise<void> {
+    if (backfilling) return
+    setBackfilling(true)
+    setBackfillNote(null)
+    try {
+      const res = await window.api.pipeline.backfillMediaKeys(7)
+      if (res.ok) {
+        setBackfillNote(
+          `已補 ${res.mediaBackfilled ?? 0} 筆媒體金鑰（掃描 ${res.scanned ?? 0} 則）；` +
+            '可重開來源訊息彈窗查看歷史媒體。'
+        )
+      } else {
+        setBackfillNote(`補金鑰失敗：${res.error ?? '未知錯誤'}`)
+      }
+    } catch (err) {
+      setBackfillNote(`補金鑰失敗：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBackfilling(false)
     }
   }
 
@@ -233,6 +258,15 @@ export function KanbanBoard(): JSX.Element {
           <span className="review-hint">請先到設定頁填金鑰</span>
         )}
         {reviewNote && <span className="review-note">{reviewNote}</span>}
+        <button
+          className="btn-review-week"
+          disabled={backfilling}
+          onClick={() => void onBackfillMediaKeys()}
+          title="重讀近 7 天訊息、補既有媒體卡片的金鑰（不需金鑰、不跑 AI）"
+        >
+          {backfilling ? '補金鑰中…' : '🖼️ 補媒體金鑰(近7天)'}
+        </button>
+        {backfillNote && <span className="review-note">{backfillNote}</span>}
       </div>
 
       <div className="board-filters" aria-label="看板排序與篩選">

@@ -361,6 +361,11 @@ const api = {
     /** 回顧過去 N 天（預設 7）：用既有抽取管線判斷時間窗口、補建 todos。 */
     reviewLastDays: (days?: number): Promise<ReviewLastDaysResult> =>
       ipcRenderer.invoke('pipeline:reviewLastDays', { days }),
+    /** 輕量 backfill：重讀近 N 天訊息只補既有列媒體欄（不跑 LLM、不需金鑰）。 */
+    backfillMediaKeys: (
+      days?: number
+    ): Promise<{ ok: boolean; scanned?: number; mediaBackfilled?: number; error?: string }> =>
+      ipcRenderer.invoke('pipeline:backfillMediaKeys', { days }),
     /** 暫停/恢復定時輪詢。 */
     setRunning: (running: boolean): Promise<PipelineStatus> =>
       ipcRenderer.invoke('pipeline:setRunning', { running }),

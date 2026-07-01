@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
 import type { PipelineScheduler, PipelineStatus } from '../pipeline/scheduler'
 import type { RunOnceResult } from '../pipeline/runOnce'
-import { reviewLastDays } from '../pipeline/backfill'
+import { reviewLastDays, backfillMediaKeys } from '../pipeline/backfill'
 import type { BackfillProgress, ReviewLastDaysResult } from '../pipeline/backfill'
 import { listModels, makeQwen } from '../llm/qwenClient'
 import { getQwenConfig } from '../config/qwen'
@@ -38,6 +38,23 @@ export function registerPipelineIpc(
       const days =
         typeof args?.days === 'number' && args.days > 0 ? Math.floor(args.days) : 7
       return reviewLastDays(days, { onProgress: deps.pushProgress })
+    }
+  )
+
+  ipcMain.handle(
+    'pipeline:backfillMediaKeys',
+    async (
+      _e,
+      args?: { days?: number }
+    ): Promise<{ ok: boolean; scanned?: number; mediaBackfilled?: number; error?: string }> => {
+      const days =
+        typeof args?.days === 'number' && args.days > 0 ? Math.floor(args.days) : 7
+      try {
+        const r = await backfillMediaKeys(days)
+        return { ok: true, scanned: r.scanned, mediaBackfilled: r.mediaBackfilled }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
     }
   )
 
