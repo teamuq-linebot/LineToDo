@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- CSP：僅允許本地資源；連線 qwen 端點走 main 進程，不從 renderer 直連。
+         script-src 額外以 sha256 釘選下方防閃爍 inline script（唯一允許的 inline）。 -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'sha256-aRADp0y3XAC4bAAuMOJR7pDAcG6MqKr5jIwIA1qDngM='; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+    />
+    <title>line-todo</title>
+    <!-- 防閃爍：render 前先套用主題（預設深色）。內容變動需同步更新上方 CSP 的 sha256。 -->
+    <script>try{var t=localStorage.getItem('lt-theme');document.documentElement.dataset.theme=t==='light'?'light':'dark'}catch(e){document.documentElement.dataset.theme='dark'}</script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

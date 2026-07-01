@@ -1,0 +1,58 @@
+node_modules/
+out/
+dist/
+*.local
+.env
+.env.*
+*.key
+secrets/
+*.enc.yaml
+.watch_json_state
+*.db
+*.db-shm
+*.db-wal
+__probe_*
+__eval_entry.ts
+.eval-tmp-*
+.DS_Store
+*.log
+logs/
+*.tsbuildinfo
+
+# eval harness：金鑰與 qwen 輸出不進版控（避免金鑰外洩 / 輸出噪音）
+eval/.qwen-key
+eval/qwen-output.json
+
+# eval 語料：含真實 LINE 第三方對話個資（人名、群組名、含敏感 URL 等），禁止進版控
+# 若需可分享的回歸樣本，請改用去識別化版本（人名→代號，URL 遮罩）
+eval/window-messages.json
+eval/gold-*.json
+
+# === 首次版控前置補強（2026-07-01 devops / task line-todo-git-init-prep-20260701）===
+# 私密輸出目錄：內含真實 LINE 對話截圖、人名、匯款帳戶、研究報告、E2EE 解密方法——絕對禁止上 GitHub
+output/
+
+# 本機 agent 腳本/設定（非 app 程式碼，屬個人工作環境）
+.claude/
+
+# qwen 金鑰各種形式防呆（明文金鑰檔）
+*.qwen-key
+.qwen-key
+**/qwen.key
+
+# 媒體/明文私料防呆（LINE 加密圖、下載夾、暫存明文檔）
+*.eimg
+Downloads/
+*_temp.jpg
+*_temp.docx
+
+# eval/ 目錄額外私料（除上方已擋者外）：
+#   board-7day-real.png = 真實看板截圖（含私人待辦內容）
+#   eval-report.md      = 由 51 聊天室/680 則真實訊息語料產生的一致性報告，含對話衍生個資
+eval/*.png
+eval/board-7day-real.png
+eval/eval-report.md
+
+# LINE bridge 擷取輸出（NDJSON）：含真實第三方對話（群組名、人名、chatId、訊息內文），嚴禁進版控
+scripts/tester/bridge_out.ndjson
+*.ndjson

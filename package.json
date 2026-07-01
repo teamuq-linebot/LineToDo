@@ -1,0 +1,44 @@
+{
+  "name": "line-todo",
+  "version": "0.1.0",
+  "description": "LINE 新訊息語意抽取代辦看板（Electron + qwen）",
+  "main": "out/main/index.js",
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
+    "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "smoke:line": "node scripts/check-line-bridge.mjs",
+    "smoke:qwen": "node scripts/smoke-qwen.mjs",
+    "eval": "node scripts/eval/run-eval.mjs",
+    "probe:pipeline": "electron scripts/probe-pipeline-dryrun.cjs",
+    "probe:pipeline-branches": "electron scripts/probe-pipeline-branches.cjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11",
+    "openai": "^4",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3",
+    "@types/better-sqlite3": "^7",
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@vitejs/plugin-react": "^4",
+    "electron": "^31",
+    "electron-builder": "^24",
+    "electron-vite": "^2",
+    "react": "^18",
+    "react-dom": "^18",
+    "typescript": "^5",
+    "vite": "^5"
+  }
+}
