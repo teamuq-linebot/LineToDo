@@ -41,6 +41,14 @@ export function migrate(db: Database): { from: number; to: number } {
       )
       v = 2
     }
+    // v2 → v3：messages 表加 media_backed_up 追蹤欄（0=未備份 / 1=已備份）。
+    // SQLite ALTER ADD COLUMN 帶 NOT NULL 需給 DEFAULT，已給 0。僅對既有 v2 舊庫執行。
+    if (v < 3) {
+      db.exec(
+        'ALTER TABLE messages ADD COLUMN media_backed_up INTEGER NOT NULL DEFAULT 0;'
+      )
+      v = 3
+    }
     db.pragma(`user_version = ${v}`)
     return v
   })

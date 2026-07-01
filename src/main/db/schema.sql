@@ -1,4 +1,4 @@
--- schema.sql  (user_version = 2)
+-- schema.sql  (user_version = 3)
 -- line-todo App 自有 DB（與 line-cua-win 的 LINE edb 完全分離；本 App 只新增、不寫回 LINE）。
 -- 位置：app.getPath('userData')/line-todo.db
 -- 此檔為「可讀參考來源」；runtime 實際執行的 DDL 內嵌在 schema.ts（避免 bundler 漏帶 .sql）。
@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS messages (
   key_material   TEXT,                      -- 媒體解密金鑰材料（僅媒體訊息；文字訊息為 NULL）
   orig_filename  TEXT,                      -- 媒體原始檔名（可空）
   file_size      INTEGER,                   -- 媒體檔案大小 bytes（可空）
+  media_backed_up INTEGER NOT NULL DEFAULT 0,-- 0=未備份 / 1=已備份（媒體自動備份增量追蹤）
   FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_chat_ts   ON messages(chat_id, ts);

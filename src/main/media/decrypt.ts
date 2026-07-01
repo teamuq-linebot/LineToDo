@@ -103,9 +103,10 @@ function detectMime(bytes: Buffer): string {
  * 策略（M2 效能）：module 級單一索引 + `indexedDir` 記錄「目前索引是為哪個 cacheDir 建的」。
  *   - **lazy build**：首次用到、或換了 cacheDir（未來多帳號 / 測試）才 walk 全 Cache 一次；
  *     之後同一 dir 的每次呼叫直接查 map，免重掃 ~37k 檔（原本每張 <img> 各全掃一次 → 阻塞 main）。
- *   - **失效 / 新檔**：查無候選且索引非本次剛建時，做「一次性 rebuild 後重試」（以 `freshlyBuilt`
- *     旗標確保單次呼叫至多重建一次、不進無限重建），以吸收「索引建立後才新增的 `.eimg`」。
- *   - `resetMediaCacheIndex()` 供測試 / 未來 fs 事件失效時強制下次重建。
+ *   - **失效 / 新檔**：查無候選時**不**逐次 rebuild（那會讓 backup 迴圈每筆 not-cached 各觸發
+ *     一次全量重掃 → O(N) 卡 main）；改由呼叫端在需涵蓋新 `.eimg` 時主動呼叫
+ *     `resetMediaCacheIndex()`，讓下次呼叫只重建一次。
+ *   - `resetMediaCacheIndex()` 供測試 / backup 每輪起始 / 未來 fs 事件失效時強制下次重建。
  */
 let cacheIndex: Map<number, string[]> | null = null
 let indexedDir: string | null = null
@@ -168,22 +169,17 @@ export function decryptCachedMedia(input: DecryptMediaInput): DecryptMediaResult
     const macKey = derived.subarray(32, 64)
     const nonce = Buffer.concat([derived.subarray(64, 76), Buffer.alloc(4, 0)]) // 16B CTR IV
 
-    // 定位：size == fileSize + 32 的候選（查記憶化索引；查無則一次性 rebuild 重試新檔）
+    // 定位：size == fileSize + 32 的候選（查記憶化索引；查無即 not-cached，不 rebuild）
     const targetSize = input.fileSize + HMAC_LEN
     const dir = input.cacheDir ?? defaultCacheDir()
 
-    // 首次用到、或換了 cacheDir → lazy 建索引一次（freshlyBuilt＝本次呼叫「已建/已重試」旗標）
-    let freshlyBuilt = false
+    // 首次用到、或換了 cacheDir → lazy 建索引一次；之後同一 dir 直接查記憶化 map（零重掃）。
     if (cacheIndex === null || indexedDir !== dir) {
       buildCacheIndex(dir)
-      freshlyBuilt = true
     }
-    let candidates = cacheIndex!.get(targetSize) ?? []
-    // 查無候選且索引非本次剛建 → 可能是建索引後才新增的 .eimg，重建一次再查（至多一次）
-    if (candidates.length === 0 && !freshlyBuilt) {
-      buildCacheIndex(dir)
-      candidates = cacheIndex!.get(targetSize) ?? []
-    }
+    // size 查無候選 → 直接回 not-cached，不逐次 rebuild（避免 backup 迴圈每筆 not-cached 觸發
+    // 全量重掃 → O(N) 卡 main）；索引失效/涵蓋新 .eimg 由呼叫端主動 resetMediaCacheIndex()。
+    const candidates = cacheIndex!.get(targetSize) ?? []
     if (candidates.length === 0) return { status: 'not-cached' }
 
     // 逐一以 HMAC 確定性裁決；命中者即正解

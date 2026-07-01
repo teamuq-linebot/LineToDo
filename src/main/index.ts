@@ -19,6 +19,7 @@ import {
   registerLinemediaHandler,
   registerMediaIpc
 } from './media/protocol'
+import { backupNewMedia } from './media/backup'
 
 /**
  * Electron main 進程入口。
@@ -124,6 +125,21 @@ function startScheduler(): void {
         updatedIds: result.updatedIds
       })
     }
+
+    // 這輪 ingest 落庫後，增量備份「可解密且未備份」的媒體（MB-3）。
+    // 非阻塞：setImmediate 讓同步解密/寫檔不擋輪詢主流程；只 log 計數、不 log 敏感值。
+    setImmediate(() => {
+      try {
+        const r = backupNewMedia()
+        if (r.backedUp > 0) {
+          console.log(
+            `[media-backup] backedUp=${r.backedUp} skipped=${r.skipped} failed=${r.failed}`
+          )
+        }
+      } catch (e) {
+        console.warn('[media-backup] run failed:', (e as Error).name)
+      }
+    })
   })
 
   scheduler.on('status', (status: PipelineStatus) => {
