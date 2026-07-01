@@ -145,6 +145,6 @@ export function deriveMsgId(m: {
   // prefer real LINE _message._id when present
   if (m.msgId != null && m.msgId !== '') return 'i:' + m.msgId
   // fallback: stable hash over fields identical for the same message
-  const basis = `${m.chatId}${m.ts}${m.direction}${m.sender}${m.text}`
+  const basis = `${m.chatId}\u0001${m.ts}\u0001${m.direction}\u0001${m.sender}\u0001${m.text}`
   return 'd:' + createHash('sha1').update(basis, 'utf8').digest('hex')
 }
