@@ -593,3 +593,48 @@ export async function backfillMediaKeys(
 
   return { scanned: win.messages.length, mediaBackfilled }
 }
+
+export interface ScanRecentUnsentResult {
+  /** 取回窗口訊息數（= watch_json.py --since 回傳的訊息筆數）。 */
+  scanned: number
+  /** 既有列被補標已收回（unsent 0→1）的筆數（取自 insertMessages 回傳的守衛式 UPDATE 計數）。 */
+  unsentMarked: number
+}
+
+export interface ScanRecentUnsentDeps {
+  /** 取窗口訊息。預設 spawn watch_json.py --since；測試可注入固定陣列。 */
+  fetchWindow?: (sinceMs: number) => Promise<{ messages: RawLineMessage[]; error?: string }>
+  db?: Database
+  now?: () => number
+}
+
+/**
+ * 輕量掃描：重讀「近 days 天」LINE 訊息並落庫，只補既有列的收回旗標（unsent）。
+ * **不跑 LLM 抽取、不需 qwen 金鑰**（比照 backfillMediaKeys），與 reviewLastDays 不同。
+ *
+ * 動機（決策 4，時序缺口）：LINE 收回只抬 `_rev`、不動 `_createdTime` → 即時 checkpoint
+ * 輪詢（WHERE _createdTime > last_ts）結構性漏抓「send-後-recall」。而 `--since` 走
+ * `WHERE _createdTime > since`、**不吃 checkpoint** → 只要收回列落在近 days 天窗口內，
+ * 重讀必然重新命中它（此時帶新 `_attribute==1` → unsent=true）。取回後直接 insertMessages
+ * ——落庫端（B-data）已對既有列跑守衛式 `UPDATE unsent=1 WHERE msg_id=? AND unsent=0`
+ * （只動 unsent、不碰 text），順帶也會補 media key（無害）。
+ */
+export async function scanRecentUnsent(
+  days = 3,
+  deps: ScanRecentUnsentDeps = {}
+): Promise<ScanRecentUnsentResult> {
+  const db = deps.db ?? getDb()
+  const nowFn = deps.now ?? (() => Date.now())
+  const fetchWindow = deps.fetchWindow ?? spawnSinceSource
+
+  const nowMs = nowFn()
+  const sinceMs = nowMs - days * 24 * 60 * 60 * 1000
+
+  const win = await fetchWindow(sinceMs)
+  if (win.error) {
+    throw new Error(`撈窗口訊息失敗: ${win.error}`)
+  }
+
+  const ins = insertMessages(win.messages, db)
+  return { scanned: win.messages.length, unsentMarked: ins.unsentMarked ?? 0 }
+}

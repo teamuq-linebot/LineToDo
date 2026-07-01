@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto'
  *
  * SCHEMA_VERSION 對應 PRAGMA user_version；migrate.ts 以此決定要不要建表/升級。
  */
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 /**
  * 建立全部資料表與索引的 DDL。所有語句皆 IF NOT EXISTS，重複執行安全（冪等）。
@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS messages (
   orig_filename  TEXT,
   file_size      INTEGER,
   media_backed_up INTEGER NOT NULL DEFAULT 0,
+  unsent INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_id, ts);
@@ -117,6 +118,7 @@ export interface MessageRow {
   orig_filename: string | null
   file_size: number | null
   media_backed_up: number
+  unsent: number
 }
 
 /**

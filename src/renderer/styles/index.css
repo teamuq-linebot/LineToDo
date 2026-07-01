@@ -1062,6 +1062,26 @@ button:disabled {
   background: #9a6410;
 }
 
+/* ── 已收回訊息標記（LINE 收回旗標 unsent）───────────────
+   彈窗（.sm-*）與即時流（.msg-*）共用同一組類名：
+   .sm-unsent 對內文加刪除線＋淡化；.unsent-badge 為「🚫 已收回」小標籤。
+   色彩沿用主題化的紅色警示對（prio-high），深/淺主題皆有足夠對比、無硬寫深色。 */
+.sm-unsent {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+.unsent-badge {
+  display: inline-block;
+  background: var(--prio-high-bg);
+  color: var(--prio-high-text);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  margin-right: 6px;
+  vertical-align: baseline;
+}
+
 /* ── 來源訊息 modal：媒體訊息（圖片縮圖 / 檔案卡 / 未下載 / lightbox）──
    固定類名，與 R3 渲染對齊；色彩一律用主題變數（無硬寫深色），深/淺皆正確。 */
 

@@ -39,6 +39,8 @@ export interface RawLineMessage {
   oid?: string | null
   /** OBS service id（選配） */
   sid?: string | null
+  /** 該列是否為已收回訊息（LINE _attribute==1）；由橋接輸出。舊列/非收回為 false/undefined。 */
+  unsent?: boolean
 }
 
 /** LINE 橋接（watch_json.py 子程序）目前狀態。 */

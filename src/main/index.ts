@@ -20,6 +20,7 @@ import {
   registerMediaIpc
 } from './media/protocol'
 import { backupNewMedia } from './media/backup'
+import { scanRecentUnsent } from './pipeline/backfill'
 
 /**
  * Electron main 進程入口。
@@ -37,6 +38,9 @@ if (!gotLock) {
 let mainWindow: BrowserWindow | null = null
 let watcher: LineWatcher | null = null
 let scheduler: PipelineScheduler | null = null
+
+// 收回時序缺口掃描節流：scanRecentUnsent 會 spawn watch_json（~200MB 解密），不可每輪跑。
+let lastUnsentScan = 0
 
 // linemedia:// 特權 scheme 必須在 app ready 前、module 頂層宣告（media_feature_plan §4.5）。
 registerLinemediaScheme()
@@ -138,6 +142,23 @@ function startScheduler(): void {
         }
       } catch (e) {
         console.warn('[media-backup] run failed:', (e as Error).name)
+      }
+    })
+
+    // 收回時序缺口補抓（決策 4）：LINE 收回只抬 _rev、不動 _createdTime → 即時輪詢（吃
+    // checkpoint）結構性漏抓「send-後-recall」。scanRecentUnsent 走 --since 窗口重讀（不吃
+    // checkpoint），必然重新命中被收回列並守衛式標 unsent=1。因會 spawn watch_json（~200MB
+    // 解密），不可每輪跑 → 5 分鐘節流；與 media backup（本機解密、每輪）分開、非阻塞。
+    setImmediate(() => {
+      if (Date.now() - lastUnsentScan > 5 * 60 * 1000) {
+        lastUnsentScan = Date.now()
+        void scanRecentUnsent(3)
+          .then((r) => {
+            if (r.unsentMarked > 0) {
+              console.log(`[unsent-scan] marked=${r.unsentMarked} scanned=${r.scanned}`)
+            }
+          })
+          .catch((e) => console.warn('[unsent-scan] failed:', (e as Error).name))
       }
     })
   })

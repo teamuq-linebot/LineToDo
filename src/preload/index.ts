@@ -36,6 +36,8 @@ export interface RawLineMessage {
   origFilename?: string | null
   /** 明文位元組數（媒體）；非媒體為 null。 */
   fileSize?: number | null
+  /** 該列是否為已收回訊息（LINE 收回旗標）；由橋接即時 push 帶入。舊列/非收回為 undefined。 */
+  unsent?: boolean
 }
 
 export interface LineBridgeStatus {
@@ -73,6 +75,8 @@ export interface MessageDTO {
   origFilename: string | null
   /** 明文位元組數（媒體）；非媒體為 null。 */
   fileSize: number | null
+  /** 是否已收回（LINE 收回旗標）。true 時 UI 加刪除線 + 已收回 badge。 */
+  unsent: boolean
 }
 
 export interface TodoDTO {

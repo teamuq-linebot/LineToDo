@@ -250,7 +250,9 @@ export function SourceMessagesModal({
         </>
       )
     }
-    return <span className="sm-text">{formatCallRecord(m.text)}</span>
+    return (
+      <span className={`sm-text${m.unsent ? ' sm-unsent' : ''}`}>{formatCallRecord(m.text)}</span>
+    )
   }
 
   return createPortal(
@@ -316,6 +318,7 @@ export function SourceMessagesModal({
                     {!isOut && <div className="sm-who">{m.sender ?? '對方'}</div>}
                     <div className="sm-bubble">
                       {isSource && <span className="sm-src-tag">來源</span>}
+                      {m.unsent && <span className="unsent-badge">🚫 已收回</span>}
                       {renderContent(m)}
                     </div>
                     <div className="sm-time">{fmtTime(m)}</div>

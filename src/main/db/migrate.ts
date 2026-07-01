@@ -49,6 +49,12 @@ export function migrate(db: Database): { from: number; to: number } {
       )
       v = 3
     }
+    // v3 → v4：messages 表加 unsent 追蹤欄（0=正常 / 1=已收回，LINE _attribute==1）。
+    // SQLite ALTER ADD COLUMN 帶 NOT NULL 需給 DEFAULT，已給 0。僅對既有 v3 舊庫執行。
+    if (v < 4) {
+      db.exec('ALTER TABLE messages ADD COLUMN unsent INTEGER NOT NULL DEFAULT 0;')
+      v = 4
+    }
     db.pragma(`user_version = ${v}`)
     return v
   })

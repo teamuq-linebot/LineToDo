@@ -37,7 +37,14 @@ function MessageRow({ m }: { m: RawLineMessage }): JSX.Element {
         {m.chat}
       </span>
       <span className="msg-sender">{m.sender}</span>
-      <span className="msg-text">{formatCallRecord(m.text)}</span>
+      <span className="msg-text">
+        {m.unsent && <span className="unsent-badge">🚫 已收回</span>}
+        {m.unsent ? (
+          <span className="sm-unsent">{formatCallRecord(m.text)}</span>
+        ) : (
+          formatCallRecord(m.text)
+        )}
+      </span>
     </li>
   )
 }

@@ -27,7 +27,8 @@ function rowToDTO(r: MessageRow): MessageDTO {
     ingestedAt: r.ingested_at,
     // key_material 絕不進 DTO（media_feature_plan §4.4 安全邊界）——只 origFilename/fileSize。
     origFilename: r.orig_filename,
-    fileSize: r.file_size
+    fileSize: r.file_size,
+    unsent: r.unsent === 1
   }
 }
 
@@ -38,6 +39,8 @@ export interface InsertMessagesResult {
   inserted: number
   /** 對既有列補上媒體欄（key_material/orig_filename/file_size）的列數（UPDATE changes 加總）。不與 inserted 混計。 */
   mediaBackfilled: number
+  /** 對既有列補標已收回（unsent 由 0 改 1）的列數（UPDATE changes 加總）。不與 inserted 混計。 */
+  unsentMarked: number
   /** 本 batch 觸及的 chatId 集合（已 upsert 進 chats） */
   chatIds: string[]
 }
@@ -55,17 +58,17 @@ export function insertMessages(
   db: Database = getDb()
 ): InsertMessagesResult {
   if (batch.length === 0)
-    return { attempted: 0, inserted: 0, mediaBackfilled: 0, chatIds: [] }
+    return { attempted: 0, inserted: 0, mediaBackfilled: 0, unsentMarked: 0, chatIds: [] }
 
   const now = new Date().toISOString()
 
   const insertMsg = db.prepare(
     `INSERT OR IGNORE INTO messages
        (msg_id, chat_id, ts, time_iso, direction, sender, text, content_type, processed, ingested_at,
-        key_material, orig_filename, file_size)
+        key_material, orig_filename, file_size, unsent)
      VALUES
        (@msgId, @chatId, @ts, @timeIso, @direction, @sender, @text, @contentType, 0, @ingestedAt,
-        @keyMaterial, @origFilename, @fileSize)`
+        @keyMaterial, @origFilename, @fileSize, @unsent)`
   )
 
   // 既有列補媒體欄（backfill）：INSERT OR IGNORE 會整列略過既有 msg_id，
@@ -77,6 +80,15 @@ export function insertMessages(
     `UPDATE messages
         SET key_material = @keyMaterial, orig_filename = @origFilename, file_size = @fileSize
       WHERE msg_id = @msgId AND key_material IS NULL`
+  )
+
+  // 既有列補標「已收回」：收回發生在送出後 → 該 msg_id 多半已存在 →
+  // INSERT OR IGNORE 整列略過 → unsent 停在 0。對帶 unsent 的進來列跑此守衛式 UPDATE，
+  // 只補「unsent 仍為 0」的列（比照 backfillMedia）：
+  //   - 新插入列：unsent 已由 INSERT 設值（1）→ 不命中 → no-op。
+  //   - 既有 unsent=0 列：命中 → 標成已收回。只動 unsent，不碰 text（保留收回前原文）。
+  const markUnsent = db.prepare(
+    `UPDATE messages SET unsent = 1 WHERE msg_id = @msgId AND unsent = 0`
   )
 
   // 同 batch 內可能含同一 chat 多則 → 先去重 chat upsert，且記錄最新顯示名。
@@ -95,6 +107,7 @@ export function insertMessages(
 
     let inserted = 0
     let mediaBackfilled = 0
+    let unsentMarked = 0
     const seenInBatch = new Set<string>()
     let attempted = 0
     for (const m of msgs) {
@@ -118,19 +131,24 @@ export function insertMessages(
         ingestedAt: now,
         keyMaterial,
         origFilename,
-        fileSize
+        fileSize,
+        unsent: m.unsent ? 1 : 0
       })
       inserted += info.changes
       // 只對媒體訊息（帶 keyMaterial）跑補欄 UPDATE；非媒體訊息跳過，省去不必要開銷。
       if (keyMaterial !== null) {
         mediaBackfilled += backfillMedia.run({ msgId, keyMaterial, origFilename, fileSize }).changes
       }
+      // 只對收回列跑補標 UPDATE；非收回訊息跳過。新插入列已帶 unsent=1 → 不命中 → no-op。
+      if (m.unsent === true) {
+        unsentMarked += markUnsent.run({ msgId }).changes
+      }
     }
-    return { attempted, inserted, mediaBackfilled }
+    return { attempted, inserted, mediaBackfilled, unsentMarked }
   })
 
-  const { attempted, inserted, mediaBackfilled } = run(batch)
-  return { attempted, inserted, mediaBackfilled, chatIds: [...chatLatest.keys()] }
+  const { attempted, inserted, mediaBackfilled, unsentMarked } = run(batch)
+  return { attempted, inserted, mediaBackfilled, unsentMarked, chatIds: [...chatLatest.keys()] }
 }
 
 /** 寫入單則（便利包裝；內部走 insertMessages）。 */
