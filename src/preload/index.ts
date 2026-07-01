@@ -23,6 +23,8 @@ const TODOS_CHANGED_CHANNEL = 'evt:todos-changed'
 const BACKFILL_PROGRESS_CHANNEL = 'evt:backfill-progress'
 
 export interface RawLineMessage {
+  /** DB 主鍵（main 端由 deriveMsgId 衍生，含 'i:'/'d:' 前綴）；供 linemedia://media/<msgId> 顯圖與 media.open/saveAs。keyMaterial 絕不跨橋。 */
+  msgId?: string
   chat: string
   chatId: string
   isGroup: boolean

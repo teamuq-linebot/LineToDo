@@ -5,6 +5,7 @@ import { getLineBridgeConfig } from './config/lineBridge'
 import type { RawLineMessage, LineBridgeStatus } from './line/types'
 import { getDb, closeDb } from './db/database'
 import { insertMessage } from './db/messages.repo'
+import { deriveMsgId } from './db/schema'
 import { registerDbIpc } from './ipc'
 import { PipelineScheduler } from './pipeline/scheduler'
 import type { PipelineStatus } from './pipeline/scheduler'
@@ -74,6 +75,13 @@ function startWatcher(): void {
     delete safe.keyMaterial
     delete safe.oid
     delete safe.sid
+    // 補齊 renderer 顯圖/檔案卡所需欄位（此 safe 同源供 messages:recent 回放與 evt:line-message push）：
+    //  - msgId 必用 deriveMsgId（含 'i:' 前綴），才對得上 DB PK 與 linemedia://media/<msgId>；
+    //    不可用 LINE 原生未前綴的 raw msgId（會 404）。
+    //  - fileName→origFilename：對齊 renderer RawLineMessage 命名（落庫路徑本就做此對映）。
+    safe.msgId = deriveMsgId(msg)
+    ;(safe as { origFilename?: string | null }).origFilename = msg.fileName ?? null
+    delete safe.fileName
     recent.push(safe)
     if (recent.length > RECENT_CAP) recent.splice(0, recent.length - RECENT_CAP)
     pushToRenderer('evt:line-message', safe)

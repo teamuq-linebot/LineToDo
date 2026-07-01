@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { RawLineMessage, LineBridgeStatus } from '../types/api'
 import { useLineStream } from '../hooks/useLineStream'
 import { formatCallRecord } from '../lib/callRecord'
@@ -25,7 +26,99 @@ function statusLabel(s: LineBridgeStatus | null): { text: string; cls: string } 
   }
 }
 
-function MessageRow({ m }: { m: RawLineMessage }): JSX.Element {
+/** bytes → 「NN.N KB」/「NN.N MB」（< 1 KB 顯示 B）；null/undefined 回空字串。 */
+function formatSize(bytes: number | null | undefined): string {
+  if (bytes == null) return ''
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(1)} KB`
+  return `${(kb / 1024).toFixed(1)} MB`
+}
+
+/**
+ * 依 contentType 渲染單則訊息內容（比照來源訊息彈窗）：
+ *   1  且有 msgId → 圖片縮圖（點開 lightbox；載入失敗→「尚未下載」）
+ *   14 且有 msgId → 檔案卡（📎＋檔名＋大小＋開啟/另存；失敗給 inline 小字）
+ *   其餘 / 缺 msgId → 純文字（formatCallRecord）
+ * bytes 全程只在 main，此處僅持 msgId，keyMaterial 不跨橋。
+ * 註：DRY 共用元件（與彈窗共用）列為後續重構，本批為低風險先落地。
+ */
+function MessageContent({
+  m,
+  onOpenLightbox
+}: {
+  m: RawLineMessage
+  onOpenLightbox: (url: string) => void
+}): JSX.Element {
+  const [imgFailed, setImgFailed] = useState(false)
+  const [fileErr, setFileErr] = useState('')
+
+  if (m.contentType === 1 && m.msgId) {
+    if (imgFailed) return <span className="sm-media-missing">尚未下載</span>
+    const url = `linemedia://media/${encodeURIComponent(m.msgId)}`
+    return (
+      <span className="sm-media">
+        <img
+          className="sm-thumb"
+          src={url}
+          alt="圖片"
+          onClick={() => onOpenLightbox(url)}
+          onError={() => setImgFailed(true)}
+        />
+      </span>
+    )
+  }
+
+  if (m.contentType === 14 && m.msgId) {
+    const id = m.msgId
+    return (
+      <>
+        <span className="sm-file">
+          <span className="sm-file-icon">📎</span>
+          <span className="sm-file-name">{m.origFilename ?? '檔案'}</span>
+          <span className="sm-file-size">{formatSize(m.fileSize)}</span>
+          <span className="sm-file-actions">
+            <button
+              type="button"
+              onClick={() =>
+                void window.api.media.open(id).then((r) => setFileErr(r.ok ? '' : '無法開啟檔案'))
+              }
+            >
+              開啟
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                void window.api.media
+                  .saveAs(id)
+                  .then((r) => setFileErr(r.ok || r.canceled ? '' : '無法另存檔案'))
+              }
+            >
+              另存
+            </button>
+          </span>
+        </span>
+        {fileErr && (
+          <span
+            style={{ display: 'block', marginTop: 4, fontSize: 11, color: 'var(--red, #f26d6d)' }}
+          >
+            {fileErr}
+          </span>
+        )}
+      </>
+    )
+  }
+
+  return <>{formatCallRecord(m.text)}</>
+}
+
+function MessageRow({
+  m,
+  onOpenLightbox
+}: {
+  m: RawLineMessage
+  onOpenLightbox: (url: string) => void
+}): JSX.Element {
   const arrow = m.direction === 'out' ? '→' : '←'
   const hhmm = m.time?.length >= 16 ? m.time.slice(11, 16) : m.time
   return (
@@ -40,9 +133,11 @@ function MessageRow({ m }: { m: RawLineMessage }): JSX.Element {
       <span className="msg-text">
         {m.unsent && <span className="unsent-badge">🚫 已收回</span>}
         {m.unsent ? (
-          <span className="sm-unsent">{formatCallRecord(m.text)}</span>
+          <span className="sm-unsent">
+            <MessageContent m={m} onOpenLightbox={onOpenLightbox} />
+          </span>
         ) : (
-          formatCallRecord(m.text)
+          <MessageContent m={m} onOpenLightbox={onOpenLightbox} />
         )}
       </span>
     </li>
@@ -52,6 +147,18 @@ function MessageRow({ m }: { m: RawLineMessage }): JSX.Element {
 export function MessageStream(): JSX.Element {
   const { messages, status } = useLineStream()
   const st = statusLabel(status)
+  // 媒體：lightbox 放大檢視中的圖片 URL（null = 未開）。
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+
+  // Esc 關閉 lightbox。
+  useEffect(() => {
+    if (!lightboxSrc) return
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') setLightboxSrc(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [lightboxSrc])
 
   return (
     <section className="stream">
@@ -75,9 +182,15 @@ export function MessageStream(): JSX.Element {
       ) : (
         <ul className="stream-list">
           {messages.map((m, i) => (
-            <MessageRow key={`${m.chatId}-${m.ts}-${i}`} m={m} />
+            <MessageRow key={`${m.chatId}-${m.ts}-${i}`} m={m} onOpenLightbox={setLightboxSrc} />
           ))}
         </ul>
+      )}
+
+      {lightboxSrc && (
+        <div className="sm-lightbox" onClick={() => setLightboxSrc(null)}>
+          <img src={lightboxSrc} alt="圖片放大" onClick={(e) => e.stopPropagation()} />
+        </div>
       )}
     </section>
   )
