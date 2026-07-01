@@ -1062,6 +1062,124 @@ button:disabled {
   background: #9a6410;
 }
 
+/* ── 來源訊息 modal：媒體訊息（圖片縮圖 / 檔案卡 / 未下載 / lightbox）──
+   固定類名，與 R3 渲染對齊；色彩一律用主題變數（無硬寫深色），深/淺皆正確。 */
+
+/* 圖片氣泡容器：像 LINE 純圖，無底色、無 caption。
+   兼容 R3 將類名掛在 .sm-bubble 上或獨立容器兩種寫法。 */
+.sm-media,
+.sm-bubble.sm-media {
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  line-height: 0;
+}
+/* 縮圖：最大寬 ~210px、4:3 裁切、圓角、可點放大 */
+.sm-thumb {
+  display: block;
+  width: 210px;
+  max-width: 62vw;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+.sm-thumb:hover {
+  filter: brightness(1.06);
+}
+.sm-thumb:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 未下載 / 失敗：灰態虛線佔位（置中小字，如「尚未下載」） */
+.sm-media-missing {
+  width: 210px;
+  max-width: 62vw;
+  aspect-ratio: 4 / 3;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: var(--input-bg);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 檔案卡：橫向 icon + 檔名 + 大小 + 動作鈕 */
+.sm-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 240px;
+  max-width: 320px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.sm-file-icon {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 44px;
+  border-radius: 8px;
+  background: var(--chip-bg);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+.sm-file-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sm-file-size {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.sm-file-actions {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Lightbox：全螢幕遮罩、置中放大 */
+.sm-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: var(--backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+.sm-lightbox img {
+  max-width: 90vw;
+  max-height: 90vh;
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+}
+
 /* ── 設定頁 ───────────────────────────────────────── */
 .settings-wrap {
   max-width: 720px;

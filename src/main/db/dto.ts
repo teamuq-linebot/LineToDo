@@ -26,6 +26,10 @@ export interface MessageDTO {
   contentType: number
   processed: boolean
   ingestedAt: string
+  /** 檔案原名（檔案訊息）；圖片/非媒體為 null。key_material 絕不進 DTO。 */
+  origFilename: string | null
+  /** 明文位元組數（媒體）；非媒體為 null。 */
+  fileSize: number | null
 }
 
 /** todos 列的 camelCase DTO（M2/M3 看板用；本輪先定義，repo 提供基本 CRUD）。 */

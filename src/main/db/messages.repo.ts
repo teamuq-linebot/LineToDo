@@ -24,7 +24,10 @@ function rowToDTO(r: MessageRow): MessageDTO {
     text: r.text,
     contentType: r.content_type,
     processed: r.processed === 1,
-    ingestedAt: r.ingested_at
+    ingestedAt: r.ingested_at,
+    // key_material 絕不進 DTO（media_feature_plan §4.4 安全邊界）——只 origFilename/fileSize。
+    origFilename: r.orig_filename,
+    fileSize: r.file_size
   }
 }
 
@@ -55,9 +58,11 @@ export function insertMessages(
 
   const insertMsg = db.prepare(
     `INSERT OR IGNORE INTO messages
-       (msg_id, chat_id, ts, time_iso, direction, sender, text, content_type, processed, ingested_at)
+       (msg_id, chat_id, ts, time_iso, direction, sender, text, content_type, processed, ingested_at,
+        key_material, orig_filename, file_size)
      VALUES
-       (@msgId, @chatId, @ts, @timeIso, @direction, @sender, @text, @contentType, 0, @ingestedAt)`
+       (@msgId, @chatId, @ts, @timeIso, @direction, @sender, @text, @contentType, 0, @ingestedAt,
+        @keyMaterial, @origFilename, @fileSize)`
   )
 
   // 同 batch 內可能含同一 chat 多則 → 先去重 chat upsert，且記錄最新顯示名。
@@ -92,7 +97,10 @@ export function insertMessages(
         sender: m.sender ?? null,
         text: m.text ?? null,
         contentType: typeof m.contentType === 'number' ? m.contentType : 0,
-        ingestedAt: now
+        ingestedAt: now,
+        keyMaterial: m.keyMaterial ?? null,
+        origFilename: m.fileName ?? null,
+        fileSize: m.fileSize ?? null
       })
       inserted += info.changes
     }

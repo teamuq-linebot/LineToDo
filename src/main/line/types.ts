@@ -26,6 +26,19 @@ export interface RawLineMessage {
   text: string
   /** _contentType 原始 int（0 = 文字） */
   contentType: number
+  // ── 媒體訊息（E2EE）解密輸入 —— 皆 optional，向後相容非媒體/舊列 ──
+  // 由橋接（watch_json.py）自 LINE DB `_contentInfo`/`_contentMetadata` 額外吐出；
+  // 只留 main/DB，keyMaterial 永不跨橋到 renderer（media_feature_plan §4.2/4.4）。
+  /** base64（32B）金鑰素材；非 E2EE 媒體/文字為 null */
+  keyMaterial?: string | null
+  /** 檔案原名（檔案訊息）；圖片為 null */
+  fileName?: string | null
+  /** 明文位元組數（`.eimg == fileSize + 32`）；非媒體為 null */
+  fileSize?: number | null
+  /** OBS object id（選配，OBS 路 D 預留） */
+  oid?: string | null
+  /** OBS service id（選配） */
+  sid?: string | null
 }
 
 /** LINE 橋接（watch_json.py 子程序）目前狀態。 */

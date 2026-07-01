@@ -39,6 +39,15 @@ function fmtTime(m: MessageDTO): string {
   return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+/** bytes → 「NN.N KB」/「NN.N MB」（< 1 KB 顯示 B）；null 回空字串。 */
+function formatSize(bytes: number | null): string {
+  if (bytes == null) return ''
+  if (bytes < 1024) return `${bytes} B`
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(1)} KB`
+  return `${(kb / 1024).toFixed(1)} MB`
+}
+
 export function SourceMessagesModal({
   chatId,
   chatName,
@@ -58,6 +67,12 @@ export function SourceMessagesModal({
   const didSettle = useRef(false)
   const autoBatches = useRef(0)
   const [srcTooEarly, setSrcTooEarly] = useState(false)
+  // 媒體：圖片載入失敗的 msgId（onError → 改渲染「尚未下載」）。
+  const [failedImgIds, setFailedImgIds] = useState<Set<string>>(new Set())
+  // 媒體：lightbox 放大檢視中的圖片 URL（null = 未開）。
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  // 媒體：檔案開啟/另存失敗的輕量提示（msgId → 訊息）。
+  const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
 
   const sourceSet = useMemo(() => new Set(sourceMsgIds), [sourceMsgIds])
 
@@ -84,14 +99,19 @@ export function SourceMessagesModal({
     }
   }, [chatId])
 
-  // Esc 關閉。
+  // Esc 關閉。lightbox 開啟時，Esc 先關 lightbox、不關整個 modal。
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') onClose()
+      if (e.key !== 'Escape') return
+      if (lightboxSrc) {
+        setLightboxSrc(null)
+        return
+      }
+      onClose()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, lightboxSrc])
 
   // 捲動控制：初次載入後停在底部（最新）；prepend 後補回高度差維持位置。
   useLayoutEffect(() => {
@@ -174,8 +194,67 @@ export function SourceMessagesModal({
     if (el && el.scrollTop < 40) void loadEarlier()
   }
 
+  async function openFile(msgId: string): Promise<void> {
+    const res = await window.api.media.open(msgId)
+    setFileErrors((e) => ({ ...e, [msgId]: res.ok ? '' : '無法開啟檔案' }))
+  }
+
+  async function saveFile(msgId: string): Promise<void> {
+    const res = await window.api.media.saveAs(msgId)
+    // canceled 不視為錯誤。
+    setFileErrors((e) => ({ ...e, [msgId]: res.ok || res.canceled ? '' : '無法另存檔案' }))
+  }
+
+  // 依 contentType 渲染訊息內容：1=圖片縮圖（點開 lightbox）、14=檔案卡、其餘=純文字。
+  function renderContent(m: MessageDTO): JSX.Element {
+    const url = `linemedia://media/${encodeURIComponent(m.msgId)}`
+    if (m.contentType === 1) {
+      if (failedImgIds.has(m.msgId)) {
+        return <div className="sm-media-missing">尚未下載</div>
+      }
+      return (
+        <div className="sm-media">
+          <img
+            className="sm-thumb"
+            src={url}
+            alt="圖片"
+            onClick={() => setLightboxSrc(url)}
+            onError={() =>
+              setFailedImgIds((prev) => {
+                const next = new Set(prev)
+                next.add(m.msgId)
+                return next
+              })
+            }
+          />
+        </div>
+      )
+    }
+    if (m.contentType === 14) {
+      const err = fileErrors[m.msgId]
+      return (
+        <>
+          <div className="sm-file">
+            <span className="sm-file-icon">📎</span>
+            <span className="sm-file-name">{m.origFilename ?? '檔案'}</span>
+            <span className="sm-file-size">{formatSize(m.fileSize)}</span>
+            <span className="sm-file-actions">
+              <button onClick={() => void openFile(m.msgId)}>開啟</button>
+              <button onClick={() => void saveFile(m.msgId)}>另存</button>
+            </span>
+          </div>
+          {err && (
+            <div style={{ marginTop: 4, fontSize: 11, color: 'var(--red, #f26d6d)' }}>{err}</div>
+          )}
+        </>
+      )
+    }
+    return <span className="sm-text">{m.text}</span>
+  }
+
   return createPortal(
-    <div className="modal-backdrop" onClick={onClose}>
+    <>
+      <div className="modal-backdrop" onClick={onClose}>
       <div
         className="modal source-modal"
         role="dialog"
@@ -236,7 +315,7 @@ export function SourceMessagesModal({
                     {!isOut && <div className="sm-who">{m.sender ?? '對方'}</div>}
                     <div className="sm-bubble">
                       {isSource && <span className="sm-src-tag">來源</span>}
-                      <span className="sm-text">{m.text}</span>
+                      {renderContent(m)}
                     </div>
                     <div className="sm-time">{fmtTime(m)}</div>
                   </div>
@@ -246,7 +325,13 @@ export function SourceMessagesModal({
           )}
         </div>
       </div>
-    </div>,
+    </div>
+      {lightboxSrc && (
+        <div className="sm-lightbox" onClick={() => setLightboxSrc(null)}>
+          <img src={lightboxSrc} alt="圖片放大" onClick={(e) => e.stopPropagation()} />
+        </div>
+      )}
+    </>,
     document.body
   )
 }

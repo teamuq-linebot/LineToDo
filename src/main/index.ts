@@ -14,6 +14,11 @@ import { registerSettingsIpc } from './ipc/settings.ipc'
 import { setSafeStorageReader } from './config/qwen'
 import { readApiKeyFromSafeStorage, getSettings } from './config/settings'
 import { setSettingsOverlayProvider } from './config/defaults'
+import {
+  registerLinemediaScheme,
+  registerLinemediaHandler,
+  registerMediaIpc
+} from './media/protocol'
 
 /**
  * Electron main 進程入口。
@@ -31,6 +36,9 @@ if (!gotLock) {
 let mainWindow: BrowserWindow | null = null
 let watcher: LineWatcher | null = null
 let scheduler: PipelineScheduler | null = null
+
+// linemedia:// 特權 scheme 必須在 app ready 前、module 頂層宣告（media_feature_plan §4.5）。
+registerLinemediaScheme()
 
 // renderer 掛載前/重整時可能漏接 push 事件；保留最近 N 則供 messages:recent 回放。
 const RECENT_CAP = 300
@@ -54,9 +62,16 @@ function startWatcher(): void {
   })
 
   watcher.on('message', (msg: RawLineMessage) => {
-    recent.push(msg)
+    // 安全邊界（media_feature_plan §1-E / §4.4）：keyMaterial/oid/sid 只留 main/DB，
+    // 永不跨橋到 renderer。push 與 recent 回放（messages:recent）皆用剝除後的 sanitized copy；
+    // DB 落庫仍用完整 msg（含 keyMaterial），供 linemedia:// 解密。
+    const safe: RawLineMessage = { ...msg }
+    delete safe.keyMaterial
+    delete safe.oid
+    delete safe.sid
+    recent.push(safe)
     if (recent.length > RECENT_CAP) recent.splice(0, recent.length - RECENT_CAP)
-    pushToRenderer('evt:line-message', msg)
+    pushToRenderer('evt:line-message', safe)
 
     // 持久化：upsert chat + INSERT OR IGNORE message（msg_id 去重）。
     // DB 失敗不可拖垮即時訊息流 —— catch 後記 log 繼續。
@@ -153,6 +168,11 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('[db] init failed:', err)
   }
+
+  // 媒體：linemedia:// protocol handler（圖片串流解密）+ media:open/saveAs IPC（檔案）。
+  // 明文/檔案 bytes 只在 main 記憶體處理，永不進 renderer（media_feature_plan §4.5/§4.6）。
+  registerLinemediaHandler()
+  registerMediaIpc()
 
   // health-check（保留）
   ipcMain.handle('app:ping', () => {

@@ -32,6 +32,10 @@ export interface RawLineMessage {
   sender: string
   text: string
   contentType: number
+  /** 檔案原名（檔案訊息）；圖片/非媒體為 null。keyMaterial 絕不跨橋。 */
+  origFilename?: string | null
+  /** 明文位元組數（媒體）；非媒體為 null。 */
+  fileSize?: number | null
 }
 
 export interface LineBridgeStatus {
@@ -65,6 +69,10 @@ export interface MessageDTO {
   contentType: number
   processed: boolean
   ingestedAt: string
+  /** 檔案原名（檔案訊息）；圖片/非媒體為 null。key_material 絕不進 DTO。 */
+  origFilename: string | null
+  /** 明文位元組數（媒體）；非媒體為 null。 */
+  fileSize: number | null
 }
 
 export interface TodoDTO {
@@ -395,6 +403,16 @@ const api = {
     /** 開 userData 資料夾（除錯）。 */
     openDataFolder: (): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('app:openDataFolder')
+  },
+
+  /** 媒體檔案（content_type=14）：bytes 全程只在 main，renderer 只傳 msgId。 */
+  media: {
+    /** 解密→暫存→以系統預設程式開啟。 */
+    open: (msgId: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('media:open', { msgId }),
+    /** 解密→另存新檔（使用者選路；預設檔名用 orig_filename）。 */
+    saveAs: (msgId: string): Promise<{ ok: boolean; canceled?: boolean; error?: string }> =>
+      ipcRenderer.invoke('media:saveAs', { msgId })
   }
 }
 
