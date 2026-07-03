@@ -4,6 +4,8 @@
 > Electron + Vite + React + TypeScript 桌面 App。回應語言：繁體中文。
 > 本檔為可直接施工的規格。M4 打包（electron-builder）不在本輪範圍。
 
+> **引擎現況（2026-07-03 Batch 5 更新）**：訊息讀取／解媒體／backfill 已純 TS 化（in-process watchEngine + koffi + better-sqlite3-multiple-ciphers），**預設引擎為 `ts`，不再需要外部 Python**。本檔以下大量描述的 venv python / `watch_json.py` spawn 路徑已降級為**緊急 fallback**：設 `LINE_ENGINE=py`（或 `python`）才會回退舊路徑，未設或空字串一律走 `ts`。詳見 `src/main/config/lineBridge.ts` 的 `getLineEngine()`。
+
 ---
 
 ## 0. 既有資產的「實際」函式簽名（已讀原始碼確認，非假設）

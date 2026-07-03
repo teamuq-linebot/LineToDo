@@ -19,7 +19,8 @@ import {
   resolveTodo
 } from '../db/todos.repo'
 import { startRun, finishRun } from '../db/pipeline.repo'
-import { getLineBridgeConfig } from '../config/lineBridge'
+import { getLineBridgeConfig, getLineEngine } from '../config/lineBridge'
+import { getMessagesSince } from '../line/engine/watchEngine'
 import { getPipelineDefaults } from '../config/defaults'
 import type { PipelineDefaults } from '../config/defaults'
 import { makeQwenExtractFn } from './runOnce'
@@ -122,6 +123,18 @@ function isFuture(dueAt: string | null, nowMs: number): boolean {
 function spawnSinceSource(
   sinceMs: number
 ): Promise<{ messages: RawLineMessage[]; error?: string }> {
+  // Batch 4b：LINE_ENGINE=ts 走 in-process watchEngine.getMessagesSince（不吃 checkpoint，
+  // 對應舊 spawn --since <ms>）；ts 路徑的錯誤以 reject/throw 表達 → 下面 catch 轉成
+  // { error } 回傳，與舊 spawn（exit 2 / stderr error → { error }）語意一致，讓下游
+  // 「win.error → lineBridge:'error'」分支同樣捕捉。未設 / 非 ts → 落到下方原 spawn 路徑不變。
+  if (getLineEngine() === 'ts') {
+    return getMessagesSince(sinceMs, { limit: 20000 })
+      .then((messages) => ({ messages }))
+      .catch((err) => ({
+        messages: [] as RawLineMessage[],
+        error: err instanceof Error ? err.message : String(err)
+      }))
+  }
   const cfg = getLineBridgeConfig()
   const python = cfg.python
   const script = cfg.script

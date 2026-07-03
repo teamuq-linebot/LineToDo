@@ -113,6 +113,78 @@ export function SettingsPanel(): JSX.Element {
         </div>
       </div>
 
+      {/* 開機與自我對帳 */}
+      <div className="set-section">
+        <div className="set-section-title">開機與自我對帳</div>
+
+        {/* 開機時自動啟動 */}
+        <div className="set-row">
+          <div className="set-row-main">
+            <span className="set-label">開機時自動啟動</span>
+            <span className="set-hint muted">
+              Windows 登入後自動在背景開啟 line-todo，隨時補齊代辦。可關閉。
+            </span>
+          </div>
+          <div className="set-row-ctl">
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={view.openAtLogin}
+                onChange={(e) => void patch({ openAtLogin: e.target.checked })}
+              />
+              <span className="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        {/* 自動補齊歷史訊息（自我對帳） */}
+        <div className="set-row">
+          <div className="set-row-main">
+            <span className="set-label">自動補齊歷史訊息（自我對帳）</span>
+            <span className="set-hint muted">
+              開機時比對 LINE 與本機資料庫各月訊息筆數，於背景補齊缺漏的月份，不打擾操作。
+            </span>
+          </div>
+          <div className="set-row-ctl">
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={view.reconcile.enabled}
+                onChange={(e) =>
+                  void patch({ reconcile: { enabled: e.target.checked } })
+                }
+              />
+              <span className="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        {/* 對帳範圍（依賴自我對帳開關；關閉時淡化+停用） */}
+        <div className={`set-row${view.reconcile.enabled ? '' : ' disabled'}`}>
+          <div className="set-row-main">
+            <span className="set-label">對帳範圍</span>
+            <span className="set-hint muted">
+              「全部歷史」較完整但首次較久；「近 N 個月」較快，只補最近的月份。
+            </span>
+          </div>
+          <div className="set-row-ctl">
+            <select
+              className="set-select"
+              disabled={!view.reconcile.enabled}
+              value={view.reconcile.scopeMonths}
+              onChange={(e) =>
+                void patch({ reconcile: { scopeMonths: Number(e.target.value) } })
+              }
+            >
+              <option value={0}>全部歷史</option>
+              <option value={3}>近 3 個月</option>
+              <option value={6}>近 6 個月</option>
+              <option value={12}>近 12 個月</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       {/* qwen 金鑰 */}
       <div className="set-section">
         <div className="set-section-title">qwen 抽取引擎</div>

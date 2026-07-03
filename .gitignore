@@ -1,6 +1,7 @@
 node_modules/
 out/
 dist/
+release/
 *.local
 .env
 .env.*
@@ -39,6 +40,16 @@ output/
 *.qwen-key
 .qwen-key
 **/qwen.key
+
+# LINE DB passphrase 快取（32-hex 秘密）——絕不進版控。
+# 正常運作寫在 <userData>/.linekey（repo 外）；此為防呆，避免任何 .linekey 落入 repo。
+.linekey
+**/.linekey
+
+# Batch 2 spike 的暫存/bundle 輸出（含解密驗證產物、可能夾帶真實 key）
+scripts/spike/.*.cjs
+scripts/spike/.*.txt
+scripts/spike/.*.json
 
 # 媒體/明文私料防呆（LINE 加密圖、下載夾、暫存明文檔）
 *.eimg

@@ -21,6 +21,7 @@ const PIPELINE_RUN_CHANNEL = 'evt:pipeline-run'
 const PIPELINE_STATUS_CHANNEL = 'evt:pipeline-status'
 const TODOS_CHANGED_CHANNEL = 'evt:todos-changed'
 const BACKFILL_PROGRESS_CHANNEL = 'evt:backfill-progress'
+const RECONCILE_PROGRESS_CHANNEL = 'evt:reconcile-progress'
 
 export interface RawLineMessage {
   /** DB 主鍵（main 端由 deriveMsgId 衍生，含 'i:'/'d:' 前綴）；供 linemedia://media/<msgId> 顯圖與 media.open/saveAs。keyMaterial 絕不跨橋。 */
@@ -180,6 +181,20 @@ export interface ReviewLastDaysResult {
   note: string | null
 }
 
+/**
+ * evt:reconcile-progress push payload（開機自我對帳進度，與
+ * main/pipeline/reconcileRunner.ts ReconcileProgress 對齊；Batch 4 emit）。
+ */
+export interface ReconcileProgress {
+  phase: 'scanning' | 'backfilling' | 'done' | 'source-unavailable' | 'db-unhealthy' | 'skipped'
+  /** 當前處理中的缺月（`YYYY-MM`）；scanning/done/gate 階段為 null。 */
+  ym: string | null
+  /** 已補完的缺月數。 */
+  done: number
+  /** 本次開機要補的缺月總數。 */
+  total: number
+}
+
 /** settings:testQwen 結果。 */
 export interface QwenTestResult {
   ok: boolean
@@ -206,6 +221,15 @@ export interface SettingsView {
   blocklist: BlocklistRules
   /** 逐對話關鍵字忽略：chatId → 小寫關鍵字陣列（設定頁可檢視 / 移除）。 */
   chatIgnoreKeywords: Record<string, string[]>
+  /** 開機時自動啟動（Batch 5a 提供）。 */
+  openAtLogin: boolean
+  /** 開機自我對帳設定（Batch 5a 提供）。 */
+  reconcile: {
+    /** 是否啟用自我對帳。 */
+    enabled: boolean
+    /** 對帳範圍：0=全部歷史，3/6/12=近 N 個月。 */
+    scopeMonths: number
+  }
   hasApiKey: boolean
   apiKeySource: 'safeStorage' | 'env' | 'none'
   safeStorageAvailable: boolean
@@ -218,6 +242,8 @@ export type SettingsPatch = Partial<{
   recentContextLimit: number
   blocklist: Partial<BlocklistRules>
   chatIgnoreKeywords: Record<string, string[]>
+  openAtLogin: boolean
+  reconcile: Partial<{ enabled: boolean; scopeMonths: number }>
 }>
 
 /** todos:draftReply 結果（只草擬不送出）。 */
@@ -388,7 +414,10 @@ const api = {
       subscribe<TodosChangedEvent>(TODOS_CHANGED_CHANNEL, cb),
     /** 訂閱「回顧過去 N 天」進度；回傳 unsubscribe。 */
     onBackfillProgress: (cb: (p: BackfillProgress) => void): (() => void) =>
-      subscribe<BackfillProgress>(BACKFILL_PROGRESS_CHANNEL, cb)
+      subscribe<BackfillProgress>(BACKFILL_PROGRESS_CHANNEL, cb),
+    /** 訂閱開機自我對帳進度（evt:reconcile-progress）；回傳 unsubscribe。 */
+    onReconcileProgress: (cb: (p: ReconcileProgress) => void): (() => void) =>
+      subscribe<ReconcileProgress>(RECONCILE_PROGRESS_CHANNEL, cb)
   },
 
   /** App 設定（設定頁）。金鑰永不以明文跨橋；只回 hasApiKey 等狀態。 */

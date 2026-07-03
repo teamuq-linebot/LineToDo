@@ -3,7 +3,7 @@ import { createWindow } from './window'
 import { LineWatcher } from './line/watcher'
 import { getLineBridgeConfig } from './config/lineBridge'
 import type { RawLineMessage, LineBridgeStatus } from './line/types'
-import { getDb, closeDb } from './db/database'
+import { getDb, closeDb, DbIntegrityError } from './db/database'
 import { insertMessage } from './db/messages.repo'
 import { deriveMsgId } from './db/schema'
 import { registerDbIpc } from './ipc'
@@ -22,6 +22,8 @@ import {
 } from './media/protocol'
 import { backupNewMedia } from './media/backup'
 import { scanRecentUnsent } from './pipeline/backfill'
+import { runReconcile } from './pipeline/reconcileRunner'
+import type { ReconcileProgress } from './pipeline/reconcileRunner'
 
 /**
  * Electron main 進程入口。
@@ -40,6 +42,11 @@ let mainWindow: BrowserWindow | null = null
 let watcher: LineWatcher | null = null
 let scheduler: PipelineScheduler | null = null
 
+// DB 完整性 gate（Batch 1/4）：getDb() 在壞庫/migrate 失敗時拋 DbIntegrityError。
+// 啟動路徑捕捉後標 dbHealthy=false → 對帳不啟動（絕不在壞庫上大量寫入），
+// 並優雅告知使用者、不讓 app 未捕捉例外硬崩。
+let dbHealthy = false
+
 // 收回時序缺口掃描節流：scanRecentUnsent 會 spawn watch_json（~200MB 解密），不可每輪跑。
 let lastUnsentScan = 0
 
@@ -53,6 +60,37 @@ const recent: RawLineMessage[] = []
 function pushToRenderer(channel: string, payload: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, payload)
+  }
+}
+
+/**
+ * 依 openAtLogin 設定套用「開機自動啟動」（Batch 5a）。
+ * 啟動時套一次、設定變更時（onSettingsChanged）重套一次。
+ *
+ * dev / packaged 差異：
+ *  - packaged（app.isPackaged=true）：實際呼叫 app.setLoginItemSettings，路徑用 process.execPath
+ *    （已封裝的 .exe），Windows 於登入時自動啟動本 App。
+ *  - dev（未封裝）：process.execPath 指向 electron.exe，若照套會把「electron.exe + 專案路徑」
+ *    註冊進登入項，污染使用者登入啟動清單、且封裝後無意義。故 dev 下不實際註冊，只 log
+ *    預期參數（openAtLogin），方便驗證接線正確。
+ */
+function applyLoginItemSettings(): void {
+  const openAtLogin = getSettings().openAtLogin
+  if (!app.isPackaged) {
+    console.log(
+      `[login-item] dev mode: skip setLoginItemSettings (would set openAtLogin=${openAtLogin})`
+    )
+    return
+  }
+  try {
+    app.setLoginItemSettings({
+      openAtLogin,
+      path: process.execPath,
+      args: []
+    })
+    console.log(`[login-item] applied openAtLogin=${openAtLogin}`)
+  } catch (err) {
+    console.error('[login-item] setLoginItemSettings failed:', err)
   }
 }
 
@@ -180,10 +218,12 @@ function startScheduler(): void {
     pushProgress: (p) => pushToRenderer('evt:backfill-progress', p)
   })
 
-  // settings:* / todos:draftReply / app:openDataFolder。設定變更時讓 scheduler 重排輪詢頻率。
+  // settings:* / todos:draftReply / app:openDataFolder。設定變更時讓 scheduler 重排輪詢頻率，
+  // 並重新套用「開機自動啟動」設定（openAtLogin 變更即時生效）。
   registerSettingsIpc({
     onSettingsChanged: () => {
       scheduler?.reschedule()
+      applyLoginItemSettings()
     }
   })
 
@@ -205,13 +245,27 @@ app.whenReady().then(() => {
   // pipeline 設定：注入持久化設定覆寫器（設定頁的 poll/並發/blocklist 要能蓋過內建常數）。
   setSettingsOverlayProvider(getSettings)
 
+  // 開機自動啟動（Batch 5a）：啟動時依 openAtLogin 設定套用一次（設定變更時於 onSettingsChanged 重套）。
+  applyLoginItemSettings()
+
   // DB 持久化：開連線（建表/migration 在此發生）+ 註冊 DB 查詢 IPC。
   // 放在最前，確保任何 IPC / watcher 落庫前 DB 已就緒。
   try {
     getDb()
     registerDbIpc()
+    dbHealthy = true
   } catch (err) {
-    console.error('[db] init failed:', err)
+    // DbIntegrityError（Batch 1）：quick_check 非 ok 或 migrate 失敗。標 DB 不健康、
+    // 告知 renderer 提示使用者，**不 rethrow**（避免未捕捉例外硬崩）；對帳也不會啟動。
+    dbHealthy = false
+    if (err instanceof DbIntegrityError) {
+      console.error('[db] integrity failure, DB unhealthy:', err.message)
+    } else {
+      console.error('[db] init failed:', err)
+    }
+    pushToRenderer('evt:db-unhealthy', {
+      reason: err instanceof Error ? err.message : String(err)
+    })
   }
 
   // 媒體：linemedia:// protocol handler（圖片串流解密）+ media:open/saveAs IPC（檔案）。
@@ -264,6 +318,22 @@ app.whenReady().then(() => {
   mainWindow.webContents.on('did-finish-load', () => {
     if (!watcher) startWatcher()
     if (!scheduler) startScheduler()
+
+    // 開機自我對帳（Batch 4，決策 A）：視窗開啟、watcher/scheduler 啟動之後，用
+    // setImmediate 背景觸發、**不 await**、不阻塞啟動/UI。健康 gate 不 ok 或設定關閉 →
+    // 直接不跑。runReconcile 內部不 throw；仍 .catch 兜底避免未捕捉 rejection。
+    setImmediate(() => {
+      if (!dbHealthy) return
+      // reconcile 設定（Batch 5a 已併入 AppSettings）：enabled=false → 完全跳過對帳。
+      const rc = getSettings().reconcile
+      if (!rc.enabled) return
+      void runReconcile(
+        { scopeMonths: rc.scopeMonths },
+        {
+          onProgress: (p: ReconcileProgress) => pushToRenderer('evt:reconcile-progress', p)
+        }
+      ).catch((err) => console.error('[reconcile] run failed:', err))
+    })
   })
 
   app.on('activate', () => {

@@ -14,8 +14,8 @@
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
-    "rebuild": "electron-rebuild -f -w better-sqlite3",
-    "smoke:line": "node scripts/check-line-bridge.mjs",
+    "rebuild": "electron-rebuild -f -w better-sqlite3,better-sqlite3-multiple-ciphers",
+    "dist": "electron-vite build && electron-builder --win",
     "smoke:qwen": "node scripts/smoke-qwen.mjs",
     "eval": "node scripts/eval/run-eval.mjs",
     "probe:pipeline": "electron scripts/probe-pipeline-dryrun.cjs",
@@ -23,6 +23,8 @@
   },
   "dependencies": {
     "better-sqlite3": "^11",
+    "better-sqlite3-multiple-ciphers": "^11.10.0",
+    "koffi": "^3.1.0",
     "openai": "^4",
     "zod": "^3"
   },
@@ -40,5 +42,35 @@
     "react-dom": "^18",
     "typescript": "^5",
     "vite": "^5"
+  },
+  "build": {
+    "appId": "com.davidhuang.line-todo",
+    "productName": "line-todo",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/build/Release/*.node",
+      "node_modules/better-sqlite3-multiple-ciphers/build/Release/*.node",
+      "node_modules/koffi/**",
+      "node_modules/@koromix/**"
+    ],
+    "npmRebuild": true,
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

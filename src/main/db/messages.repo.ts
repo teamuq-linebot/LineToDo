@@ -37,6 +37,12 @@ export interface InsertMessagesResult {
   attempted: number
   /** 實際新插入（去重後真正落庫）的列數 */
   inserted: number
+  /**
+   * 本次真正新插入（`INSERT OR IGNORE` 命中、`changes>0`）的 msg_id 清單。
+   * 長度恆等於 `inserted`；被去重略過的既有列不列入。
+   * 對帳/回填用：只對「本次新插入」的列 `markProcessed`，不誤標既有 pending 列。
+   */
+  insertedMsgIds: string[]
   /** 對既有列補上媒體欄（key_material/orig_filename/file_size）的列數（UPDATE changes 加總）。不與 inserted 混計。 */
   mediaBackfilled: number
   /** 對既有列補標已收回（unsent 由 0 改 1）的列數（UPDATE changes 加總）。不與 inserted 混計。 */
@@ -58,7 +64,14 @@ export function insertMessages(
   db: Database = getDb()
 ): InsertMessagesResult {
   if (batch.length === 0)
-    return { attempted: 0, inserted: 0, mediaBackfilled: 0, unsentMarked: 0, chatIds: [] }
+    return {
+      attempted: 0,
+      inserted: 0,
+      insertedMsgIds: [],
+      mediaBackfilled: 0,
+      unsentMarked: 0,
+      chatIds: []
+    }
 
   const now = new Date().toISOString()
 
@@ -106,6 +119,7 @@ export function insertMessages(
     }
 
     let inserted = 0
+    const insertedMsgIds: string[] = []
     let mediaBackfilled = 0
     let unsentMarked = 0
     const seenInBatch = new Set<string>()
@@ -135,6 +149,8 @@ export function insertMessages(
         unsent: m.unsent ? 1 : 0
       })
       inserted += info.changes
+      // changes>0 代表此列非既有 msg_id（未被 INSERT OR IGNORE 略過）→ 記為本次新插入。
+      if (info.changes > 0) insertedMsgIds.push(msgId)
       // 只對媒體訊息（帶 keyMaterial）跑補欄 UPDATE；非媒體訊息跳過，省去不必要開銷。
       if (keyMaterial !== null) {
         mediaBackfilled += backfillMedia.run({ msgId, keyMaterial, origFilename, fileSize }).changes
@@ -144,11 +160,18 @@ export function insertMessages(
         unsentMarked += markUnsent.run({ msgId }).changes
       }
     }
-    return { attempted, inserted, mediaBackfilled, unsentMarked }
+    return { attempted, inserted, insertedMsgIds, mediaBackfilled, unsentMarked }
   })
 
-  const { attempted, inserted, mediaBackfilled, unsentMarked } = run(batch)
-  return { attempted, inserted, mediaBackfilled, unsentMarked, chatIds: [...chatLatest.keys()] }
+  const { attempted, inserted, insertedMsgIds, mediaBackfilled, unsentMarked } = run(batch)
+  return {
+    attempted,
+    inserted,
+    insertedMsgIds,
+    mediaBackfilled,
+    unsentMarked,
+    chatIds: [...chatLatest.keys()]
+  }
 }
 
 /** 寫入單則（便利包裝；內部走 insertMessages）。 */

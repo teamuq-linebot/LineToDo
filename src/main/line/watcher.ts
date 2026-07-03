@@ -5,6 +5,8 @@ import { watch as fsWatch, type FSWatcher } from 'node:fs'
 import { watchFile as fsWatchFile, type StatWatcher } from 'node:fs'
 import { EventEmitter } from 'node:events'
 import type { RawLineMessage, LineBridgeStatus, LineBridgeState } from './types'
+import { getLineEngine } from '../config/lineBridge'
+import { getNewMessagesOnce } from './engine/watchEngine'
 
 /**
  * LineWatcher — 在 main 進程觸發 line-cua-win 的 watch_json.py --once（NDJSON）。
@@ -225,8 +227,31 @@ export class LineWatcher extends EventEmitter {
     }
   }
 
+  /**
+   * 把一則 RawLineMessage 走「與 NDJSON parse 後相同的下游 emit 路徑」：
+   * 型別守衛 → 切 running → 累加計數 → emit('message')。ts 引擎與舊 spawn 共用此路徑，
+   * 只換「訊息從哪來」，不換「拿到訊息後怎麼處理」。
+   */
+  private emitMessage(msg: RawLineMessage): void {
+    if (typeof msg.chatId !== 'string' || typeof msg.ts !== 'number') {
+      this.emit('log', `[watcher] skip malformed message: ${JSON.stringify(msg).slice(0, 200)}`)
+      return
+    }
+    if (this.status.state !== 'running') this.setState('running', null)
+    this.status.messageCount += 1
+    this.status.lastMessageAt = msg.time ?? new Date().toISOString()
+    this.emit('message', msg)
+  }
+
   /** Spawn watch_json.py --once，解析 NDJSON stdout，等子程序結束。 */
   private spawnOnce(trigger: string): Promise<void> {
+    // Batch 4b：LINE_ENGINE=ts 走 in-process watchEngine.getNewMessagesOnce（自 checkpoint
+    // 取增量，對應舊 spawn --once）；每則訊息走與 NDJSON parse 後相同的 emitMessage 下游路徑。
+    // ts 路徑的錯誤以 throw 表達 → catch 後 setState('error')，與舊 spawn（exit 2 / stderr
+    // error → 'error'）語意一致，不吞掉錯誤。未設 / 非 ts → 落到下方原 spawn 路徑不變。
+    if (getLineEngine() === 'ts') {
+      return this.pollOnceInProcess(trigger)
+    }
     return new Promise((resolve) => {
       const { python, script, limit = 500 } = this.opts
       const args = [script, '--once', '--json', '--limit', String(limit)]
@@ -270,14 +295,7 @@ export class LineWatcher extends EventEmitter {
           this.emit('log', `[watcher] skip non-JSON stdout line: ${trimmed.slice(0, 200)}`)
           return
         }
-        if (typeof msg.chatId !== 'string' || typeof msg.ts !== 'number') {
-          this.emit('log', `[watcher] skip malformed message: ${trimmed.slice(0, 200)}`)
-          return
-        }
-        if (this.status.state !== 'running') this.setState('running', null)
-        this.status.messageCount += 1
-        this.status.lastMessageAt = msg.time ?? new Date().toISOString()
-        this.emit('message', msg)
+        this.emitMessage(msg)
       })
 
       // ── stderr：狀態/錯誤行 ──
@@ -325,6 +343,29 @@ export class LineWatcher extends EventEmitter {
         resolve()
       })
     })
+  }
+
+  /**
+   * in-process 版 --once（LINE_ENGINE=ts）：呼叫 watchEngine.getNewMessagesOnce，
+   * 逐則走 emitMessage 下游路徑；正常完成沿用舊 spawn code===0 的收尾（若還 starting
+   * 就切 running）。任何 throw → setState('error')，對齊舊 spawn 的 code===2 分支。
+   */
+  private async pollOnceInProcess(trigger: string): Promise<void> {
+    const { limit = 500 } = this.opts
+    if (this.status.state !== 'running' && this.status.state !== 'starting') {
+      this.setState('starting', null)
+    }
+    this.emit('log', `[watcher] engine=ts getNewMessagesOnce(${trigger}) limit=${limit}`)
+    try {
+      const msgs = await getNewMessagesOnce({ limit })
+      for (const msg of msgs) this.emitMessage(msg)
+      // 正常完成：若還沒切到 running（e.g. 沒有新訊息），至少設 running 消除 starting 狀態。
+      if (this.status.state === 'starting') this.setState('running', null)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.emit('log', `[watcher] engine=ts error: ${msg}`)
+      this.setState('error', msg)
+    }
   }
 
   private teardownChild(): void {

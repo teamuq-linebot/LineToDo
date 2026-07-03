@@ -3,6 +3,8 @@ import { createInterface } from 'node:readline'
 import { dirname } from 'node:path'
 import type { RawLineMessage } from '../line/types'
 import type { LineBridge } from '../db/pipeline.repo'
+import { getLineEngine } from '../config/lineBridge'
+import { getNewMessagesOnce } from '../line/engine/watchEngine'
 
 /**
  * watchSource.ts — pipeline runOnce 的「取本輪新訊息」來源（IMPLEMENTATION_PLAN.md §8 步驟 2）。
@@ -40,6 +42,21 @@ export async function dbDrainSource(): Promise<WatchSourceResult> {
  */
 export function spawnWatchOnce(opts: WatchOnceOptions): Promise<WatchSourceResult> {
   const { python, script, limit = 500, timeoutMs = 60_000 } = opts
+  // Batch 4b：LINE_ENGINE=ts 走 in-process watchEngine.getNewMessagesOnce（自 checkpoint
+  // 取增量，對應舊 spawn --once）；ts 路徑的錯誤以 reject/throw 表達 → 下面 catch 轉成
+  // bridge:'error'，與舊 spawn（exit 2 / stderr error → bridge:'error'）語意一致。
+  // 未設 / 非 ts → 落到下方原 spawn 路徑不變。
+  if (getLineEngine() === 'ts') {
+    return getNewMessagesOnce({ limit })
+      .then((messages): WatchSourceResult => ({ messages, bridge: 'ok' }))
+      .catch(
+        (err): WatchSourceResult => ({
+          messages: [],
+          bridge: 'error',
+          error: err instanceof Error ? err.message : String(err)
+        })
+      )
+  }
   return new Promise<WatchSourceResult>((resolve) => {
     const messages: RawLineMessage[] = []
     let errored = false

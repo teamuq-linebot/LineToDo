@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import type { TodoDTO, PipelineStatus } from '../types/api'
+import { useEffect, useRef, useState } from 'react'
+import type { TodoDTO, PipelineStatus, ReconcileProgress } from '../types/api'
 import { isOverdue } from './Board/buckets'
 
 /**
@@ -54,14 +54,63 @@ function bridgeLabel(s: PipelineStatus['lineBridge']): string {
   }
 }
 
+/** 對帳 pill 文案（含具體年月 + 已補筆數）。 */
+function reconLabel(p: ReconcileProgress): string {
+  if (p.phase === 'done') return '✓ 已是最新'
+  if (p.phase === 'scanning') return '偵測缺口月…'
+  // backfilling：補齊歷史訊息 第 done+1/total 個月（ym）
+  const monthNo = Math.min(p.done + 1, p.total)
+  const ymPart = p.ym ? `（${p.ym}）` : ''
+  return `補齊歷史訊息 第 ${monthNo}/${p.total} 個月${ymPart}`
+}
+
+/** pill 下方 mini 進度條寬度（%）。 */
+function reconPct(p: ReconcileProgress): number {
+  if (p.phase === 'done') return 100
+  if (p.total <= 0) return 0
+  return Math.round((p.done / p.total) * 100)
+}
+
 export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element {
   const [status, setStatus] = useState<PipelineStatus | null>(null)
   const [running, setRunning] = useState(false)
+
+  // 自我對帳進度（方案 A：低調 pill）。backfilling 顯示；done 顯示綠勾後淡出；
+  // scanning 顯示「偵測缺口…」；source-unavailable / db-unhealthy / skipped 為終態，直接隱藏。
+  const [recon, setRecon] = useState<ReconcileProgress | null>(null)
+  const [reconFading, setReconFading] = useState(false)
+  const reconTimers = useRef<ReturnType<typeof setTimeout>[]>([])
 
   useEffect(() => {
     void window.api.pipeline.status().then(setStatus)
     const off = window.api.pipeline.onStatus(setStatus)
     return off
+  }, [])
+
+  useEffect(() => {
+    const timers = reconTimers.current
+    const off = window.api.pipeline.onReconcileProgress((p) => {
+      timers.forEach(clearTimeout)
+      timers.length = 0
+      if (p.phase === 'scanning' || p.phase === 'backfilling') {
+        setReconFading(false)
+        setRecon(p)
+      } else if (p.phase === 'done') {
+        setReconFading(false)
+        setRecon(p)
+        // 顯示綠勾約 2.6s 後淡出、再移除。
+        timers.push(setTimeout(() => setReconFading(true), 2200))
+        timers.push(setTimeout(() => setRecon(null), 2600))
+      } else {
+        // source-unavailable / db-unhealthy / skipped：終態不打擾，直接隱藏。
+        setRecon(null)
+      }
+    })
+    return () => {
+      off()
+      timers.forEach(clearTimeout)
+      timers.length = 0
+    }
   }, [])
 
   const active = todos.filter((t) =>
@@ -113,6 +162,23 @@ export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element 
               {status ? bridgeLabel(status.lineBridge) : '…'}
             </span>
           </div>
+          {recon && (recon.phase === 'scanning' || recon.phase === 'backfilling' || recon.phase === 'done') && (
+            <div className={`recon-pill-wrap${reconFading ? ' fade-out' : ''}`}>
+              <span className={`recon-pill${recon.phase === 'done' ? ' done' : ''}`}>
+                {recon.phase === 'done' ? (
+                  <span className="check">✓</span>
+                ) : (
+                  <span className="spin"></span>
+                )}
+                <span>{reconLabel(recon)}</span>
+              </span>
+              {recon.phase !== 'scanning' && (
+                <span className="recon-mini-bar">
+                  <i style={{ width: `${reconPct(recon)}%` }}></i>
+                </span>
+              )}
+            </div>
+          )}
           <div>
             <span className="muted">抽取引擎：</span>
             <span

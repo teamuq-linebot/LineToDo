@@ -14,6 +14,14 @@ import { DEFAULTS, type BlocklistRules } from './defaults'
  * 對 renderer 暴露的設定 DTO 只含「可顯示」欄位 + hasApiKey:boolean。
  */
 
+/** 開機自我對帳設定（Batch 5a；reconcileRunner 讀取）。 */
+export interface ReconcileSettings {
+  /** 是否啟用開機自我對帳。false → 啟動時完全跳過對帳（不掃描、不寫入）。預設 true。 */
+  enabled: boolean
+  /** 對帳範圍：只看近 N 月。0 = 全部歷史（預設）；合法值 3 / 6 / 12。透傳 detectGaps.scopeMonths。 */
+  scopeMonths: number
+}
+
 export interface AppSettings {
   pollIntervalSec: number
   concurrency: number
@@ -21,6 +29,10 @@ export interface AppSettings {
   blocklist: BlocklistRules
   /** 逐對話關鍵字忽略：chatId → 小寫關鍵字陣列。抽取後過濾 title/detail 命中者（per-chat 第二層忽略）。 */
   chatIgnoreKeywords: Record<string, string[]>
+  /** 開機自動啟動（使用者要求預設開）。啟動時與變更時透過 app.setLoginItemSettings 套用。 */
+  openAtLogin: boolean
+  /** 開機自我對帳設定（Batch 5a）。 */
+  reconcile: ReconcileSettings
 }
 
 /** 回傳 renderer 的設定（不含任何金鑰；以 hasApiKey 表達金鑰是否已設定）。 */
@@ -39,6 +51,9 @@ export type SettingsPatch = Partial<{
   blocklist: Partial<BlocklistRules>
   /** 整個替換逐對話關鍵字忽略表（呼叫端先讀現值、改完整表再送）。 */
   chatIgnoreKeywords: Record<string, string[]>
+  openAtLogin: boolean
+  /** 部分更新對帳設定（enabled / scopeMonths 可各自單獨送）。 */
+  reconcile: Partial<ReconcileSettings>
 }>
 
 const SETTINGS_FILE = 'settings.json'
@@ -70,7 +85,25 @@ function defaultSettings(): AppSettings {
       contentTypeNoiseOnly: [...DEFAULTS.blocklist.contentTypeNoiseOnly],
       minTextLenForLLM: DEFAULTS.blocklist.minTextLenForLLM
     },
-    chatIgnoreKeywords: {}
+    chatIgnoreKeywords: {},
+    // 使用者要求：開機自動啟動預設開。
+    openAtLogin: true,
+    // 對帳預設啟用、全歷史範圍（scopeMonths=0）。
+    reconcile: { enabled: true, scopeMonths: 0 }
+  }
+}
+
+/** 合法的對帳範圍值（月）。0 = 全歷史；其餘為近 N 月。非法值 → 退回 fallback。 */
+const RECONCILE_SCOPE_VALUES = [0, 3, 6, 12]
+
+/** 正規化對帳設定：enabled 轉 boolean，scopeMonths 限定合法值集合（非法退回預設）。 */
+function normalizeReconcile(input: unknown, d: ReconcileSettings): ReconcileSettings {
+  if (!input || typeof input !== 'object') return { ...d }
+  const r = input as Partial<ReconcileSettings>
+  const scope = Math.floor(Number(r.scopeMonths))
+  return {
+    enabled: typeof r.enabled === 'boolean' ? r.enabled : d.enabled,
+    scopeMonths: RECONCILE_SCOPE_VALUES.includes(scope) ? scope : d.scopeMonths
   }
 }
 
@@ -119,7 +152,9 @@ function normalize(input: Partial<AppSettings>): AppSettings {
         : d.blocklist.contentTypeNoiseOnly,
       minTextLenForLLM: clampInt(bl.minTextLenForLLM, 0, 100, d.blocklist.minTextLenForLLM)
     },
-    chatIgnoreKeywords: normalizeChatIgnore(input.chatIgnoreKeywords)
+    chatIgnoreKeywords: normalizeChatIgnore(input.chatIgnoreKeywords),
+    openAtLogin: typeof input.openAtLogin === 'boolean' ? input.openAtLogin : d.openAtLogin,
+    reconcile: normalizeReconcile(input.reconcile, d.reconcile)
   }
 }
 
@@ -154,7 +189,14 @@ export function updateSettings(patch: SettingsPatch): AppSettings {
       ...cur.blocklist,
       ...(patch.blocklist ?? {})
     },
-    chatIgnoreKeywords: patch.chatIgnoreKeywords ?? cur.chatIgnoreKeywords
+    chatIgnoreKeywords: patch.chatIgnoreKeywords ?? cur.chatIgnoreKeywords,
+    openAtLogin: patch.openAtLogin ?? cur.openAtLogin,
+    // reconcile 部分更新：以「目前值」為 fallback 基準（patch 帶非法 scopeMonths 時保留現值，
+    // 而非退回硬預設）。normalizeReconcile 對已合法的結果再跑一次為冪等。
+    reconcile: normalizeReconcile(
+      { ...cur.reconcile, ...(patch.reconcile ?? {}) },
+      cur.reconcile
+    )
   })
   cached = merged
   try {

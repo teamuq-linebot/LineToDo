@@ -20,6 +20,7 @@ export type {
   PipelineRunResult,
   TodosChangedEvent,
   BackfillProgress,
+  ReconcileProgress,
   ReviewLastDaysResult,
   QwenTestResult,
   BlocklistRules,
