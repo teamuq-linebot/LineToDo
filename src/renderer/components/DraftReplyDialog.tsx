@@ -68,7 +68,7 @@ export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Elemen
         </div>
 
         {loading ? (
-          <div className="draft-box muted">qwen 草擬中…</div>
+          <div className="draft-box muted">AI 草擬中…</div>
         ) : error ? (
           <div className="draft-box draft-err">{error}</div>
         ) : (

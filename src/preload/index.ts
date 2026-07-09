@@ -230,6 +230,8 @@ export interface SettingsView {
     /** 對帳範圍：0=全部歷史，3/6/12=近 N 個月。 */
     scopeMonths: number
   }
+  /** AI 判斷引擎端點 Base URL；空字串＝用預設端點（見 qwen.ts 的 baseURL 解析優先序）。 */
+  aiBaseUrl: string
   hasApiKey: boolean
   apiKeySource: 'safeStorage' | 'env' | 'none'
   safeStorageAvailable: boolean
@@ -244,6 +246,8 @@ export type SettingsPatch = Partial<{
   chatIgnoreKeywords: Record<string, string[]>
   openAtLogin: boolean
   reconcile: Partial<{ enabled: boolean; scopeMonths: number }>
+  /** AI 判斷引擎端點 Base URL；空字串＝用預設端點。 */
+  aiBaseUrl: string
 }>
 
 /** todos:draftReply 結果（只草擬不送出）。 */

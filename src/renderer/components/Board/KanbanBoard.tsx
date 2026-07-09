@@ -249,7 +249,7 @@ export function KanbanBoard(): JSX.Element {
           title={
             hasApiKey === false
               ? '請先到設定頁填金鑰'
-              : `用 qwen 判斷最近 ${REVIEW_DAYS} 天訊息、補建代辦`
+              : `用 AI 判斷最近 ${REVIEW_DAYS} 天訊息、補建代辦`
           }
         >
           {reviewLabel}

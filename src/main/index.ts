@@ -12,7 +12,7 @@ import type { PipelineStatus } from './pipeline/scheduler'
 import type { RunOnceResult } from './pipeline/runOnce'
 import { registerPipelineIpc } from './ipc/pipeline.ipc'
 import { registerSettingsIpc } from './ipc/settings.ipc'
-import { setSafeStorageReader } from './config/qwen'
+import { setSafeStorageReader, setBaseUrlReader } from './config/qwen'
 import { readApiKeyFromSafeStorage, getSettings } from './config/settings'
 import { setSettingsOverlayProvider } from './config/defaults'
 import {
@@ -241,6 +241,13 @@ app.whenReady().then(() => {
   // qwen 金鑰：注入 safeStorage 讀取器（§7.2 優先序 safeStorage > env）。
   // 必須在 scheduler / 任何讀 getQwenConfig 之前注入，否則設定頁存的金鑰不會被採用。
   setSafeStorageReader(readApiKeyFromSafeStorage)
+
+  // qwen 端點：注入 aiBaseUrl 讀取器（優先序 settings.aiBaseUrl > env QWEN_BASE_URL > 內建預設）。
+  // 同樣須在任何讀 getQwenConfig 之前注入，設定頁存的端點才會被採用。
+  setBaseUrlReader(() => {
+    const u = getSettings().aiBaseUrl
+    return u && u.trim() ? u.trim() : null
+  })
 
   // pipeline 設定：注入持久化設定覆寫器（設定頁的 poll/並發/blocklist 要能蓋過內建常數）。
   setSettingsOverlayProvider(getSettings)

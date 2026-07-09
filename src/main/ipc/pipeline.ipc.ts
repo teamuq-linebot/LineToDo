@@ -71,7 +71,7 @@ export function registerPipelineIpc(
     async (): Promise<{ ok: boolean; models?: string[]; error?: string }> => {
       const cfg = getQwenConfig()
       if (!cfg.apiKey) {
-        return { ok: false, error: '尚未設定 qwen 金鑰（請在設定頁填入，或設環境變數 QWEN_API_KEY）' }
+        return { ok: false, error: '尚未設定 API 金鑰（請在設定頁填入，或設環境變數 QWEN_API_KEY）' }
       }
       const client = makeQwen({
         apiKey: cfg.apiKey,

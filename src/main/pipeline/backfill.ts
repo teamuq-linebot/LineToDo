@@ -266,7 +266,7 @@ export async function reviewLastDays(
   // 無金鑰：直接回報（不 spawn、不抽），讓 UI 提示填金鑰。
   if (extractFn === null) {
     result.ok = false
-    result.note = '尚未設定 qwen 金鑰（請先到設定頁填金鑰）'
+    result.note = '尚未設定 API 金鑰（請先到設定頁填金鑰）'
     finishRun(runId, { lineBridge: 'skipped', llmStatus: 'error', note: result.note }, db)
     emit({ processed: 0, total: 0, phase: 'done' })
     return result

@@ -33,6 +33,8 @@ export interface AppSettings {
   openAtLogin: boolean
   /** 開機自我對帳設定（Batch 5a）。 */
   reconcile: ReconcileSettings
+  /** AI 判斷引擎端點 Base URL；空字串＝用預設端點（見 qwen.ts 的 baseURL 解析優先序）。 */
+  aiBaseUrl: string
 }
 
 /** 回傳 renderer 的設定（不含任何金鑰；以 hasApiKey 表達金鑰是否已設定）。 */
@@ -54,6 +56,8 @@ export type SettingsPatch = Partial<{
   openAtLogin: boolean
   /** 部分更新對帳設定（enabled / scopeMonths 可各自單獨送）。 */
   reconcile: Partial<ReconcileSettings>
+  /** AI 判斷引擎端點 Base URL；空字串＝用預設端點。 */
+  aiBaseUrl: string
 }>
 
 const SETTINGS_FILE = 'settings.json'
@@ -89,7 +93,9 @@ function defaultSettings(): AppSettings {
     // 使用者要求：開機自動啟動預設開。
     openAtLogin: true,
     // 對帳預設啟用、全歷史範圍（scopeMonths=0）。
-    reconcile: { enabled: true, scopeMonths: 0 }
+    reconcile: { enabled: true, scopeMonths: 0 },
+    // AI 端點預設空字串＝用 qwen.ts 內建預設。
+    aiBaseUrl: ''
   }
 }
 
@@ -154,7 +160,9 @@ function normalize(input: Partial<AppSettings>): AppSettings {
     },
     chatIgnoreKeywords: normalizeChatIgnore(input.chatIgnoreKeywords),
     openAtLogin: typeof input.openAtLogin === 'boolean' ? input.openAtLogin : d.openAtLogin,
-    reconcile: normalizeReconcile(input.reconcile, d.reconcile)
+    reconcile: normalizeReconcile(input.reconcile, d.reconcile),
+    // 容忍空字串；不強制驗 URL 格式，空＝用預設端點。
+    aiBaseUrl: typeof input.aiBaseUrl === 'string' ? input.aiBaseUrl.trim() : d.aiBaseUrl
   }
 }
 
@@ -196,7 +204,8 @@ export function updateSettings(patch: SettingsPatch): AppSettings {
     reconcile: normalizeReconcile(
       { ...cur.reconcile, ...(patch.reconcile ?? {}) },
       cur.reconcile
-    )
+    ),
+    aiBaseUrl: patch.aiBaseUrl ?? cur.aiBaseUrl
   })
   cached = merged
   try {

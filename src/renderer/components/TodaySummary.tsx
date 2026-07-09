@@ -194,7 +194,7 @@ export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element 
             </span>
           </div>
           {status && !status.hasApiKey && (
-            <div className="txt-warn">⚠ 請在設定頁填入 qwen 金鑰才會抽取代辦</div>
+            <div className="txt-warn">⚠ 請在設定頁填入 API 金鑰才會抽取代辦</div>
           )}
           {status?.lastRunAt && (
             <div className="muted">

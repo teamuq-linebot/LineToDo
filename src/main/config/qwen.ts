@@ -42,6 +42,19 @@ export function setSafeStorageReader(reader: SafeStorageReader): void {
   safeStorageReader = reader
 }
 
+/**
+ * 從持久化設定讀 AI 端點 Base URL（settings.aiBaseUrl）。回 null 表示未設定/空，
+ * 由 getQwenConfig 退回 env / 內建預設。抽成可注入 hook，讓測試/腳本不必牽連設定層。
+ */
+export type BaseUrlReader = () => string | null
+
+let baseUrlReader: BaseUrlReader = () => null
+
+/** 設定頁啟用後注入真正的 aiBaseUrl 讀取器（見 index.ts wireup）。 */
+export function setBaseUrlReader(r: BaseUrlReader): void {
+  baseUrlReader = r
+}
+
 function readEnvKey(): string | null {
   const k = process.env.QWEN_API_KEY?.trim()
   return k ? k : null
@@ -51,7 +64,18 @@ function readEnvKey(): string | null {
  * 解析當前 qwen 設定。每次呼叫即時解析（金鑰即用即丟，不在模組層長存）。
  */
 export function getQwenConfig(): QwenConfig {
-  const baseURL = process.env.QWEN_BASE_URL?.trim() || DEFAULT_BASE_URL
+  // baseURL 解析優先序：settings.aiBaseUrl（trim 後非空）> 環境變數 QWEN_BASE_URL > 內建預設。
+  // reader 拋錯時退回 env/default（比照 safeStorage 的容錯，不崩潰）。
+  let fromSettings: string | null = null
+  try {
+    fromSettings = baseUrlReader()
+  } catch {
+    /* 設定層不可用（如注入前被呼叫）—— 退回環境變數/預設。 */
+  }
+  const baseURL =
+    (fromSettings && fromSettings.trim()) ||
+    process.env.QWEN_BASE_URL?.trim() ||
+    DEFAULT_BASE_URL
   const model = process.env.QWEN_MODEL?.trim() || DEFAULT_MODEL
   const timeoutEnv = Number(process.env.QWEN_TIMEOUT_MS)
   const timeoutMs =

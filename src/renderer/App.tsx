@@ -8,7 +8,7 @@ import { SettingsPanel } from './components/Settings/SettingsPanel'
  * 頂部分頁切換：看板 / 即時訊息流 / 設定。
  *   - 看板：四欄（待辦 / 等回覆 / 行程 / 已完成）+ 今日摘要。
  *   - 即時訊息流：M1 的 LINE 原始訊息流（保留作觀測 / 除錯）。
- *   - 設定：輪詢頻率、降噪黑名單、qwen 金鑰。
+ *   - 設定：輪詢頻率、降噪黑名單、AI 判斷引擎（API 金鑰 + AI 端點）。
  */
 
 type Tab = 'board' | 'stream' | 'settings'

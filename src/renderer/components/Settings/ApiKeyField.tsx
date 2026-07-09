@@ -74,7 +74,7 @@ export function ApiKeyField({ view, onChanged }: Props): JSX.Element {
 
   return (
     <div className="set-field">
-      <label className="set-label">qwen 金鑰（QWEN_API_KEY）</label>
+      <label className="set-label">API 金鑰</label>
       <div className="set-keystate">
         目前狀態：
         <span className={view.hasApiKey ? 'txt-ok' : 'txt-warn'}>

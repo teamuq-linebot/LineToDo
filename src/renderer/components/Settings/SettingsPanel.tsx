@@ -8,7 +8,7 @@ import { BlocklistEditor } from './BlocklistEditor'
  *
  * 區塊：
  *   - 輪詢頻率 / 並發 / 上下文則數（數值設定，存 settings.json）
- *   - qwen 金鑰（safeStorage，ApiKeyField）
+ *   - AI 判斷引擎（AI 端點 Base URL + API 金鑰 safeStorage，ApiKeyField）
  *   - 降噪黑名單（關鍵字 + 逐 chat toggle，BlocklistEditor）
  *   - 資料夾 / 維運
  *
@@ -108,7 +108,7 @@ export function SettingsPanel(): JSX.Element {
               }
               onBlur={() => void patch({ concurrency: view.concurrency })}
             />
-            <span className="muted">同時送幾個聊天室給 qwen（保守 1–2，最多 4）。</span>
+            <span className="muted">同時送幾個聊天室給 AI 判斷引擎（保守 1–2，最多 4）。</span>
           </div>
         </div>
       </div>
@@ -185,9 +185,39 @@ export function SettingsPanel(): JSX.Element {
         </div>
       </div>
 
-      {/* qwen 金鑰 */}
+      {/* AI 判斷引擎 */}
       <div className="set-section">
-        <div className="set-section-title">qwen 抽取引擎</div>
+        <div className="set-section-title">AI 判斷引擎</div>
+
+        <div className="set-field">
+          <label className="set-label">AI 端點（Base URL）</label>
+          <div className="set-inline">
+            <input
+              type="text"
+              className="set-input"
+              value={view.aiBaseUrl}
+              placeholder="https://qwen.tuq.tw/v1"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => setView({ ...view, aiBaseUrl: e.target.value })}
+              onBlur={() => void patch({ aiBaseUrl: view.aiBaseUrl })}
+            />
+            <button
+              className="ghost"
+              onClick={() => {
+                setView({ ...view, aiBaseUrl: '' })
+                void patch({ aiBaseUrl: '' })
+              }}
+            >
+              還原為預設
+            </button>
+          </div>
+          <div className="muted set-hint">
+            留空＝使用預設端點；填入你自己的 OpenAI 相容端點（Base
+            URL）即可換後端 LLM，讓別人也能用自己的模型安裝使用。
+          </div>
+        </div>
+
         <ApiKeyField view={view} onChanged={() => void loadView()} />
       </div>
 

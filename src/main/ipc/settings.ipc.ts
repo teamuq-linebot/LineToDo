@@ -94,7 +94,7 @@ export function registerSettingsIpc(hooks: SettingsIpcHooks = {}): void {
 
       const cfg = getQwenConfig()
       if (!cfg.apiKey) {
-        return { error: '尚未設定 qwen 金鑰（請在設定頁填入，或設環境變數 QWEN_API_KEY）' }
+        return { error: '尚未設定 API 金鑰（請在設定頁填入，或設環境變數 QWEN_API_KEY）' }
       }
 
       try {
