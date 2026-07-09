@@ -11,8 +11,9 @@
 #       [renderer] [stream] recv ...      -> renderer received pushed messages
 set -u
 
-REPO=/c/Users/david/line-todo
-LINE_REPO=/c/Users/david/line-cua-win
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+LINE_REPO="$REPO/line-cua-win"
 STATE="$LINE_REPO/.watch_json_state"
 LOG="$REPO/scripts/e2e-stream.log"
 

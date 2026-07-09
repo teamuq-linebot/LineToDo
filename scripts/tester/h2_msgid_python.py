@@ -8,7 +8,7 @@
 import os, sys, json
 
 # 在 src/ 內執行，讓 watch_json 能 import linedb/linekey（與 App spawn cwd 一致）。
-SRC = os.path.join(os.path.dirname(__file__), "..", "..", "..", "line-cua-win", "src")
+SRC = os.path.join(os.path.dirname(__file__), "..", "..", "line-cua-win", "src")
 SRC = os.path.abspath(SRC)
 sys.path.insert(0, SRC)
 os.chdir(SRC)

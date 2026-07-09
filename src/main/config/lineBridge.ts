@@ -4,6 +4,9 @@
  * 本輪（即時訊息流）只需要這幾個值即可運作；完整的 settings.json + 設定頁覆寫
  * 屬後續里程碑（M3）。此處先以常數提供，並允許環境變數覆寫，方便開發/測試。
  */
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+
 export interface LineBridgeConfig {
   python: string
   script: string
@@ -28,13 +31,35 @@ export interface LineBridgeConfig {
 function defaultDbDir(): string {
   const localAppData =
     process.env.LOCALAPPDATA ??
-    (process.env.USERPROFILE ? `${process.env.USERPROFILE}\\AppData\\Local` : 'C:\\Users\\david\\AppData\\Local')
+    (process.env.USERPROFILE ? `${process.env.USERPROFILE}\\AppData\\Local` : join(homedir(), 'AppData', 'Local'))
   return `${localAppData}\\LINE\\Data\\db`
 }
 
+/**
+ * py fallback（LINE_ENGINE=py 才用）的 line-cua-win 根目錄。
+ * 由 LINE_CUA_WIN_DIR 覆寫；否則以專案根相對定位到 <projectRoot>/line-cua-win
+ * （已從獨立 repo 搬進 line-todo 專案內的子目錄）。
+ * app.getAppPath 只在 Electron 主程序可用；純 Node 環境惰性 require 失敗時，
+ * fallback 到 __dirname（bundle 於 out/main）往上兩層的專案根。
+ */
+function defaultCuaWinDir(): string {
+  const override = process.env.LINE_CUA_WIN_DIR?.trim()
+  if (override) return override
+  try {
+    const electron = require('electron') as { app?: { getAppPath?: () => string } }
+    const appRoot = electron?.app?.getAppPath?.()
+    if (appRoot) return join(appRoot, 'line-cua-win')
+  } catch {
+    // 非 Electron 環境 —— 落到下方 __dirname fallback。
+  }
+  return join(__dirname, '..', '..', 'line-cua-win')
+}
+
+const CUA_WIN_DIR = defaultCuaWinDir()
+
 const DEFAULTS: LineBridgeConfig = {
-  python: 'C:/Users/david/line-cua-win/.venv/Scripts/python.exe',
-  script: 'C:/Users/david/line-cua-win/src/watch_json.py',
+  python: join(CUA_WIN_DIR, '.venv', 'Scripts', 'python.exe'),
+  script: join(CUA_WIN_DIR, 'src', 'watch_json.py'),
   intervalSec: 15,
   limit: 500,
   dbWatchEnabled: true,

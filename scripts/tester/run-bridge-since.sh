@@ -2,9 +2,12 @@
 # Tester harness: run watch_json.py with --since (does NOT mutate the App checkpoint),
 # pull messages from the last ~3 days, cap small, print first lines + counts.
 set -uo pipefail
-PY="C:/Users/david/line-cua-win/.venv/Scripts/python.exe"
-SCRIPT="C:/Users/david/line-cua-win/src/watch_json.py"
-SRCDIR="C:/Users/david/line-cua-win/src"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LINE_REPO="$REPO/line-cua-win"
+PY="$LINE_REPO/.venv/Scripts/python.exe"
+SCRIPT="$LINE_REPO/src/watch_json.py"
+SRCDIR="$LINE_REPO/src"
 # 3 days ago in epoch-ms
 SINCE_MS=$(( ($(date +%s) - 3*24*3600) * 1000 ))
 echo "[bridge-test] SINCE_MS=$SINCE_MS"

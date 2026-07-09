@@ -25,7 +25,7 @@ const fs = require('node:fs')
 const esbuild = require('esbuild')
 
 const ROOT = path.resolve(__dirname, '..', '..')
-const LINE_REPO = 'C:/Users/david/line-cua-win'
+const LINE_REPO = path.join(ROOT, 'line-cua-win')
 const STATE_FILE = path.join(LINE_REPO, '.watch_json_state')
 
 const ENTRY = `
@@ -75,8 +75,8 @@ app.whenReady().then(async () => {
     console.log('[e2e] initial countMessages=' + m.countMessages())
 
     const watcher = new m.LineWatcher({
-      python: 'C:/Users/david/line-cua-win/.venv/Scripts/python.exe',
-      script: 'C:/Users/david/line-cua-win/src/watch_json.py',
+      python: path.join(LINE_REPO, '.venv', 'Scripts', 'python.exe'),
+      script: path.join(LINE_REPO, 'src', 'watch_json.py'),
       intervalSec: 5,
       limit: 80
     })

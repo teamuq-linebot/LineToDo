@@ -1,0 +1,36 @@
+node_modules/
+dist/
+.venv/
+.linekey
+.env
+.env.*
+*.key
+secrets/
+*.enc.yaml
+*.log
+*.db
+line_plain.db
+poc_findkey.py
+inspect_schema.py
+probe_uia.py
+probe_ocr.py
+capture.py
+*.png
+
+# === PII / 個資防護（搬入 line-todo 後補強，2026-07-09）===
+export_*.md
+export_*.xlsx
+*.xlsx
+digest_*.md
+_calib/
+.watch_state
+.watch_json_state
+
+# === Python bytecode ===
+__pycache__/
+*.pyc
+
+# === PII fixture（內嵌真實個資、不進版控，2026-07-09）===
+# build_gold.py 內嵌真實 PII fixture 供 dev 產生 eval/gold-*.json；
+# 其產物已由 root .gitignore 的 eval/gold-*.json 擋下，原始檔亦不追蹤。
+build_gold.py
