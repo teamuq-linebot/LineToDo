@@ -3,6 +3,8 @@ import type { PipelineScheduler, PipelineStatus } from '../pipeline/scheduler'
 import type { RunOnceResult } from '../pipeline/runOnce'
 import { reviewLastDays, backfillMediaKeys } from '../pipeline/backfill'
 import type { BackfillProgress, ReviewLastDaysResult } from '../pipeline/backfill'
+import { getChatsSeenStats } from '../db/pipeline.repo'
+import { countChatsWithRecentMessages } from '../db/messages.repo'
 import { listModels, makeQwen } from '../llm/qwenClient'
 import { getQwenConfig } from '../config/qwen'
 import { resolveProvider, unconfiguredHealth, LlmProviderError } from '../llm/provider'
@@ -12,6 +14,7 @@ import type { ProviderHealth } from '../llm/provider'
  * pipeline:* IPC handler（IMPLEMENTATION_PLAN.md §5）。
  *
  * - pipeline:status         → 目前狀態（含 hasApiKey / llmStatus，UI 顯示「缺金鑰」提示）
+ * - pipeline:loadStats      → 唯讀的歷史負載統計（設定頁延遲試算的預設值；只回整數）
  * - pipeline:runOnce        → 手動立即跑一輪
  * - pipeline:setRunning     → 暫停/恢復定時輪詢
  * - pipeline:reviewLastDays → 回顧過去 N 天（預設 7），用既有抽取管線補建 todos
@@ -29,11 +32,45 @@ export interface PipelineIpcDeps {
   pushProgress: (p: BackfillProgress) => void
 }
 
+/** 近 N 天的視窗大小（`chatsWithRecentMessages` 的定義）。 */
+const RECENT_DAYS = 7
+
+/**
+ * 設定頁延遲試算要用的歷史事實（全部是整數，不含任何聊天室名稱或訊息內容）。
+ *
+ * 為什麼是獨立的 IPC，而不是塞進 `pipeline:status`：
+ *   - `pipeline:status` 每輪（預設 30 秒）都會 emit 給 renderer，多掛兩支 SQL 就是
+ *     每 30 秒多兩次查詢，只為了餵一個「開設定頁才看得到」的欄位。
+ *   - scheduler.getStatus() 的註解已明文「刻意不新增 PipelineStatus 欄位」（Batch 5
+ *     確立的形狀），改它等於動到看板/狀態列共用的契約。
+ *   這裡改成「開設定頁時拉一次」的唯讀查詢，既不動既有契約，也不進輪詢熱路徑。
+ */
+export interface PipelineLoadStats {
+  /** 納入分位數的輪數；< 20 代表歷史不足，呼叫端應退回保守預設。 */
+  sampleRuns: number
+  chatsSeenP50: number
+  chatsSeenP90: number
+  /** 歷來單輪最多處理過的聊天室數（多半來自開機自我對帳的一次性回補）。 */
+  chatsSeenMax: number
+  /** `chatsWithRecentMessages` 的視窗天數。 */
+  recentDays: number
+  /** 近 recentDays 天有過新訊息、且未被封鎖的聊天室數。 */
+  chatsWithRecentMessages: number
+}
+
 export function registerPipelineIpc(
   scheduler: PipelineScheduler,
   deps: PipelineIpcDeps
 ): void {
   ipcMain.handle('pipeline:status', (): PipelineStatus => scheduler.getStatus())
+
+  ipcMain.handle('pipeline:loadStats', (): PipelineLoadStats => {
+    return {
+      ...getChatsSeenStats(),
+      recentDays: RECENT_DAYS,
+      chatsWithRecentMessages: countChatsWithRecentMessages(RECENT_DAYS)
+    }
+  })
 
   ipcMain.handle('pipeline:runOnce', async (): Promise<RunOnceResult> => {
     return scheduler.triggerNow()

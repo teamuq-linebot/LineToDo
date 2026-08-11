@@ -116,3 +116,61 @@ export function getLastRun(db: Database = getDb()): PipelineRunDTO | null {
     .get() as PipelineRunRow | undefined
   return row ? rowToDTO(row) : null
 }
+
+/** `chats_seen` 的歷史分佈（設定頁延遲試算的預設值來源）。 */
+export interface ChatsSeenStats {
+  /** 取樣到的輪數（母體大小）。< 20 時不足以估算，呼叫端應退回保守預設。 */
+  sampleRuns: number
+  chatsSeenP50: number
+  chatsSeenP90: number
+  /** 歷來（不限取樣視窗）單輪最多處理過的聊天室數；反映開機自我對帳的一次性尖峰。 */
+  chatsSeenMax: number
+}
+
+/** 最近幾輪納入分位數統計。 */
+export const CHATS_SEEN_SAMPLE_RUNS = 200
+
+/** nearest-rank 分位數（sorted 需已由小到大）。 */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))
+  return sorted[idx]
+}
+
+/**
+ * 每輪實際處理的聊天室數（`chats_seen`）分佈。
+ *
+ * **只取 `llm_status = 'ok'` 的輪次**：抽取失敗的訊息刻意不標 `processed`，
+ * 下一輪會再看到同一批，所以 provider 持續失敗時 `chats_seen` 會爬成一個假高原
+ * （本機實測 32–35），拿它當「正常負載」會又一次高估。成功輪次才是穩態負載。
+ *
+ * `chatsSeenMax` 刻意不受取樣視窗限制：它要代表的是「開機自我對帳那種一次性尖峰」，
+ * 而那種輪次本來就稀有，落在最近 200 輪裡的機率很低。
+ */
+export function getChatsSeenStats(
+  sampleRuns = CHATS_SEEN_SAMPLE_RUNS,
+  db: Database = getDb()
+): ChatsSeenStats {
+  const n = Math.min(Math.max(sampleRuns, 1), 5000)
+  const rows = db
+    .prepare(
+      `SELECT chats_seen FROM pipeline_runs
+       WHERE llm_status = 'ok' AND finished_at IS NOT NULL
+       ORDER BY started_at DESC
+       LIMIT ?`
+    )
+    .all(n) as { chats_seen: number }[]
+  const sorted = rows.map((r) => r.chats_seen).sort((a, b) => a - b)
+  const maxRow = db
+    .prepare(
+      `SELECT MAX(chats_seen) AS n FROM pipeline_runs
+       WHERE llm_status = 'ok' AND finished_at IS NOT NULL`
+    )
+    .get() as { n: number | null } | undefined
+  return {
+    sampleRuns: sorted.length,
+    chatsSeenP50: percentile(sorted, 0.5),
+    chatsSeenP90: percentile(sorted, 0.9),
+    chatsSeenMax: maxRow?.n ?? 0
+  }
+}

@@ -126,6 +126,22 @@ export interface PipelineStatus {
   lastError: string | null
 }
 
+/**
+ * 歷史負載統計（與 main/ipc/pipeline.ipc.ts PipelineLoadStats 對齊）。
+ * 設定頁延遲試算用；全部是整數，不含聊天室名稱或訊息內容。
+ */
+export interface PipelineLoadStats {
+  /** 納入分位數的輪數；< 20 代表歷史不足，UI 應退回保守預設。 */
+  sampleRuns: number
+  chatsSeenP50: number
+  chatsSeenP90: number
+  /** 歷來單輪最多處理過的聊天室數（多半來自開機自我對帳的一次性回補）。 */
+  chatsSeenMax: number
+  recentDays: number
+  /** 近 recentDays 天有過新訊息、且未被封鎖的聊天室數。 */
+  chatsWithRecentMessages: number
+}
+
 /** 一輪 pipeline 結果（與 main/pipeline/runOnce.ts RunOnceResult 對齊）。 */
 export interface PipelineRunResult {
   runId: string
@@ -454,6 +470,11 @@ const api = {
   pipeline: {
     /** 目前 pipeline 狀態（含 hasApiKey / llmStatus，UI 顯示缺金鑰提示）。 */
     status: (): Promise<PipelineStatus> => ipcRenderer.invoke('pipeline:status'),
+    /**
+     * 歷史負載統計（唯讀）：設定頁延遲試算的預設值來源。
+     * 只在開設定頁時拉一次，不放進輪詢——它不是狀態，是統計。
+     */
+    loadStats: (): Promise<PipelineLoadStats> => ipcRenderer.invoke('pipeline:loadStats'),
     /** 手動立即跑一輪。 */
     runOnce: (): Promise<PipelineRunResult> => ipcRenderer.invoke('pipeline:runOnce'),
     /** 回顧過去 N 天（預設 7）：用既有抽取管線判斷時間窗口、補建 todos。 */

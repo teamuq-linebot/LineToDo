@@ -1,6 +1,7 @@
 import type {
   AiProviderId,
   CliProviderSettings,
+  PipelineLoadStats,
   ProviderHealth,
   SettingsView
 } from '../types/api'
@@ -66,7 +67,16 @@ export const PROVIDERS: readonly ProviderMeta[] = [
     loginCmd: 'claude /login',
     models: [
       { value: 'sonnet', label: 'sonnet — 建議：實測 5/5 成功，p90 約 21 秒' },
-      { value: 'haiku', label: 'haiku — 不建議：實測結構化輸出只成功 2/5' },
+      // 2026-08-11 補測（--max-turns 2，即現行組態）：結構化輸出 5/5 成功，舊「只成功 2/5」
+      // 是 --max-turns 1 下量到的，該組態早已不是現行程式碼路徑，標註不可再沿用。
+      // 但 p50≈131s / p90≈173s 已超過設定頁預設的 CLI 逾時（120s），且待辦召回明顯弱於
+      // sonnet（常漏掉低信心/隱含事項），故仍非首選，只是理由改了。
+      {
+        value: 'haiku',
+        label:
+          'haiku — 可用但慢，需調高逾時：--max-turns 2 下實測 5/5 成功，p50≈131 秒/p90≈173 秒' +
+          '（已超過預設 120 秒逾時，請在下方調高逾時，建議 ≥200 秒）；代辦召回弱於 sonnet，常漏低信心/隱含事項'
+      },
       { value: 'opus', label: 'opus — 最貴：實測單次抽取最高 $0.149' }
     ],
     nativeExeHint: 'C:\\nvm4w\\nodejs\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe'
@@ -122,6 +132,39 @@ const PER_CALL_SEC: Record<AiProviderId, number> = { http: 2, claudeCli: 21, cod
  * main 的 clamp，這裡要跟著動。
  */
 export const POLL_SEC_MAX = 3600
+
+/**
+ * 歷史紀錄少於這麼多輪就不拿來估算（開機沒多久、剛裝好的機器）。
+ */
+const LOAD_STATS_MIN_RUNS = 20
+
+/** 歷史不足時的保守預設：一輪一間。 */
+const FALLBACK_CHATS_PER_ROUND = 1
+
+/**
+ * 延遲試算「每輪聊天室數」的預設值。
+ *
+ * ⚠️ 這裡**不是**聊天室總數。pipeline 每輪的候選集合是
+ * `WHERE processed = 0 AND blocked = 0`（main/db/messages.repo.ts
+ * `getUnprocessedForPipeline`），也就是「這個輪詢間隔內剛有新訊息的聊天室」，
+ * 跟你有幾個聊天室無關。舊版拿未封鎖聊天室總數當預設（本機 590），
+ * 算出一輪 3.4 小時 → 觸發 hopeless → UI 勸使用者別用背景輪詢；
+ * 但 `pipeline_runs` 的實測是 p50 = 0、p90 = 0（近 200 輪成功輪次有 185 輪是 0 間），
+ * 那個 3.4 小時幾乎不會發生。
+ *
+ * 改用 `chats_seen` 最近 {@link PipelineLoadStats.sampleRuns} 輪成功輪次的 p90：
+ * 是實際發生過的數字，而且取 p90 已經偏保守（比中位數高）。
+ * 至少 1 —— p90 常常是 0，但「一輪 0 秒」對使用者沒有資訊量。
+ */
+export function defaultChatsPerRound(stats: PipelineLoadStats | null): number {
+  if (!stats || stats.sampleRuns < LOAD_STATS_MIN_RUNS) return FALLBACK_CHATS_PER_ROUND
+  return Math.max(FALLBACK_CHATS_PER_ROUND, stats.chatsSeenP90)
+}
+
+/** 歷史紀錄夠不夠拿來估算（不夠時 UI 要說「先以 1 間計」而不是假裝有根據）。 */
+export function hasEnoughLoadHistory(stats: PipelineLoadStats | null): boolean {
+  return !!stats && stats.sampleRuns >= LOAD_STATS_MIN_RUNS
+}
 
 /**
  * 實際生效的併發數：CLI 一律被 main 壓成 1（src/main/index.ts，design.md §7.1），

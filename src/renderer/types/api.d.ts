@@ -17,6 +17,7 @@ export type {
   TodoSortDirection,
   MessagesPersistedEvent,
   PipelineStatus,
+  PipelineLoadStats,
   PipelineRunResult,
   TodosChangedEvent,
   BackfillProgress,

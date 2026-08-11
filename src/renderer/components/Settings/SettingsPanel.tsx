@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AiProviderId, CliProviderSettings, SettingsView, ChatDTO } from '../../types/api'
+import type {
+  AiProviderId,
+  CliProviderSettings,
+  PipelineLoadStats,
+  SettingsView,
+  ChatDTO
+} from '../../types/api'
 import { ApiKeyField } from './ApiKeyField'
 import { BlocklistEditor } from './BlocklistEditor'
 import { ProviderHealthCheck } from './ProviderHealthCheck'
@@ -7,9 +13,11 @@ import {
   POLL_SEC_MAX,
   PROVIDERS,
   cliSettingsOf,
+  defaultChatsPerRound,
   effectiveConcurrency,
   estimateRound,
   fmtDuration,
+  hasEnoughLoadHistory,
   modelRationaleText,
   providerMeta
 } from '../../lib/aiProvider'
@@ -30,8 +38,13 @@ export function SettingsPanel(): JSX.Element {
   const [view, setView] = useState<SettingsView | null>(null)
   const [chats, setChats] = useState<ChatDTO[]>([])
   const [saved, setSaved] = useState(false)
-  /** 延遲試算用的聊天室數量（純試算，不落檔）；null＝沿用實際聊天室數。 */
+  /**
+   * 延遲試算用的「每輪聊天室數」（純試算，不落檔）；
+   * null＝沿用 loadStats 算出的預設（見 defaultChatsPerRound）。
+   */
   const [estimateChats, setEstimateChats] = useState<number | null>(null)
+  /** 歷史負載統計（pipeline:loadStats）；null＝還沒回來或查不到。 */
+  const [loadStats, setLoadStats] = useState<PipelineLoadStats | null>(null)
   /** 模型下拉是否切到「自訂模型名稱…」。 */
   const [customModel, setCustomModel] = useState(false)
   const execPathRef = useRef<HTMLInputElement>(null)
@@ -57,13 +70,19 @@ export function SettingsPanel(): JSX.Element {
     setEngineReady(st.hasApiKey)
   }, [])
 
+  /** 只在掛載時拉一次：這是統計，不是狀態，不需要跟著每輪更新。 */
+  const loadLoadStats = useCallback(async (): Promise<void> => {
+    setLoadStats(await window.api.pipeline.loadStats())
+  }, [])
+
   useEffect(() => {
     void loadView()
     void loadChats()
     void loadReady()
+    void loadLoadStats()
     // 設定改動會讓 main 重排排程器並推 status；順手跟著更新就緒狀態。
     return window.api.pipeline.onStatus((st) => setEngineReady(st.hasApiKey))
-  }, [loadView, loadChats, loadReady])
+  }, [loadView, loadChats, loadReady, loadLoadStats])
 
   function flashSaved(): void {
     setSaved(true)
@@ -100,7 +119,12 @@ export function SettingsPanel(): JSX.Element {
   const meta = providerMeta(v.aiProvider)
   const cli = cliSettingsOf(v, v.aiProvider)
   const isCli = meta.kind === 'cli'
-  const chatCount = estimateChats ?? Math.max(1, chats.filter((c) => !c.blocked).length)
+  /**
+   * 試算的預設值＝歷史上每輪實際處理過的聊天室數（p90），**不是**聊天室總數。
+   * 總數只出現在下方的說明文字裡（它是使用者關心的數字，但它不驅動試算）。
+   */
+  const activeChatTotal = chats.filter((c) => !c.blocked).length
+  const chatCount = estimateChats ?? defaultChatsPerRound(loadStats)
   const est = estimateRound(v.aiProvider, chatCount, v.concurrency, v.pollIntervalSec)
   const modelIsPreset = !!cli && meta.models.some((m) => m.value === cli.model)
   const modelSelectValue = customModel || (!!cli?.model && !modelIsPreset) ? '__custom' : (cli?.model ?? '')
@@ -288,12 +312,12 @@ export function SettingsPanel(): JSX.Element {
               </div>
               <div className="est-line">
                 <label>
-                  聊天室數量{' '}
+                  每輪要處理的聊天室數（只算有新訊息的）{' '}
                   <input
                     type="number"
                     className="set-num"
                     min={1}
-                    /* 無上限：試算欄初值取實際聊天室數，這台機器可能有幾百個房間，
+                    /* 無上限：使用者可以自己填大數字去看最壞情況（例如把總數填進來），
                        宣告一個死板上限只會讓 input 一載入就 :invalid（見 Batch 驗收缺陷 2）。 */
                     value={chatCount}
                     onChange={(e) =>
@@ -305,6 +329,19 @@ export function SettingsPanel(): JSX.Element {
                 <span className="est-num">{est.concurrency}</span> ＝ 跑完一輪約{' '}
                 <span className="est-num">{fmtDuration(est.roundSec)}</span>，目前輪詢間隔{' '}
                 <span className="est-num">{fmtDuration(v.pollIntervalSec)}</span>。
+              </div>
+              {/* 聊天室總數要有地方安放（使用者會找它），但它不驅動試算——只當說明文字。 */}
+              <div className="muted set-hint">
+                {activeChatTotal > 0 && loadStats
+                  ? `你有 ${activeChatTotal} 個未封鎖聊天室，近 ${loadStats.recentDays} 天其中 ${loadStats.chatsWithRecentMessages} 個有過新訊息；`
+                  : ''}
+                每一輪只處理「上一輪之後剛有新訊息」的那幾間，不是每輪都掃全部聊天室。
+                {loadStats && hasEnoughLoadHistory(loadStats)
+                  ? `本機最近 ${loadStats.sampleRuns} 輪成功紀錄：每輪中位數 ${loadStats.chatsSeenP50} 間、p90 ${loadStats.chatsSeenP90} 間，所以上面預設填 ${defaultChatsPerRound(loadStats)}（最少以 1 間估算，因為「一輪 0 秒」沒有參考價值）。`
+                  : '目前還沒有足夠的執行紀錄可以估算，上面先以每輪 1 間計；想看最壞情況可以自己把數字改大。'}
+                {loadStats && loadStats.chatsSeenMax >= 10
+                  ? `例外是久沒開機後的第一次自我對帳，會一次補比較多（本機歷來單輪最多 ${loadStats.chatsSeenMax} 間），那是一次性的，跑完就回到常態。`
+                  : '例外是久沒開機後的第一次自我對帳，會一次補比較多；那是一次性的，跑完就回到常態。'}
               </div>
               {est.behind ? (
                 est.hopeless ? (
@@ -333,11 +370,12 @@ export function SettingsPanel(): JSX.Element {
                 <div className="est-line">
                   CLI 每次抽取約 20 秒（實測 p90：Claude 21 秒、Codex 23
                   秒），比 HTTP
-                  端點的數秒慢一個量級；目前這組數字追得上，聊天室變多時這裡會再提醒你。
+                  端點的數秒慢一個量級；目前這組數字追得上，單輪要處理的聊天室變多時這裡會再提醒你。
                 </div>
               )}
               <div className="muted set-hint">
-                數字來源：本機實測（{meta.name}，20 則對話 × 5 次）。實際速度會隨對話長度變動。
+                數字來源：每室秒數為本機實測（{meta.name}，20 則對話 × 5 次），會隨對話長度變動；
+                每輪聊天室數取自本機 pipeline 執行紀錄（近 200 輪抽取成功的輪次）。
               </div>
             </div>
           </div>

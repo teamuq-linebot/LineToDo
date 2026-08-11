@@ -264,6 +264,28 @@ export function countMessages(chatId?: string, db: Database = getDb()): number {
 }
 
 /**
+ * 近 N 天內有過新訊息、且未被封鎖的聊天室數（設定頁延遲試算的說明文字用）。
+ *
+ * 這是「會落進 pipeline 候選集合的聊天室」的上界；聊天室總數不是——絕大多數聊天室
+ * 長期沒有新訊息，永遠不會被抽取。只回一個整數，不回任何聊天室名稱或訊息內容。
+ */
+export function countChatsWithRecentMessages(
+  days = 7,
+  db: Database = getDb()
+): number {
+  const d = Math.min(Math.max(Math.floor(days), 1), 365)
+  const sinceMs = Date.now() - d * 24 * 60 * 60 * 1000
+  const r = db
+    .prepare(
+      `SELECT COUNT(DISTINCT m.chat_id) AS n FROM messages m
+       JOIN chats c ON c.chat_id = m.chat_id
+       WHERE c.blocked = 0 AND m.ts >= ?`
+    )
+    .get(sinceMs) as { n: number }
+  return r.n
+}
+
+/**
  * 取「未處理（processed=0）且該 chat 未被 blocked」的訊息，依 ts 由舊到新。
  * pipeline runOnce 用：這是本輪要送 LLM 抽取的候選（§8 步驟 4）。
  * 黑名單 chat 的訊息仍鏡像在 messages（可追溯），但這裡 JOIN chats 過濾掉 blocked=1。
