@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import type {
+  AiProviderId,
   TodoDTO,
   BackfillProgress,
   TodoSortBy,
   TodoSortDirection
 } from '../../types/api'
+import { notReadyShortText } from '../../lib/aiProvider'
 import { COLUMNS, columnOf, type ColumnId } from './buckets'
 import { Column } from './Column'
 import { useTodos } from '../../store/useTodos'
@@ -84,6 +86,8 @@ export function KanbanBoard(): JSX.Element {
   const [reviewing, setReviewing] = useState(false)
   const [progress, setProgress] = useState<BackfillProgress | null>(null)
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null)
+  // 引擎未就緒時的文案要看 provider：http＝缺金鑰；CLI＝找不到執行檔。
+  const [aiProvider, setAiProvider] = useState<AiProviderId>('http')
   const [reviewNote, setReviewNote] = useState<string | null>(null)
 
   // 「補媒體金鑰（近 7 天）」狀態（輕量 backfill：不跑 LLM、不需金鑰）。
@@ -101,6 +105,12 @@ export function KanbanBoard(): JSX.Element {
       .catch(() => {
         if (alive) setHasApiKey(null)
       })
+    void window.api.settings
+      .get()
+      .then((v) => {
+        if (alive) setAiProvider(v.aiProvider)
+      })
+      .catch(() => undefined)
     // 訂閱 backfill 進度推播。
     const off = window.api.pipeline.onBackfillProgress((p) => {
       setProgress(p)
@@ -120,7 +130,7 @@ export function KanbanBoard(): JSX.Element {
       const res = await window.api.pipeline.reviewLastDays(REVIEW_DAYS)
       setHasApiKey(res.hasApiKey)
       if (!res.ok && !res.hasApiKey) {
-        setReviewNote('請先到設定頁填金鑰')
+        setReviewNote(notReadyShortText(aiProvider))
       } else if (!res.ok) {
         setReviewNote(res.note ?? '回顧失敗')
       } else {
@@ -248,14 +258,14 @@ export function KanbanBoard(): JSX.Element {
           onClick={() => void onReviewRecentDays()}
           title={
             hasApiKey === false
-              ? '請先到設定頁填金鑰'
+              ? notReadyShortText(aiProvider)
               : `用 AI 判斷最近 ${REVIEW_DAYS} 天訊息、補建代辦`
           }
         >
           {reviewLabel}
         </button>
         {hasApiKey === false && !reviewing && (
-          <span className="review-hint">請先到設定頁填金鑰</span>
+          <span className="review-hint">{notReadyShortText(aiProvider)}</span>
         )}
         {reviewNote && <span className="review-note">{reviewNote}</span>}
         <button

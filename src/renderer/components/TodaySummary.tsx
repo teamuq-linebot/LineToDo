@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import type { TodoDTO, PipelineStatus, ReconcileProgress } from '../types/api'
+import type { AiProviderId, TodoDTO, PipelineStatus, ReconcileProgress } from '../types/api'
 import { isOverdue } from './Board/buckets'
+import { notReadyText, providerMeta } from '../lib/aiProvider'
 
 /**
  * TodaySummary — 「今日摘要」面板（IMPLEMENTATION_PLAN.md M3）。
@@ -26,7 +27,11 @@ function isToday(iso: string | null): boolean {
   return iso.startsWith(todayPrefix())
 }
 
-function llmLabel(s: PipelineStatus['llmStatus']): string {
+/**
+ * llmStatus 文案。'disabled' 在 http 下代表缺金鑰，在 CLI 下代表找不到執行檔，
+ * 所以不能寫死「缺金鑰」（Batch 5 指出的誤導文案）。
+ */
+function llmLabel(s: PipelineStatus['llmStatus'], provider: AiProviderId): string {
   switch (s) {
     case 'ok':
       return '正常'
@@ -35,7 +40,9 @@ function llmLabel(s: PipelineStatus['llmStatus']): string {
     case 'error':
       return '錯誤'
     case 'disabled':
-      return '未啟用（缺金鑰）'
+      return providerMeta(provider).kind === 'http'
+        ? '未啟用（缺金鑰）'
+        : `未啟用（找不到 ${providerMeta(provider).name}）`
     default:
       return '未知'
   }
@@ -73,6 +80,8 @@ function reconPct(p: ReconcileProgress): number {
 
 export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element {
   const [status, setStatus] = useState<PipelineStatus | null>(null)
+  // 目前選用的 AI provider：決定「引擎未就緒」時該叫使用者去填金鑰還是去修 CLI 路徑。
+  const [provider, setProvider] = useState<AiProviderId>('http')
   const [running, setRunning] = useState(false)
 
   // 自我對帳進度（方案 A：低調 pill）。backfilling 顯示；done 顯示綠勾後淡出；
@@ -83,6 +92,7 @@ export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element 
 
   useEffect(() => {
     void window.api.pipeline.status().then(setStatus)
+    void window.api.settings.get().then((v) => setProvider(v.aiProvider))
     const off = window.api.pipeline.onStatus(setStatus)
     return off
   }, [])
@@ -190,11 +200,11 @@ export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element 
                     : ''
               }
             >
-              {status ? llmLabel(status.llmStatus) : '…'}
+              {status ? llmLabel(status.llmStatus, provider) : '…'}
             </span>
           </div>
           {status && !status.hasApiKey && (
-            <div className="txt-warn">⚠ 請在設定頁填入 API 金鑰才會抽取代辦</div>
+            <div className="txt-warn">⚠ {notReadyText(provider)}</div>
           )}
           {status?.lastRunAt && (
             <div className="muted">

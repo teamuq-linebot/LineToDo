@@ -65,6 +65,19 @@ export const CODEX_TESTED_VERSION = '0.147.0'
 /** design §5.1：codex 無 `--max-turns`，逾時是唯一的煞車。 */
 export const CODEX_DEFAULT_TIMEOUT_MS = 120_000
 
+/**
+ * 未指定模型時使用的預設模型。**`-m` 永遠會被帶上**，不存在「不帶 `-m`」這條路徑。
+ *
+ * 理由與 claudeCli 的 `--model` 必填完全相同（spike §13-2）：不帶模型旗標＝把「跑哪個模型」
+ * 交給使用者本機 CLI 的設定，而那是 app 看不到也控制不了的東西 —— 有人的本機預設是 opus，
+ * 實測單次抽取就燒掉 $0.149，而且這件事不會有任何提示。設定檔可被手動編輯（繞過設定頁的
+ * 「模型必填」驗證），所以這道防線必須落在**組 argv 的地方**，不能只放在 UI。
+ *
+ * 選 `gpt-5.6-sol` 的依據：spike-results.md §3 實測 5/5 成功、p90 約 23 秒，
+ * 也是設定頁模型下拉唯一的建議選項。
+ */
+export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol'
+
 const TMP_ROOT_DIR = 'ai-cli-tmp'
 const TMP_DIR_PREFIX = 'codex-'
 const OUT_FILE = 'out.json'
@@ -357,7 +370,7 @@ function codexFailure(
 export interface CodexCliProviderOptions {
   /** 使用者手動指定的執行檔絕對路徑；空字串＝自動偵測。 */
   execPath?: string
-  /** 省略＝用 codex 自己的預設模型（實測 `gpt-5.6-sol`）。 */
+  /** 省略／空字串＝`DEFAULT_CODEX_MODEL`。**不會**變成「不帶 `-m`」（見該常數的說明）。 */
   model?: string
   /** 單次呼叫 wall-clock 上限；`req.timeoutMs` 優先。預設 120s。 */
   timeoutMs?: number
@@ -387,7 +400,8 @@ class CodexCliProvider implements LlmProvider {
 
   constructor(opts: CodexCliProviderOptions = {}) {
     this.execPath = opts.execPath ?? ''
-    this.model = opts.model ?? ''
+    // 空字串／只有空白 → 退回安全預設，而不是「不帶 -m」（見 DEFAULT_CODEX_MODEL）。
+    this.model = opts.model?.trim() || DEFAULT_CODEX_MODEL
     this.timeoutMs = opts.timeoutMs ?? CODEX_DEFAULT_TIMEOUT_MS
     this.tmpRoot = opts.tmpRoot
   }
@@ -416,7 +430,8 @@ class CodexCliProvider implements LlmProvider {
       'never',
       '--json'
     ]
-    if (this.model.length > 0) args.push('-m', this.model)
+    // `this.model` 在建構子已保證非空 → `-m` 無條件帶上（design：不沿用本機 CLI 預設模型）。
+    args.push('-m', this.model)
     if (schemaPath !== null) args.push('--output-schema', schemaPath)
     args.push('-o', outPath, '-') // 結尾的 `-`＝整個 prompt 從 stdin 讀
     return args
@@ -484,7 +499,7 @@ class CodexCliProvider implements LlmProvider {
 
       const meta = {
         provider: this.id,
-        model: this.model.length > 0 ? this.model : null,
+        model: this.model,
         durationMs: Date.now() - startedAt,
         usedFallback
       }

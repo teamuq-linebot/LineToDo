@@ -25,7 +25,14 @@ export type AiProviderId = 'http' | 'claudeCli' | 'codexCli'
 export interface CliProviderSettings {
   /** 使用者手動指定執行檔絕對路徑；空字串＝自動偵測（where.exe + fallback 清單）。 */
   execPath: string
-  /** 空字串＝用 provider 內建的建議預設（claude→sonnet、codex→CLI 自己的預設）。 */
+  /**
+   * 空字串＝用 provider 內建的**建議預設**（claude→`sonnet`、codex→`gpt-5.6-sol`）。
+   *
+   * ⚠️ 兩個 CLI provider 都**一定會**把模型旗標帶給 CLI；空字串不代表「不指定模型」。
+   * 不指定＝沿用使用者本機 CLI 的預設（可能是 opus，實測單次抽取 $0.149 且無提示），
+   * 所以這個檔案允許空字串是安全的 —— 保證落在 provider 端（claudeCli.ts / codexCli.ts），
+   * 而不是設定頁的必填驗證（settings.json 可被手動編輯繞過）。
+   */
   model: string
   /** 單次呼叫 wall-clock 上限（ms）。CLI 冷啟動要算進去，預設 120000。 */
   timeoutMs: number

@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import type { SettingsView, QwenTestResult } from '../../types/api'
+import type { SettingsView } from '../../types/api'
 
 /**
  * ApiKeyField — QWEN_API_KEY 輸入（IMPLEMENTATION_PLAN.md §7.2）。
  *
  * 寫入走 settings:setApiKey → main 用 safeStorage 加密落檔；renderer 永不取回明文。
- * 只顯示「是否已設定」+ 來源（safeStorage / 環境變數 / 無）。可測試連線、可清除。
+ * 只顯示「是否已設定」+ 來源（safeStorage / 環境變數 / 無）。可清除。
+ * 連線測試已移到 SettingsPanel 的 ProviderHealthCheck（provider-aware，HTTP / CLI 共用一顆按鈕）。
  */
 
 interface Props {
@@ -28,7 +29,6 @@ export function ApiKeyField({ view, onChanged }: Props): JSX.Element {
   const [input, setInput] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null)
-  const [testing, setTesting] = useState(false)
 
   async function save(): Promise<void> {
     if (!input.trim()) return
@@ -52,24 +52,6 @@ export function ApiKeyField({ view, onChanged }: Props): JSX.Element {
     await window.api.settings.clearApiKey()
     setMsg({ text: '已清除金鑰', ok: true })
     onChanged()
-  }
-
-  async function test(): Promise<void> {
-    setTesting(true)
-    setMsg(null)
-    try {
-      const res: QwenTestResult = await window.api.pipeline.testQwen()
-      if (res.ok) {
-        setMsg({
-          text: `連線成功${res.models?.length ? `（model: ${res.models.join(', ')}）` : ''}`,
-          ok: true
-        })
-      } else {
-        setMsg({ text: res.error ?? '連線失敗', ok: false })
-      }
-    } finally {
-      setTesting(false)
-    }
   }
 
   return (
@@ -97,9 +79,6 @@ export function ApiKeyField({ view, onChanged }: Props): JSX.Element {
         />
         <button onClick={() => void save()} disabled={saving || !input.trim()}>
           {saving ? '儲存中…' : '儲存'}
-        </button>
-        <button className="ghost" onClick={() => void test()} disabled={testing}>
-          {testing ? '測試中…' : '測試連線'}
         </button>
         {view.hasApiKey && view.apiKeySource === 'safeStorage' && (
           <button className="ghost danger" onClick={() => void clear()}>

@@ -47,6 +47,13 @@
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.5); /* 彈出選單陰影 */
   --backdrop: rgba(0, 0, 0, 0.55); /* modal 遮罩 */
   --track: #2a323d; /* switch 軌道 / 進度條底（自我對帳） */
+  /* 狀態訊息區塊底色（設定頁 .set-notice；深色為 rgba 疊在 --panel 上） */
+  --notice-info-bg: rgba(74, 158, 255, 0.08);
+  --notice-info-border: #2c4a6b;
+  --notice-warn-bg: rgba(210, 153, 34, 0.1);
+  --notice-warn-border: #5a4620;
+  --notice-err-bg: rgba(248, 81, 73, 0.09);
+  --notice-err-border: #5a2b2b;
 
   font-family: -apple-system, "Segoe UI", "Microsoft JhengHei", "PingFang TC",
     system-ui, sans-serif;
@@ -100,6 +107,12 @@
   --shadow-pop: 0 8px 24px rgba(16, 24, 40, 0.18);
   --backdrop: rgba(16, 24, 40, 0.42);
   --track: #dce1ea;
+  --notice-info-bg: rgba(37, 99, 235, 0.07);
+  --notice-info-border: #bcd4f7;
+  --notice-warn-bg: rgba(183, 121, 31, 0.1);
+  --notice-warn-border: #ecd9ae;
+  --notice-err-bg: #fdeaea;
+  --notice-err-border: #eab8b8;
 }
 
 * {
@@ -1332,6 +1345,7 @@ input.set-input {
 }
 .set-input {
   flex: 1;
+  min-width: 180px;
 }
 .set-keyrow,
 .set-inline {
@@ -1441,6 +1455,189 @@ select.set-select {
 }
 select.set-select:disabled {
   opacity: 0.5;
+}
+select.set-select.wide {
+  min-width: 100%;
+}
+select.set-select.is-err,
+.set-input.is-err {
+  border-color: var(--err);
+}
+
+/* ── AI provider 卡片式 radio（設定頁「使用哪一個引擎」）── */
+.prov-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+.prov-cards legend {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 7px;
+}
+.prov-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--input-bg);
+  cursor: pointer;
+}
+.prov-card:hover {
+  background: var(--hover-row);
+}
+.prov-card.sel {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.prov-card input[type="radio"] {
+  accent-color: var(--accent);
+  margin: 2px 0 0 0;
+  flex: 0 0 auto;
+}
+.prov-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.prov-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.prov-sub {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.prov-speed {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  white-space: nowrap;
+  align-self: flex-start;
+}
+.prov-speed.fast {
+  color: var(--ok);
+}
+.prov-speed.slow {
+  color: var(--warn);
+}
+
+/* ── 狀態訊息區塊（延遲試算 / 追不上警示）── */
+.set-notice {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  border: 1px solid var(--notice-info-border);
+  background: var(--notice-info-bg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.set-notice.warn {
+  border-color: var(--notice-warn-border);
+  background: var(--notice-warn-bg);
+}
+.set-notice.err {
+  border-color: var(--notice-err-border);
+  background: var(--notice-err-bg);
+}
+.set-notice-icon {
+  flex: 0 0 auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.set-notice-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+.set-notice-title {
+  font-weight: 600;
+}
+.set-notice-acts {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.set-notice .set-num {
+  width: 68px;
+  padding: 4px 7px;
+  font-size: 12px;
+}
+.set-notice button {
+  padding: 5px 11px;
+  font-size: 12px;
+}
+.est-line {
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.est-num {
+  font-weight: 600;
+}
+
+/* ── 健檢結果（測試連線 / 檢查 CLI 狀態的三行輸出）── */
+.health-box {
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.health-sum {
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+.health-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.health-line {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.health-line .dot {
+  margin-top: 5px;
+  flex: 0 0 auto;
+}
+.health-k {
+  color: var(--muted);
+  flex: 0 0 62px;
+}
+.health-v {
+  min-width: 0;
+  word-break: break-all;
+}
+.health-acts {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+.health-box.testing .health-sum {
+  color: var(--muted);
 }
 
 /* 關鍵字 chips */

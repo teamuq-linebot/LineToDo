@@ -10,7 +10,7 @@ import {
   type SettingsPatch
 } from '../config/settings'
 import { getQwenConfig } from '../config/qwen'
-import { resolveProvider } from '../llm/provider'
+import { isProviderConfigured, resolveProvider } from '../llm/provider'
 import { draftReply } from '../llm/draftReply'
 import { getTodo } from '../db/todos.repo'
 import { getChat } from '../db/chats.repo'
@@ -21,6 +21,7 @@ import { getPipelineDefaults } from '../config/defaults'
  * settings:* / todos:draftReply / app:openDataFolder IPC handler（IMPLEMENTATION_PLAN.md §5）。
  *
  * - settings:get        → SettingsView（不含金鑰；只回 hasApiKey + 來源 + safeStorage 可用性）
+ *                         hasApiKey 是 **provider-aware** 的（與 pipeline:status 同源）
  * - settings:update     → 套用 patch 並落檔，回最新 SettingsView
  * - settings:setApiKey  → safeStorage 加密落檔（不可用時回友善錯誤，不崩潰）
  * - settings:clearApiKey→ 清除金鑰檔
@@ -30,12 +31,23 @@ import { getPipelineDefaults } from '../config/defaults'
  * 註：settings:testQwen 已在 pipeline.ipc.ts 註冊（與 scheduler 同檔），此處不重複。
  */
 
+/**
+ * `hasApiKey` 的語意 = 「**目前這個 provider** 的引擎已就緒」，不是「有沒有 qwen 金鑰」
+ * （欄位名沿用歷史，preload SettingsView 已如此註記：http=有金鑰；CLI=設定無誤）。
+ *
+ * 因此這裡用 `isProviderConfigured()`，與 `pipeline:status` 的同名欄位（scheduler.getStatus）
+ * **同一個判定來源**。舊寫法 `getQwenConfig().apiKey !== null` 在 CLI provider 下恆為 false，
+ * 讓 settings:get 與 pipeline:status 對同一件事給出相反答案。
+ *
+ * `apiKeySource` 維持 HTTP 專屬語意（金鑰從哪來），CLI 下就是 'none'，不受本次修正影響 ——
+ * 設定頁的金鑰欄位本來就只在 http provider 下顯示。
+ */
 function buildView(): SettingsView {
   const s = getSettings()
   const cfg = getQwenConfig()
   return {
     ...s,
-    hasApiKey: cfg.apiKey !== null,
+    hasApiKey: isProviderConfigured(),
     apiKeySource: cfg.source,
     safeStorageAvailable: isSafeStorageAvailable()
   }

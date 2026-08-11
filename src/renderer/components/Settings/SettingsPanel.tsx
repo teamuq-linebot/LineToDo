@@ -1,14 +1,25 @@
-import { useCallback, useEffect, useState } from 'react'
-import type { SettingsView, ChatDTO } from '../../types/api'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { AiProviderId, CliProviderSettings, SettingsView, ChatDTO } from '../../types/api'
 import { ApiKeyField } from './ApiKeyField'
 import { BlocklistEditor } from './BlocklistEditor'
+import { ProviderHealthCheck } from './ProviderHealthCheck'
+import {
+  POLL_SEC_MAX,
+  PROVIDERS,
+  cliSettingsOf,
+  effectiveConcurrency,
+  estimateRound,
+  fmtDuration,
+  modelRationaleText,
+  providerMeta
+} from '../../lib/aiProvider'
 
 /**
  * SettingsPanel — 設定頁（IMPLEMENTATION_PLAN.md M3）。
  *
  * 區塊：
  *   - 輪詢頻率 / 並發 / 上下文則數（數值設定，存 settings.json）
- *   - AI 判斷引擎（AI 端點 Base URL + API 金鑰 safeStorage，ApiKeyField）
+ *   - AI 判斷引擎（provider 卡片選擇 + 各自的欄位 + 健檢；Batch 6）
  *   - 降噪黑名單（關鍵字 + 逐 chat toggle，BlocklistEditor）
  *   - 資料夾 / 維運
  *
@@ -19,6 +30,17 @@ export function SettingsPanel(): JSX.Element {
   const [view, setView] = useState<SettingsView | null>(null)
   const [chats, setChats] = useState<ChatDTO[]>([])
   const [saved, setSaved] = useState(false)
+  /** 延遲試算用的聊天室數量（純試算，不落檔）；null＝沿用實際聊天室數。 */
+  const [estimateChats, setEstimateChats] = useState<number | null>(null)
+  /** 模型下拉是否切到「自訂模型名稱…」。 */
+  const [customModel, setCustomModel] = useState(false)
+  const execPathRef = useRef<HTMLInputElement>(null)
+  /**
+   * 「引擎已就緒」用 pipeline:status 的 hasApiKey——它是 provider-aware 的
+   * （main/llm/provider/index.ts isProviderConfigured）。settings:get 的同名欄位
+   * 目前只看 HTTP 金鑰，CLI 下會恆假，拿它當提示會誤導使用者。
+   */
+  const [engineReady, setEngineReady] = useState<boolean | null>(null)
 
   const loadView = useCallback(async (): Promise<void> => {
     const v = await window.api.settings.get()
@@ -30,10 +52,18 @@ export function SettingsPanel(): JSX.Element {
     setChats(list)
   }, [])
 
+  const loadReady = useCallback(async (): Promise<void> => {
+    const st = await window.api.pipeline.status()
+    setEngineReady(st.hasApiKey)
+  }, [])
+
   useEffect(() => {
     void loadView()
     void loadChats()
-  }, [loadView, loadChats])
+    void loadReady()
+    // 設定改動會讓 main 重排排程器並推 status；順手跟著更新就緒狀態。
+    return window.api.pipeline.onStatus((st) => setEngineReady(st.hasApiKey))
+  }, [loadView, loadChats, loadReady])
 
   function flashSaved(): void {
     setSaved(true)
@@ -43,9 +73,10 @@ export function SettingsPanel(): JSX.Element {
   async function patch(
     p: Parameters<typeof window.api.settings.update>[0]
   ): Promise<void> {
-    const v = await window.api.settings.update(p)
-    setView(v)
+    const next = await window.api.settings.update(p)
+    setView(next)
     flashSaved()
+    void loadReady()
   }
 
   async function toggleChat(chatId: string, blocked: boolean): Promise<void> {
@@ -63,6 +94,34 @@ export function SettingsPanel(): JSX.Element {
 
   if (!view) {
     return <div className="settings-wrap muted">載入設定中…</div>
+  }
+
+  const v = view // TS narrowing：以下的 closure 都用這個非空引用
+  const meta = providerMeta(v.aiProvider)
+  const cli = cliSettingsOf(v, v.aiProvider)
+  const isCli = meta.kind === 'cli'
+  const chatCount = estimateChats ?? Math.max(1, chats.filter((c) => !c.blocked).length)
+  const est = estimateRound(v.aiProvider, chatCount, v.concurrency, v.pollIntervalSec)
+  const modelIsPreset = !!cli && meta.models.some((m) => m.value === cli.model)
+  const modelSelectValue = customModel || (!!cli?.model && !modelIsPreset) ? '__custom' : (cli?.model ?? '')
+  const modelMissing = !!cli && cli.model.trim() === ''
+
+  /** 只改當前 CLI provider 的欄位（另一個 provider 的設定原封不動）。 */
+  function patchCli(p: Partial<CliProviderSettings>): void {
+    if (v.aiProvider === 'claudeCli') void patch({ claudeCli: p })
+    else if (v.aiProvider === 'codexCli') void patch({ codexCli: p })
+  }
+
+  /** 輸入中的本地更新（onBlur 才落檔），避免每個字都寫檔。 */
+  function setCliLocal(p: Partial<CliProviderSettings>): void {
+    if (v.aiProvider === 'claudeCli') setView({ ...v, claudeCli: { ...v.claudeCli, ...p } })
+    else if (v.aiProvider === 'codexCli') setView({ ...v, codexCli: { ...v.codexCli, ...p } })
+  }
+
+  function selectProvider(id: AiProviderId): void {
+    if (id === v.aiProvider) return
+    setCustomModel(false)
+    void patch({ aiProvider: id })
   }
 
   return (
@@ -102,13 +161,18 @@ export function SettingsPanel(): JSX.Element {
               className="set-num"
               min={1}
               max={4}
-              value={view.concurrency}
+              disabled={isCli}
+              value={effectiveConcurrency(v.aiProvider, view.concurrency)}
               onChange={(e) =>
                 setView({ ...view, concurrency: Number(e.target.value) })
               }
               onBlur={() => void patch({ concurrency: view.concurrency })}
             />
-            <span className="muted">同時送幾個聊天室給 AI 判斷引擎（保守 1–2，最多 4）。</span>
+            <span className="muted">
+              {isCli
+                ? 'CLI 引擎固定為 1：同時跑多個 CLI 會把這台電腦吃掉。'
+                : '同時送幾個聊天室給 AI 判斷引擎（保守 1–2，最多 4）。'}
+            </span>
           </div>
         </div>
       </div>
@@ -189,36 +253,265 @@ export function SettingsPanel(): JSX.Element {
       <div className="set-section">
         <div className="set-section-title">AI 判斷引擎</div>
 
-        <div className="set-field">
-          <label className="set-label">AI 端點（Base URL）</label>
-          <div className="set-inline">
-            <input
-              type="text"
-              className="set-input"
-              value={view.aiBaseUrl}
-              placeholder="https://qwen.tuq.tw/v1"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) => setView({ ...view, aiBaseUrl: e.target.value })}
-              onBlur={() => void patch({ aiBaseUrl: view.aiBaseUrl })}
-            />
-            <button
-              className="ghost"
-              onClick={() => {
-                setView({ ...view, aiBaseUrl: '' })
-                void patch({ aiBaseUrl: '' })
-              }}
-            >
-              還原為預設
-            </button>
-          </div>
-          <div className="muted set-hint">
-            留空＝使用預設端點；填入你自己的 OpenAI 相容端點（Base
-            URL）即可換後端 LLM，讓別人也能用自己的模型安裝使用。
-          </div>
-        </div>
+        {/* provider 卡片選擇器：三個選項全部攤開，速度標籤在選之前就看得到 */}
+        <fieldset className="prov-cards">
+          <legend>使用哪一個引擎</legend>
+          {PROVIDERS.map((p) => (
+            <label className={`prov-card${p.id === v.aiProvider ? ' sel' : ''}`} key={p.id}>
+              <input
+                type="radio"
+                name="ai-provider"
+                value={p.id}
+                checked={p.id === v.aiProvider}
+                onChange={() => selectProvider(p.id)}
+              />
+              <span className="prov-card-body">
+                <span className="prov-name">{p.name}</span>
+                <span className="prov-sub">{p.sub}</span>
+              </span>
+              <span className={`prov-speed ${p.speedClass}`}>{p.speed}</span>
+            </label>
+          ))}
+        </fieldset>
 
-        <ApiKeyField view={view} onChanged={() => void loadView()} />
+        {/* 延遲試算（CLI 才出現）：常駐事實 → 可編輯試算 → 追不上時才升級成警示 */}
+        {isCli && (
+          <div className={`set-notice ${est.behind ? 'warn' : 'info'}`} role="status" aria-live="polite">
+            <span className="set-notice-icon" aria-hidden="true">
+              {est.behind ? '⚠' : 'ℹ'}
+            </span>
+            <div className="set-notice-body">
+              <div className="set-notice-title">
+                {est.behind
+                  ? '以你目前的設定，背景輪詢會追不上'
+                  : '以你目前的設定，背景輪詢追得上'}
+              </div>
+              <div className="est-line">
+                <label>
+                  聊天室數量{' '}
+                  <input
+                    type="number"
+                    className="set-num"
+                    min={1}
+                    /* 無上限：試算欄初值取實際聊天室數，這台機器可能有幾百個房間，
+                       宣告一個死板上限只會讓 input 一載入就 :invalid（見 Batch 驗收缺陷 2）。 */
+                    value={chatCount}
+                    onChange={(e) =>
+                      setEstimateChats(Math.max(1, Number(e.target.value) || 1))
+                    }
+                  />
+                </label>{' '}
+                × 每室約 <span className="est-num">{est.perCallSec} 秒</span> ÷ 併發{' '}
+                <span className="est-num">{est.concurrency}</span> ＝ 跑完一輪約{' '}
+                <span className="est-num">{fmtDuration(est.roundSec)}</span>，目前輪詢間隔{' '}
+                <span className="est-num">{fmtDuration(v.pollIntervalSec)}</span>。
+              </div>
+              {est.behind ? (
+                est.hopeless ? (
+                  <div className="est-line">
+                    這個規模跑完一輪要 {fmtDuration(est.roundSec)}
+                    ，已經超過輪詢間隔可以調到的上限（{fmtDuration(POLL_SEC_MAX)}
+                    ）—— 不管把輪詢間隔調多長都追不上，這不是調參數能解的問題。
+                    這個規模不適合背景自動輪詢；建議改用「今日摘要」面板的「立即抓取」手動觸發，
+                    或設法把要輪詢的聊天室數量／併發降到追得上的範圍。
+                  </div>
+                ) : (
+                  <>
+                    <div className="est-line">
+                      上一輪還沒跑完，下一輪就到了 ——
+                      多數輪次會被略過，而且這台電腦會一直有 CLI
+                      在跑。把輪詢間隔拉長就能解決，代價是新訊息晚一點被整理進看板。
+                    </div>
+                    <div className="set-notice-acts">
+                      <button onClick={() => void patch({ pollIntervalSec: est.suggestPollSec })}>
+                        把輪詢間隔改成 {fmtDuration(est.suggestPollSec)}
+                      </button>
+                    </div>
+                  </>
+                )
+              ) : (
+                <div className="est-line">
+                  CLI 每次抽取約 20 秒（實測 p90：Claude 21 秒、Codex 23
+                  秒），比 HTTP
+                  端點的數秒慢一個量級；目前這組數字追得上，聊天室變多時這裡會再提醒你。
+                </div>
+              )}
+              <div className="muted set-hint">
+                數字來源：本機實測（{meta.name}，20 則對話 × 5 次）。實際速度會隨對話長度變動。
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* HTTP 專屬欄位 */}
+        {!isCli && (
+          <>
+            <div className="set-field">
+              <label className="set-label">AI 端點（Base URL）</label>
+              <div className="set-inline">
+                <input
+                  type="text"
+                  className="set-input"
+                  value={view.aiBaseUrl}
+                  placeholder="https://qwen.tuq.tw/v1"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(e) => setView({ ...view, aiBaseUrl: e.target.value })}
+                  onBlur={() => void patch({ aiBaseUrl: view.aiBaseUrl })}
+                />
+                <button
+                  className="ghost"
+                  onClick={() => {
+                    setView({ ...view, aiBaseUrl: '' })
+                    void patch({ aiBaseUrl: '' })
+                  }}
+                >
+                  還原為預設
+                </button>
+              </div>
+              <div className="muted set-hint">
+                留空＝使用預設端點；填入你自己的 OpenAI 相容端點（Base
+                URL）即可換後端 LLM，讓別人也能用自己的模型安裝使用。
+              </div>
+            </div>
+
+            <ApiKeyField view={view} onChanged={() => void loadView()} />
+          </>
+        )}
+
+        {/* CLI 專屬欄位：執行檔路徑 + 模型（必填）+ 逾時 */}
+        {isCli && cli && (
+          <>
+            <div className="set-field">
+              <label className="set-label" htmlFor="set-execpath">
+                CLI 執行檔路徑
+              </label>
+              <div className="set-inline">
+                <input
+                  id="set-execpath"
+                  ref={execPathRef}
+                  type="text"
+                  className="set-input"
+                  value={cli.execPath}
+                  placeholder="留空＝自動偵測"
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(e) => setCliLocal({ execPath: e.target.value })}
+                  onBlur={() => patchCli({ execPath: cli.execPath.trim() })}
+                />
+                {cli.execPath !== '' && (
+                  <button className="ghost" onClick={() => patchCli({ execPath: '' })}>
+                    清除，改回自動偵測
+                  </button>
+                )}
+              </div>
+              <div className="muted set-hint">
+                留空時會自動尋找 <code>{meta.cliName}</code>
+                。只有在下方檢查結果告訴你「找不到」或「找到的是批次檔」時，才需要手動填。
+              </div>
+            </div>
+
+            <div className="set-field">
+              <label className="set-label" htmlFor="set-cli-model">
+                模型{modelMissing && <span className="txt-err">（必填）</span>}
+              </label>
+              <select
+                id="set-cli-model"
+                className={`set-select wide${modelMissing ? ' is-err' : ''}`}
+                value={modelSelectValue}
+                aria-invalid={modelMissing || undefined}
+                aria-describedby="set-cli-modelhint"
+                onChange={(e) => {
+                  const next = e.target.value
+                  if (next === '__custom') {
+                    setCustomModel(true)
+                    if (modelIsPreset) patchCli({ model: '' })
+                  } else {
+                    setCustomModel(false)
+                    patchCli({ model: next })
+                  }
+                }}
+              >
+                <option value="">— 請選擇模型（必填）—</option>
+                {meta.models.map((m) => (
+                  <option value={m.value} key={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+                <option value="__custom">自訂模型名稱…</option>
+              </select>
+              {modelSelectValue === '__custom' && (
+                <input
+                  type="text"
+                  className={`set-input${modelMissing ? ' is-err' : ''}`}
+                  value={cli.model}
+                  placeholder="輸入模型名稱，例如 sonnet"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-label="自訂模型名稱"
+                  onChange={(e) => setCliLocal({ model: e.target.value })}
+                  onBlur={() => patchCli({ model: cli.model.trim() })}
+                />
+              )}
+              <div className="muted set-hint" id="set-cli-modelhint">
+                {modelMissing ? (
+                  <>
+                    <span className="txt-err">必須指定模型。</span>
+                    {modelRationaleText(v.aiProvider)}
+                  </>
+                ) : (
+                  modelRationaleText(v.aiProvider)
+                )}
+              </div>
+            </div>
+
+            <div className="set-field">
+              <label className="set-label" htmlFor="set-cli-timeout">
+                單次逾時（秒）
+              </label>
+              <div className="set-inline">
+                <input
+                  id="set-cli-timeout"
+                  type="number"
+                  className="set-num"
+                  min={15}
+                  max={600}
+                  value={Math.round(cli.timeoutMs / 1000)}
+                  onChange={(e) =>
+                    setCliLocal({ timeoutMs: (Number(e.target.value) || 0) * 1000 })
+                  }
+                  onBlur={() => patchCli({ timeoutMs: cli.timeoutMs })}
+                />
+                <span className="muted">
+                  超過就放棄這一室，換下一室（15–600）。實測 p90 約 21 秒，預設 120 秒留有餘裕。
+                </span>
+              </div>
+            </div>
+
+            <div className="muted set-hint">
+              會呼叫這台電腦上已安裝、且你已登入的 {meta.name}
+              ；用量計入該訂閱帳號，不需要另外的 API 金鑰。它也會沿用你本機的 CLI
+              設定，所以你改了自己的 CLI 設定時，抽取行為可能跟著變。
+            </div>
+          </>
+        )}
+
+        {/* 測試連線 / 檢查 CLI 狀態（三行結果） */}
+        <ProviderHealthCheck
+          view={view}
+          onFocusExecPath={() => {
+            execPathRef.current?.focus()
+            execPathRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          }}
+        />
+
+        {engineReady === false && (
+          <div className="set-msg txt-warn">
+            {isCli
+              ? `目前找不到可用的 ${meta.name}（執行檔不存在或路徑指錯），抽取不會執行。請按上方「${meta.testLabel}」看是哪一環。`
+              : '目前沒有可用的 API 金鑰，抽取不會執行。請填入金鑰後再按「測試連線」。'}
+          </div>
+        )}
       </div>
 
       {/* 黑名單 */}

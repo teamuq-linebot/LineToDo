@@ -66,6 +66,9 @@ function makeClaudeFromSettings(cfg: CliProviderSettings): LlmProvider {
 function makeCodexFromSettings(cfg: CliProviderSettings): LlmProvider {
   return makeCodexCliProvider({
     execPath: cfg.execPath,
+    // 空字串 → undefined → provider 用 DEFAULT_CODEX_MODEL（'gpt-5.6-sol'）。
+    // 與 claude 同理，模型名的單一真實來源留在 codexCli.ts；**設定為空時 codex 仍會帶 `-m`**，
+    // 絕不退回「沿用使用者本機 CLI 的預設模型」（那條路會在使用者不知情下跑到昂貴模型）。
     model: orUndefined(cfg.model),
     timeoutMs: cfg.timeoutMs
   })
