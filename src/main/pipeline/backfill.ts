@@ -19,7 +19,7 @@ import { startRun, finishRun } from '../db/pipeline.repo'
 import { getMessagesSince } from '../line/engine/watchEngine'
 import { getPipelineDefaults } from '../config/defaults'
 import type { PipelineDefaults } from '../config/defaults'
-import { makeQwenExtractFn } from './runOnce'
+import { makeExtractFn } from './runOnce'
 import type { ChatExtractInput } from './runOnce'
 import type { ExtractResult } from '../llm/schema'
 import { evaluateChatAutoBlock, isBatchNoise, matchesChatIgnoreKeyword } from './blocklist'
@@ -42,7 +42,7 @@ import type { RawLineMessage } from '../line/types'
  *      → 該 chat 窗口訊息標 processed=1（避免 live scheduler 重抽）。
  *   7. emit 進度（已處理/總聊天數）+ 收尾 pipeline_runs。
  *
- * 無金鑰（makeQwenExtractFn 回 null）→ 不抽 todo、回 hasApiKey:false，由 UI 提示填金鑰。
+ * 無金鑰（makeExtractFn 回 null）→ 不抽 todo、回 hasApiKey:false，由 UI 提示填金鑰。
  * 失敗的 chat 標 fail 不中斷整輪；其訊息「不」標 processed（留待後續處理）。
  */
 
@@ -81,7 +81,7 @@ export interface ReviewLastDaysResult {
 export interface ReviewLastDaysDeps {
   /** 取窗口訊息。預設走 in-process 引擎的 getMessagesSince；測試可注入固定陣列。 */
   fetchWindow?: (sinceMs: number) => Promise<{ messages: RawLineMessage[]; error?: string }>
-  /** 對單一 chat 抽取。預設 makeQwenExtractFn()；無金鑰回 null。 */
+  /** 對單一 chat 抽取。預設 makeExtractFn()；無金鑰回 null。 */
   extractFn?: ((input: ChatExtractInput) => Promise<ExtractResult>) | null
   /** 進度回呼（emit 給 IPC push）。 */
   onProgress?: (p: BackfillProgress) => void
@@ -140,9 +140,9 @@ export async function reviewLastDays(
   const cfg = deps.config ?? getPipelineDefaults()
   const rules = cfg.blocklist
   const fetchWindow = deps.fetchWindow ?? fetchSinceWindow
-  // 未顯式注入 extractFn 時，現組 qwen extractFn（金鑰即用即丟）。null = 無金鑰。
+  // 未顯式注入 extractFn 時，現組 extractFn（金鑰即用即丟）。null = 無金鑰。
   const extractFn =
-    deps.extractFn === undefined ? makeQwenExtractFn() : deps.extractFn
+    deps.extractFn === undefined ? makeExtractFn() : deps.extractFn
   const emit = deps.onProgress ?? ((): void => {})
 
   const nowMs = nowFn()

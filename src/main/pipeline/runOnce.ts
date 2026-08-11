@@ -1,5 +1,4 @@
 import type { Database } from 'better-sqlite3'
-import type OpenAI from 'openai'
 import { getDb } from '../db/database'
 import type { MessageDTO, TodoDTO } from '../db/dto'
 import {
@@ -19,10 +18,9 @@ import {
 import { startRun, finishRun } from '../db/pipeline.repo'
 import type { LineBridge, LlmStatus } from '../db/pipeline.repo'
 import type { RawLineMessage } from '../line/types'
-import { getQwenConfig } from '../config/qwen'
 import { getPipelineDefaults } from '../config/defaults'
 import type { PipelineDefaults } from '../config/defaults'
-import { makeQwen } from '../llm/qwenClient'
+import { resolveProvider } from '../llm/provider'
 import { extractTodos } from '../llm/extractor'
 import type { ExtractResult } from '../llm/schema'
 import { evaluateChatAutoBlock, isBatchNoise, matchesChatIgnoreKeyword } from './blocklist'
@@ -52,6 +50,19 @@ export interface RunOnceDeps {
    * 失敗 throw → 該 chat 標 partial，不中斷整輪。
    */
   extractFn: (input: ChatExtractInput) => Promise<ExtractResult>
+  /**
+   * 回 true 則**完全跳過**該 chat（不呼叫 extractFn、不標 processed、既不算 processed
+   * 也不算 failed，只累加 chatsSkipped）。Batch 7 的熔斷冷卻與 per-chat 退避都走這裡
+   * ——這是「保證不 spawn」的唯一機制。不傳＝維持現行行為（既有 probe 腳本不受影響）。
+   */
+  shouldSkipChat?: (chatId: string) => boolean
+  /**
+   * 某個 chat 抽取失敗時回報**原始錯誤物件**（不是字串——熔斷器要靠 LlmProviderError.code
+   * 分類，字串化就沒了）。供上層記熔斷與退避。
+   */
+  onChatFailed?: (chatId: string, err: unknown) => void
+  /** 某個 chat 抽取成功時回報（供上層清掉該 chat 的退避計數）。 */
+  onChatSucceeded?: (chatId: string) => void
   db?: Database
   now?: () => string
   config?: PipelineDefaults
@@ -73,6 +84,12 @@ export interface RunOnceResult {
   chatsSeen: number
   chatsProcessed: number
   chatsSkippedNoise: number
+  /**
+   * 因熔斷冷卻 / per-chat 退避而**整個被跳過**的 chat 數（Batch 7）。
+   * 這些 chat 的訊息維持未處理，等退避到期或熔斷解除後的下一輪再抽。
+   * 刻意不計入 chatsFailed —— 否則熔斷期間 llmStatus 會永遠停在 error。
+   */
+  chatsSkipped: number
   chatsFailed: number
   todosCreated: number
   todosMerged: number
@@ -124,6 +141,7 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
     chatsSeen: 0,
     chatsProcessed: 0,
     chatsSkippedNoise: 0,
+    chatsSkipped: 0,
     chatsFailed: 0,
     todosCreated: 0,
     todosMerged: 0,
@@ -195,6 +213,7 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
   // ── 5–6. 每 chat 抽取 + 落庫（並發節流）────────────────
   type ChatOutcome =
     | { kind: 'noise'; chatId: string; msgIds: string[] }
+    | { kind: 'skipped'; chatId: string }
     | { kind: 'ok'; chatId: string; msgIds: string[]; extract: ExtractResult }
     | { kind: 'fail'; chatId: string; msgIds: string[]; error: string }
 
@@ -202,6 +221,12 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
     chatIds,
     cfg.concurrency,
     async (chatId): Promise<ChatOutcome> => {
+      // 熔斷冷卻 / per-chat 退避：在**任何 DB 讀取與 extractFn 之前**就退出，
+      // 確保冷卻期間不會有任何 provider 呼叫（CLI 下 = 不會有任何進程 spawn）。
+      if (deps.shouldSkipChat?.(chatId)) {
+        return { kind: 'skipped', chatId }
+      }
+
       const msgs = byChat.get(chatId)!
       const msgIds = msgs.map((m) => m.msgId)
 
@@ -230,8 +255,11 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
           recentContext,
           openTodos
         })
+        deps.onChatSucceeded?.(chatId)
         return { kind: 'ok', chatId, msgIds, extract }
       } catch (err) {
+        // 原始錯誤物件交給上層（熔斷器要 LlmProviderError.code）；下面的 error 字串只給計數用。
+        deps.onChatFailed?.(chatId, err)
         return {
           kind: 'fail',
           chatId,
@@ -249,6 +277,12 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
       continue
     }
     const outcome = s.value
+
+    if (outcome.kind === 'skipped') {
+      result.chatsSkipped += 1
+      // 訊息**不**標 processed → 退避到期 / 熔斷解除後的下一輪會重新抽（不遺失代辦）。
+      continue
+    }
 
     if (outcome.kind === 'noise') {
       result.chatsSkippedNoise += 1
@@ -362,20 +396,16 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
 }
 
 /**
- * 組一個「正式 qwen extractFn」：用設定中的金鑰 / baseURL / model。
- * 無金鑰 → 回 null，呼叫端據此跳過 LLM 階段並在 UI 提示（不崩潰、不硬寫）。
+ * 組一個「正式 extractFn」：依設定解析出當前的 AI provider（http / claudeCli / codexCli）。
+ * provider 不可用（http 無金鑰）→ 回 null，呼叫端據此跳過 LLM 階段並在 UI 提示
+ * （不崩潰、不硬寫）。CLI provider 永不回 null——找不到 CLI 的錯誤在實際呼叫時才浮現。
  */
-export function makeQwenExtractFn(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null {
-  const cfg = getQwenConfig()
-  if (!cfg.apiKey) return null
-  const client: OpenAI = makeQwen({
-    apiKey: cfg.apiKey,
-    baseURL: cfg.baseURL,
-    timeoutMs: cfg.timeoutMs
-  })
+export function makeExtractFn(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null {
+  const provider = resolveProvider()
+  if (!provider) return null
   return (input: ChatExtractInput) =>
     extractTodos(
-      client,
+      provider,
       {
         now: input.now,
         chat: input.chat,
@@ -383,6 +413,6 @@ export function makeQwenExtractFn(): ((input: ChatExtractInput) => Promise<Extra
         recentContext: input.recentContext,
         openTodos: input.openTodos
       },
-      { model: cfg.model, structuredMode: 'auto' }
+      {}
     )
 }

@@ -14,6 +14,30 @@ import { DEFAULTS, type BlocklistRules } from './defaults'
  * 對 renderer 暴露的設定 DTO 只含「可顯示」欄位 + hasApiKey:boolean。
  */
 
+/**
+ * AI 判斷引擎的種類（design.md §4.1）。
+ * `'http'` = 現行的 OpenAI 相容 HTTP 端點；其餘兩者為本機 CLI（走使用者的訂閱登入）。
+ * 舊設定沒有這個欄位 → normalize() 補 `'http'`，行為與升級前完全相同。
+ */
+export type AiProviderId = 'http' | 'claudeCli' | 'codexCli'
+
+/** 兩個 CLI provider 共用的設定形狀（design.md §4.1）。 */
+export interface CliProviderSettings {
+  /** 使用者手動指定執行檔絕對路徑；空字串＝自動偵測（where.exe + fallback 清單）。 */
+  execPath: string
+  /** 空字串＝用 provider 內建的建議預設（claude→sonnet、codex→CLI 自己的預設）。 */
+  model: string
+  /** 單次呼叫 wall-clock 上限（ms）。CLI 冷啟動要算進去，預設 120000。 */
+  timeoutMs: number
+}
+
+/** CLI 逾時的合法區間（design.md §4.1）。 */
+const CLI_TIMEOUT_MIN_MS = 15_000
+const CLI_TIMEOUT_MAX_MS = 600_000
+const CLI_TIMEOUT_DEFAULT_MS = 120_000
+
+const AI_PROVIDER_IDS: AiProviderId[] = ['http', 'claudeCli', 'codexCli']
+
 /** 開機自我對帳設定（Batch 5a；reconcileRunner 讀取）。 */
 export interface ReconcileSettings {
   /** 是否啟用開機自我對帳。false → 啟動時完全跳過對帳（不掃描、不寫入）。預設 true。 */
@@ -35,6 +59,12 @@ export interface AppSettings {
   reconcile: ReconcileSettings
   /** AI 判斷引擎端點 Base URL；空字串＝用預設端點（見 qwen.ts 的 baseURL 解析優先序）。 */
   aiBaseUrl: string
+  /** AI 判斷引擎種類。預設 'http'＝現行行為（缺席時 normalize 補上）。 */
+  aiProvider: AiProviderId
+  /** Claude CLI provider 設定（aiProvider='claudeCli' 時生效）。 */
+  claudeCli: CliProviderSettings
+  /** Codex CLI provider 設定（aiProvider='codexCli' 時生效）。 */
+  codexCli: CliProviderSettings
 }
 
 /** 回傳 renderer 的設定（不含任何金鑰；以 hasApiKey 表達金鑰是否已設定）。 */
@@ -58,6 +88,12 @@ export type SettingsPatch = Partial<{
   reconcile: Partial<ReconcileSettings>
   /** AI 判斷引擎端點 Base URL；空字串＝用預設端點。 */
   aiBaseUrl: string
+  /** AI 判斷引擎種類（'http' | 'claudeCli' | 'codexCli'）。 */
+  aiProvider: AiProviderId
+  /** 部分更新 Claude CLI 設定（execPath / model / timeoutMs 可各自單獨送）。 */
+  claudeCli: Partial<CliProviderSettings>
+  /** 部分更新 Codex CLI 設定。 */
+  codexCli: Partial<CliProviderSettings>
 }>
 
 const SETTINGS_FILE = 'settings.json'
@@ -95,7 +131,12 @@ function defaultSettings(): AppSettings {
     // 對帳預設啟用、全歷史範圍（scopeMonths=0）。
     reconcile: { enabled: true, scopeMonths: 0 },
     // AI 端點預設空字串＝用 qwen.ts 內建預設。
-    aiBaseUrl: ''
+    aiBaseUrl: '',
+    // AI 引擎預設 http＝完全維持現行行為（design.md §4.2：舊設定零遷移）。
+    aiProvider: 'http',
+    // execPath/model 空字串＝自動偵測 / 用 provider 內建建議預設（單一真實來源留在 provider）。
+    claudeCli: { execPath: '', model: '', timeoutMs: CLI_TIMEOUT_DEFAULT_MS },
+    codexCli: { execPath: '', model: '', timeoutMs: CLI_TIMEOUT_DEFAULT_MS }
   }
 }
 
@@ -110,6 +151,23 @@ function normalizeReconcile(input: unknown, d: ReconcileSettings): ReconcileSett
   return {
     enabled: typeof r.enabled === 'boolean' ? r.enabled : d.enabled,
     scopeMonths: RECONCILE_SCOPE_VALUES.includes(scope) ? scope : d.scopeMonths
+  }
+}
+
+/**
+ * 正規化單一 CLI provider 設定：路徑/模型 trim（容忍使用者貼路徑時帶的引號與空白），
+ * timeoutMs 夾在 15s–600s。缺席欄位一律退回 `d`（呼叫端會先把現值當 `d` 傳進來，
+ * 所以「patch 只帶 model」不會把 execPath 洗掉）。
+ */
+function normalizeCli(input: unknown, d: CliProviderSettings): CliProviderSettings {
+  if (!input || typeof input !== 'object') return { ...d }
+  const r = input as Partial<CliProviderSettings>
+  const trimPath = (v: unknown, fallback: string): string =>
+    typeof v === 'string' ? v.trim().replace(/^"(.*)"$/, '$1').trim() : fallback
+  return {
+    execPath: trimPath(r.execPath, d.execPath),
+    model: typeof r.model === 'string' ? r.model.trim() : d.model,
+    timeoutMs: clampInt(r.timeoutMs, CLI_TIMEOUT_MIN_MS, CLI_TIMEOUT_MAX_MS, d.timeoutMs)
   }
 }
 
@@ -162,7 +220,13 @@ function normalize(input: Partial<AppSettings>): AppSettings {
     openAtLogin: typeof input.openAtLogin === 'boolean' ? input.openAtLogin : d.openAtLogin,
     reconcile: normalizeReconcile(input.reconcile, d.reconcile),
     // 容忍空字串；不強制驗 URL 格式，空＝用預設端點。
-    aiBaseUrl: typeof input.aiBaseUrl === 'string' ? input.aiBaseUrl.trim() : d.aiBaseUrl
+    aiBaseUrl: typeof input.aiBaseUrl === 'string' ? input.aiBaseUrl.trim() : d.aiBaseUrl,
+    // 未知/缺席（舊 settings.json）→ 退回 'http'＝現行行為。
+    aiProvider: AI_PROVIDER_IDS.includes(input.aiProvider as AiProviderId)
+      ? (input.aiProvider as AiProviderId)
+      : d.aiProvider,
+    claudeCli: normalizeCli(input.claudeCli, d.claudeCli),
+    codexCli: normalizeCli(input.codexCli, d.codexCli)
   }
 }
 
@@ -186,26 +250,45 @@ export function getSettings(): AppSettings {
   }
 }
 
-/** 部分更新設定並落檔。回傳合併後的完整設定。 */
+/** 只取「真的有給值」的欄位（`undefined` 視為沒送，不可覆蓋現值）。 */
+function definedOnly<T extends object>(obj: T): Partial<T> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v
+  }
+  return out as Partial<T>
+}
+
+/**
+ * 部分更新設定並落檔。回傳合併後的完整設定。
+ *
+ * ⚠️ 這裡原本是「逐欄位手動列舉」（`pollIntervalSec: patch.x ?? cur.x` × N）。那個寫法是
+ * design.md §4.2 點名的地雷：**新增欄位若忘了加進列舉清單，任何一次 patch 都會把它洗成預設值**
+ * （例如使用者選了 claudeCli，接著在 UI 調輪詢秒數 → aiProvider 被洗回 http）。
+ *
+ * 改為「以現值為底、只覆蓋 patch 中真的有給的欄位」：純量欄位不必再列舉，
+ * 未來新增欄位只要改 型別 / defaultSettings / normalize 三處，這裡自動涵蓋。
+ * 巢狀物件（blocklist / reconcile / claudeCli / codexCli）仍需明確深度合併 ——
+ * 否則「只送 model」會把同一物件裡的 execPath 洗掉；它們一律以**現值**為 fallback 基準。
+ */
 export function updateSettings(patch: SettingsPatch): AppSettings {
   const cur = getSettings()
   const merged: AppSettings = normalize({
-    pollIntervalSec: patch.pollIntervalSec ?? cur.pollIntervalSec,
-    concurrency: patch.concurrency ?? cur.concurrency,
-    recentContextLimit: patch.recentContextLimit ?? cur.recentContextLimit,
+    ...cur,
+    ...definedOnly(patch),
     blocklist: {
       ...cur.blocklist,
       ...(patch.blocklist ?? {})
     },
     chatIgnoreKeywords: patch.chatIgnoreKeywords ?? cur.chatIgnoreKeywords,
-    openAtLogin: patch.openAtLogin ?? cur.openAtLogin,
     // reconcile 部分更新：以「目前值」為 fallback 基準（patch 帶非法 scopeMonths 時保留現值，
     // 而非退回硬預設）。normalizeReconcile 對已合法的結果再跑一次為冪等。
     reconcile: normalizeReconcile(
       { ...cur.reconcile, ...(patch.reconcile ?? {}) },
       cur.reconcile
     ),
-    aiBaseUrl: patch.aiBaseUrl ?? cur.aiBaseUrl
+    claudeCli: normalizeCli({ ...cur.claudeCli, ...(patch.claudeCli ?? {}) }, cur.claudeCli),
+    codexCli: normalizeCli({ ...cur.codexCli, ...(patch.codexCli ?? {}) }, cur.codexCli)
   })
   cached = merged
   try {

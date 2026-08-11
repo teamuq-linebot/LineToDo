@@ -34,6 +34,7 @@ const ENTRY = `
 export { EXTRACT_SYSTEM_PROMPT, buildUserPayload } from './src/main/llm/extractPrompt.ts'
 export { EXTRACT_JSON_SCHEMA, parseExtractResult } from './src/main/llm/schema.ts'
 export { makeQwen, listModels } from './src/main/llm/qwenClient.ts'
+export { makeHttpProvider } from './src/main/llm/provider/httpOpenAi.ts'
 export { extractTodos } from './src/main/llm/extractor.ts'
 `
 
@@ -56,6 +57,7 @@ async function main() {
     const m = await import(pathToFileURL(outFile).href)
 
     const client = m.makeQwen({ apiKey, baseURL, timeoutMs: 60000 })
+    const provider = m.makeHttpProvider({ apiKey, baseURL, model, timeoutMs: 60000 })
 
     // 1) /v1/models
     const models = await m.listModels(client)
@@ -77,7 +79,7 @@ async function main() {
 
     let result
     try {
-      result = await m.extractTodos(client, input, { model, structuredMode: 'auto' })
+      result = await m.extractTodos(provider, input, {})
     } catch (err) {
       console.error('[smoke:qwen] 抽取失敗: ' + (err && err.stack ? err.stack : err))
       process.exitCode = 1

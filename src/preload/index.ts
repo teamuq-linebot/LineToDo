@@ -135,6 +135,11 @@ export interface PipelineRunResult {
   chatsSeen: number
   chatsProcessed: number
   chatsSkippedNoise: number
+  /**
+   * 因 AI 引擎熔斷冷卻 / per-chat 退避而整個被跳過的 chat 數（Batch 7 新增，**純加欄位**：
+   * 既有 UI 不讀它也完全正常，訊息維持未處理、解除後下一輪重抽）。
+   */
+  chatsSkipped: number
   chatsFailed: number
   todosCreated: number
   todosMerged: number
@@ -202,6 +207,50 @@ export interface QwenTestResult {
   error?: string
 }
 
+/** AI provider 種類（與 main/config/settings.ts AiProviderId 對齊）。 */
+export type AiProviderId = 'http' | 'claudeCli' | 'codexCli'
+
+/** provider 錯誤碼（與 main/llm/provider/types.ts LlmErrorCode 對齊）。 */
+export type LlmErrorCode =
+  | 'not_installed'
+  | 'not_authenticated'
+  | 'timeout'
+  | 'rate_limited'
+  | 'quota_exceeded'
+  | 'bad_output'
+  | 'invalid_config'
+  | 'transport'
+  | 'unknown'
+
+/**
+ * settings:testAiProvider 結果（與 main/llm/provider/types.ts ProviderHealth 對齊）。
+ * `summary` 是 UI 唯一的訊息來源；技術細節（stderr / 路徑）只留在 main 的 log。
+ */
+export interface ProviderHealth {
+  ok: boolean
+  summary: string
+  code?: LlmErrorCode
+  details: {
+    installed?: boolean
+    path?: string | null
+    version?: string | null
+    versionOk?: boolean
+    authenticated?: boolean | 'unknown'
+    /** 只有 http provider 有。 */
+    models?: string[]
+  }
+}
+
+/** CLI provider 設定（與 main/config/settings.ts CliProviderSettings 對齊）。 */
+export interface CliProviderSettings {
+  /** 執行檔絕對路徑；空字串＝自動偵測。 */
+  execPath: string
+  /** 空字串＝用 provider 內建建議預設。 */
+  model: string
+  /** 單次呼叫逾時（ms），15000–600000。 */
+  timeoutMs: number
+}
+
 /** 降噪黑名單規則（與 main/config/defaults.ts BlocklistRules 對齊）。 */
 export interface BlocklistRules {
   nameKeywords: string[]
@@ -232,6 +281,13 @@ export interface SettingsView {
   }
   /** AI 判斷引擎端點 Base URL；空字串＝用預設端點（見 qwen.ts 的 baseURL 解析優先序）。 */
   aiBaseUrl: string
+  /** AI 判斷引擎種類；預設 'http'＝現行行為（Batch 5）。 */
+  aiProvider: AiProviderId
+  /** Claude CLI provider 設定（aiProvider='claudeCli' 時生效）。 */
+  claudeCli: CliProviderSettings
+  /** Codex CLI provider 設定（aiProvider='codexCli' 時生效）。 */
+  codexCli: CliProviderSettings
+  /** AI 引擎是否已就緒（http=有金鑰；CLI=設定無誤）。欄位名沿用歷史，語意見 main scheduler。 */
   hasApiKey: boolean
   apiKeySource: 'safeStorage' | 'env' | 'none'
   safeStorageAvailable: boolean
@@ -248,6 +304,12 @@ export type SettingsPatch = Partial<{
   reconcile: Partial<{ enabled: boolean; scopeMonths: number }>
   /** AI 判斷引擎端點 Base URL；空字串＝用預設端點。 */
   aiBaseUrl: string
+  /** AI 判斷引擎種類。 */
+  aiProvider: AiProviderId
+  /** 部分更新 Claude CLI 設定。 */
+  claudeCli: Partial<CliProviderSettings>
+  /** 部分更新 Codex CLI 設定。 */
+  codexCli: Partial<CliProviderSettings>
 }>
 
 /** todos:draftReply 結果（只草擬不送出）。 */
@@ -405,8 +467,14 @@ const api = {
     /** 暫停/恢復定時輪詢。 */
     setRunning: (running: boolean): Promise<PipelineStatus> =>
       ipcRenderer.invoke('pipeline:setRunning', { running }),
-    /** 測試 qwen 金鑰/連線（打 /v1/models）。 */
+    /** 測試 qwen 金鑰/連線（打 /v1/models）。HTTP 專屬；保留給現行設定頁。 */
     testQwen: (): Promise<QwenTestResult> => ipcRenderer.invoke('settings:testQwen'),
+    /**
+     * provider-aware 健檢：依 settings.aiProvider 分別檢查 HTTP 端點 / CLI 路徑版本登入。
+     * CLI 會 spawn 子程序，耗時可達數秒；只在使用者按下按鈕時呼叫，不要放進輪詢。
+     */
+    testAiProvider: (): Promise<ProviderHealth> =>
+      ipcRenderer.invoke('settings:testAiProvider'),
     /** 訂閱每輪結束；回傳 unsubscribe。 */
     onRun: (cb: (r: PipelineRunResult) => void): (() => void) =>
       subscribe<PipelineRunResult>(PIPELINE_RUN_CHANNEL, cb),

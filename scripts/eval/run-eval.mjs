@@ -118,7 +118,7 @@ function normalizeChat(s) {
 // ── esbuild 即時編譯 App 真實管線（與 smoke-qwen.mjs 同款手法，避免常數漂移）──
 const ENTRY = `
 export { buildUserPayload } from './src/main/llm/extractPrompt.ts'
-export { makeQwen } from './src/main/llm/qwenClient.ts'
+export { makeHttpProvider } from './src/main/llm/provider/httpOpenAi.ts'
 export { extractTodos } from './src/main/llm/extractor.ts'
 `
 async function loadAppPipeline() {
@@ -186,7 +186,7 @@ function loadWindowChats() {
 // ── 呼叫 qwen 逐 chat 抽取 → 扁平 todo 清單 ─────────────────────
 async function runQwen(appMod, apiKey, windowData) {
   const now = (windowData.window?.end || new Date().toISOString()).slice(0, 19)
-  const client = appMod.makeQwen({ apiKey, baseURL, timeoutMs: 90000 })
+  const provider = appMod.makeHttpProvider({ apiKey, baseURL, model, timeoutMs: 90000 })
 
   const flat = []
   const perChatErrors = []
@@ -203,7 +203,7 @@ async function runQwen(appMod, apiKey, windowData) {
     }
     process.stderr.write(`[eval] qwen chat ${chatIdx}/${windowData.chats.length} "${chat.name ?? chat.chatId}" (${input.newMessages.length} msgs)...\n`)
     try {
-      const res = await appMod.extractTodos(client, input, { model, structuredMode: 'auto' })
+      const res = await appMod.extractTodos(provider, input, {})
       for (const t of res.newTodos) {
         flat.push({
           chat: chat.name ?? chat.chatId,

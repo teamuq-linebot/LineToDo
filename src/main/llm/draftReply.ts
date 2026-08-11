@@ -1,12 +1,12 @@
-import type OpenAI from 'openai'
 import type { TodoDTO } from '../db/dto'
 import type { MessageDTO } from '../db/dto'
+import type { LlmProvider } from './provider/types'
 
 /**
  * draftReply.ts — 為「等回覆 / 待辦」草擬一則回覆（IMPLEMENTATION_PLAN.md §5 todos:draftReply）。
  *
- * MVP 只「草擬」不送出（真送出 driver_post 延後）。本模組純呼叫 qwen，回一段繁中文字草稿。
- * 不碰 DB、不讀金鑰；qwen client 與 model 由呼叫端傳入（金鑰即用即丟）。
+ * MVP 只「草擬」不送出（真送出 driver_post 延後）。本模組純呼叫 LLM provider，回一段繁中文字草稿。
+ * 不碰 DB、不讀金鑰；provider 由呼叫端傳入（金鑰即用即丟；model 由 provider 自己解析）。
  * 失敗一律 throw，IPC 呼叫端 catch 後回友善錯誤。
  */
 
@@ -53,26 +53,22 @@ function buildDraftUserPayload(input: DraftReplyInput): string {
 }
 
 export interface DraftReplyOptions {
-  model: string
   temperature?: number
 }
 
-/** 呼叫 qwen 產一段回覆草稿。回傳純文字（已 trim）。 */
+/** 呼叫 LLM provider 產一段回覆草稿。回傳純文字（已 trim）。 */
 export async function draftReply(
-  qwen: OpenAI,
+  provider: LlmProvider,
   input: DraftReplyInput,
   opts: DraftReplyOptions
 ): Promise<string> {
-  const res = await qwen.chat.completions.create({
-    model: opts.model,
-    temperature: opts.temperature ?? 0.5,
-    messages: [
-      { role: 'system', content: DRAFT_SYSTEM_PROMPT },
-      { role: 'user', content: buildDraftUserPayload(input) }
-    ]
+  const res = await provider.complete({
+    system: DRAFT_SYSTEM_PROMPT,
+    user: buildDraftUserPayload(input),
+    temperature: opts.temperature ?? 0.5
   })
-  const content = res.choices?.[0]?.message?.content
-  if (typeof content !== 'string' || !content.trim()) {
+  const content = res.text
+  if (!content.trim()) {
     throw new Error('qwen 回應沒有可用的草稿內容')
   }
   return content.trim()

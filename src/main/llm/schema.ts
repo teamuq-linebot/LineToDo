@@ -112,14 +112,16 @@ export const EXTRACT_JSON_SCHEMA = {
 } as const
 
 /**
- * 解析 + 驗證模型回傳字串。
- * - JSON.parse 失敗 → throw（呼叫端標該 chat partial、不中斷整輪）。
- * - zod 驗證失敗 → throw ZodError（同上）。
+ * 驗證「已解析成 JS 值」的抽取結果。
+ * - zod 驗證失敗 → throw ZodError（呼叫端標該 chat partial、不中斷整輪）。
  * 回傳已淨化的 ExtractResult（detail/dueAt 統一成 string | null）。
+ *
+ * 拆出這個入口是為了讓「原生就回物件」的 provider（Claude structured_output /
+ * Codex out.json）不必為了餵 parseExtractResult 而先 stringify 再 parse 回來。
+ * zod 驗證永遠在 provider 之外做（design.md §1.3），這裡是唯一的真實來源。
  */
-export function parseExtractResult(raw: string): ExtractResult {
-  const json = JSON.parse(raw) as unknown
-  const parsed = ExtractResultSchema.parse(json)
+export function validateExtractResult(value: unknown): ExtractResult {
+  const parsed = ExtractResultSchema.parse(value)
   // 正規化 optional → null，給下游 DB 寫入用穩定型別。
   return {
     importance: parsed.importance,
@@ -140,4 +142,13 @@ export function parseExtractResult(raw: string): ExtractResult {
       evidence: u.evidence
     }))
   }
+}
+
+/**
+ * 解析 + 驗證模型回傳字串（對外簽章不變；scripts/probe-* 依賴它）。
+ * - JSON.parse 失敗 → throw（呼叫端標該 chat partial、不中斷整輪）。
+ * - zod 驗證失敗 → throw ZodError（同上）。
+ */
+export function parseExtractResult(raw: string): ExtractResult {
+  return validateExtractResult(JSON.parse(raw) as unknown)
 }

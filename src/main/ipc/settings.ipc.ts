@@ -10,7 +10,7 @@ import {
   type SettingsPatch
 } from '../config/settings'
 import { getQwenConfig } from '../config/qwen'
-import { makeQwen } from '../llm/qwenClient'
+import { resolveProvider } from '../llm/provider'
 import { draftReply } from '../llm/draftReply'
 import { getTodo } from '../db/todos.repo'
 import { getChat } from '../db/chats.repo'
@@ -68,6 +68,9 @@ export function registerSettingsIpc(hooks: SettingsIpcHooks = {}): void {
       }
       try {
         setApiKey(args.apiKey)
+        // 金鑰也是設定（只是另存一個加密檔）。Batch 7：填了新金鑰後必須解除 provider 熔斷，
+        // 否則「金鑰過期 → 熔斷 → 使用者立刻換新金鑰」還要乾等 15 分鐘才會恢復。
+        hooks.onSettingsChanged?.()
         return { ok: true }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -77,6 +80,7 @@ export function registerSettingsIpc(hooks: SettingsIpcHooks = {}): void {
 
   ipcMain.handle('settings:clearApiKey', (): { ok: boolean } => {
     clearApiKey()
+    hooks.onSettingsChanged?.()
     return { ok: true }
   })
 
@@ -92,8 +96,8 @@ export function registerSettingsIpc(hooks: SettingsIpcHooks = {}): void {
       const todo = getTodo(args.id)
       if (!todo) return { error: '找不到該代辦' }
 
-      const cfg = getQwenConfig()
-      if (!cfg.apiKey) {
+      const provider = resolveProvider()
+      if (!provider) {
         return { error: '尚未設定 API 金鑰（請在設定頁填入，或設環境變數 QWEN_API_KEY）' }
       }
 
@@ -101,13 +105,8 @@ export function registerSettingsIpc(hooks: SettingsIpcHooks = {}): void {
         const chat = getChat(todo.chatId)
         const limit = getPipelineDefaults().recentContextLimit || 10
         const recent = getRecentByChat(todo.chatId, Math.max(limit, 10))
-        const client = makeQwen({
-          apiKey: cfg.apiKey,
-          baseURL: cfg.baseURL,
-          timeoutMs: cfg.timeoutMs
-        })
         const draft = await draftReply(
-          client,
+          provider,
           {
             todo: { bucket: todo.bucket, title: todo.title, detail: todo.detail },
             chatName: chat?.name ?? null,
@@ -119,7 +118,7 @@ export function registerSettingsIpc(hooks: SettingsIpcHooks = {}): void {
               timeIso: m.timeIso
             }))
           },
-          { model: cfg.model }
+          {}
         )
         return { draft }
       } catch (err) {

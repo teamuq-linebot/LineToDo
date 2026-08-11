@@ -19,7 +19,8 @@
     "smoke:qwen": "node scripts/smoke-qwen.mjs",
     "eval": "node scripts/eval/run-eval.mjs",
     "probe:pipeline": "electron scripts/probe-pipeline-dryrun.cjs",
-    "probe:pipeline-branches": "electron scripts/probe-pipeline-branches.cjs"
+    "probe:pipeline-branches": "electron scripts/probe-pipeline-branches.cjs",
+    "probe:breaker": "electron scripts/probe-breaker.cjs"
   },
   "dependencies": {
     "better-sqlite3": "^11",

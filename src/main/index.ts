@@ -1,4 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { createWindow } from './window'
 import { LineWatcher } from './line/watcher'
 import { getLineBridgeConfig } from './config/lineBridge'
@@ -15,6 +17,8 @@ import { registerSettingsIpc } from './ipc/settings.ipc'
 import { setSafeStorageReader, setBaseUrlReader } from './config/qwen'
 import { readApiKeyFromSafeStorage, getSettings } from './config/settings'
 import { setSettingsOverlayProvider } from './config/defaults'
+import { invalidateCliCache } from './llm/cli'
+import { sweepCodexTmpDirs } from './llm/provider'
 import {
   registerLinemediaScheme,
   registerLinemediaHandler,
@@ -220,12 +224,41 @@ function startScheduler(): void {
   // 並重新套用「開機自動啟動」設定（openAtLogin 變更即時生效）。
   registerSettingsIpc({
     onSettingsChanged: () => {
-      scheduler?.reschedule()
+      // notifySettingsChanged = reschedule + 解除 provider 熔斷/退避（Batch 7）：
+      // 熔斷記錄的是「用舊設定會失敗」，設定既然被改了（換 provider、改 execPath、填金鑰），
+      // 拿新設定重試一次才合理，不該讓使用者乾等冷卻結束。
+      scheduler?.notifySettingsChanged()
       applyLoginItemSettings()
+      // design.md §3.2 失效時機 2：改了 aiProvider / execPath 後，CLI 定位快取必須作廢，
+      // 否則使用者剛指定的新路徑會被舊快取蓋掉（無差別 invalidate：比對舊值不值得多存一份狀態）。
+      invalidateCliCache()
     }
   })
 
   scheduler.start()
+}
+
+/**
+ * CLI provider 的開機清掃（design.md §2.3）：
+ *   1. 刪掉 `<userData>/ai-cli-tmp/codex-*` 中 mtime 超過 1 小時的殘留目錄
+ *      （正常路徑由 codexCli 的 finally 清；這裡只處理「app 被強制結束來不及清」的殘留。
+ *       門檻刻意不短於 1 小時，免得誤刪正在跑的呼叫的暫存）。
+ *   2. 確保 claude 用的空 workdir 存在（切斷 project-level 設定/記憶的向上探索）。
+ * 非阻塞、失敗只 log —— 清掃失敗不該擋啟動。
+ */
+function sweepCliWorkspace(): void {
+  setImmediate(() => {
+    try {
+      mkdirSync(join(app.getPath('userData'), 'ai-cli-workdir'), { recursive: true })
+    } catch (e) {
+      console.warn('[ai-cli] workdir 建立失敗：', (e as Error).message)
+    }
+    void sweepCodexTmpDirs()
+      .then((n) => {
+        if (n > 0) console.log(`[ai-cli] 清掉 ${n} 個殘留暫存目錄`)
+      })
+      .catch((e) => console.warn('[ai-cli] 暫存清掃失敗：', (e as Error).message))
+  })
 }
 
 app.on('second-instance', () => {
@@ -248,7 +281,13 @@ app.whenReady().then(() => {
   })
 
   // pipeline 設定：注入持久化設定覆寫器（設定頁的 poll/並發/blocklist 要能蓋過內建常數）。
-  setSettingsOverlayProvider(getSettings)
+  // CLI provider 時**強制 concurrency = 1**（design.md §7.1）：CLI 的一次呼叫是啟一整套
+  // agent runtime，桌機上同時跑 2–4 個會把 CPU/記憶體吃光。設定值本身不改寫（切回 http
+  // 就恢復使用者原本的並發），只在「取用時」壓制。
+  setSettingsOverlayProvider(() => {
+    const s = getSettings()
+    return s.aiProvider === 'http' ? s : { ...s, concurrency: 1 }
+  })
 
   // 開機自動啟動（Batch 5a）：啟動時依 openAtLogin 設定套用一次（設定變更時於 onSettingsChanged 重套）。
   applyLoginItemSettings()
@@ -323,6 +362,10 @@ app.whenReady().then(() => {
   mainWindow.webContents.on('did-finish-load', () => {
     if (!watcher) startWatcher()
     if (!scheduler) startScheduler()
+
+    // CLI provider 的暫存/工作目錄清掃（背景、不阻塞）。與 aiProvider 設定無關：
+    // 使用者可能剛從 CLI 切回 http，殘留一樣要清。
+    sweepCliWorkspace()
 
     // 開機自我對帳（Batch 4，決策 A）：視窗開啟、watcher/scheduler 啟動之後，用
     // setImmediate 背景觸發、**不 await**、不阻塞啟動/UI。健康 gate 不 ok 或設定關閉 →
