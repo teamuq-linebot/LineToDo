@@ -1,7 +1,7 @@
 // shot-board.cjs — Electron 截圖驗收 harness（看板 UI）。
 //
 // 載入「已 build 的 renderer + preload」，但 IPC 由本 harness 直接以 better-sqlite3
-// 讀 seeded DB 回應（不 spawn watch_json.py / 不打 qwen），確保在無 LINE / 無金鑰環境
+// 讀 seeded DB 回應（不觸發 LINE 引擎輪詢 / 不打 qwen），確保在無 LINE / 無金鑰環境
 // 也能截到真實渲染畫面。驗證點：renderer 透過真正的 preload contextBridge 把 seeded
 // todos 渲染成四欄看板。
 //

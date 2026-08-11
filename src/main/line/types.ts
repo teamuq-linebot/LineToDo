@@ -1,6 +1,7 @@
 /**
- * RawLineMessage — 一則 LINE 訊息的型別，對齊 watch_json.py 的 NDJSON 欄位契約
- * （IMPLEMENTATION_PLAN.md §3）。watcher.ts 逐行 JSON.parse 後得到此型別。
+ * RawLineMessage — 一則 LINE 訊息的型別；欄位契約沿用自原 watch_json.py 的 NDJSON 輸出
+ * （IMPLEMENTATION_PLAN.md §3）。現由 in-process TS 引擎（watchEngine.getNewMessagesOnce /
+ * getMessagesSince）產生同型別物件，watcher.ts 逐則 emit 給下游。
  */
 export interface RawLineMessage {
   /**
@@ -27,8 +28,9 @@ export interface RawLineMessage {
   /** _contentType 原始 int（0 = 文字） */
   contentType: number
   // ── 媒體訊息（E2EE）解密輸入 —— 皆 optional，向後相容非媒體/舊列 ──
-  // 由橋接（watch_json.py）自 LINE DB `_contentInfo`/`_contentMetadata` 額外吐出；
-  // 只留 main/DB，keyMaterial 永不跨橋到 renderer（media_feature_plan §4.2/4.4）。
+  // 欄位契約沿用自原橋接 watch_json.py 對 LINE DB `_contentInfo`/`_contentMetadata` 的解析輸出；
+  // 現由 in-process TS 引擎（engine/rowToObj.ts）產生同值。只留 main/DB，keyMaterial 永不跨橋到
+  // renderer（media_feature_plan §4.2/4.4）。
   /** base64（32B）金鑰素材；非 E2EE 媒體/文字為 null */
   keyMaterial?: string | null
   /** 檔案原名（檔案訊息）；圖片為 null */
@@ -43,7 +45,7 @@ export interface RawLineMessage {
   unsent?: boolean
 }
 
-/** LINE 橋接（watch_json.py 子程序）目前狀態。 */
+/** LINE 橋接（in-process TS 輪詢引擎；watcher.ts，無子程序）目前狀態。 */
 export type LineBridgeState = 'starting' | 'running' | 'error' | 'stopped'
 
 export interface LineBridgeStatus {

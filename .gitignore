@@ -71,15 +71,3 @@ scripts/tester/bridge_out.ndjson
 .teamuq/pasted/
 .teamuq_pasted/
 # TeamUQ shared scripts live in .teamuq/scripts/; legacy agent script folders migrate there.
-
-# === line-cua-win 子目錄 PII/大檔防護（2026-07-09 relocate）===
-/line-cua-win/.venv/
-/line-cua-win/node_modules/
-/line-cua-win/_calib/
-/line-cua-win/export_*.md
-/line-cua-win/export_*.xlsx
-/line-cua-win/digest_*.md
-/line-cua-win/*.db
-/line-cua-win/.linekey
-/line-cua-win/.watch_state
-/line-cua-win/.watch_json_state

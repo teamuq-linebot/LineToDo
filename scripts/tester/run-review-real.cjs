@@ -1,11 +1,11 @@
 // 一次性實跑：用「現行金鑰」讓 App 自己跑過去 7 天（reviewLastDays(7)），
-// 走完全真實路徑（真 qwen client + 真 watch_json.py --since + App 真實 userData DB / keyPath），
+// 走完全真實路徑（真 qwen client + in-process TS 引擎 getMessagesSince --since + App 真實 userData DB / keyPath），
 // 證明 todos 真的被 qwen 判出來並寫進 App 的 SQLite。
 //
 // 與 probe-pipeline-dryrun.cjs 的差異（關鍵）：
 //   - 不設 LINE_TODO_DB_PATH → 用 App 預設 userData/line-todo.db（真實 DB）。
 //   - 不注入 extractFn / fetchWindow → reviewLastDays 用預設 makeQwenExtractFn()(真 qwen)
-//     與 spawnSinceSource(真 spawn watch_json.py --since)。
+//     與 fetchSinceWindow(in-process TS 引擎 getMessagesSince --since)。
 //   - 金鑰：讀 eval/.qwen-key → 用 App 自己的 setApiKey()(safeStorage 加密)寫進真實 keyPath，
 //     並 setSafeStorageReader(readApiKeyFromSafeStorage) 注入，確認 getQwenConfig source=safeStorage。
 //   - monkey-patch OpenAI.chat.completions.create 計數 qwen 呼叫次數 / 計時 / 抓錯誤。
@@ -128,7 +128,7 @@ app.whenReady().then(async () => {
     console.log('[review] BEFORE countTodos=' + before.todos +
       ' lastRunId=' + (before.lastRun ? before.lastRun.id : '(none)'))
 
-    // ── 步驟 2：實跑 reviewLastDays(7)（真 qwen + 真 watch_json --since）──
+    // ── 步驟 2：實跑 reviewLastDays(7)（真 qwen + in-process 引擎 getMessagesSince --since）──
     const t0 = Date.now()
     let progressLast = null
     const res = await m.reviewLastDays(7, {

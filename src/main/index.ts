@@ -27,7 +27,7 @@ import type { ReconcileProgress } from './pipeline/reconcileRunner'
 
 /**
  * Electron main 進程入口。
- * 本里程碑（M1 即時訊息流）：spawn watch_json.py --follow --json，逐行解析 NDJSON，
+ * 本里程碑（M1 即時訊息流）：由 in-process TS 引擎（line/engine）輪詢 LINE DB 取增量，
  * 透過 IPC push 把每則 LINE 新訊息送到 renderer 顯示成「即時訊息流」。
  * 後續里程碑會在此加上 DB 落庫、qwen 抽取、看板。
  */
@@ -47,7 +47,7 @@ let scheduler: PipelineScheduler | null = null
 // 並優雅告知使用者、不讓 app 未捕捉例外硬崩。
 let dbHealthy = false
 
-// 收回時序缺口掃描節流：scanRecentUnsent 會 spawn watch_json（~200MB 解密），不可每輪跑。
+// 收回時序缺口掃描節流：scanRecentUnsent 會重讀整個窗口（~200MB 解密），不可每輪跑。
 let lastUnsentScan = 0
 
 // linemedia:// 特權 scheme 必須在 app ready 前、module 頂層宣告（media_feature_plan §4.5）。
@@ -97,8 +97,6 @@ function applyLoginItemSettings(): void {
 function startWatcher(): void {
   const cfg = getLineBridgeConfig()
   watcher = new LineWatcher({
-    python: cfg.python,
-    script: cfg.script,
     intervalSec: cfg.intervalSec,
     limit: cfg.limit,
     dbWatchEnabled: cfg.dbWatchEnabled,
@@ -155,7 +153,7 @@ function startWatcher(): void {
 /**
  * 啟動 qwen 抽取 pipeline 排程器。
  * watchSource 用預設 dbDrainSource —— live watcher 已把訊息鏡像進 DB，
- * pipeline 只需處理「未處理且未黑名單」的 DB 列，不另 spawn watch_json.py（避免雙消費者搶 checkpoint）。
+ * pipeline 只需處理「未處理且未黑名單」的 DB 列，不另跑一次引擎（避免雙消費者搶 checkpoint）。
  * 無 QWEN_API_KEY 時 scheduler 仍跑（落庫/降噪照常），但 LLM 階段優雅停用、不產 todo，
  * 並把 llmStatus 標 'disabled'，由 UI 提示使用者填金鑰。
  */
@@ -192,8 +190,8 @@ function startScheduler(): void {
     })
 
     // 收回時序缺口補抓（決策 4）：LINE 收回只抬 _rev、不動 _createdTime → 即時輪詢（吃
-    // checkpoint）結構性漏抓「send-後-recall」。scanRecentUnsent 走 --since 窗口重讀（不吃
-    // checkpoint），必然重新命中被收回列並守衛式標 unsent=1。因會 spawn watch_json（~200MB
+    // checkpoint）結構性漏抓「send-後-recall」。scanRecentUnsent 走 since 時間窗口重讀（不吃
+    // checkpoint），必然重新命中被收回列並守衛式標 unsent=1。因會重讀整個窗口（~200MB
     // 解密），不可每輪跑 → 5 分鐘節流；與 media backup（本機解密、每輪）分開、非阻塞。
     setImmediate(() => {
       if (Date.now() - lastUnsentScan > 5 * 60 * 1000) {

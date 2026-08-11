@@ -5,7 +5,7 @@ import { formatCallRecord } from '../lib/callRecord'
 
 /**
  * MessageStream — 「即時訊息流」清單。
- * 顯示 main 經由 watch_json.py 即時推來的 LINE 新訊息（最新在頂），
+ * 顯示 main 經由 in-process TS 引擎（watcher.ts）即時推來的 LINE 新訊息（最新在頂），
  * 並在頂部顯示 LINE 橋接狀態（啟動/運行/錯誤）。
  *
  * 本里程碑的可視驗收點：App 啟動後，這個清單應出現 LINE 新訊息（或近期訊息）。
@@ -175,7 +175,7 @@ export function MessageStream(): JSX.Element {
 
       {messages.length === 0 ? (
         <div className="stream-empty muted">
-          尚無訊息。watch_json.py 正在輪詢 LINE；有新訊息（或近期訊息）時會即時出現在這裡。
+          尚無訊息。正在輪詢 LINE 資料庫；有新訊息（或近期訊息）時會即時出現在這裡。
           <br />
           若顯示「橋接錯誤」，常見原因：LINE 未開啟（金鑰需從其記憶體讀取）或金鑰已過期。
         </div>

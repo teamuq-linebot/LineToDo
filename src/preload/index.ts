@@ -275,7 +275,7 @@ const api = {
   line: {
     /** 目前 LINE 橋接狀態。 */
     status: (): Promise<LineBridgeStatus> => ipcRenderer.invoke('line:status'),
-    /** 暫停/恢復 watch_json.py 子程序。 */
+    /** 暫停/恢復 in-process LINE 輪詢引擎（watcher.ts；無子程序）。 */
     setRunning: (running: boolean): Promise<LineBridgeStatus> =>
       ipcRenderer.invoke('line:setRunning', running),
     /** 訂閱每則新訊息；回傳 unsubscribe。 */

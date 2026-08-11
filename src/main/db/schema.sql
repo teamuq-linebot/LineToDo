@@ -1,5 +1,5 @@
 -- schema.sql  (user_version = 4)
--- line-todo App 自有 DB（與 line-cua-win 的 LINE edb 完全分離；本 App 只新增、不寫回 LINE）。
+-- line-todo App 自有 DB（與 LINE 自身的 edb 完全分離；本 App 只新增、不寫回 LINE）。
 -- 位置：app.getPath('userData')/line-todo.db
 -- 此檔為「可讀參考來源」；runtime 實際執行的 DDL 內嵌在 schema.ts（避免 bundler 漏帶 .sql）。
 -- 兩者須保持一致：改 DDL 時兩邊一起改。

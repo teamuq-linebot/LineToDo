@@ -4,7 +4,7 @@
 > Electron + Vite + React + TypeScript 桌面 App。回應語言：繁體中文。
 > 本檔為可直接施工的規格。M4 打包（electron-builder）不在本輪範圍。
 
-> **引擎現況（2026-07-03 Batch 5 更新）**：訊息讀取／解媒體／backfill 已純 TS 化（in-process watchEngine + koffi + better-sqlite3-multiple-ciphers），**預設引擎為 `ts`，不再需要外部 Python**。本檔以下大量描述的 venv python / `watch_json.py` spawn 路徑已降級為**緊急 fallback**：設 `LINE_ENGINE=py`（或 `python`）才會回退舊路徑，未設或空字串一律走 `ts`。詳見 `src/main/config/lineBridge.ts` 的 `getLineEngine()`。
+> **引擎現況（2026-08-11 更新）**：Python fallback 路徑與 `line-cua-win/` 子目錄已於 2026-08-11 完全移除，現行唯一引擎為 in-process TS 引擎（`src/main/line/engine/`）。訊息讀取／解媒體／backfill 皆為純 TS 實作（watchEngine + koffi + better-sqlite3-multiple-ciphers）。本檔以下大量描述的 venv python / `watch_json.py` spawn 路徑為**歷史紀錄**（2026-07-03 之前一度作為緊急 fallback，`LINE_ENGINE=py` 已無作用），僅供理解演進脈絡，不代表現行行為。
 
 ---
 
@@ -584,10 +584,7 @@ const res = await qwen.chat.completions.create({
   },
   "pollIntervalSec": 30,
   "concurrency": 2,
-  "llm": { "baseURL": "https://qwen.tuq.tw/v1", "model": "qwen36-fp8", "timeoutMs": 60000 },
-  // linePython / lineWatchScript 預設由 LINE_CUA_WIN_DIR env（未設則 app.getAppPath()/line-cua-win）解析，非寫死；以下僅為覆寫範例：
-  "linePython": "${LINE_CUA_WIN_DIR}/.venv/Scripts/python.exe",
-  "lineWatchScript": "${LINE_CUA_WIN_DIR}/src/watch_json.py"
+  "llm": { "baseURL": "https://qwen.tuq.tw/v1", "model": "qwen36-fp8", "timeoutMs": 60000 }
 }
 ```
 運作：

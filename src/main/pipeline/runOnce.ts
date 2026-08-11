@@ -33,7 +33,8 @@ import { mapLimited } from './concurrency'
  * runOnce.ts — 串起一輪 pipeline（IMPLEMENTATION_PLAN.md §8）。
  *
  * 1. 開 pipeline_runs。
- * 2. 取本輪 LINE 新訊息（watchSource，可注入；正式為 watcher.ts spawn watch_json.py）。
+ * 2. 取本輪 LINE 新訊息（watchSource，可注入；正式版為 dbDrainSource——live LineWatcher 已用
+ *    in-process TS 引擎把訊息鏡像進 DB，這裡回空 batch）。
  * 3. upsert chats（套自動黑名單）+ INSERT OR IGNORE messages（msg_id 去重）。
  * 4. 取「未處理且 chat 未 blocked」訊息，按 chatId 分組。
  * 5. 每 chat：撈 recentContext + openTodos → extractFn（qwen，並發≤2）→ ExtractResult。
@@ -44,7 +45,7 @@ import { mapLimited } from './concurrency'
  */
 
 export interface RunOnceDeps {
-  /** 取得本輪 LINE 新訊息。正式版 spawn watch_json.py；測試版回固定陣列。 */
+  /** 取得本輪 LINE 新訊息。正式版為 dbDrainSource（live LineWatcher 已用 in-process TS 引擎把訊息鏡像進 DB，這裡回空 batch）；測試版回固定陣列。 */
   watchSource: () => Promise<{ messages: RawLineMessage[]; bridge: LineBridge; error?: string }>
   /**
    * 對單一 chat 抽取。正式版呼叫 qwen；測試版回 mock。

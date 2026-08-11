@@ -6,7 +6,7 @@ import type { RawLineMessage } from '../line/types'
 import { upsertChat } from './chats.repo'
 
 /**
- * messages.repo — sidecar(watch_json.py) 進來的訊息落庫 + 查詢。
+ * messages.repo — LINE 引擎（in-process TS watchEngine，經 watcher.ts emit）進來的訊息落庫 + 查詢。
  *
  * 去重：每則訊息推導穩定 msg_id（schema.deriveMsgId），以 PK + INSERT OR IGNORE 去重。
  *       同一則被重複輪詢只會落庫一次。

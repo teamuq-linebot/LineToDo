@@ -1,6 +1,3 @@
-import { spawn } from 'node:child_process'
-import { createInterface } from 'node:readline'
-import { dirname } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { getDb } from '../db/database'
 import type { MessageDTO, TodoDTO } from '../db/dto'
@@ -19,7 +16,6 @@ import {
   resolveTodo
 } from '../db/todos.repo'
 import { startRun, finishRun } from '../db/pipeline.repo'
-import { getLineBridgeConfig, getLineEngine } from '../config/lineBridge'
 import { getMessagesSince } from '../line/engine/watchEngine'
 import { getPipelineDefaults } from '../config/defaults'
 import type { PipelineDefaults } from '../config/defaults'
@@ -33,11 +29,11 @@ import type { RawLineMessage } from '../line/types'
 
 /**
  * backfill.ts — 「回顧過去 N 天」一次性補抓（重用 runOnce 既有抽取/去重/完成偵測邏輯，
- * 但走獨立的時間窗口來源：直接 spawn watch_json.py --since <epoch_ms>，而非吃 DB 未處理列）。
+ * 但走獨立的時間窗口來源：直接向 in-process 引擎要 since <epoch_ms> 的窗口，而非吃 DB 未處理列）。
  *
  * 流程（對齊 IMPLEMENTATION_PLAN.md §8，但訊息來源是時間窗口而非 live drain）：
  *   1. 開一筆 pipeline_runs。
- *   2. spawn watch_json.py --since (now - N天) → 收 NDJSON → RawLineMessage[]。
+ *   2. getMessagesSince(now - N天) → RawLineMessage[]。
  *   3. insertMessages：upsert chats（套自動黑名單）+ INSERT OR IGNORE messages（msg_id 去重）。
  *      → 讓抽出的 todo.sourceMsgIds 連得到 messages 表。
  *   4. 依 chatId 分組（用本窗口訊息；blocked chat 整組跳過）。
@@ -51,7 +47,6 @@ import type { RawLineMessage } from '../line/types'
  */
 
 const DEFAULT_DAYS = 7
-const SPAWN_TIMEOUT_MS = 180_000
 
 export interface BackfillProgress {
   /** 已處理（含噪音/失敗）的聊天數。 */
@@ -84,7 +79,7 @@ export interface ReviewLastDaysResult {
 }
 
 export interface ReviewLastDaysDeps {
-  /** 取窗口訊息。預設 spawn watch_json.py --since；測試可注入固定陣列。 */
+  /** 取窗口訊息。預設走 in-process 引擎的 getMessagesSince；測試可注入固定陣列。 */
   fetchWindow?: (sinceMs: number) => Promise<{ messages: RawLineMessage[]; error?: string }>
   /** 對單一 chat 抽取。預設 makeQwenExtractFn()；無金鑰回 null。 */
   extractFn?: ((input: ChatExtractInput) => Promise<ExtractResult>) | null
@@ -117,107 +112,19 @@ function isFuture(dueAt: string | null, nowMs: number): boolean {
 }
 
 /**
- * 預設窗口來源：spawn watch_json.py --since <epoch_ms>，逐行解析 NDJSON。
- * 與 watchSource.spawnWatchOnce 同風格（解析失敗的行跳過；exit!=0 / stderr error 回 error）。
+ * 預設窗口來源：in-process 引擎的 getMessagesSince（不吃 checkpoint，取 sinceMs 之後的窗口）。
+ * 引擎的錯誤以 reject/throw 表達 → 這裡 catch 轉成 { error } 回傳，讓下游
+ * 「win.error → lineBridge:'error'」分支同樣捕捉。
  */
-function spawnSinceSource(
+function fetchSinceWindow(
   sinceMs: number
 ): Promise<{ messages: RawLineMessage[]; error?: string }> {
-  // Batch 4b：LINE_ENGINE=ts 走 in-process watchEngine.getMessagesSince（不吃 checkpoint，
-  // 對應舊 spawn --since <ms>）；ts 路徑的錯誤以 reject/throw 表達 → 下面 catch 轉成
-  // { error } 回傳，與舊 spawn（exit 2 / stderr error → { error }）語意一致，讓下游
-  // 「win.error → lineBridge:'error'」分支同樣捕捉。未設 / 非 ts → 落到下方原 spawn 路徑不變。
-  if (getLineEngine() === 'ts') {
-    return getMessagesSince(sinceMs, { limit: 20000 })
-      .then((messages) => ({ messages }))
-      .catch((err) => ({
-        messages: [] as RawLineMessage[],
-        error: err instanceof Error ? err.message : String(err)
-      }))
-  }
-  const cfg = getLineBridgeConfig()
-  const python = cfg.python
-  const script = cfg.script
-  return new Promise((resolve) => {
-    const messages: RawLineMessage[] = []
-    let errored = false
-    let errorMsg: string | null = null
-    let settled = false
-    const finish = (res: { messages: RawLineMessage[]; error?: string }): void => {
-      if (settled) return
-      settled = true
-      resolve(res)
-    }
-
-    let child
-    try {
-      child = spawn(
-        python,
-        [script, '--since', String(sinceMs), '--json', '--limit', '20000'],
-        {
-          cwd: dirname(script),
-          env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
-        }
-      )
-    } catch (err) {
-      finish({ messages: [], error: err instanceof Error ? err.message : String(err) })
-      return
-    }
-
-    const killTimer = setTimeout(() => {
-      try {
-        child.kill()
-      } catch {
-        /* already dead */
-      }
-      finish({ messages, error: `watch_json.py 逾時 ${SPAWN_TIMEOUT_MS}ms` })
-    }, SPAWN_TIMEOUT_MS)
-
-    const rl = createInterface({ input: child.stdout })
-    rl.on('line', (line) => {
-      const t = line.trim()
-      if (!t) return
-      try {
-        const msg = JSON.parse(t) as RawLineMessage
-        if (typeof msg.chatId === 'string' && typeof msg.ts === 'number') {
-          messages.push(msg)
-        }
-      } catch {
-        /* 非 JSON 行：跳過 */
-      }
-    })
-
-    const errRl = createInterface({ input: child.stderr })
-    errRl.on('line', (line) => {
-      const t = line.trim()
-      if (!t) return
-      try {
-        const obj = JSON.parse(t) as { error?: string }
-        if (obj && typeof obj.error === 'string') {
-          errored = true
-          errorMsg = obj.error
-        }
-      } catch {
-        /* 非 JSON stderr：忽略 */
-      }
-    })
-
-    child.on('error', (err) => {
-      clearTimeout(killTimer)
-      finish({ messages: [], error: err.message })
-    })
-
-    child.on('exit', (code) => {
-      clearTimeout(killTimer)
-      rl.close()
-      errRl.close()
-      if (code === 2 || errored) {
-        finish({ messages, error: errorMsg ?? `watch_json.py exited code ${code}` })
-        return
-      }
-      finish({ messages })
-    })
-  })
+  return getMessagesSince(sinceMs, { limit: 20000 })
+    .then((messages) => ({ messages }))
+    .catch((err) => ({
+      messages: [] as RawLineMessage[],
+      error: err instanceof Error ? err.message : String(err)
+    }))
 }
 
 /**
@@ -232,7 +139,7 @@ export async function reviewLastDays(
   const nowFn = deps.now ?? (() => Date.now())
   const cfg = deps.config ?? getPipelineDefaults()
   const rules = cfg.blocklist
-  const fetchWindow = deps.fetchWindow ?? spawnSinceSource
+  const fetchWindow = deps.fetchWindow ?? fetchSinceWindow
   // 未顯式注入 extractFn 時，現組 qwen extractFn（金鑰即用即丟）。null = 無金鑰。
   const extractFn =
     deps.extractFn === undefined ? makeQwenExtractFn() : deps.extractFn
@@ -263,7 +170,7 @@ export async function reviewLastDays(
 
   const runId = startRun(db)
 
-  // 無金鑰：直接回報（不 spawn、不抽），讓 UI 提示填金鑰。
+  // 無金鑰：直接回報（不取窗口、不抽），讓 UI 提示填金鑰。
   if (extractFn === null) {
     result.ok = false
     result.note = '尚未設定 API 金鑰（請先到設定頁填金鑰）'
@@ -562,14 +469,14 @@ export async function reviewLastDays(
 }
 
 export interface BackfillMediaKeysResult {
-  /** 取回窗口訊息數（= watch_json.py --since 回傳的訊息筆數）。 */
+  /** 取回窗口訊息數（= getMessagesSince 回傳的訊息筆數）。 */
   scanned: number
   /** 既有列被補上媒體欄的筆數（取自 insertMessages 回傳的 media 補欄計數）。 */
   mediaBackfilled: number
 }
 
 export interface BackfillMediaKeysDeps {
-  /** 取窗口訊息。預設 spawn watch_json.py --since；測試可注入固定陣列。 */
+  /** 取窗口訊息。預設走 in-process 引擎的 getMessagesSince；測試可注入固定陣列。 */
   fetchWindow?: (sinceMs: number) => Promise<{ messages: RawLineMessage[]; error?: string }>
   db?: Database
   now?: () => number
@@ -580,7 +487,7 @@ export interface BackfillMediaKeysDeps {
  * （key_material/orig_filename/file_size）。**不跑 LLM 抽取、不需 qwen 金鑰**，
  * 與 reviewLastDays（會跑 LLM、有 API 成本）不同。
  *
- * 重用 reviewLastDays 的窗口來源 spawnSinceSource（spawn watch_json.py --since，
+ * 重用 reviewLastDays 的窗口來源 fetchSinceWindow（getMessagesSince 時間窗口，
  * --limit 20000 升冪截斷；7 天一般不觸頂）取回窗口訊息，取回後直接 insertMessages——
  * 落庫端（BF-1）已讓 insertMessages 對既有列補媒體欄。
  */
@@ -590,7 +497,7 @@ export async function backfillMediaKeys(
 ): Promise<BackfillMediaKeysResult> {
   const db = deps.db ?? getDb()
   const nowFn = deps.now ?? (() => Date.now())
-  const fetchWindow = deps.fetchWindow ?? spawnSinceSource
+  const fetchWindow = deps.fetchWindow ?? fetchSinceWindow
 
   const nowMs = nowFn()
   const sinceMs = nowMs - days * 24 * 60 * 60 * 1000
@@ -608,14 +515,14 @@ export async function backfillMediaKeys(
 }
 
 export interface ScanRecentUnsentResult {
-  /** 取回窗口訊息數（= watch_json.py --since 回傳的訊息筆數）。 */
+  /** 取回窗口訊息數（= getMessagesSince 回傳的訊息筆數）。 */
   scanned: number
   /** 既有列被補標已收回（unsent 0→1）的筆數（取自 insertMessages 回傳的守衛式 UPDATE 計數）。 */
   unsentMarked: number
 }
 
 export interface ScanRecentUnsentDeps {
-  /** 取窗口訊息。預設 spawn watch_json.py --since；測試可注入固定陣列。 */
+  /** 取窗口訊息。預設走 in-process 引擎的 getMessagesSince；測試可注入固定陣列。 */
   fetchWindow?: (sinceMs: number) => Promise<{ messages: RawLineMessage[]; error?: string }>
   db?: Database
   now?: () => number
@@ -638,7 +545,7 @@ export async function scanRecentUnsent(
 ): Promise<ScanRecentUnsentResult> {
   const db = deps.db ?? getDb()
   const nowFn = deps.now ?? (() => Date.now())
-  const fetchWindow = deps.fetchWindow ?? spawnSinceSource
+  const fetchWindow = deps.fetchWindow ?? fetchSinceWindow
 
   const nowMs = nowFn()
   const sinceMs = nowMs - days * 24 * 60 * 60 * 1000

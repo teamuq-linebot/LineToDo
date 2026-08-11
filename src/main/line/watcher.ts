@@ -1,24 +1,20 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { createInterface, type Interface } from 'node:readline'
-import { dirname } from 'node:path'
 import { watch as fsWatch, type FSWatcher } from 'node:fs'
 import { watchFile as fsWatchFile, type StatWatcher } from 'node:fs'
 import { EventEmitter } from 'node:events'
 import type { RawLineMessage, LineBridgeStatus, LineBridgeState } from './types'
-import { getLineEngine } from '../config/lineBridge'
 import { getNewMessagesOnce } from './engine/watchEngine'
 
 /**
- * LineWatcher — 在 main 進程觸發 line-cua-win 的 watch_json.py --once（NDJSON）。
- * 把每則訊息以事件吐出，負責子程序的錯誤偵測與自動重啟。
+ * LineWatcher — 在 main 進程以 in-process TS 引擎（engine/watchEngine）取增量新訊息。
+ * 把每則訊息以事件吐出，負責錯誤偵測與狀態回報。
  *
  * 觸發機制（雙驅動，任一先到就啟動一次 poll）：
  *   1. 事件驅動：fs.watch 監看 LINE DB 目錄（dbDir）；偵測到 -wal 等寫入事件後
- *      去抖 ~800ms，立即 spawn 一次 --once（不必等 interval）。
+ *      去抖 ~800ms，立即跑一次 getNewMessagesOnce（不必等 interval）。
  *   2. 間隔輪詢：setInterval(intervalSec) 作為 fallback 上限（「最久 N 秒一定檢查一次」）。
  *
- *   watch_json.py 的 stat-gate（edb/-wal size+mtime_ns 未變就 exit 0 輸出 0 行）
- *   讓「沒真的變動」的多餘觸發幾乎零成本，所以寧可多觸發也不漏。
+ *   引擎內建 stat-gate（edb/-wal size+mtime_ns 未變就直接回 0 則）讓「沒真的變動」的
+ *   多餘觸發幾乎零成本，所以寧可多觸發也不漏。
  *
  * fs.watch 不穩定時（ENOENT / EACCES / Windows 限制）：自動退回 fs.watchFile stat 輪詢，
  * 再退回純 setInterval，任何錯誤均記 log 不崩潰。
@@ -26,22 +22,17 @@ import { getNewMessagesOnce } from './engine/watchEngine'
  * 事件：
  *   'message' (msg: RawLineMessage)   每收到一則新訊息
  *   'status'  (status: LineBridgeStatus) 橋接狀態變更（啟動/運行/錯誤/停止）
- *   'log'     (line: string)          子程序原始 stderr / 診斷行（除錯用）
+ *   'log'     (line: string)          診斷行（除錯用）
  *
  * 設計重點：
- *   - watch_json.py stdout 為純 NDJSON；stderr 為狀態/錯誤（含 {"error":...}）。
- *   - 子程序 exit code 2 或 stderr 出現 {"error":...} → 標記 'error'。
+ *   - 引擎丟出的例外 → 標記 'error'（狀態語意與舊 spawn 路徑一致）。
  *   - 一次 poll 結束前不開新一輪（busy guard）。
  */
 
 export interface LineWatcherOptions {
-  /** venv python 絕對路徑 */
-  python: string
-  /** watch_json.py 絕對路徑 */
-  script: string
   /** 間隔輪詢秒數（fallback 上限） */
   intervalSec: number
-  /** 單輪安全上限（傳給 --limit） */
+  /** 單輪安全上限 */
   limit?: number
   /** 是否啟用 fs.watch 事件驅動即時觸發（預設 true） */
   dbWatchEnabled?: boolean
@@ -55,8 +46,6 @@ const STAT_WATCHER_INTERVAL_MS = 2000
 
 export class LineWatcher extends EventEmitter {
   private opts: LineWatcherOptions
-  private child: ChildProcessWithoutNullStreams | null = null
-  private rl: Interface | null = null
   private stopped = false
   private busy = false
 
@@ -111,7 +100,7 @@ export class LineWatcher extends EventEmitter {
     }
   }
 
-  /** 停止所有計時器與 watcher，取消進行中的 poll（等待子程序自然結束）。 */
+  /** 停止所有計時器與 watcher（進行中的 in-process poll 會自然跑完後不再排下一輪）。 */
   stop(): void {
     this.stopped = true
 
@@ -124,7 +113,6 @@ export class LineWatcher extends EventEmitter {
       this.intervalTimer = null
     }
     this.teardownDbWatch()
-    this.teardownChild()
     this.setState('stopped')
   }
 
@@ -209,7 +197,7 @@ export class LineWatcher extends EventEmitter {
   }
 
   // ─────────────────────────────────────────────
-  // 核心：spawn --once，解析 NDJSON
+  // 核心：in-process 引擎取一次增量
   // ─────────────────────────────────────────────
 
   /** 觸發一次 poll。若上一輪仍在跑（busy）則略過（不重入）。 */
@@ -221,18 +209,18 @@ export class LineWatcher extends EventEmitter {
     }
     this.busy = true
     try {
-      await this.spawnOnce(trigger)
+      await this.pollOnceInProcess(trigger)
     } finally {
       this.busy = false
     }
   }
 
   /**
-   * 把一則 RawLineMessage 走「與 NDJSON parse 後相同的下游 emit 路徑」：
-   * 型別守衛 → 切 running → 累加計數 → emit('message')。ts 引擎與舊 spawn 共用此路徑，
-   * 只換「訊息從哪來」，不換「拿到訊息後怎麼處理」。
+   * 把一則 RawLineMessage 走統一的下游 emit 路徑：
+   * 型別守衛 → 切 running → 累加計數 → emit('message')。
    */
   private emitMessage(msg: RawLineMessage): void {
+    if (this.stopped) return
     if (typeof msg.chatId !== 'string' || typeof msg.ts !== 'number') {
       this.emit('log', `[watcher] skip malformed message: ${JSON.stringify(msg).slice(0, 200)}`)
       return
@@ -243,112 +231,10 @@ export class LineWatcher extends EventEmitter {
     this.emit('message', msg)
   }
 
-  /** Spawn watch_json.py --once，解析 NDJSON stdout，等子程序結束。 */
-  private spawnOnce(trigger: string): Promise<void> {
-    // Batch 4b：LINE_ENGINE=ts 走 in-process watchEngine.getNewMessagesOnce（自 checkpoint
-    // 取增量，對應舊 spawn --once）；每則訊息走與 NDJSON parse 後相同的 emitMessage 下游路徑。
-    // ts 路徑的錯誤以 throw 表達 → catch 後 setState('error')，與舊 spawn（exit 2 / stderr
-    // error → 'error'）語意一致，不吞掉錯誤。未設 / 非 ts → 落到下方原 spawn 路徑不變。
-    if (getLineEngine() === 'ts') {
-      return this.pollOnceInProcess(trigger)
-    }
-    return new Promise((resolve) => {
-      const { python, script, limit = 500 } = this.opts
-      const args = [script, '--once', '--json', '--limit', String(limit)]
-
-      if (this.status.state !== 'running' && this.status.state !== 'starting') {
-        this.setState('starting', null)
-      }
-      this.emit('log', `[watcher] spawn(${trigger}): ${python} ${args.join(' ')}`)
-
-      let child: ChildProcessWithoutNullStreams
-      try {
-        child = spawn(python, args, {
-          cwd: dirname(script),
-          env: {
-            ...process.env,
-            PYTHONUTF8: '1',
-            PYTHONIOENCODING: 'utf-8'
-          }
-        })
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        this.emit('log', `[watcher] spawn failed: ${msg}`)
-        this.setState('error', msg)
-        resolve()
-        return
-      }
-
-      this.child = child
-      let sawError = false
-
-      // ── stdout：純 NDJSON，逐行解析 ──
-      const rl = createInterface({ input: child.stdout })
-      this.rl = rl
-      rl.on('line', (line: string) => {
-        const trimmed = line.trim()
-        if (!trimmed) return
-        let msg: RawLineMessage
-        try {
-          msg = JSON.parse(trimmed) as RawLineMessage
-        } catch {
-          this.emit('log', `[watcher] skip non-JSON stdout line: ${trimmed.slice(0, 200)}`)
-          return
-        }
-        this.emitMessage(msg)
-      })
-
-      // ── stderr：狀態/錯誤行 ──
-      const errRl = createInterface({ input: child.stderr })
-      errRl.on('line', (line: string) => {
-        const trimmed = line.trim()
-        if (!trimmed) return
-        this.emit('log', `[watch_json.py] ${trimmed}`)
-        try {
-          const obj = JSON.parse(trimmed) as { error?: string }
-          if (obj && typeof obj.error === 'string') {
-            sawError = true
-            this.setState('error', obj.error)
-          }
-        } catch { /* 非 JSON stderr — 視為 log */ }
-      })
-
-      child.on('error', (err) => {
-        this.emit('log', `[watcher] child error: ${err.message}`)
-        this.setState('error', err.message)
-        rl.close()
-        errRl.close()
-        this.child = null
-        resolve()
-      })
-
-      child.on('exit', (code, signal) => {
-        this.emit('log', `[watcher] child exit code=${code} signal=${signal} trigger=${trigger}`)
-        rl.close()
-        errRl.close()
-        this.rl = null
-        this.child = null
-
-        if (code === 2 || sawError) {
-          if (this.status.state !== 'error') {
-            this.setState('error', this.status.lastError ?? 'watch_json.py exited with error')
-          }
-        } else if (code === 0) {
-          // 正常完成：若還沒切到 running（e.g. 沒有新訊息），至少設 running 消除 starting 狀態
-          if (this.status.state === 'starting') this.setState('running', null)
-        } else {
-          this.emit('log', `[watcher] non-zero exit ${code}`)
-          this.setState('error', `watch_json.py exit ${code}`)
-        }
-        resolve()
-      })
-    })
-  }
-
   /**
-   * in-process 版 --once（LINE_ENGINE=ts）：呼叫 watchEngine.getNewMessagesOnce，
-   * 逐則走 emitMessage 下游路徑；正常完成沿用舊 spawn code===0 的收尾（若還 starting
-   * 就切 running）。任何 throw → setState('error')，對齊舊 spawn 的 code===2 分支。
+   * 取一次增量：呼叫 watchEngine.getNewMessagesOnce（自 checkpoint 取增量），
+   * 逐則走 emitMessage 下游路徑；正常完成時若還 starting 就切 running。
+   * 任何 throw → setState('error')。
    */
   private async pollOnceInProcess(trigger: string): Promise<void> {
     const { limit = 500 } = this.opts
@@ -358,26 +244,15 @@ export class LineWatcher extends EventEmitter {
     this.emit('log', `[watcher] engine=ts getNewMessagesOnce(${trigger}) limit=${limit}`)
     try {
       const msgs = await getNewMessagesOnce({ limit })
+      if (this.stopped) return // stop() 在 await 期間發生：本輪結果整批丟棄，不 emit、不改狀態
       for (const msg of msgs) this.emitMessage(msg)
       // 正常完成：若還沒切到 running（e.g. 沒有新訊息），至少設 running 消除 starting 狀態。
       if (this.status.state === 'starting') this.setState('running', null)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emit('log', `[watcher] engine=ts error: ${msg}`)
+      if (this.stopped) return // 已停止：不得用 'error' 蓋掉 stop() 設下的 'stopped'
       this.setState('error', msg)
-    }
-  }
-
-  private teardownChild(): void {
-    if (this.rl) {
-      this.rl.close()
-      this.rl = null
-    }
-    if (this.child) {
-      const c = this.child
-      this.child = null
-      c.removeAllListeners()
-      try { c.kill() } catch { /* already dead */ }
     }
   }
 }
