@@ -67,7 +67,13 @@ eval/eval-report.md
 # LINE bridge 擷取輸出（NDJSON）：含真實第三方對話（群組名、人名、chatId、訊息內文），嚴禁進版控
 scripts/tester/bridge_out.ndjson
 *.ndjson
-# TeamUQ runtime paste attachments
-.teamuq/pasted/
+# TeamUQ agent 工作區整目錄（含 scripts/、worktrees/、pasted/、README 等）：
+# 屬本機 agent 執行環境與暫存工作區，非 app 程式碼，不進版控
+.teamuq/
+# TeamUQ 舊版 paste 附件資料夾：與 .teamuq/ 是獨立路徑（非其子目錄），需單獨排除
 .teamuq_pasted/
-# TeamUQ shared scripts live in .teamuq/scripts/; legacy agent script folders migrate there.
+
+# 專案根目錄的 agent 指示檔：屬本機 agent 執行設定，非 app 程式碼；
+# 用根目錄錨定（/開頭）避免誤擋子目錄下同名檔案
+/AGENTS.md
+/CLAUDE.md
