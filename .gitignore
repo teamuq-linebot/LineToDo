@@ -77,3 +77,6 @@ scripts/tester/bridge_out.ndjson
 # 用根目錄錨定（/開頭）避免誤擋子目錄下同名檔案
 /AGENTS.md
 /CLAUDE.md
+# TeamUQ runtime paste attachments
+.teamuq/pasted/
+# TeamUQ shared scripts live in .teamuq/scripts/; legacy agent script folders migrate there.
