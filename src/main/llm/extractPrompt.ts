@@ -121,6 +121,8 @@ export interface BuildUserPayloadInput {
   /** 該 chat 目前未完成代辦（去重 + 完成偵測對象）。 */
   openTodos: TodoDTO[]
   classificationCorrections?: Array<{ id: string; revision: number; condition: string; effect: string }>
+  /** Internal audit hook. It is never serialized into the provider payload. */
+  onCorrectionsPayloadBuilt?: () => void
 }
 
 function toPayloadMessage(m: MessageDTO): PayloadMessage {

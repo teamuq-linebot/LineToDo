@@ -30,9 +30,11 @@ export async function extractTodos(
   input: BuildUserPayloadInput,
   opts: ExtractOptions
 ): Promise<ExtractResult> {
+  const user = buildUserPayload(input)
+  input.onCorrectionsPayloadBuilt?.()
   const res = await provider.complete({
     system: EXTRACT_SYSTEM_PROMPT,
-    user: buildUserPayload(input),
+    user,
     temperature: opts.temperature ?? 0.1,
     jsonSchema: EXTRACT_JSON_SCHEMA,
     timeoutMs: opts.timeoutMs

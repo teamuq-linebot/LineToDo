@@ -67,7 +67,7 @@ export interface RunOnceDeps {
   now?: () => string
   config?: PipelineDefaults
   correctionsForChat?: (chatId: string) => ChatExtractInput['classificationCorrections']
-  onCorrectionsApplied?: (chatId: string, messageIds: string[], rules: NonNullable<ChatExtractInput['classificationCorrections']>) => void
+  onCorrectionsPayloadBuilt?: (chatId: string, messageIds: string[], rules: NonNullable<ChatExtractInput['classificationCorrections']>) => void
 }
 
 export interface ChatExtractInput {
@@ -77,6 +77,8 @@ export interface ChatExtractInput {
   recentContext: MessageDTO[]
   openTodos: TodoDTO[]
   classificationCorrections?: Array<{ id: string; revision: number; condition: string; effect: string }>
+  /** Called by the owning extractor only after it has constructed the serialized user payload. */
+  onCorrectionsPayloadBuilt?: () => void
 }
 
 export interface RunOnceResult {
@@ -248,7 +250,6 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
 
       try {
         const classificationCorrections = deps.correctionsForChat?.(chatId) ?? []
-        if (classificationCorrections.length) deps.onCorrectionsApplied?.(chatId, msgIds, classificationCorrections)
         const extract = await deps.extractFn({
           now,
           chat: {
@@ -259,7 +260,10 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
           newMessages: msgs,
           recentContext,
           openTodos,
-          classificationCorrections
+          classificationCorrections,
+          ...(classificationCorrections.length && deps.onCorrectionsPayloadBuilt
+            ? { onCorrectionsPayloadBuilt: () => deps.onCorrectionsPayloadBuilt!(chatId, msgIds, classificationCorrections) }
+            : {})
         })
         deps.onChatSucceeded?.(chatId)
         return { kind: 'ok', chatId, msgIds, extract }
@@ -423,7 +427,8 @@ export function createExtractFactory(resolve: () => ReturnType<typeof resolvePro
         newMessages: input.newMessages,
         recentContext: input.recentContext,
         openTodos: input.openTodos,
-        classificationCorrections: input.classificationCorrections
+        classificationCorrections: input.classificationCorrections,
+        onCorrectionsPayloadBuilt: input.onCorrectionsPayloadBuilt
       },
       {}
     )

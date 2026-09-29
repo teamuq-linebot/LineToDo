@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS todo_not_mine_events (
   FOREIGN KEY (parent_feedback_id) REFERENCES todo_not_mine_events(feedback_id)
 );
 CREATE INDEX IF NOT EXISTS idx_not_mine_events_todo ON todo_not_mine_events(todo_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_not_mine_analysis_parent ON todo_not_mine_events(parent_feedback_id, created_at) WHERE parent_feedback_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS todo_classification_corrections (
   id TEXT PRIMARY KEY, feedback_id TEXT NOT NULL, chat_id TEXT NOT NULL,
   revision INTEGER NOT NULL, condition_text TEXT NOT NULL, effect_text TEXT NOT NULL,

@@ -351,7 +351,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
         },
         extractFn: ports.makeExtract(),
         correctionsForChat: (chatId) => repos.notMine.corrections(chatId),
-        onCorrectionsApplied: (chatId,messageIds,rules) => rules.forEach(rule=>repos.notMine.effect(rule,chatId,messageIds,'reviewLastDays')),
+        onCorrectionsPayloadBuilt: (chatId,messageIds,rules) => rules.forEach(rule=>repos.notMine.effect(rule,chatId,messageIds,'reviewLastDays')),
         onProgress: (progress: BackfillProgress) => { if (state === 'running') events.emit('backfill-progress', progress) }
       }),
       backfillMediaKeys: async (days = 7) => {
