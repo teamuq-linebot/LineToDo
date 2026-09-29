@@ -138,7 +138,6 @@ export interface ReconcileResult {
 }
 
 /** in-process 單飛旗標：避免同進程重入（手動觸發 + 開機觸發撞在一起）。 */
-let running = false
 
 /** 預設單飛鎖檔：<userData>/.reconcile_lock（跨程序層防護；in-proc flag 為主）。 */
 function defaultLockFile(): string {
@@ -173,29 +172,23 @@ const RECONCILE_LLM_SKIP_OLDER_THAN_DAYS = 7
 
 /** 取得單飛鎖（in-proc flag + 鎖檔）。已被佔用回 false。 */
 function acquireLock(lockFile: string): boolean {
-  if (running) return false
-  // 鎖檔存在且未過期 → 視為另一份在跑；過期殘鎖（崩潰遺留）則接管。
-  if (existsSync(lockFile)) {
-    try {
-      const raw = readFileSync(lockFile, 'utf8')
-      const ts = Number(raw)
-      if (Number.isFinite(ts) && Date.now() - ts < LOCK_STALE_MS) return false
-    } catch {
-      /* 讀不到 → 當殘鎖接管 */
+  const stamp = String(Date.now())
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try { writeFileSync(lockFile, stamp, { encoding: 'utf8', flag: 'wx' }); return true }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return false
+      try {
+        const ts = Number(readFileSync(lockFile, 'utf8'))
+        if (!Number.isFinite(ts) || Date.now() - ts < LOCK_STALE_MS) return false
+        unlinkSync(lockFile)
+      } catch { return false }
     }
   }
-  running = true
-  try {
-    writeFileSync(lockFile, String(Date.now()), 'utf8')
-  } catch {
-    /* 鎖檔寫失敗非致命：in-proc flag 仍擋同進程重入 */
-  }
-  return true
+  return false
 }
 
 /** 釋放單飛鎖。冪等。 */
 function releaseLock(lockFile: string): void {
-  running = false
   try {
     if (existsSync(lockFile)) unlinkSync(lockFile)
   } catch {

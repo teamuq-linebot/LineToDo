@@ -1,3 +1,4 @@
+import { useLineTodoApi } from '../../platform/LineTodoApi'
 import { useState } from 'react'
 import type { SettingsView } from '../../types/api'
 
@@ -26,6 +27,7 @@ function sourceLabel(s: SettingsView['apiKeySource']): string {
 }
 
 export function ApiKeyField({ view, onChanged }: Props): JSX.Element {
+  const api = useLineTodoApi()
   const [input, setInput] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null)
@@ -35,7 +37,7 @@ export function ApiKeyField({ view, onChanged }: Props): JSX.Element {
     setSaving(true)
     setMsg(null)
     try {
-      const res = await window.api.settings.setApiKey(input.trim())
+      const res = await api.settings.setApiKey(input.trim())
       if (res.ok) {
         setInput('')
         setMsg({ text: '金鑰已加密儲存', ok: true })
@@ -49,7 +51,7 @@ export function ApiKeyField({ view, onChanged }: Props): JSX.Element {
   }
 
   async function clear(): Promise<void> {
-    await window.api.settings.clearApiKey()
+    await api.settings.clearApiKey()
     setMsg({ text: '已清除金鑰', ok: true })
     onChanged()
   }

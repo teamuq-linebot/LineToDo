@@ -171,13 +171,14 @@ function relFromRoot(root: string, full: string): string {
  */
 export function backupNewMedia(
   db: Database = getDb(),
-  opts?: { limit?: number }
+  opts?: { limit?: number; decrypt?: typeof decryptCachedMedia; resetIndex?: () => void }
 ): { backedUp: number; skipped: number; failed: number } {
   const limit = opts?.limit && opts.limit > 0 ? opts.limit : 200
 
   // 每輪備份起始先失效快取索引：整個迴圈只在首次 decrypt 時建一次（可涵蓋這輪剛快取好的
   // .eimg），之後所有 decrypt 共用同一份索引；not-cached 不再逐筆觸發全量重掃（修 O(N) 卡 UI）。
-  resetMediaCacheIndex()
+  if (opts?.resetIndex) opts.resetIndex()
+  else resetMediaCacheIndex()
 
   const rows = db
     .prepare(
@@ -223,7 +224,7 @@ export function backupNewMedia(
         continue
       }
 
-      const res = decryptCachedMedia({ keyMaterial: row.key_material, fileSize: row.file_size })
+      const res = (opts?.decrypt ?? decryptCachedMedia)({ keyMaterial: row.key_material, fileSize: row.file_size })
 
       if (res.status === 'not-cached') {
         // 未快取屬預期：不標記，等 .eimg 快取後下輪再試。

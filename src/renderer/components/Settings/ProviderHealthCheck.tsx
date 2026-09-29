@@ -1,3 +1,4 @@
+import { useLineTodoApi } from '../../platform/LineTodoApi'
 import { useEffect, useState } from 'react'
 import type { ProviderHealth, SettingsView } from '../../types/api'
 import {
@@ -27,6 +28,7 @@ interface Props {
 }
 
 export function ProviderHealthCheck({ view, onFocusExecPath }: Props): JSX.Element {
+  const api = useLineTodoApi()
   const meta = providerMeta(view.aiProvider)
   const cli = cliSettingsOf(view, view.aiProvider)
   const execPath = cli?.execPath ?? ''
@@ -43,7 +45,7 @@ export function ProviderHealthCheck({ view, onFocusExecPath }: Props): JSX.Eleme
     setTesting(true)
     setHealth(null)
     try {
-      setHealth(await window.api.pipeline.testAiProvider())
+      setHealth(await api.pipeline.testAiProvider())
     } finally {
       setTesting(false)
     }

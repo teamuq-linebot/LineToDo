@@ -1,4 +1,4 @@
-import type { Api } from '../../preload'
+import type { Api } from '../../shared/api'
 
 /**
  * 讓 renderer 認得 preload 透過 contextBridge 暴露的 window.api。
@@ -32,7 +32,7 @@ export type {
   SettingsView,
   SettingsPatch,
   DraftReplyResult
-} from '../../preload'
+} from '../../shared/api'
 
 declare global {
   interface Window {

@@ -108,8 +108,8 @@ function detectMime(bytes: Buffer): string {
  *     `resetMediaCacheIndex()`，讓下次呼叫只重建一次。
  *   - `resetMediaCacheIndex()` 供測試 / backup 每輪起始 / 未來 fs 事件失效時強制下次重建。
  */
-let cacheIndex: Map<number, string[]> | null = null
-let indexedDir: string | null = null
+interface MediaCacheState { cacheIndex: Map<number, string[]> | null; indexedDir: string | null }
+const legacyCacheState: MediaCacheState = { cacheIndex: null, indexedDir: null }
 
 /**
  * 遞迴 walk `dir`，把所有 `.eimg` 依 `statSync().size` 收進 `index`。
@@ -140,17 +140,31 @@ function walkEimg(dir: string, index: Map<number, string[]>): void {
 }
 
 /** 為 `dir` 全掃一次並替換記憶化索引。 */
-function buildCacheIndex(dir: string): void {
+function buildCacheIndex(dir: string, state: MediaCacheState): void {
   const index = new Map<number, string[]>()
   walkEimg(dir, index)
-  cacheIndex = index
-  indexedDir = dir
+  state.cacheIndex = index
+  state.indexedDir = dir
 }
 
 /** 清空記憶化索引；下次 `decryptCachedMedia` 會 lazy 重建（測試 / 未來 fs 事件失效用）。 */
 export function resetMediaCacheIndex(): void {
-  cacheIndex = null
-  indexedDir = null
+  legacyCacheState.cacheIndex = null
+  legacyCacheState.indexedDir = null
+}
+
+export interface MediaDecryptor {
+  decrypt(input: DecryptMediaInput): DecryptMediaResult
+  reset(): void
+}
+
+/** Runtime-owned cache index; each application instance tracks its own LINE cache directory. */
+export function createMediaDecryptor(): MediaDecryptor {
+  const state: MediaCacheState = { cacheIndex: null, indexedDir: null }
+  return {
+    decrypt: (input) => decryptWithState(input, state),
+    reset: () => { state.cacheIndex = null; state.indexedDir = null }
+  }
 }
 
 /**
@@ -160,6 +174,10 @@ export function resetMediaCacheIndex(): void {
  * 失敗一律回結構化狀態（不 throw、不 log 敏感值），由呼叫端決定 fallback/log。
  */
 export function decryptCachedMedia(input: DecryptMediaInput): DecryptMediaResult {
+  return decryptWithState(input, legacyCacheState)
+}
+
+function decryptWithState(input: DecryptMediaInput, state: MediaCacheState): DecryptMediaResult {
   try {
     const ikm = Buffer.from(input.keyMaterial, 'base64')
 
@@ -174,12 +192,12 @@ export function decryptCachedMedia(input: DecryptMediaInput): DecryptMediaResult
     const dir = input.cacheDir ?? defaultCacheDir()
 
     // 首次用到、或換了 cacheDir → lazy 建索引一次；之後同一 dir 直接查記憶化 map（零重掃）。
-    if (cacheIndex === null || indexedDir !== dir) {
-      buildCacheIndex(dir)
+    if (state.cacheIndex === null || state.indexedDir !== dir) {
+      buildCacheIndex(dir, state)
     }
     // size 查無候選 → 直接回 not-cached，不逐次 rebuild（避免 backup 迴圈每筆 not-cached 觸發
     // 全量重掃 → O(N) 卡 main）；索引失效/涵蓋新 .eimg 由呼叫端主動 resetMediaCacheIndex()。
-    const candidates = cacheIndex!.get(targetSize) ?? []
+    const candidates = state.cacheIndex!.get(targetSize) ?? []
     if (candidates.length === 0) return { status: 'not-cached' }
 
     // 逐一以 HMAC 確定性裁決；命中者即正解

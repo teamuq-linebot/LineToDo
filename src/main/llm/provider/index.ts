@@ -1,7 +1,6 @@
-import { app } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { getQwenConfig } from '../../config/qwen'
+import { getQwenConfig as getGlobalQwenConfig } from '../../config/qwen'
 import { getSettings, type AiProviderId, type CliProviderSettings } from '../../config/settings'
 import { makeHttpProvider } from './httpOpenAi'
 import { makeClaudeCliProvider } from './claudeCli'
@@ -38,12 +37,8 @@ export { makeCodexCliProvider, sweepCodexTmpDirs } from './codexCli'
 const CLI_WORKDIR = 'ai-cli-workdir'
 
 /** 取 `<userData>/ai-cli-workdir`；非 electron 環境（不會發生於 main，但保險）回 undefined。 */
-function cliWorkdir(): string | undefined {
-  try {
-    return join(app.getPath('userData'), CLI_WORKDIR)
-  } catch {
-    return undefined
-  }
+function cliWorkdir(userDataDir?: string): string | undefined {
+  return userDataDir ? join(userDataDir, CLI_WORKDIR) : undefined
 }
 
 /** 空字串＝「用 provider 內建的建議預設」，所以要轉成 undefined 而不是原樣傳空字串。 */
@@ -52,14 +47,14 @@ function orUndefined(v: string): string | undefined {
   return s.length > 0 ? s : undefined
 }
 
-function makeClaudeFromSettings(cfg: CliProviderSettings): LlmProvider {
+function makeClaudeFromSettings(cfg: CliProviderSettings, userDataDir?: string): LlmProvider {
   return makeClaudeCliProvider({
     execPath: cfg.execPath,
     // 空字串 → undefined → provider 用 DEFAULT_CLAUDE_MODEL（'sonnet'）。
     // 模型名的單一真實來源留在 claudeCli.ts，設定層不複製一份。
     model: orUndefined(cfg.model),
     timeoutMs: cfg.timeoutMs,
-    workdir: cliWorkdir()
+    workdir: cliWorkdir(userDataDir)
   })
 }
 
@@ -75,16 +70,21 @@ function makeCodexFromSettings(cfg: CliProviderSettings): LlmProvider {
 }
 
 /** 解析當前 provider；無法使用（http 無金鑰）回 null。每次呼叫重新建立（金鑰即用即丟）。 */
-export function resolveProvider(): LlmProvider | null {
-  const s = getSettings()
-  switch (s.aiProvider) {
+export function createProviderRegistry(deps: {
+  getSettings(): ReturnType<typeof getSettings>
+  getQwenConfig(): ReturnType<typeof getGlobalQwenConfig>
+  userDataDir?: string
+}) {
+  const resolveProvider = (): LlmProvider | null => {
+    const s = deps.getSettings()
+    switch (s.aiProvider) {
     case 'claudeCli':
-      return makeClaudeFromSettings(s.claudeCli)
+      return makeClaudeFromSettings(s.claudeCli, deps.userDataDir)
     case 'codexCli':
       return makeCodexFromSettings(s.codexCli)
     case 'http':
     default: {
-      const cfg = getQwenConfig()
+      const cfg = deps.getQwenConfig()
       if (!cfg.apiKey) return null
       return makeHttpProvider({
         apiKey: cfg.apiKey,
@@ -93,12 +93,28 @@ export function resolveProvider(): LlmProvider | null {
         timeoutMs: cfg.timeoutMs
       })
     }
+    }
   }
+  const currentProviderId = () => deps.getSettings().aiProvider
+  const isProviderConfigured = (): boolean => {
+    const s = deps.getSettings()
+    switch (s.aiProvider) {
+      case 'claudeCli': return !s.claudeCli.execPath || existsSync(s.claudeCli.execPath)
+      case 'codexCli': return !s.codexCli.execPath || existsSync(s.codexCli.execPath)
+      case 'http':
+      default: return deps.getQwenConfig().apiKey !== null
+    }
+  }
+  return { resolveProvider, currentProviderId, isProviderConfigured }
+}
+
+export function resolveProvider(options: { userDataDir?: string } = {}): LlmProvider | null {
+  return createProviderRegistry({ getSettings, getQwenConfig: getGlobalQwenConfig, userDataDir: options.userDataDir }).resolveProvider()
 }
 
 /** 目前選用的 provider 種類（scheduler / UI 顯示用；不建構 provider、不做 I/O）。 */
 export function currentProviderId(): AiProviderId {
-  return getSettings().aiProvider
+  return createProviderRegistry({ getSettings, getQwenConfig: getGlobalQwenConfig }).currentProviderId()
 }
 
 /**
@@ -111,17 +127,8 @@ export function currentProviderId(): AiProviderId {
  * 真正的「裝了沒 / 登入了沒」由 `settings:testAiProvider`（health()）回答——那會 spawn，
  * 只在使用者按下按鈕時才做。
  */
-export function isProviderConfigured(): boolean {
-  const s = getSettings()
-  switch (s.aiProvider) {
-    case 'claudeCli':
-      return !s.claudeCli.execPath || existsSync(s.claudeCli.execPath)
-    case 'codexCli':
-      return !s.codexCli.execPath || existsSync(s.codexCli.execPath)
-    case 'http':
-    default:
-      return getQwenConfig().apiKey !== null
-  }
+export function isProviderConfigured(_options: { userDataDir?: string } = {}): boolean {
+  return createProviderRegistry({ getSettings, getQwenConfig: getGlobalQwenConfig }).isProviderConfigured()
 }
 
 /** 未設定/不可用時給 UI 的健檢結果（provider 為 null 時用；只有 http 會走到）。 */

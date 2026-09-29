@@ -1,3 +1,4 @@
+import { useLineTodoApi } from '../platform/LineTodoApi'
 import { useEffect, useState } from 'react'
 import type { RawLineMessage, LineBridgeStatus } from '../types/api'
 import { useLineStream } from '../hooks/useLineStream'
@@ -50,6 +51,7 @@ function MessageContent({
   m: RawLineMessage
   onOpenLightbox: (url: string) => void
 }): JSX.Element {
+  const api = useLineTodoApi()
   const [imgFailed, setImgFailed] = useState(false)
   const [fileErr, setFileErr] = useState('')
 
@@ -81,7 +83,7 @@ function MessageContent({
             <button
               type="button"
               onClick={() =>
-                void window.api.media.open(id).then((r) => setFileErr(r.ok ? '' : '無法開啟檔案'))
+                void api.media.open(id).then((r) => setFileErr(r.ok ? '' : '無法開啟檔案'))
               }
             >
               開啟
@@ -89,7 +91,7 @@ function MessageContent({
             <button
               type="button"
               onClick={() =>
-                void window.api.media
+                void api.media
                   .saveAs(id)
                   .then((r) => setFileErr(r.ok || r.canceled ? '' : '無法另存檔案'))
               }

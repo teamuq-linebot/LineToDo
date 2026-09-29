@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useLineTodoApi } from '../../platform/LineTodoApi'
 import type {
   AiProviderId,
   CliProviderSettings,
@@ -31,10 +32,11 @@ import {
  *   - 降噪黑名單（關鍵字 + 逐 chat toggle，BlocklistEditor）
  *   - 資料夾 / 維運
  *
- * 所有變更立即透過 window.api.settings.update 落檔；輪詢頻率改動會讓 main 重排排程器。
+ * 所有變更立即透過 api.settings.update 落檔；輪詢頻率改動會讓 main 重排排程器。
  */
 
 export function SettingsPanel(): JSX.Element {
+  const api = useLineTodoApi()
   const [view, setView] = useState<SettingsView | null>(null)
   const [chats, setChats] = useState<ChatDTO[]>([])
   const [saved, setSaved] = useState(false)
@@ -56,23 +58,23 @@ export function SettingsPanel(): JSX.Element {
   const [engineReady, setEngineReady] = useState<boolean | null>(null)
 
   const loadView = useCallback(async (): Promise<void> => {
-    const v = await window.api.settings.get()
+    const v = await api.settings.get()
     setView(v)
   }, [])
 
   const loadChats = useCallback(async (): Promise<void> => {
-    const list = await window.api.db.chats.list(true) // 含黑名單
+    const list = await api.db.chats.list(true) // 含黑名單
     setChats(list)
   }, [])
 
   const loadReady = useCallback(async (): Promise<void> => {
-    const st = await window.api.pipeline.status()
+    const st = await api.pipeline.status()
     setEngineReady(st.hasApiKey)
   }, [])
 
   /** 只在掛載時拉一次：這是統計，不是狀態，不需要跟著每輪更新。 */
   const loadLoadStats = useCallback(async (): Promise<void> => {
-    setLoadStats(await window.api.pipeline.loadStats())
+    setLoadStats(await api.pipeline.loadStats())
   }, [])
 
   useEffect(() => {
@@ -81,7 +83,7 @@ export function SettingsPanel(): JSX.Element {
     void loadReady()
     void loadLoadStats()
     // 設定改動會讓 main 重排排程器並推 status；順手跟著更新就緒狀態。
-    return window.api.pipeline.onStatus((st) => setEngineReady(st.hasApiKey))
+    return api.pipeline.onStatus((st) => setEngineReady(st.hasApiKey))
   }, [loadView, loadChats, loadReady, loadLoadStats])
 
   function flashSaved(): void {
@@ -90,21 +92,21 @@ export function SettingsPanel(): JSX.Element {
   }
 
   async function patch(
-    p: Parameters<typeof window.api.settings.update>[0]
+    p: Parameters<typeof api.settings.update>[0]
   ): Promise<void> {
-    const next = await window.api.settings.update(p)
+    const next = await api.settings.update(p)
     setView(next)
     flashSaved()
     void loadReady()
   }
 
   async function toggleChat(chatId: string, blocked: boolean): Promise<void> {
-    await window.api.db.chats.setBlocked(chatId, blocked, blocked ? 'manual' : undefined)
+    await api.db.chats.setBlocked(chatId, blocked, blocked ? 'manual' : undefined)
     await loadChats()
   }
 
   async function removeKeyword(chatId: string, kw: string): Promise<void> {
-    await window.api.db.chats.removeIgnoreKeyword(chatId, kw)
+    await api.db.chats.removeIgnoreKeyword(chatId, kw)
     await loadView()
   }
 
@@ -598,7 +600,7 @@ export function SettingsPanel(): JSX.Element {
       {/* 維運 */}
       <div className="set-section">
         <div className="set-section-title">維運</div>
-        <button className="ghost" onClick={() => void window.api.app.openDataFolder()}>
+        <button className="ghost" onClick={() => void api.app.openDataFolder()}>
           開啟資料夾
         </button>
       </div>

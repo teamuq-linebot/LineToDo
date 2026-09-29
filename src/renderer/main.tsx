@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import './styles/index.css'
+import { LineTodoApiProvider } from './platform/LineTodoApi'
 
 const container = document.getElementById('root')
 if (!container) {
@@ -10,6 +11,8 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <App />
+    <LineTodoApiProvider api={window.api}>
+      <App />
+    </LineTodoApiProvider>
   </StrictMode>
 )

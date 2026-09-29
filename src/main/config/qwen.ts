@@ -55,29 +55,29 @@ export function setBaseUrlReader(r: BaseUrlReader): void {
   baseUrlReader = r
 }
 
-function readEnvKey(): string | null {
-  const k = process.env.QWEN_API_KEY?.trim()
-  return k ? k : null
-}
-
 /**
  * 解析當前 qwen 設定。每次呼叫即時解析（金鑰即用即丟，不在模組層長存）。
  */
 export function getQwenConfig(): QwenConfig {
+  return createQwenConfig({ readApiKey: safeStorageReader, readBaseUrl: baseUrlReader })()
+}
+
+export function createQwenConfig(readers: { readApiKey(): string | null; readBaseUrl(): string | null }, env: NodeJS.ProcessEnv = process.env): () => QwenConfig {
+  return () => {
   // baseURL 解析優先序：settings.aiBaseUrl（trim 後非空）> 環境變數 QWEN_BASE_URL > 內建預設。
   // reader 拋錯時退回 env/default（比照 safeStorage 的容錯，不崩潰）。
   let fromSettings: string | null = null
   try {
-    fromSettings = baseUrlReader()
+    fromSettings = readers.readBaseUrl()
   } catch {
     /* 設定層不可用（如注入前被呼叫）—— 退回環境變數/預設。 */
   }
   const baseURL =
     (fromSettings && fromSettings.trim()) ||
-    process.env.QWEN_BASE_URL?.trim() ||
+    env.QWEN_BASE_URL?.trim() ||
     DEFAULT_BASE_URL
-  const model = process.env.QWEN_MODEL?.trim() || DEFAULT_MODEL
-  const timeoutEnv = Number(process.env.QWEN_TIMEOUT_MS)
+  const model = env.QWEN_MODEL?.trim() || DEFAULT_MODEL
+  const timeoutEnv = Number(env.QWEN_TIMEOUT_MS)
   const timeoutMs =
     Number.isFinite(timeoutEnv) && timeoutEnv > 0 ? timeoutEnv : DEFAULT_TIMEOUT_MS
 
@@ -85,7 +85,7 @@ export function getQwenConfig(): QwenConfig {
   let apiKey: string | null = null
   let source: QwenConfig['source'] = 'none'
   try {
-    const fromSafe = safeStorageReader()
+    const fromSafe = readers.readApiKey()
     if (fromSafe && fromSafe.trim()) {
       apiKey = fromSafe.trim()
       source = 'safeStorage'
@@ -94,7 +94,7 @@ export function getQwenConfig(): QwenConfig {
     /* safeStorage 後端不可用（§9 未驗證項）—— 退回環境變數，不崩潰。 */
   }
   if (!apiKey) {
-    const fromEnv = readEnvKey()
+    const fromEnv = env.QWEN_API_KEY?.trim() || null
     if (fromEnv) {
       apiKey = fromEnv
       source = 'env'
@@ -102,6 +102,7 @@ export function getQwenConfig(): QwenConfig {
   }
 
   return { apiKey, baseURL, model, timeoutMs, source }
+  }
 }
 
 /** 是否具備可用金鑰（UI 提示 / pipeline 是否啟用 LLM 用）。 */

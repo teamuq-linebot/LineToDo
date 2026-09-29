@@ -132,3 +132,23 @@ export function getPipelineDefaults(): PipelineDefaults {
         : base.concurrency
   }
 }
+
+/** Instance config factory used by application composition; preserves env > settings > defaults precedence. */
+export function createPipelineConfig(readSettings: () => SettingsOverlay, env: NodeJS.ProcessEnv = process.env): () => PipelineDefaults {
+  return () => {
+    const pollEnv = Number(env.QWEN_POLL_SEC)
+    const concEnv = Number(env.QWEN_CONCURRENCY)
+    let overlay: SettingsOverlay = {}
+    try { overlay = readSettings() ?? {} } catch { /* settings failure falls back to defaults */ }
+    const base: PipelineDefaults = {
+      ...DEFAULTS, ...overlay,
+      blocklist: overlay.blocklist ?? DEFAULTS.blocklist,
+      chatIgnoreKeywords: overlay.chatIgnoreKeywords ?? DEFAULTS.chatIgnoreKeywords
+    }
+    return {
+      ...base,
+      pollIntervalSec: Number.isFinite(pollEnv) && pollEnv > 0 ? pollEnv : base.pollIntervalSec,
+      concurrency: Number.isFinite(concEnv) && concEnv > 0 ? Math.min(Math.max(Math.floor(concEnv), 1), 4) : base.concurrency
+    }
+  }
+}

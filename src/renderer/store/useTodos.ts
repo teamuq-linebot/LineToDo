@@ -1,3 +1,4 @@
+import { useLineTodoApi } from '../platform/LineTodoApi'
 import { useCallback, useEffect, useState } from 'react'
 import type {
   TodoDTO,
@@ -16,14 +17,14 @@ import { BOARD_STATUSES, type ColumnId } from '../components/Board/buckets'
  *   - 訂閱 pipeline 推播（onRun / onTodosChanged / onMessagesPersisted）自動刷新。
  *   - 提供動作：完成 / 確認建議完成 / 退回 / 延後 / 忽略 / 改 bucket。
  *
- * 所有 I/O 走 window.api（preload contextBridge），renderer 不直接碰 ipcRenderer。
+ * 所有 I/O 走 api（preload contextBridge），renderer 不直接碰 ipcRenderer。
  */
 
 export interface ChatNameMap {
   [chatId: string]: { name: string | null; isGroup: boolean }
 }
 
-/** 手動編輯可改的欄位（對齊 window.api.db.todos.update 的 patch 形態）。 */
+/** 手動編輯可改的欄位（對齊 api.db.todos.update 的 patch 形態）。 */
 export interface TodoUpdatePatch {
   title?: string
   detail?: string | null
@@ -89,6 +90,7 @@ function isNoopMove(todo: TodoDTO, toColumn: ColumnId): boolean {
 }
 
 export function useTodos(options: TodoListOptions = {}): UseTodos {
+  const api = useLineTodoApi()
   const [todos, setTodos] = useState<TodoDTO[]>([])
   const [chatMap, setChatMap] = useState<ChatNameMap>({})
   const [loading, setLoading] = useState(true)
@@ -99,7 +101,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
   const loadChats = useCallback(async (): Promise<void> => {
     try {
       // 含黑名單一起拉，確保黑名單 chat 產生的歷史 todo 也能顯示正確名稱。
-      const chats: ChatDTO[] = await window.api.db.chats.list(true)
+      const chats: ChatDTO[] = await api.db.chats.list(true)
       const map: ChatNameMap = {}
       for (const c of chats) map[c.chatId] = { name: c.name, isGroup: c.isGroup }
       setChatMap(map)
@@ -110,7 +112,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
-      const list = await window.api.db.todos.list({
+      const list = await api.db.todos.list({
         statuses: BOARD_STATUSES,
         sortBy,
         sortDirection,
@@ -129,13 +131,13 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
     void refresh()
 
     // 推播自動刷新：每輪結束、todos 異動、有新訊息落庫（名稱可能更新）皆重拉。
-    const offRun = window.api.pipeline.onRun(() => {
+    const offRun = api.pipeline.onRun(() => {
       void refresh()
     })
-    const offTodos = window.api.pipeline.onTodosChanged(() => {
+    const offTodos = api.pipeline.onTodosChanged(() => {
       void refresh()
     })
-    const offPersisted = window.api.db.onMessagesPersisted(() => {
+    const offPersisted = api.db.onMessagesPersisted(() => {
       void loadChats()
     })
 
@@ -148,7 +150,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
 
   const complete = useCallback(
     async (id: string): Promise<void> => {
-      await window.api.db.todos.updateStatus(id, 'done')
+      await api.db.todos.updateStatus(id, 'done')
       await refresh()
     },
     [refresh]
@@ -156,7 +158,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
 
   const confirmDone = useCallback(
     async (id: string): Promise<void> => {
-      await window.api.db.todos.updateStatus(id, 'done')
+      await api.db.todos.updateStatus(id, 'done')
       await refresh()
     },
     [refresh]
@@ -164,7 +166,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
 
   const rejectSuggested = useCallback(
     async (todo: TodoDTO): Promise<void> => {
-      await window.api.db.todos.updateStatus(todo.id, activeStatusForBucket(todo.bucket))
+      await api.db.todos.updateStatus(todo.id, activeStatusForBucket(todo.bucket))
       await refresh()
     },
     [refresh]
@@ -172,7 +174,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
 
   const ignore = useCallback(
     async (id: string): Promise<void> => {
-      await window.api.db.todos.updateStatus(id, 'dismissed')
+      await api.db.todos.updateStatus(id, 'dismissed')
       await refresh()
     },
     [refresh]
@@ -180,7 +182,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
 
   const ignoreByKeyword = useCallback(
     async (chatId: string, keyword: string): Promise<number> => {
-      const res = await window.api.db.chats.addIgnoreKeyword(chatId, keyword)
+      const res = await api.db.chats.addIgnoreKeyword(chatId, keyword)
       await refresh()
       return res.dismissed
     },
@@ -189,7 +191,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
 
   const blockChat = useCallback(
     async (chatId: string): Promise<number> => {
-      const res = await window.api.db.chats.blockAndClear(chatId)
+      const res = await api.db.chats.blockAndClear(chatId)
       await refresh()
       return res.dismissed
     },
@@ -203,7 +205,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
       const next = new Date(from + hours * 3600 * 1000)
       // 存本地秒精度、無 tz（與後端 time_iso 風格一致）。
       const iso = toLocalIso(next)
-      await window.api.db.todos.update(todo.id, { dueAt: iso })
+      await api.db.todos.update(todo.id, { dueAt: iso })
       await refresh()
     },
     [refresh]
@@ -211,7 +213,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
 
   const update = useCallback(
     async (id: string, patch: TodoUpdatePatch): Promise<void> => {
-      await window.api.db.todos.update(id, patch)
+      await api.db.todos.update(id, patch)
       await refresh()
     },
     [refresh]
@@ -220,7 +222,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
   const moveToColumn = useCallback(
     async (todo: TodoDTO, toColumn: ColumnId): Promise<void> => {
       if (isNoopMove(todo, toColumn)) return
-      await window.api.db.todos.moveColumn(todo.id, toColumn)
+      await api.db.todos.moveColumn(todo.id, toColumn)
       await refresh()
     },
     [refresh]

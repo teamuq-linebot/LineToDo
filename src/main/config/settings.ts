@@ -1,4 +1,3 @@
-import { app, safeStorage } from 'electron'
 import { join } from 'node:path'
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { DEFAULTS, type BlocklistRules } from './defaults'
@@ -105,9 +104,92 @@ export type SettingsPatch = Partial<{
 
 const SETTINGS_FILE = 'settings.json'
 const KEY_FILE = 'qwen.key'
+export interface SettingsSecretStorage {
+  isEncryptionAvailable(): boolean
+  encryptString(value: string): Buffer
+  decryptString(value: Buffer): string
+}
+
+export interface SettingsStore {
+  get(): AppSettings
+  update(patch: SettingsPatch): AppSettings
+  setApiKey(apiKey: string): void
+  clearApiKey(): void
+  readApiKey(): string | null
+  isSafeStorageAvailable(): boolean
+  hasSafeStorageKey(): boolean
+  subscribe(listener: (next: AppSettings) => void): () => void
+}
+
+/** Runtime-owned settings/cache instance. No Electron import or process-wide cache is required. */
+export function createSettingsStore(ports: { userDataDir: string; secrets: SettingsSecretStorage }): SettingsStore {
+  const settingsFile = join(ports.userDataDir, SETTINGS_FILE)
+  const keyFile = join(ports.userDataDir, KEY_FILE)
+  let instanceCache: AppSettings | null = null
+  const listeners = new Set<(next: AppSettings) => void>()
+  const isAvailable = (): boolean => { try { return ports.secrets.isEncryptionAvailable() } catch { return false } }
+  const get = (): AppSettings => {
+    if (instanceCache) return instanceCache
+    mkdirSync(ports.userDataDir, { recursive: true })
+    if (!existsSync(settingsFile)) return (instanceCache = defaultSettings())
+    try { instanceCache = normalize(JSON.parse(readFileSync(settingsFile, 'utf-8')) as Partial<AppSettings>) }
+    catch (error) { console.error('[settings] 讀取失敗，回預設：', error); instanceCache = defaultSettings() }
+    return instanceCache
+  }
+  const update = (patch: SettingsPatch): AppSettings => {
+    const cur = get()
+    const merged = normalize({
+      ...cur, ...definedOnly(patch),
+      blocklist: { ...cur.blocklist, ...(patch.blocklist ?? {}) },
+      chatIgnoreKeywords: patch.chatIgnoreKeywords ?? cur.chatIgnoreKeywords,
+      reconcile: normalizeReconcile({ ...cur.reconcile, ...(patch.reconcile ?? {}) }, cur.reconcile),
+      claudeCli: normalizeCli({ ...cur.claudeCli, ...(patch.claudeCli ?? {}) }, cur.claudeCli),
+      codexCli: normalizeCli({ ...cur.codexCli, ...(patch.codexCli ?? {}) }, cur.codexCli)
+    })
+    instanceCache = merged
+    try { mkdirSync(ports.userDataDir, { recursive: true }); writeFileSync(settingsFile, JSON.stringify(merged, null, 2), 'utf-8') }
+    catch (error) { console.error('[settings] 寫檔失敗：', error) }
+    for (const listener of listeners) listener(merged)
+    return merged
+  }
+  return {
+    get,
+    update,
+    setApiKey(apiKey) {
+      const key = apiKey.trim()
+      if (!key) throw new Error('金鑰不可為空')
+      if (!isAvailable()) throw new Error('此機器的 safeStorage 加密後端不可用，無法安全儲存金鑰；請改用環境變數 QWEN_API_KEY')
+      mkdirSync(ports.userDataDir, { recursive: true })
+      writeFileSync(keyFile, ports.secrets.encryptString(key))
+      for (const listener of listeners) listener(get())
+    },
+    clearApiKey() {
+      if (existsSync(keyFile)) { try { rmSync(keyFile) } catch (error) { console.error('[settings] 清除金鑰失敗：', error) } }
+      for (const listener of listeners) listener(get())
+    },
+    readApiKey() {
+      if (!existsSync(keyFile) || !isAvailable()) return null
+      try { const value = ports.secrets.decryptString(readFileSync(keyFile)); return value.trim() || null }
+      catch (error) { console.error('[settings] 金鑰解密失敗：', error); return null }
+    },
+    isSafeStorageAvailable: isAvailable,
+    hasSafeStorageKey: () => existsSync(keyFile) && isAvailable(),
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } }
+  }
+}
+let configuredUserDataDir: string | null = null
+let secretStorage: SettingsSecretStorage | null = null
+
+/** Host-owned settings directory and secret-storage injection. Call before reading settings. */
+export function configureSettingsHost(host: { userDataDir: string; safeStorage: SettingsSecretStorage }): void {
+  if (cached) throw new Error('Settings host must be configured before settings are read')
+  configuredUserDataDir = host.userDataDir
+  secretStorage = host.safeStorage
+}
 
 function userDataDir(): string {
-  const dir = app.getPath('userData')
+  const dir = configuredUserDataDir
+  if (!dir) throw new Error('Settings host must be configured before settings are read')
   mkdirSync(dir, { recursive: true })
   return dir
 }
@@ -311,7 +393,7 @@ export function updateSettings(patch: SettingsPatch): AppSettings {
 /** safeStorage 後端是否可用（Windows DPAPI / mac keychain）。§9 未驗證項，runtime 偵測。 */
 export function isSafeStorageAvailable(): boolean {
   try {
-    return safeStorage.isEncryptionAvailable()
+    return secretStorage?.isEncryptionAvailable() ?? false
   } catch {
     return false
   }
@@ -324,7 +406,8 @@ export function setApiKey(apiKey: string): void {
   if (!isSafeStorageAvailable()) {
     throw new Error('此機器的 safeStorage 加密後端不可用，無法安全儲存金鑰；請改用環境變數 QWEN_API_KEY')
   }
-  const enc = safeStorage.encryptString(k)
+  if (!secretStorage) throw new Error('Secret storage is not configured')
+  const enc = secretStorage.encryptString(k)
   writeFileSync(keyPath(), enc)
 }
 
@@ -347,10 +430,10 @@ export function clearApiKey(): void {
 export function readApiKeyFromSafeStorage(): string | null {
   const p = keyPath()
   if (!existsSync(p)) return null
-  if (!isSafeStorageAvailable()) return null
+  if (!isSafeStorageAvailable() || !secretStorage) return null
   try {
     const buf = readFileSync(p)
-    const dec = safeStorage.decryptString(buf)
+    const dec = secretStorage.decryptString(buf)
     return dec && dec.trim() ? dec.trim() : null
   } catch (err) {
     console.error('[settings] 金鑰解密失敗：', err)

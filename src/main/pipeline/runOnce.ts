@@ -401,7 +401,12 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
  * （不崩潰、不硬寫）。CLI provider 永不回 null——找不到 CLI 的錯誤在實際呼叫時才浮現。
  */
 export function makeExtractFn(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null {
-  const provider = resolveProvider()
+  return createExtractFactory(resolveProvider)()
+}
+
+export function createExtractFactory(resolve: () => ReturnType<typeof resolveProvider>): () => ((input: ChatExtractInput) => Promise<ExtractResult>) | null {
+  return () => {
+  const provider = resolve()
   if (!provider) return null
   return (input: ChatExtractInput) =>
     extractTodos(
@@ -415,4 +420,5 @@ export function makeExtractFn(): ((input: ChatExtractInput) => Promise<ExtractRe
       },
       {}
     )
+  }
 }

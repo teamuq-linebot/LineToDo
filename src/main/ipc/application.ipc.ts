@@ -1,0 +1,50 @@
+import { ipcMain } from 'electron'
+import type { Api } from '../../shared/api'
+
+/** Electron adapter only translates the established IPC wire shapes to the shared host API. */
+export function registerApplicationApiIpc(api: Api): () => void {
+  const channels: string[] = []
+  const handle = (channel: string, invoke: (args: any) => unknown): void => {
+    ipcMain.handle(channel, (_event, args) => invoke(args))
+    channels.push(channel)
+  }
+  handle('app:ping', () => api.ping())
+  handle('messages:recent', () => api.messages.recent())
+  handle('line:status', () => api.line.status())
+  handle('line:setRunning', (running) => api.line.setRunning(!!running))
+  handle('messages:list', (query) => api.db.messages.list(query ?? {}))
+  handle('messages:recentByChat', (args) => api.db.messages.recentByChat(args?.chatId, args?.limit))
+  handle('messages:byChatSince', (args) => api.db.messages.byChatSince(args?.chatId, args?.sinceMs))
+  handle('messages:count', (args) => api.db.messages.count(args?.chatId))
+  handle('chats:list', (args) => api.db.chats.list(!!args?.includeBlocked))
+  handle('chats:get', (args) => api.db.chats.get(args?.chatId))
+  handle('chats:setBlocked', (args) => api.db.chats.setBlocked(args?.chatId, !!args?.blocked, args?.reason))
+  handle('chats:blockAndClear', (args) => api.db.chats.blockAndClear(args?.chatId))
+  handle('chats:addIgnoreKeyword', (args) => api.db.chats.addIgnoreKeyword(args?.chatId, args?.keyword))
+  handle('chats:removeIgnoreKeyword', (args) => api.db.chats.removeIgnoreKeyword(args?.chatId, args?.keyword))
+  handle('chats:openOriginal', (args) => api.db.chats.openOriginal(args?.chatId))
+  handle('todos:list', (query) => api.db.todos.list(query ?? {}))
+  handle('todos:get', (args) => api.db.todos.get(args?.id))
+  handle('todos:openByChat', (args) => api.db.todos.openByChat(args?.chatId))
+  handle('todos:updateStatus', (args) => api.db.todos.updateStatus(args?.id, args?.status))
+  handle('todos:update', (args) => api.db.todos.update(args?.id, args?.patch))
+  handle('todos:moveColumn', (args) => api.db.todos.moveColumn(args?.id, args?.toColumn))
+  handle('todos:draftReply', (args) => api.db.todos.draftReply(args?.id))
+  handle('pipeline:status', () => api.pipeline.status())
+  handle('pipeline:loadStats', () => api.pipeline.loadStats())
+  handle('pipeline:runOnce', () => api.pipeline.runOnce())
+  handle('pipeline:reviewLastDays', (args) => api.pipeline.reviewLastDays(args?.days))
+  handle('pipeline:backfillMediaKeys', (args) => api.pipeline.backfillMediaKeys(args?.days))
+  handle('pipeline:setRunning', (args) => api.pipeline.setRunning(!!args?.running))
+  handle('settings:testQwen', () => api.pipeline.testQwen())
+  handle('settings:testAiProvider', () => api.pipeline.testAiProvider())
+  handle('settings:get', () => api.settings.get())
+  handle('settings:update', (args) => api.settings.update(args?.patch))
+  handle('settings:setApiKey', (args) => api.settings.setApiKey(args?.apiKey))
+  handle('settings:clearApiKey', () => api.settings.clearApiKey())
+  handle('settings:hasSafeStorageKey', () => api.settings.hasSafeStorageKey())
+  handle('app:openDataFolder', () => api.app.openDataFolder())
+  handle('media:open', (args) => api.media.open(args?.msgId))
+  handle('media:saveAs', (args) => api.media.saveAs(args?.msgId))
+  return () => channels.forEach((channel) => ipcMain.removeHandler(channel))
+}

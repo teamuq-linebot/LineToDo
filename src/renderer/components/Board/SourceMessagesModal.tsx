@@ -1,3 +1,4 @@
+import { useLineTodoApi } from '../../platform/LineTodoApi'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { MessageDTO } from '../../types/api'
@@ -9,7 +10,7 @@ import { formatCallRecord } from '../../lib/callRecord'
  * 由卡片「來源訊息 (N)」開啟，顯示該對話「過去 24 小時」完整對話（氣泡串，最新在下），
  * 可往上一次載入更早 100 筆並維持捲動位置。該 todo 的來源訊息以琥珀色高亮並加「來源」標籤。
  *
- * 資料層走 Batch 2a 的 preload 契約（window.api.db.messages）：
+ * 資料層走 Batch 2a 的 preload 契約（api.db.messages）：
  *   - byChatSince(chatId, sinceMs) → 過去 24h 全窗（回舊→新）
  *   - list({ chatId, beforeTs, limit }) → 往前分頁（回新→舊，prepend 前反轉成舊→新）
  * （modal 掛在 TodoCard 內、無 useTodos hook 可用；直接消費 preload API，與 hook helper 等價。）
@@ -55,6 +56,7 @@ export function SourceMessagesModal({
   sourceMsgIds,
   onClose
 }: Props): JSX.Element {
+  const api = useLineTodoApi()
   // messages 一律維持「舊→新」：最新在陣列尾、畫面底部。
   const [messages, setMessages] = useState<MessageDTO[]>([])
   const [loading, setLoading] = useState(true)
@@ -81,7 +83,7 @@ export function SourceMessagesModal({
   useEffect(() => {
     let alive = true
     setLoading(true)
-    window.api.db.messages
+    api.db.messages
       .byChatSince(chatId, Date.now() - DAY_MS)
       .then((list) => {
         if (!alive) return
@@ -139,7 +141,7 @@ export function SourceMessagesModal({
     try {
       const oldestTs = messages[0].ts
       // list 回新→舊，反轉成舊→新再 prepend。
-      const older = await window.api.db.messages.list({
+      const older = await api.db.messages.list({
         chatId,
         beforeTs: oldestTs,
         limit: PAGE_SIZE
@@ -196,12 +198,12 @@ export function SourceMessagesModal({
   }
 
   async function openFile(msgId: string): Promise<void> {
-    const res = await window.api.media.open(msgId)
+    const res = await api.media.open(msgId)
     setFileErrors((e) => ({ ...e, [msgId]: res.ok ? '' : '無法開啟檔案' }))
   }
 
   async function saveFile(msgId: string): Promise<void> {
-    const res = await window.api.media.saveAs(msgId)
+    const res = await api.media.saveAs(msgId)
     // canceled 不視為錯誤。
     setFileErrors((e) => ({ ...e, [msgId]: res.ok || res.canceled ? '' : '無法另存檔案' }))
   }

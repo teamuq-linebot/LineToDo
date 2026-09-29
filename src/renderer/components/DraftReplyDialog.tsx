@@ -1,3 +1,4 @@
+import { useLineTodoApi } from '../platform/LineTodoApi'
 import { useEffect, useState } from 'react'
 import type { TodoDTO } from '../types/api'
 
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Element {
+  const api = useLineTodoApi()
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -25,7 +27,7 @@ export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Elemen
     setError(null)
     setCopied(false)
     try {
-      const res = await window.api.db.todos.draftReply(todo.id)
+      const res = await api.db.todos.draftReply(todo.id)
       if (res.error) {
         setError(res.error)
         setDraft('')

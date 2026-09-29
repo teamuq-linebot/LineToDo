@@ -2,6 +2,7 @@ import { app, dialog, ipcMain, protocol, shell } from 'electron'
 import { writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { getDb } from '../db/database'
+import type { Database } from 'better-sqlite3'
 import { decryptCachedMedia, type DecryptMediaStatus } from './decrypt'
 
 /**
@@ -32,8 +33,8 @@ interface MediaRow {
 }
 
 /** 以 msg_id 直接查 messages 列（getDb()；不經 repo，避免把 key_material 帶進 DTO）。 */
-function queryMediaRow(msgId: string): MediaRow | undefined {
-  return getDb()
+function queryMediaRow(msgId: string, db: Database = getDb()): MediaRow | undefined {
+  return db
     .prepare(
       'SELECT key_material, file_size, content_type, orig_filename FROM messages WHERE msg_id = ?'
     )
@@ -109,13 +110,13 @@ type DecryptedForMsg =
   | { ok: false; error: string }
 
 /** 查列 + 解密（IPC 共用）。key_material/file_size 缺料或解密失敗一律回結構化錯誤。 */
-function decryptForMsg(msgId: string): DecryptedForMsg {
-  const row = queryMediaRow(msgId)
+function decryptForMsg(msgId: string, db: Database = getDb(), decrypt: typeof decryptCachedMedia = decryptCachedMedia): DecryptedForMsg {
+  const row = queryMediaRow(msgId, db)
   if (!row) return { ok: false, error: '找不到訊息' }
   if (!row.key_material || typeof row.file_size !== 'number') {
     return { ok: false, error: '缺少解密資訊' }
   }
-  const res = decryptCachedMedia({ keyMaterial: row.key_material, fileSize: row.file_size })
+  const res = decrypt({ keyMaterial: row.key_material, fileSize: row.file_size })
   if (res.status !== 'ok' || !res.bytes) {
     return { ok: false, error: statusToMessage(res.status) }
   }
@@ -150,7 +151,7 @@ export function registerLinemediaScheme(): void {
  * 註冊 linemedia:// handler（app ready 後）。
  * 僅服務「content_type=1（圖片）且 key_material+file_size 有值」的列；其餘一律 404。
  */
-export function registerLinemediaHandler(): void {
+export function registerLinemediaHandler(database: () => Database = getDb, decrypt: typeof decryptCachedMedia = decryptCachedMedia): () => void {
   protocol.handle(SCHEME, (req): Response => {
     try {
       const msgId = parseMsgId(req.url)
@@ -159,7 +160,8 @@ export function registerLinemediaHandler(): void {
         return new Response(null, { status: 404 })
       }
 
-      const row = queryMediaRow(msgId)
+      const db = database()
+      const row = queryMediaRow(msgId, db)
       if (
         !row ||
         row.content_type !== CONTENT_TYPE_IMAGE ||
@@ -170,7 +172,7 @@ export function registerLinemediaHandler(): void {
         return new Response(null, { status: 404 })
       }
 
-      const res = decryptCachedMedia({ keyMaterial: row.key_material, fileSize: row.file_size })
+      const res = decrypt({ keyMaterial: row.key_material, fileSize: row.file_size })
       if (res.status === 'ok' && res.bytes) {
         return new Response(res.bytes, {
           headers: { 'Content-Type': res.mime ?? 'application/octet-stream' }
@@ -187,6 +189,37 @@ export function registerLinemediaHandler(): void {
       return new Response(null, { status: 404 })
     }
   })
+  return () => protocol.unhandle(SCHEME)
+}
+
+/** Host-owned media commands used by the application facade and the IPC forwarding adapter. */
+export async function openMediaFile(msgId: string, db: Database = getDb(), decrypt: typeof decryptCachedMedia = decryptCachedMedia): Promise<{ ok: boolean; error?: string }> {
+  if (typeof msgId !== 'string') return { ok: false, error: '缺少 msgId' }
+  try {
+    const dec = decryptForMsg(msgId, db, decrypt)
+    if (!dec.ok) return { ok: false, error: dec.error }
+    const tmpPath = join(app.getPath('temp'), pickFileName(msgId, dec.origFilename, dec.mime))
+    writeFileSync(tmpPath, dec.bytes)
+    const openErr = await shell.openPath(tmpPath)
+    return openErr ? { ok: false, error: openErr } : { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+export async function saveMediaAsFile(msgId: string, db: Database = getDb(), decrypt: typeof decryptCachedMedia = decryptCachedMedia): Promise<{ ok: boolean; canceled?: boolean; error?: string }> {
+  if (typeof msgId !== 'string') return { ok: false, error: '缺少 msgId' }
+  try {
+    const dec = decryptForMsg(msgId, db, decrypt)
+    if (!dec.ok) return { ok: false, error: dec.error }
+    const defaultPath = pickFileName(msgId, dec.origFilename, dec.mime)
+    const { canceled, filePath } = await dialog.showSaveDialog({ defaultPath })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    writeFileSync(filePath, dec.bytes)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 /**

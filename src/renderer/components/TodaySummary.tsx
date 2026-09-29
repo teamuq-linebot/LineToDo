@@ -1,3 +1,4 @@
+import { useLineTodoApi } from '../platform/LineTodoApi'
 import { useEffect, useRef, useState } from 'react'
 import type { AiProviderId, TodoDTO, PipelineStatus, ReconcileProgress } from '../types/api'
 import { isOverdue } from './Board/buckets'
@@ -79,6 +80,7 @@ function reconPct(p: ReconcileProgress): number {
 }
 
 export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element {
+  const api = useLineTodoApi()
   const [status, setStatus] = useState<PipelineStatus | null>(null)
   // 目前選用的 AI provider：決定「引擎未就緒」時該叫使用者去填金鑰還是去修 CLI 路徑。
   const [provider, setProvider] = useState<AiProviderId>('http')
@@ -91,15 +93,15 @@ export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element 
   const reconTimers = useRef<ReturnType<typeof setTimeout>[]>([])
 
   useEffect(() => {
-    void window.api.pipeline.status().then(setStatus)
-    void window.api.settings.get().then((v) => setProvider(v.aiProvider))
-    const off = window.api.pipeline.onStatus(setStatus)
+    void api.pipeline.status().then(setStatus)
+    void api.settings.get().then((v) => setProvider(v.aiProvider))
+    const off = api.pipeline.onStatus(setStatus)
     return off
   }, [])
 
   useEffect(() => {
     const timers = reconTimers.current
-    const off = window.api.pipeline.onReconcileProgress((p) => {
+    const off = api.pipeline.onReconcileProgress((p) => {
       timers.forEach(clearTimeout)
       timers.length = 0
       if (p.phase === 'scanning' || p.phase === 'backfilling') {
@@ -136,7 +138,7 @@ export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element 
   async function runNow(): Promise<void> {
     setRunning(true)
     try {
-      await window.api.pipeline.runOnce()
+      await api.pipeline.runOnce()
       onRefresh()
     } catch (err) {
       console.error('[summary] runOnce 失敗：', err)

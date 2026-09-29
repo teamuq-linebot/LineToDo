@@ -1,5 +1,4 @@
-import { app } from 'electron'
-import { join } from 'node:path'
+import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import type { Database as Db } from 'better-sqlite3'
@@ -16,6 +15,7 @@ import { migrate } from './migrate'
  */
 
 let db: Db | null = null
+let configuredDbPath: string | null = null
 
 /** 最近一次開連線的健康結果（供啟動流程 / 未來對帳查詢；未開庫前為 unknown）。 */
 let health: DbHealth = { ok: false, reason: 'db-not-opened' }
@@ -42,16 +42,30 @@ export class DbIntegrityError extends Error {
 function resolveDbPath(): string {
   const override = process.env.LINE_TODO_DB_PATH?.trim()
   if (override) return override
-  const dir = app.getPath('userData')
-  mkdirSync(dir, { recursive: true })
-  return join(dir, 'line-todo.db')
+  if (configuredDbPath) return configuredDbPath
+  throw new Error('Database path must be configured by the host before opening the database')
 }
 
-/** 取得已初始化的 DB 單例（首次呼叫時開連線、設 PRAGMA、跑 migration）。 */
-export function getDb(): Db {
-  if (db) return db
+export interface OpenDatabaseResult {
+  db: Db
+  health: DbHealth
+  close(): void
+}
 
-  const path = resolveDbPath()
+/** Host-owned path injection. Must be called before getDb(); default remains userData/line-todo.db. */
+export function configureDbPath(path: string): void {
+  if (db) throw new Error('Cannot change the database path after the connection is open')
+  const normalized = path.trim()
+  if (!normalized) throw new Error('Database path cannot be empty')
+  mkdirSync(dirname(normalized), { recursive: true })
+  configuredDbPath = normalized
+}
+
+/** Open one owned database connection; no Electron or module singleton is used by this factory. */
+export function openDatabase(options: { dbPath: string }): OpenDatabaseResult {
+  const path = options.dbPath.trim()
+  if (!path) throw new Error('Database path cannot be empty')
+  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
   const conn = new Database(path)
 
   // 連線層 PRAGMA（每次開連線都要下；非 schema 的一部分）。
@@ -73,8 +87,6 @@ export function getDb(): Db {
     } catch {
       /* 壞庫關閉失敗無關緊要，錯誤已記錄 */
     }
-    const reason = `quick_check failed: ${result}`
-    health = { ok: false, reason }
     console.error(`[db] INTEGRITY FAILURE ${path}: ${result}`)
     throw new DbIntegrityError(`DB integrity check failed for ${path}: ${result}`)
   }
@@ -92,14 +104,29 @@ export function getDb(): Db {
       /* 已進入錯誤路徑，關閉失敗無關緊要 */
     }
     const reason = `migrate failed: ${err instanceof Error ? err.message : String(err)}`
-    health = { ok: false, reason }
     console.error(`[db] migrate failed for ${path}:`, err)
     throw new DbIntegrityError(`DB migration failed for ${path}: ${reason}`)
   }
   console.log(`[db] opened ${path} (schema ${from} -> ${to})`)
 
-  health = { ok: true }
-  db = conn
+  let closed = false
+  return {
+    db: conn,
+    health: { ok: true },
+    close(): void {
+      if (closed) return
+      closed = true
+      conn.close()
+    }
+  }
+}
+
+/** Legacy standalone adapter. New runtime composition must use openDatabase(options). */
+export function getDb(): Db {
+  if (db) return db
+  const opened = openDatabase({ dbPath: resolveDbPath() })
+  db = opened.db
+  health = opened.health
   return db
 }
 

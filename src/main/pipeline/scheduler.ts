@@ -1,8 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { getPipelineDefaults } from '../config/defaults'
-import { getLastRun } from '../db/pipeline.repo'
-import { isProviderConfigured } from '../llm/provider'
-import { runOnce, makeExtractFn } from './runOnce'
+import { runOnce } from './runOnce'
 import type { RunOnceResult, ChatExtractInput } from './runOnce'
 import type { ExtractResult } from '../llm/schema'
 import { ProviderBreaker, ChatBackoff } from './breaker'
@@ -10,6 +7,9 @@ import type { BreakerSnapshot, ChatBackoffEntry } from './breaker'
 import type { WatchSourceResult } from './watchSource'
 import { dbDrainSource } from './watchSource'
 import type { RawLineMessage } from '../line/types'
+import type { Database } from 'better-sqlite3'
+import type { PipelineDefaults } from '../config/defaults'
+import type { PipelineRunDTO } from '../db/pipeline.repo'
 
 /**
  * scheduler.ts — 定時跑 pipeline runOnce（IMPLEMENTATION_PLAN.md §8 步驟 8）。
@@ -45,13 +45,13 @@ export interface PipelineStatus {
 }
 
 export interface SchedulerOptions {
+  db: Database
+  getDefaults: () => PipelineDefaults
+  getLastRun: () => PipelineRunDTO | null
+  isProviderConfigured: () => boolean
+  makeExtract: () => ((input: ChatExtractInput) => Promise<ExtractResult>) | null
   /** 取本輪新訊息的來源。預設 dbDrainSource（live watcher 已餵 DB）。 */
   watchSource?: () => Promise<WatchSourceResult>
-  /**
-   * 取本輪的 extractFn。預設 makeExtractFn（依設定解析真 provider）。
-   * 注入點只為了讓 probe 腳本能用「會計數的假 provider」證明冷卻期間真的零呼叫。
-   */
-  makeExtract?: () => ((input: ChatExtractInput) => Promise<ExtractResult>) | null
   /** 注入自訂熔斷器（probe 用假時鐘 + 短冷卻，免得驗證要真的等 15 分鐘）。 */
   breaker?: ProviderBreaker
   /** 注入自訂 per-chat 退避表（同上）。 */
@@ -67,17 +67,28 @@ export class PipelineScheduler extends EventEmitter {
   private lastResult: RunOnceResult | null = null
   private lastError: string | null = null
   private watchSource: () => Promise<WatchSourceResult>
-  private makeExtract: () => ((input: ChatExtractInput) => Promise<ExtractResult>) | null
+  private makeExtract: SchedulerOptions['makeExtract']
   private readonly breaker: ProviderBreaker
   private readonly backoff: ChatBackoff
+  private readonly options: SchedulerOptions
+  private inFlight: Promise<RunOnceResult> | null = null
 
-  constructor(opts: SchedulerOptions = {}) {
+  constructor(opts: SchedulerOptions) {
     super()
-    this.intervalSec = getPipelineDefaults().pollIntervalSec
+    this.options = opts
+    this.intervalSec = this.getDefaults().pollIntervalSec
     this.watchSource = opts.watchSource ?? dbDrainSource
-    this.makeExtract = opts.makeExtract ?? makeExtractFn
+    this.makeExtract = opts.makeExtract
     this.breaker = opts.breaker ?? new ProviderBreaker()
     this.backoff = opts.backoff ?? new ChatBackoff()
+  }
+
+  private getDefaults(): PipelineDefaults {
+    return this.options.getDefaults()
+  }
+
+  private providerIsConfigured(): boolean {
+    return this.options.isProviderConfigured()
   }
 
   /** 熔斷器現況（觀測 / probe 用；不進 IPC）。 */
@@ -97,7 +108,7 @@ export class PipelineScheduler extends EventEmitter {
     //   http → 有金鑰；CLI → 就緒（除非使用者指定的 execPath 不存在）。
     // **IPC 契約形狀不變**：欄位仍叫 hasApiKey、仍是 boolean，UI 不必同步改動；
     // 只有語意從「有 qwen 金鑰」放寬為「AI 引擎已就緒」（欄位改名屬 UI 變動，另走核可）。
-    const hasApiKey = isProviderConfigured()
+    const hasApiKey = this.providerIsConfigured()
     // 熔斷冷卻中：沿用「無金鑰」那條既有路徑的表達方式 —— llmStatus='disabled'
     // ＋ lastError 帶原因/剩餘時間/解除方式。**刻意不新增 PipelineStatus 欄位**，
     // 因為 Batch 5 已確立這個形狀，多一個欄位就多一項 UI 相依（design.md §5.5：
@@ -112,7 +123,7 @@ export class PipelineScheduler extends EventEmitter {
       running: this.running,
       busy: this.busy,
       intervalSec: this.intervalSec,
-      lastRunAt: this.lastRunAt ?? getLastRun()?.startedAt ?? null,
+      lastRunAt: this.lastRunAt ?? this.options.getLastRun()?.startedAt ?? null,
       lineBridge: this.lastResult?.lineBridge ?? 'unknown',
       llmStatus,
       hasApiKey,
@@ -128,24 +139,25 @@ export class PipelineScheduler extends EventEmitter {
   start(): void {
     if (this.running) return
     this.running = true
-    this.intervalSec = getPipelineDefaults().pollIntervalSec
+    this.intervalSec = this.getDefaults().pollIntervalSec
     this.scheduleNext()
     this.emitStatus()
   }
 
   /** 暫停定時輪詢（進行中的一輪會跑完）。 */
-  stop(): void {
+  async stop(): Promise<void> {
     this.running = false
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = null
     }
     this.emitStatus()
+    if (this.inFlight) await this.inFlight.catch(() => undefined)
   }
 
   setRunning(running: boolean): PipelineStatus {
     if (running) this.start()
-    else this.stop()
+    else void this.stop()
     return this.getStatus()
   }
 
@@ -154,7 +166,7 @@ export class PipelineScheduler extends EventEmitter {
    * 若目前未在運行則只更新數值、不開排程。
    */
   reschedule(): PipelineStatus {
-    this.intervalSec = getPipelineDefaults().pollIntervalSec
+    this.intervalSec = this.getDefaults().pollIntervalSec
     if (this.running) this.scheduleNext()
     this.emitStatus()
     return this.getStatus()
@@ -197,14 +209,15 @@ export class PipelineScheduler extends EventEmitter {
 
   private async tick(): Promise<void> {
     await this.runGuarded()
-    this.scheduleNext()
+    if (this.running) this.scheduleNext()
   }
 
   /** 跑一輪，含不重入保護。 */
-  private async runGuarded(): Promise<RunOnceResult> {
+  private runGuarded(): Promise<RunOnceResult> {
+    if (this.inFlight) return this.inFlight
     if (this.busy) {
       // 上一輪未結束：回上次結果，不重入。
-      return (
+      return Promise.resolve(
         this.lastResult ?? {
           runId: '',
           lineBridge: 'skipped',
@@ -228,6 +241,15 @@ export class PipelineScheduler extends EventEmitter {
     }
     this.busy = true
     this.emitStatus()
+    let tracked: Promise<RunOnceResult>
+    tracked = Promise.resolve().then(() => this.runCycle()).finally(() => {
+      if (this.inFlight === tracked) this.inFlight = null
+    })
+    this.inFlight = tracked
+    return tracked
+  }
+
+  private async runCycle(): Promise<RunOnceResult> {
     try {
       // 熔斷冷卻中 → 這一輪的每個 chat 都被 shouldSkipChat 擋下（連 provider 都不建構）。
       // 落庫 / 黑名單 / 噪音判定照常，只是完全不進 LLM 階段。
@@ -252,6 +274,8 @@ export class PipelineScheduler extends EventEmitter {
 
       const roundErrors: unknown[] = []
       const result = await runOnce({
+        db: this.options.db,
+        config: this.getDefaults(),
         watchSource: this.watchSource,
         extractFn,
         shouldSkipChat: (chatId) => cooling || this.backoff.shouldSkip(chatId),

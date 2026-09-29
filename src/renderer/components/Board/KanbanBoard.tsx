@@ -1,3 +1,4 @@
+import { useLineTodoApi } from '../../platform/LineTodoApi'
 import { useEffect, useMemo, useState } from 'react'
 import type {
   AiProviderId,
@@ -44,6 +45,7 @@ export interface CardDnd {
 }
 
 export function KanbanBoard(): JSX.Element {
+  const api = useLineTodoApi()
   const [sortBy, setSortBy] = useState<TodoSortBy>('updatedAt')
   const [sortDirection, setSortDirection] = useState<TodoSortDirection>('desc')
   const [chatFilter, setChatFilter] = useState('')
@@ -97,7 +99,7 @@ export function KanbanBoard(): JSX.Element {
   // 初次掛載：查 pipeline 狀態取得 hasApiKey（決定按鈕是否提示填金鑰）。
   useEffect(() => {
     let alive = true
-    void window.api.pipeline
+    void api.pipeline
       .status()
       .then((s) => {
         if (alive) setHasApiKey(s.hasApiKey)
@@ -105,14 +107,14 @@ export function KanbanBoard(): JSX.Element {
       .catch(() => {
         if (alive) setHasApiKey(null)
       })
-    void window.api.settings
+    void api.settings
       .get()
       .then((v) => {
         if (alive) setAiProvider(v.aiProvider)
       })
       .catch(() => undefined)
     // 訂閱 backfill 進度推播。
-    const off = window.api.pipeline.onBackfillProgress((p) => {
+    const off = api.pipeline.onBackfillProgress((p) => {
       setProgress(p)
     })
     return () => {
@@ -127,7 +129,7 @@ export function KanbanBoard(): JSX.Element {
     setReviewNote(null)
     setProgress({ processed: 0, total: 0, phase: 'fetching' })
     try {
-      const res = await window.api.pipeline.reviewLastDays(REVIEW_DAYS)
+      const res = await api.pipeline.reviewLastDays(REVIEW_DAYS)
       setHasApiKey(res.hasApiKey)
       if (!res.ok && !res.hasApiKey) {
         setReviewNote(notReadyShortText(aiProvider))
@@ -153,7 +155,7 @@ export function KanbanBoard(): JSX.Element {
     setBackfilling(true)
     setBackfillNote(null)
     try {
-      const res = await window.api.pipeline.backfillMediaKeys(7)
+      const res = await api.pipeline.backfillMediaKeys(7)
       if (res.ok) {
         setBackfillNote(
           `已補 ${res.mediaBackfilled ?? 0} 筆媒體金鑰（掃描 ${res.scanned ?? 0} 則）；` +
@@ -227,7 +229,7 @@ export function KanbanBoard(): JSX.Element {
   }
 
   async function openChat(chatId: string): Promise<void> {
-    const res = await window.api.db.chats.openOriginal(chatId)
+    const res = await api.db.chats.openOriginal(chatId)
     if (!res.ok) {
       // LINE Desktop 無精準 deep-link；失敗只記錄，不打斷使用者。
       console.warn('[board] 開原聊天失敗：', res.error)

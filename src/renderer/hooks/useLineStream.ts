@@ -1,3 +1,4 @@
+import { useLineTodoApi } from '../platform/LineTodoApi'
 import { useEffect, useRef, useState } from 'react'
 import type { RawLineMessage, LineBridgeStatus } from '../types/api'
 
@@ -18,6 +19,7 @@ export interface UseLineStream {
 }
 
 export function useLineStream(): UseLineStream {
+  const api = useLineTodoApi()
   const [messages, setMessages] = useState<RawLineMessage[]>([])
   const [status, setStatus] = useState<LineBridgeStatus | null>(null)
   // 用 key 去重（同一則訊息可能既在 backlog 又在後續 push）
@@ -45,19 +47,19 @@ export function useLineStream(): UseLineStream {
   useEffect(() => {
     let active = true
 
-    void window.api.messages.recent().then((backlog) => {
+    void api.messages.recent().then((backlog) => {
       if (active && backlog.length) add(backlog)
     })
-    void window.api.line.status().then((s) => {
+    void api.line.status().then((s) => {
       if (active) setStatus(s)
     })
 
-    const offMsg = window.api.line.onMessage((m) => {
+    const offMsg = api.line.onMessage((m) => {
       // 觀測點：證明 renderer 收到 main 推來的訊息（main 在 DEBUG 模式會轉這行到 stdout）
       console.log(`[stream] recv ${m.time} [${m.chat}] ${m.sender}: ${m.text.slice(0, 40)}`)
       add([m])
     })
-    const offStatus = window.api.line.onStatus((s) => setStatus(s))
+    const offStatus = api.line.onStatus((s) => setStatus(s))
 
     return () => {
       active = false
