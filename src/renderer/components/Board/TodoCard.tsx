@@ -24,6 +24,7 @@ export interface TodoCardActions {
   onConfirmDone: (id: string) => void
   onRejectSuggested: (todo: TodoDTO) => void
   onIgnore: (id: string) => void
+  onMarkNotMine: (todo: TodoDTO) => void
   /** 依關鍵字忽略（此對話）：加關鍵字並立即忽略命中的未完成代辦。 */
   onIgnoreByKeyword: (chatId: string, keyword: string) => void
   /** 封鎖這個對話：不再抽代辦 + 清掉現有未完成代辦。 */
@@ -470,6 +471,7 @@ export function TodoCard({
                 <button className="menu-item" onClick={() => actions.onIgnore(todo.id)}>
                   🚫 忽略這一筆
                 </button>
+                <button className="menu-item" onClick={() => actions.onMarkNotMine(todo)}>不是我的（保留來源）</button>
                 <button className="menu-item" onClick={startKwIgnore}>
                   🔑 依關鍵字忽略…
                 </button>
@@ -508,6 +510,7 @@ export function TodoCard({
                 <button className="menu-item" onClick={() => actions.onIgnore(todo.id)}>
                   🚫 忽略這一筆
                 </button>
+                <button className="menu-item" onClick={() => actions.onMarkNotMine(todo)}>不是我的（保留來源）</button>
                 <button className="menu-item" onClick={startKwIgnore}>
                   🔑 依關鍵字忽略…
                 </button>

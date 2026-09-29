@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto'
  *
  * SCHEMA_VERSION 對應 PRAGMA user_version；migrate.ts 以此決定要不要建表/升級。
  */
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 /**
  * 建立全部資料表與索引的 DDL。所有語句皆 IF NOT EXISTS，重複執行安全（冪等）。
@@ -71,6 +71,25 @@ CREATE TABLE IF NOT EXISTS todos (
 CREATE INDEX IF NOT EXISTS idx_todos_status    ON todos(status);
 CREATE INDEX IF NOT EXISTS idx_todos_chat_open ON todos(chat_id, status);
 CREATE INDEX IF NOT EXISTS idx_todos_due       ON todos(due_at);
+
+CREATE TABLE IF NOT EXISTS todo_not_mine_events (
+  feedback_id TEXT PRIMARY KEY, todo_id TEXT NOT NULL, event_type TEXT NOT NULL,
+  previous_status TEXT, reason_code TEXT, note TEXT, source_msg_ids TEXT NOT NULL,
+  analysis_json TEXT, correction_id TEXT, correction_revision INTEGER, created_at TEXT NOT NULL,
+  FOREIGN KEY (todo_id) REFERENCES todos(id)
+);
+CREATE INDEX IF NOT EXISTS idx_not_mine_events_todo ON todo_not_mine_events(todo_id, created_at);
+CREATE TABLE IF NOT EXISTS todo_classification_corrections (
+  id TEXT PRIMARY KEY, feedback_id TEXT NOT NULL, chat_id TEXT NOT NULL,
+  revision INTEGER NOT NULL, condition_text TEXT NOT NULL, effect_text TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  FOREIGN KEY (feedback_id) REFERENCES todo_not_mine_events(feedback_id),
+  FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
+);
+CREATE TABLE IF NOT EXISTS todo_correction_effects (
+  id TEXT PRIMARY KEY, correction_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  chat_id TEXT NOT NULL, message_ids TEXT NOT NULL, stage TEXT NOT NULL, created_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS app_settings (
   key   TEXT PRIMARY KEY,

@@ -140,10 +140,12 @@ app.whenReady().then(async () => {
           makeExtract: acceptanceMode
             ? () => async (input) => ({ importance: 'action', newTodos: [{ bucket: 'todo', title: 'Manual review fixture task', detail: null, priority: 1, confidence: 0.95, sourceMsgIds: input.newMessages.map((item) => item.msgId) }], resolved: [], updates: [] })
             : makeExtract,
-          schedulerFactory: (db) => {
+          schedulerFactory: (db, repos) => {
             scheduler = new PipelineScheduler({ db, getDefaults,
               getLastRun: () => getLastRun(db), isProviderConfigured: acceptanceMode ? () => true : providers.isProviderConfigured,
-              makeExtract: acceptanceMode ? () => async (input) => ({ importance: 'action', newTodos: [{ bucket: 'todo', title: 'Package acceptance fixture task', detail: null, priority: 1, confidence: 0.95, sourceMsgIds: input.newMessages.map((item) => item.msgId) }], resolved: [], updates: [] }) : makeExtract })
+              makeExtract: acceptanceMode ? () => async (input) => ({ importance: 'action', newTodos: [{ bucket: 'todo', title: 'Package acceptance fixture task', detail: null, priority: 1, confidence: 0.95, sourceMsgIds: input.newMessages.map((item) => item.msgId) }], resolved: [], updates: [] }) : makeExtract,
+              correctionsForChat: acceptanceMode ? () => [] : (chatId) => repos.notMine.corrections(chatId),
+              onCorrectionsApplied: acceptanceMode ? undefined : (chatId,messageIds,rules) => rules.forEach(rule=>repos.notMine.effect(rule,chatId,messageIds,'runOnce')) })
             return scheduler
           },
           media: {

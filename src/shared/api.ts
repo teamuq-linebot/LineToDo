@@ -80,6 +80,12 @@ export interface TodoDTO {
   resolvedAt: string | null
 }
 
+export type NotMineReasonCode = 'other_person_assigned' | 'general_announcement' | 'delegated_or_third_party' | 'unclear_context' | 'other'
+export interface NotMineFeedbackDTO { feedbackId: string; todo: TodoDTO; reasonCode: NotMineReasonCode; note: string | null; markedAt: string; analysis: { analysisVersion: string; inferredCauseCode: string; summary: string; providerId: AiProviderId | null; modelId: string | null; analyzedAt: string; suggestedCondition?: string; suggestedEffect?: string } | null; correction: { id: string; revision: number; condition: string; effect: string; enabled: boolean } | null }
+export interface NotMineReviewDTO extends NotMineFeedbackDTO { evidence: MessageDTO[]; missingSourceMsgIds: string[] }
+export interface NotMineCorrectionDTO { id: string; feedbackId: string; todoId: string; chatId: string; revision: number; condition: string; effect: string; enabled: boolean; updatedAt: string }
+export interface NotMineAnalysisResult { ok: boolean; reason?: string; inferredCauseCode?: string; summary?: string; suggestedCondition?: string; suggestedEffect?: string; providerId?: AiProviderId; modelId?: string | null }
+
 export type TodoSortBy = 'updatedAt' | 'createdAt' | 'dueAt' | 'priority'
 export type TodoSortDirection = 'asc' | 'desc'
 
@@ -339,6 +345,14 @@ export interface LineTodoApi {
       update(id: string, patch: { title?: string; detail?: string | null; priority?: number; dueAt?: string | null; bucket?: TodoDTO['bucket']; sourceMsgIds?: string[] }): Promise<TodoDTO | null>
       draftReply(id: string): Promise<DraftReplyResult>
       moveColumn(id: string, toColumn: 'todo' | 'waiting' | 'schedule' | 'done'): Promise<TodoDTO | null>
+      markNotMine(id: string, reasonCode: NotMineReasonCode, note?: string): Promise<{ ok: boolean; feedbackId?: string; error?: string }>
+      listNotMine(): Promise<NotMineFeedbackDTO[]>
+      listNotMineCorrections(): Promise<NotMineCorrectionDTO[]>
+      getNotMineReview(feedbackId: string): Promise<NotMineReviewDTO | null>
+      analyzeNotMine(feedbackId: string): Promise<NotMineAnalysisResult>
+      reopenNotMine(feedbackId: string): Promise<{ ok: boolean; error?: string }>
+      applyNotMineCorrection(feedbackId: string, condition: string, effect: string): Promise<{ ok: boolean; error?: string }>
+      setNotMineCorrectionEnabled(correctionId: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>
     }
     onMessagesPersisted(cb: (e: MessagesPersistedEvent) => void): () => void
   }

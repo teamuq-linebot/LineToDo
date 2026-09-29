@@ -55,6 +55,25 @@ export function migrate(db: Database): { from: number; to: number } {
       db.exec('ALTER TABLE messages ADD COLUMN unsent INTEGER NOT NULL DEFAULT 0;')
       v = 4
     }
+    // v4 → v5: additive not-mine feedback and chat-scoped correction audit.
+    if (v < 5) {
+      db.exec(`CREATE TABLE IF NOT EXISTS todo_not_mine_events (
+        feedback_id TEXT PRIMARY KEY, todo_id TEXT NOT NULL, event_type TEXT NOT NULL,
+        previous_status TEXT, reason_code TEXT, note TEXT, source_msg_ids TEXT NOT NULL,
+        analysis_json TEXT, correction_id TEXT, correction_revision INTEGER, created_at TEXT NOT NULL,
+        FOREIGN KEY (todo_id) REFERENCES todos(id));
+        CREATE INDEX IF NOT EXISTS idx_not_mine_events_todo ON todo_not_mine_events(todo_id, created_at);
+        CREATE TABLE IF NOT EXISTS todo_classification_corrections (
+          id TEXT PRIMARY KEY, feedback_id TEXT NOT NULL, chat_id TEXT NOT NULL,
+          revision INTEGER NOT NULL, condition_text TEXT NOT NULL, effect_text TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          FOREIGN KEY (feedback_id) REFERENCES todo_not_mine_events(feedback_id),
+          FOREIGN KEY (chat_id) REFERENCES chats(chat_id));
+        CREATE TABLE IF NOT EXISTS todo_correction_effects (
+          id TEXT PRIMARY KEY, correction_id TEXT NOT NULL, revision INTEGER NOT NULL,
+          chat_id TEXT NOT NULL, message_ids TEXT NOT NULL, stage TEXT NOT NULL, created_at TEXT NOT NULL);`)
+      v = 5
+    }
     db.pragma(`user_version = ${v}`)
     return v
   })

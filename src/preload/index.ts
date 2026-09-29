@@ -156,7 +156,15 @@ const api = {
         id: string,
         toColumn: 'todo' | 'waiting' | 'schedule' | 'done'
       ): Promise<TodoDTO | null> =>
-        ipcRenderer.invoke('todos:moveColumn', { id, toColumn })
+        ipcRenderer.invoke('todos:moveColumn', { id, toColumn }),
+      markNotMine: (id,reasonCode,note) => ipcRenderer.invoke('todos:markNotMine',{id,reasonCode,note}),
+      listNotMine: () => ipcRenderer.invoke('todos:listNotMine'),
+      listNotMineCorrections: () => ipcRenderer.invoke('todos:listNotMineCorrections'),
+      getNotMineReview: (feedbackId) => ipcRenderer.invoke('todos:getNotMineReview',{feedbackId}),
+      analyzeNotMine: (feedbackId) => ipcRenderer.invoke('todos:analyzeNotMine',{feedbackId}),
+      reopenNotMine: (feedbackId) => ipcRenderer.invoke('todos:reopenNotMine',{feedbackId}),
+      applyNotMineCorrection: (feedbackId,condition,effect) => ipcRenderer.invoke('todos:applyNotMineCorrection',{feedbackId,condition,effect}),
+      setNotMineCorrectionEnabled: (correctionId,enabled) => ipcRenderer.invoke('todos:setNotMineCorrectionEnabled',{correctionId,enabled})
     },
     /** 訂閱「DB 有新訊息落庫」事件；回傳 unsubscribe。 */
     onMessagesPersisted: (

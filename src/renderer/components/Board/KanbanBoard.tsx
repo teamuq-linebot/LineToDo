@@ -14,6 +14,7 @@ import { useTodos } from '../../store/useTodos'
 import { TodaySummary } from '../TodaySummary'
 import { DraftReplyDialog } from '../DraftReplyDialog'
 import type { TodoCardActions } from './TodoCard'
+import { NotMineReviewPanel } from './NotMineReviewPanel'
 
 /**
  * KanbanBoard — 四欄看板容器（IMPLEMENTATION_PLAN.md M3）。
@@ -59,6 +60,7 @@ export function KanbanBoard(): JSX.Element {
     chatId: chatFilter || undefined
   })
   const [draftTodo, setDraftTodo] = useState<TodoDTO | null>(null)
+  const [showNotMine,setShowNotMine]=useState(false)
 
   // 看板拖曳搬移狀態（§3.2）：拖曳中卡片 id、目前 dragover 的目標欄。
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -241,6 +243,7 @@ export function KanbanBoard(): JSX.Element {
     onConfirmDone: (id) => void t.confirmDone(id),
     onRejectSuggested: (todo) => void t.rejectSuggested(todo),
     onIgnore: (id) => void t.ignore(id),
+    onMarkNotMine: (todo) => { void api.db.todos.markNotMine(todo.id,'unclear_context').then(()=>t.refresh()) },
     onIgnoreByKeyword: (chatId, keyword) => void t.ignoreByKeyword(chatId, keyword),
     onBlockChat: (chatId) => void t.blockChat(chatId),
     onSnooze: (todo, hours) => void t.snooze(todo, hours),
@@ -254,6 +257,7 @@ export function KanbanBoard(): JSX.Element {
   return (
     <div className="board-wrap">
       <div className="board-toolbar">
+        <button className="btn-review-week" onClick={()=>setShowNotMine(v=>!v)}>不是我的回查</button>
         <button
           className="btn-review-week"
           disabled={reviewing}
@@ -280,6 +284,8 @@ export function KanbanBoard(): JSX.Element {
         </button>
         {backfillNote && <span className="review-note">{backfillNote}</span>}
       </div>
+
+      {showNotMine&&<NotMineReviewPanel api={api} onClose={()=>setShowNotMine(false)} onChanged={()=>void t.refresh()}/>}
 
       <div className="board-filters" aria-label="看板排序與篩選">
         <label className="filter-field">

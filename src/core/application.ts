@@ -4,6 +4,7 @@ import type {
   PipelineLoadStats, PipelineRunResult, PipelineStatus, ProviderHealth, RawLineMessage,
   ReviewLastDaysResult, SettingsPatch, SettingsView, TodoDTO,
   TodosChangedEvent, QwenTestResult
+  , NotMineReasonCode
 } from '../shared/api'
 import { openDatabase } from '../main/db/database'
 import { createRepositories } from '../main/db/repositories'
@@ -69,6 +70,7 @@ export interface LineTodoApplication {
 const RECENT_DAYS = 7
 const UPDATE_BUCKETS = new Set<TodoDTO['bucket']>(['todo', 'waiting', 'schedule'])
 const UPDATE_COLUMNS = new Set(['todo', 'waiting', 'schedule', 'done'])
+function validFeedbackId(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) }
 
 function subscribe<T>(events: EventEmitter, event: string, cb: (value: T) => void): () => void {
   events.on(event, cb)
@@ -303,6 +305,36 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
           if (!id || !UPDATE_COLUMNS.has(toColumn)) return null
           return repos.todos.moveColumn(id, toColumn)
         }
+        ,markNotMine: async (id, reasonCode: NotMineReasonCode, note) => {
+          if (!validFeedbackId(id) || !['other_person_assigned','general_announcement','delegated_or_third_party','unclear_context','other'].includes(reasonCode) || (note !== undefined && typeof note !== 'string')) return {ok:false,error:'理由格式不正確'}
+          const result = repos.notMine.mark(id,reasonCode,typeof note==='string'?note:undefined)
+          return result.feedbackId ? {ok:true,feedbackId:result.feedbackId} : {ok:false,error:result.error}
+        },
+        listNotMine: async () => repos.notMine.list(),
+        listNotMineCorrections: async () => repos.notMine.listCorrections(),
+        getNotMineReview: async (feedbackId) => validFeedbackId(feedbackId) ? repos.notMine.get(feedbackId) : null,
+        analyzeNotMine: async (feedbackId) => {
+          if(!validFeedbackId(feedbackId)) return {ok:false,reason:'feedback id 格式不正確'}
+          const review = repos.notMine.get(feedbackId)
+          if (!review) return {ok:false,reason:'標記已變更，請重新整理'}
+          const evidence = review.evidence.slice(0,50).map(m=>({direction:m.direction,sender:m.sender,time:m.timeIso,text:m.text?.slice(0,2000)??null}))
+          try {
+            const provider = ports.providers.resolveProvider()
+            if (!provider) return {ok:false,reason:'尚未設定可用的 AI provider；來源檢視、標記與復原仍可使用'}
+            const response=await provider.complete({system:'你是分類誤判分析助手。只能根據提供的紀錄提出可能原因，不能聲稱知道舊模型思路。回傳 JSON: inferredCauseCode, summary, suggestedCondition, suggestedEffect。條件與效果須簡短、可人工檢查，限本聊天室未來抽取。',user:JSON.stringify({todo:{bucket:review.todo.bucket,status:review.todo.status,title:review.todo.title,detail:review.todo.detail,confidence:review.todo.confidence},feedback:{reasonCode:review.reasonCode,note:review.note},evidence})})
+            if(response.text.length>16000) return {ok:false,reason:'分析回覆超過可保存大小'}
+            const parsed=JSON.parse(response.text) as Record<string,unknown>
+            const bounded=(x:unknown,max:number):string=>typeof x==='string'?x.trim().slice(0,max):''
+            const inferredCauseCode=bounded(parsed.inferredCauseCode,60)||'unclear_context', summary=bounded(parsed.summary,1000)
+            if (!summary) return {ok:false,reason:'分析未提供可用摘要'}
+            const suggestedCondition=bounded(parsed.suggestedCondition,500), suggestedEffect=bounded(parsed.suggestedEffect,500)
+            const saved=repos.notMine.analyze(feedbackId,{analysisVersion:'not-mine-analysis-v1',inferredCauseCode,summary,providerId:response.meta.provider,modelId:response.meta.model,suggestedCondition,suggestedEffect})
+            return saved?{ok:true,inferredCauseCode,summary,suggestedCondition:bounded(parsed.suggestedCondition,500),suggestedEffect:bounded(parsed.suggestedEffect,500),providerId:response.meta.provider,modelId:response.meta.model}:{ok:false,reason:'標記已變更，分析未保存'}
+          } catch (error) { return {ok:false,reason:error instanceof Error?error.message:'分析失敗'} }
+        },
+        reopenNotMine: async (feedbackId) => validFeedbackId(feedbackId) ? repos.notMine.reopen(feedbackId) : {ok:false,error:'feedback id 格式不正確'},
+        applyNotMineCorrection: async (feedbackId,condition,effect) => validFeedbackId(feedbackId)&&typeof condition==='string'&&typeof effect==='string' ? repos.notMine.apply(feedbackId,condition,effect) : {ok:false,error:'修正資料格式不正確'},
+        setNotMineCorrectionEnabled: async (correctionId,enabled) => validFeedbackId(correctionId) ? repos.notMine.setEnabled(correctionId,!!enabled) : {ok:false,error:'correction id 格式不正確'}
       },
       onMessagesPersisted: (cb) => subscribe(events, 'messages-persisted', cb)
     },
@@ -318,6 +350,8 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
           catch (error) { return { messages: [], error: error instanceof Error ? error.message : String(error) } }
         },
         extractFn: ports.makeExtract(),
+        correctionsForChat: (chatId) => repos.notMine.corrections(chatId),
+        onCorrectionsApplied: (chatId,messageIds,rules) => rules.forEach(rule=>repos.notMine.effect(rule,chatId,messageIds,'reviewLastDays')),
         onProgress: (progress: BackfillProgress) => { if (state === 'running') events.emit('backfill-progress', progress) }
       }),
       backfillMediaKeys: async (days = 7) => {

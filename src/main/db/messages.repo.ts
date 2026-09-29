@@ -216,6 +216,18 @@ export function listMessages(
   return rows.map(rowToDTO)
 }
 
+/** 依明確 msg IDs 回查有限來源證據；DTO 仍排除 key_material。 */
+export function getMessagesByIds(ids: string[], db: Database = getDb()): MessageDTO[] {
+  const unique = Array.from(new Set(ids))
+  if (!unique.length) return []
+  const rows: MessageRow[] = []
+  for (let i=0;i<unique.length;i+=900) {
+    const part=unique.slice(i,i+900), query=db.prepare(`SELECT * FROM messages WHERE msg_id IN (${part.map(()=>'?').join(',')}) ORDER BY ts ASC, msg_id ASC`)
+    rows.push(...query.all(...part) as MessageRow[])
+  }
+  return rows.sort((a,b)=>a.ts-b.ts||a.msg_id.localeCompare(b.msg_id)).map(rowToDTO)
+}
+
 /**
  * 某 chat 最近 N 則，**依 ts 由舊到新**（適合當 LLM 上下文 / 對話顯示順序）。
  * 內部先取最新 N 筆再反轉，確保拿到的是「最近」而非「最舊」N 筆。

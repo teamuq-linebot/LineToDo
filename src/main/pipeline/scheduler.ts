@@ -50,6 +50,8 @@ export interface SchedulerOptions {
   getLastRun: () => PipelineRunDTO | null
   isProviderConfigured: () => boolean
   makeExtract: () => ((input: ChatExtractInput) => Promise<ExtractResult>) | null
+  correctionsForChat?: (chatId:string) => ChatExtractInput['classificationCorrections']
+  onCorrectionsApplied?: (chatId:string,messageIds:string[],rules:NonNullable<ChatExtractInput['classificationCorrections']>) => void
   /** 取本輪新訊息的來源。預設 dbDrainSource（live watcher 已餵 DB）。 */
   watchSource?: () => Promise<WatchSourceResult>
   /** 注入自訂熔斷器（probe 用假時鐘 + 短冷卻，免得驗證要真的等 15 分鐘）。 */
@@ -278,6 +280,8 @@ export class PipelineScheduler extends EventEmitter {
         config: this.getDefaults(),
         watchSource: this.watchSource,
         extractFn,
+        correctionsForChat: this.options.correctionsForChat,
+        onCorrectionsApplied: this.options.onCorrectionsApplied,
         shouldSkipChat: (chatId) => cooling || this.backoff.shouldSkip(chatId),
         onChatFailed: (chatId, err) => {
           roundErrors.push(err)

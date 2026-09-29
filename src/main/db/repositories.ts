@@ -3,6 +3,7 @@ import * as chatsRepo from './chats.repo'
 import * as messagesRepo from './messages.repo'
 import * as todosRepo from './todos.repo'
 import * as pipelineRepo from './pipeline.repo'
+import * as notMineRepo from './notMine.repo'
 
 /** Instance-bound repository bundle; every closure below captures exactly one DB connection. */
 export function createRepositories(db: Database) {
@@ -37,6 +38,15 @@ export function createRepositories(db: Database) {
       mergeSources: (id: string, msgIds: string[]) => todosRepo.mergeSources(id, msgIds, db),
       resolve: (id: string, evidence: string, toDone: boolean) => todosRepo.resolveTodo(id, evidence, toDone, db),
       count: () => todosRepo.countTodos(db)
+    },
+    notMine: {
+      mark: (id: string, reason: Parameters<typeof notMineRepo.markNotMine>[2], note?: string) => notMineRepo.markNotMine(db,id,reason,note),
+      list: () => notMineRepo.listNotMine(db), get: (id: string) => notMineRepo.getNotMineReview(db,id),
+      listCorrections: () => notMineRepo.listCorrections(db),
+      analyze: (id: string, value: Parameters<typeof notMineRepo.saveAnalysis>[2]) => notMineRepo.saveAnalysis(db,id,value),
+      reopen: (id: string) => notMineRepo.reopenNotMine(db,id), apply: (id: string,c:string,e:string) => notMineRepo.applyCorrection(db,id,c,e),
+      setEnabled: (id: string,enabled:boolean) => notMineRepo.setCorrectionEnabled(db,id,enabled),
+      corrections: (chatId:string) => notMineRepo.activeCorrections(db,chatId), effect: (rule:Parameters<typeof notMineRepo.recordCorrectionEffect>[1],chatId:string,messageIds:string[],stage:Parameters<typeof notMineRepo.recordCorrectionEffect>[4]) => notMineRepo.recordCorrectionEffect(db,rule,chatId,messageIds,stage)
     },
     pipeline: {
       startRun: () => pipelineRepo.startRun(db),

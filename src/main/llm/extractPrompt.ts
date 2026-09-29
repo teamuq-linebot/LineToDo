@@ -114,6 +114,7 @@ export interface BuildUserPayloadInput {
   recentContext?: MessageDTO[]
   /** 該 chat 目前未完成代辦（去重 + 完成偵測對象）。 */
   openTodos: TodoDTO[]
+  classificationCorrections?: Array<{ id: string; revision: number; condition: string; effect: string }>
 }
 
 function toPayloadMessage(m: MessageDTO): PayloadMessage {
@@ -147,7 +148,8 @@ export function buildUserPayload(input: BuildUserPayloadInput): string {
       bucket: t.bucket,
       title: t.title,
       dueAt: t.dueAt
-    }))
+    })),
+    ...(input.classificationCorrections?.length ? { chatScopedClassificationCorrections: input.classificationCorrections.map(r=>({id:r.id,revision:r.revision,condition:r.condition,effect:r.effect,scope:'this chat only'})) } : {})
   }
   // ensure UTF-8 中文不被轉義（JSON.stringify 預設即保留非 ASCII）。
   return JSON.stringify(payload)

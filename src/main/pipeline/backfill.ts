@@ -88,6 +88,8 @@ export interface ReviewLastDaysDeps {
   db?: Database
   now?: () => number
   config?: PipelineDefaults
+  correctionsForChat?: (chatId: string) => Array<{id:string;revision:number;condition:string;effect:string}>
+  onCorrectionsApplied?: (chatId:string,messageIds:string[],rules:Array<{id:string;revision:number;condition:string;effect:string}>) => void
 }
 
 /** bucket → 建立時 active 狀態（與 runOnce.bucketToActiveStatus 一致）。 */
@@ -320,6 +322,8 @@ export async function reviewLastDays(
       try {
         for (const slice of sliceByDay(msgs)) {
           const recentContext = getRecentContextBeforeSlice(chatId, slice)
+          const classificationCorrections = deps.correctionsForChat?.(chatId) ?? []
+          if (classificationCorrections.length) deps.onCorrectionsApplied?.(chatId,slice.map(m=>m.msgId),classificationCorrections)
           const extract = await extractFn({
             now: nowIso,
             chat: chatMeta,
@@ -327,7 +331,8 @@ export async function reviewLastDays(
             newMessages: slice,
             recentContext,
             // 餵入「DB 既有 + 本輪已建」未完成 todo，使後片能 resolve 前片所建（Fix 2）。
-            openTodos: [...openTodos, ...createdInThisChat]
+            openTodos: [...openTodos, ...createdInThisChat],
+            classificationCorrections
           })
 
           if (extract.importance !== 'noise') {
