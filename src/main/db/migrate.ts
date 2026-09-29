@@ -74,6 +74,11 @@ export function migrate(db: Database): { from: number; to: number } {
           chat_id TEXT NOT NULL, message_ids TEXT NOT NULL, stage TEXT NOT NULL, created_at TEXT NOT NULL);`)
       v = 5
     }
+    // v5 → v6: link append-only analysis_saved events to their marked feedback row.
+    if (v < 6) {
+      db.exec('ALTER TABLE todo_not_mine_events ADD COLUMN parent_feedback_id TEXT REFERENCES todo_not_mine_events(feedback_id); CREATE INDEX IF NOT EXISTS idx_not_mine_analysis_parent ON todo_not_mine_events(parent_feedback_id, created_at) WHERE parent_feedback_id IS NOT NULL;')
+      v = 6
+    }
     db.pragma(`user_version = ${v}`)
     return v
   })

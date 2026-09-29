@@ -3,6 +3,12 @@ const esbuild = require('esbuild')
 const { mkdtempSync, writeFileSync, rmSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 const path = require('node:path')
+const { mkdirSync } = require('node:fs')
+const fakeRoot = process.env.LINE_TODO_FAKE_FIXTURE_ROOT
+if (!fakeRoot) throw new Error('LINE_TODO_FAKE_FIXTURE_ROOT must point to report-owned fake-fixtures')
+mkdirSync(fakeRoot,{recursive:true})
+app.setPath('userData',path.join(fakeRoot,'electron-userdata-ui'))
+app.setPath('sessionData',path.join(fakeRoot,'electron-session-ui'))
 
 const source=`
 import React,{useState} from 'react'

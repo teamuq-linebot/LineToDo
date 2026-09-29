@@ -81,7 +81,8 @@ export interface TodoDTO {
 }
 
 export type NotMineReasonCode = 'other_person_assigned' | 'general_announcement' | 'delegated_or_third_party' | 'unclear_context' | 'other'
-export interface NotMineFeedbackDTO { feedbackId: string; todo: TodoDTO; reasonCode: NotMineReasonCode; note: string | null; markedAt: string; analysis: { analysisVersion: string; inferredCauseCode: string; summary: string; providerId: AiProviderId | null; modelId: string | null; analyzedAt: string; suggestedCondition?: string; suggestedEffect?: string } | null; correction: { id: string; revision: number; condition: string; effect: string; enabled: boolean } | null }
+export interface NotMineAnalysisDTO { analysisVersion: string; inferredCauseCode: string; summary: string; providerId: AiProviderId | null; modelId: string | null; analyzedAt: string; suggestedCondition?: string; suggestedEffect?: string }
+export interface NotMineFeedbackDTO { feedbackId: string; todo: TodoDTO; reasonCode: NotMineReasonCode; note: string | null; markedAt: string; analysis: NotMineAnalysisDTO | null; analysisHistory?: NotMineAnalysisDTO[]; correction: { id: string; revision: number; condition: string; effect: string; enabled: boolean } | null }
 export interface NotMineReviewDTO extends NotMineFeedbackDTO { evidence: MessageDTO[]; missingSourceMsgIds: string[] }
 export interface NotMineCorrectionDTO { id: string; feedbackId: string; todoId: string; chatId: string; revision: number; condition: string; effect: string; enabled: boolean; updatedAt: string }
 export interface NotMineAnalysisResult { ok: boolean; reason?: string; inferredCauseCode?: string; summary?: string; suggestedCondition?: string; suggestedEffect?: string; providerId?: AiProviderId; modelId?: string | null }

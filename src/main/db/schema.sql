@@ -67,8 +67,9 @@ CREATE INDEX IF NOT EXISTS idx_todos_due       ON todos(due_at);
 CREATE TABLE IF NOT EXISTS todo_not_mine_events (
   feedback_id TEXT PRIMARY KEY, todo_id TEXT NOT NULL, event_type TEXT NOT NULL,
   previous_status TEXT, reason_code TEXT, note TEXT, source_msg_ids TEXT NOT NULL,
-  analysis_json TEXT, correction_id TEXT, correction_revision INTEGER, created_at TEXT NOT NULL,
-  FOREIGN KEY (todo_id) REFERENCES todos(id)
+  analysis_json TEXT, correction_id TEXT, correction_revision INTEGER, parent_feedback_id TEXT, created_at TEXT NOT NULL,
+  FOREIGN KEY (todo_id) REFERENCES todos(id),
+  FOREIGN KEY (parent_feedback_id) REFERENCES todo_not_mine_events(feedback_id)
 );
 CREATE INDEX IF NOT EXISTS idx_not_mine_events_todo ON todo_not_mine_events(todo_id, created_at);
 CREATE TABLE IF NOT EXISTS todo_classification_corrections (

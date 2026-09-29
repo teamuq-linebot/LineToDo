@@ -4,7 +4,7 @@ import type { AiProviderId, NotMineCorrectionDTO, NotMineFeedbackDTO, NotMineRea
 import { getTodo } from './todos.repo'
 import { getMessagesByIds } from './messages.repo'
 
-type EventRow = { feedback_id: string; todo_id: string; event_type: string; previous_status: TodoDTO['status'] | null; reason_code: NotMineReasonCode | null; note: string | null; source_msg_ids: string; analysis_json: string | null; created_at: string }
+type EventRow = { feedback_id: string; todo_id: string; event_type: string; previous_status: TodoDTO['status'] | null; reason_code: NotMineReasonCode | null; note: string | null; source_msg_ids: string; analysis_json: string | null; parent_feedback_id: string | null; created_at: string }
 type CorrectionRow = { id: string; revision: number; condition_text: string; effect_text: string; enabled: number }
 const ACTIVE = ['pending', 'waiting_reply', 'scheduled', 'suggested_done'] as const
 const now = (): string => new Date().toISOString()
@@ -16,10 +16,15 @@ function parseIds(value: string): string[] { try { const x = JSON.parse(value); 
 function dto(db: Database, row: EventRow): NotMineFeedbackDTO | null {
   const todo = getTodo(row.todo_id, db); if (!todo) return null
   const correction = db.prepare('SELECT id,revision,condition_text,effect_text,enabled FROM todo_classification_corrections WHERE feedback_id=? ORDER BY revision DESC LIMIT 1').get(row.feedback_id) as CorrectionRow | undefined
-  let analysis: NotMineFeedbackDTO['analysis'] = null
-  if (row.analysis_json) { try { analysis = JSON.parse(row.analysis_json) as NonNullable<NotMineFeedbackDTO['analysis']> } catch { /* malformed legacy payload is omitted */ } }
+  const historyRows = db.prepare(`SELECT analysis_json FROM todo_not_mine_events WHERE parent_feedback_id=? AND event_type='analysis_saved' ORDER BY created_at, rowid`).all(row.feedback_id) as Array<{analysis_json:string|null}>
+  const analysisHistory: NonNullable<NotMineFeedbackDTO['analysis']>[] = []
+  for (const saved of historyRows) if (saved.analysis_json) { try { analysisHistory.push(JSON.parse(saved.analysis_json) as NonNullable<NotMineFeedbackDTO['analysis']>) } catch { /* malformed event is omitted */ } }
+  // Preserve visibility for records created before v6, when only the latest analysis
+  // was stored on the marked event. New analyses always use append-only child events.
+  if (!analysisHistory.length && row.analysis_json) { try { analysisHistory.push(JSON.parse(row.analysis_json) as NonNullable<NotMineFeedbackDTO['analysis']>) } catch { /* malformed legacy payload is omitted */ } }
+  const analysis = analysisHistory.at(-1) ?? null
   return { feedbackId: row.feedback_id, todo, reasonCode: row.reason_code ?? 'other', note: row.note, markedAt: row.created_at,
-    analysis, correction: correction ? { id: correction.id, revision: correction.revision, condition: correction.condition_text, effect: correction.effect_text, enabled: correction.enabled === 1 } : null }
+    analysis, analysisHistory, correction: correction ? { id: correction.id, revision: correction.revision, condition: correction.condition_text, effect: correction.effect_text, enabled: correction.enabled === 1 } : null }
 }
 
 export function markNotMine(db: Database, todoId: string, reasonCode: NotMineReasonCode, note?: string): { feedbackId?: string; error?: string } {
@@ -54,8 +59,7 @@ export function saveAnalysis(db: Database, feedbackId: string, value: { analysis
   if (!row || currentEvent(db,row.todo_id)?.feedback_id !== feedbackId) return false
   const at = now(), payload = JSON.stringify({ ...value, analyzedAt: at })
   const tx = db.transaction(() => {
-    db.prepare('UPDATE todo_not_mine_events SET analysis_json=? WHERE feedback_id=?').run(payload,feedbackId)
-    db.prepare(`INSERT INTO todo_not_mine_events(feedback_id,todo_id,event_type,source_msg_ids,created_at) VALUES(?,?,'analysis_saved',?,?)`).run(randomUUID(),row.todo_id,row.source_msg_ids,at)
+    db.prepare(`INSERT INTO todo_not_mine_events(feedback_id,todo_id,event_type,source_msg_ids,analysis_json,parent_feedback_id,created_at) VALUES(?,?,'analysis_saved',?,?,?,?)`).run(randomUUID(),row.todo_id,row.source_msg_ids,payload,feedbackId,at)
   })
   tx(); return true
 }
@@ -105,5 +109,5 @@ export function activeCorrections(db: Database, chatId: string): Array<{id:strin
   return db.prepare(`SELECT c.id,c.revision,c.condition_text AS condition,c.effect_text AS effect FROM todo_classification_corrections c WHERE c.chat_id=? AND c.enabled=1 AND c.revision=(SELECT MAX(x.revision) FROM todo_classification_corrections x WHERE x.feedback_id=c.feedback_id) ORDER BY c.created_at`).all(chatId) as Array<{id:string;revision:number;condition:string;effect:string}>
 }
 export function recordCorrectionEffect(db: Database, rule: {id:string;revision:number}, chatId:string, messageIds:string[], stage:'runOnce'|'reviewLastDays'): void {
-  db.prepare('INSERT INTO todo_correction_effects(id,correction_id,revision,chat_id,message_ids,stage,created_at) VALUES(?,?,?,?,?,?,?)').run(randomUUID(),rule.id,rule.revision,chatId,JSON.stringify(messageIds.slice(0,200)),stage,now())
+  db.prepare('INSERT INTO todo_correction_effects(id,correction_id,revision,chat_id,message_ids,stage,created_at) VALUES(?,?,?,?,?,?,?)').run(randomUUID(),rule.id,rule.revision,chatId,JSON.stringify(messageIds),stage,now())
 }

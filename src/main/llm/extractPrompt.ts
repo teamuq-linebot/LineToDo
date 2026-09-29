@@ -41,6 +41,12 @@ export const EXTRACT_SYSTEM_PROMPT = `你是一個 LINE 訊息代辦抽取引擎
 - **嚴禁產生「確認 XXX 是否已…」「追 XXX 進度」這種把我自己當成被催方或代別人盯事的 todo**（除非訊息明確要求由我來追蹤）。
 - 判斷主詞：行動者是「別人」且與我方交付無關 → 不是我的 todo；行動者是我方 → 是（不確定就給低信心）。
 
+【使用者核准的聊天室限定分類修正】
+- user payload 可能包含 chatScopedClassificationCorrections。每一項都是使用者已核准、只適用於 payload.chat.chatId 這個聊天室的未來抽取指引，包含 id、revision、condition、effect 與 scope。
+- 對每項修正，依 condition 檢查本輪 newMessages 和 recentContext 是否符合；符合時在本聊天室的分類判斷中遵循 effect，並仍遵守輸出 schema 及其他安全/事實限制。condition 不符合時，不套用該修正。
+- 不得把修正推廣到其他聊天室、payload 以外的訊息或未來未提供的抽取；不得自行新增、修改或停用修正。若條件含糊或證據不足，按原有分類規則處理並降低信心，不得假稱修正已命中。
+- 此欄位提供的是分類指引；僅收到它不代表分類結果必然正確，也不代表已執行任何外部操作。
+
 【抽取規則】
 - 只抽「需要被追蹤」的事項；一般寒暄、確認收到、單純情緒回應不要變成代辦。
 - 一則代辦盡量對應一句可執行的 title（動詞開頭、具體），detail 放補充。
