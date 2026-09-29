@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { LineTodoApi } from '../shared/api'
@@ -7,12 +7,17 @@ export const DATA_DIRECTORY_IN_USE = 'DATA_DIRECTORY_IN_USE'
 
 export interface LineTodoHostPorts {
   dataDir: string
+  ownerLockFs?: OwnerLockFileSystem
+  stopAcceptingRequests?(): void | Promise<void>
   api?: LineTodoApi
   start?(): Promise<void>
   stop?(): Promise<void>
   dispose?(): Promise<void>
   initialize?(): Promise<Pick<LineTodoRuntime, 'api' | 'start' | 'stop' | 'dispose'>>
 }
+
+export type OwnerLockFileSystem = Pick<typeof import('node:fs'),
+  'closeSync' | 'existsSync' | 'fstatSync' | 'lstatSync' | 'mkdirSync' | 'openSync' | 'readFileSync' | 'unlinkSync' | 'writeFileSync'>
 
 export interface LineTodoRuntime {
   readonly api: LineTodoApi
@@ -36,36 +41,59 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-function acquireOwnerLock(dataDir: string): () => void {
-  mkdirSync(dataDir, { recursive: true })
+function sameFile(a: { dev: number; ino: number }, b: { dev: number; ino: number }): boolean {
+  return a.dev === b.dev && a.ino === b.ino
+}
+
+function unlinkCreatedLock(path: string, identity: { dev: number; ino: number }, fs: OwnerLockFileSystem): void {
+  try {
+    const current = fs.lstatSync(path)
+    if (sameFile(identity, current)) fs.unlinkSync(path)
+  } catch {
+    // The path disappeared or no longer names the file created by this attempt.
+  }
+}
+
+function acquireOwnerLock(dataDir: string, fs: OwnerLockFileSystem): () => void {
+  fs.mkdirSync(dataDir, { recursive: true })
   const path = join(resolve(dataDir), '.line-todo-owner.lock')
   const record: LockRecord = { pid: process.pid, hostname: hostname(), startedAt: new Date().toISOString() }
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const fd = openSync(path, 'wx')
+      const fd = fs.openSync(path, 'wx')
+      const identity = fs.fstatSync(fd)
+      let failure: unknown
       try {
-        writeFileSync(fd, JSON.stringify(record), 'utf8')
+        fs.writeFileSync(fd, JSON.stringify(record), 'utf8')
+      } catch (error) {
+        failure = error
       } finally {
-        closeSync(fd)
+        try { fs.closeSync(fd) } catch (error) { failure ??= error; try { fs.closeSync(fd) } catch { /* close best effort */ } }
+      }
+      if (failure) {
+        unlinkCreatedLock(path, identity, fs)
+        throw Object.assign(new Error('Line Todo owner lock record could not be written'), { code: 'OWNER_LOCK_WRITE_FAILED', cause: failure })
       }
       return () => {
         try {
-          const existing = JSON.parse(readFileSync(path, 'utf8')) as LockRecord
-          if (existing.pid === record.pid && existing.startedAt === record.startedAt) unlinkSync(path)
+          const existingStat = fs.lstatSync(path)
+          if (!sameFile(identity, existingStat)) return
+          const existing = JSON.parse(fs.readFileSync(path, 'utf8')) as LockRecord
+          if (existing.pid === record.pid && existing.startedAt === record.startedAt) fs.unlinkSync(path)
         } catch {
           // Another owner or operator changed the lock; never delete an unowned lock.
         }
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      if (!existsSync(path)) continue
+      if (!fs.existsSync(path)) continue
       try {
-        const owner = JSON.parse(readFileSync(path, 'utf8')) as Partial<LockRecord>
+        const owner = JSON.parse(fs.readFileSync(path, 'utf8')) as Partial<LockRecord>
         // A lock from another machine or malformed lock is ambiguous and fails closed.
         if (owner.hostname !== hostname() || !Number.isInteger(owner.pid) || (owner.pid as number) > 0 && processIsAlive(owner.pid as number)) {
           throw Object.assign(new Error(`Line Todo data directory already has an owner (${String(owner.pid ?? 'unknown')})`), { code: DATA_DIRECTORY_IN_USE })
         }
-        unlinkSync(path)
+        fs.unlinkSync(path)
       } catch (readError) {
         if ((readError as NodeJS.ErrnoException).code === DATA_DIRECTORY_IN_USE) throw readError
         throw Object.assign(new Error('Line Todo owner lock is unreadable; refusing to take ownership'), { code: DATA_DIRECTORY_IN_USE })
@@ -79,7 +107,8 @@ type State = 'created' | 'running' | 'stopped' | 'disposed'
 const SUBSCRIPTION_METHODS = new Set(['onMessage', 'onStatus', 'onMessagesPersisted', 'onRun', 'onTodosChanged', 'onBackfillProgress', 'onReconcileProgress'])
 
 export async function createLineTodoRuntime(ports: LineTodoHostPorts): Promise<LineTodoRuntime> {
-  const releaseLock = acquireOwnerLock(ports.dataDir)
+  const lockFs = ports.ownerLockFs ?? { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync }
+  const releaseLock = acquireOwnerLock(ports.dataDir, lockFs)
   let application: Pick<LineTodoRuntime, 'api' | 'start' | 'stop' | 'dispose'> | undefined
   try { application = await ports.initialize?.() } catch (error) { releaseLock(); throw error }
   const api = application?.api ?? ports.api
@@ -98,10 +127,19 @@ export async function createLineTodoRuntime(ports: LineTodoHostPorts): Promise<L
     if (activeCalls === 0) return
     await new Promise<void>((resolveIdle) => idleWaiters.push(resolveIdle))
   }
-  const stopResources = async (): Promise<void> => {
+  let admissionsClosed = false
+  const closeAdmissions = async (): Promise<void> => {
+    if (admissionsClosed) return
+    await ports.stopAcceptingRequests?.()
+    admissionsClosed = true
+  }
+  const stopResources = async (disposing = false): Promise<void> => {
     state = 'stopped'
-    await stopHost()
+    let failure: unknown
+    if (disposing) { try { await closeAdmissions() } catch (error) { failure = error } }
+    try { await stopHost() } catch (error) { failure ??= error }
     await waitForCalls()
+    if (failure) throw failure
   }
   const guarded = (target: unknown): unknown => {
     if (typeof target !== 'object' || target === null) return target
@@ -158,7 +196,7 @@ export async function createLineTodoRuntime(ports: LineTodoHostPorts): Promise<L
       if (transition) return transition.then(() => runtime.stop())
       transition = (async () => {
         try {
-          await stopResources()
+          await stopResources(false)
         } finally {
           transition = null
         }
@@ -169,11 +207,18 @@ export async function createLineTodoRuntime(ports: LineTodoHostPorts): Promise<L
       if (state === 'disposed') return transition ?? Promise.resolve()
       if (transition) return transition.then(() => runtime.dispose())
       transition = (async () => {
-        let failure: unknown
         try {
-          if (state === 'running') await stopResources()
-          else if (state === 'created') state = 'stopped'
-        } catch (error) { failure = error }
+          if (state === 'running') await stopResources(true)
+          else {
+            state = 'stopped'
+            await closeAdmissions()
+            await waitForCalls()
+          }
+        } catch (error) {
+          transition = null
+          throw error
+        }
+        let failure: unknown
         try { await disposeHost?.() } catch (error) { failure ??= error }
         releaseLock()
         state = 'disposed'

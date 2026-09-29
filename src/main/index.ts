@@ -42,7 +42,7 @@ let scheduler: PipelineScheduler | null = null
 let runtimeDatabase: Database | null = null
 let disposeApiEvents: (() => void) | null = null
 let ipcDisposer: (() => void) | null = null
-let mediaProtocolDisposer: (() => void) | null = null
+let mediaProtocolDisposer: (() => Promise<void>) | null = null
 let quitting = false
 let lastUnsentScan = 0
 let reconcileStarted = false
@@ -105,15 +105,28 @@ app.whenReady().then(async () => {
     start() { if (!fixtureDelivered) { fixtureDelivered = true; messageListeners.forEach((listener) => listener(fixtureMessage)) } },
     stop() {}, status: () => ({ state: 'running' as const, lastMessageAt: null, messageCount: fixtureDelivered ? 1 : 0, lastError: null, restarts: 0 }),
     onMessage(listener: (message: typeof fixtureMessage) => void) { messageListeners.push(listener); return () => { const index = messageListeners.indexOf(listener); if (index >= 0) messageListeners.splice(index, 1) } },
-    onStatus() { return () => undefined }
+    onStatus() { return () => undefined },
+    getMessagesSince: async (sinceMs: number) => fixtureMessage.ts > sinceMs ? [fixtureMessage] : []
   } : {
     start: () => watcher!.start(), stop: () => watcher!.stop(), status: () => watcher!.getStatus(),
     onMessage(listener: (message: typeof fixtureMessage) => void) { watcher!.on('message', listener); return () => watcher!.off('message', listener) },
-    onStatus(listener: (status: LineBridgeStatus) => void) { watcher!.on('status', listener); return () => watcher!.off('status', listener) }
+    onStatus(listener: (status: LineBridgeStatus) => void) { watcher!.on('status', listener); return () => watcher!.off('status', listener) },
+    getMessagesSince: (sinceMs: number, opts: { limit: number }) => getMessagesSince(sinceMs, opts)
   }
   try {
     runtime = await createLineTodoRuntime({
       dataDir,
+      stopAcceptingRequests: async () => {
+        let failure: unknown
+        try { disposeApiEvents?.() } catch (error) { failure ??= error }
+        disposeApiEvents = null
+        try { ipcDisposer?.() } catch (error) { failure ??= error }
+        ipcDisposer = null
+        const disposeMedia = mediaProtocolDisposer
+        mediaProtocolDisposer = null
+        try { await disposeMedia?.() } catch (error) { failure ??= error }
+        if (failure) throw failure
+      },
       initialize: async () => {
         const application = await createLineTodoApplication({
           dataDir,
@@ -124,6 +137,9 @@ app.whenReady().then(async () => {
           providers,
           onSettingsChanged: () => { scheduler?.notifySettingsChanged(); invalidateCliCache(); applyLoginItemSettings(settings) },
           line: linePort,
+          makeExtract: acceptanceMode
+            ? () => async (input) => ({ importance: 'action', newTodos: [{ bucket: 'todo', title: 'Manual review fixture task', detail: null, priority: 1, confidence: 0.95, sourceMsgIds: input.newMessages.map((item) => item.msgId) }], resolved: [], updates: [] })
+            : makeExtract,
           schedulerFactory: (db) => {
             scheduler = new PipelineScheduler({ db, getDefaults,
               getLastRun: () => getLastRun(db), isProviderConfigured: acceptanceMode ? () => true : providers.isProviderConfigured,
@@ -134,33 +150,41 @@ app.whenReady().then(async () => {
             open: (msgId, db) => openMediaFile(msgId, db, mediaDecryptor.decrypt),
             saveAs: (msgId, db) => saveMediaAsFile(msgId, db, mediaDecryptor.decrypt)
           },
-          afterPipelineRun: (_result, db) => {
+          afterPipelineRun: (_result, db, schedule) => {
             if (acceptanceMode) return
-            setImmediate(() => {
+            schedule(() => {
               try { const backup = backupNewMedia(db, { decrypt: mediaDecryptor.decrypt, resetIndex: mediaDecryptor.reset }); if (backup.backedUp) console.log(`[media-backup] backedUp=${backup.backedUp}`) }
               catch (error) { console.warn('[media-backup] failed:', (error as Error).name) }
             })
-            setImmediate(() => {
+            schedule(async (signal) => {
+              if (signal.aborted) return
               if (Date.now() - lastUnsentScan < 5 * 60 * 1000) return
               lastUnsentScan = Date.now()
-              void scanRecentUnsent(3, { db, fetchWindow: async (sinceMs) => ({ messages: await getMessagesSince(sinceMs, { limit: 5000 }) }) })
+              await scanRecentUnsent(3, { db, signal, fetchWindow: async (sinceMs) => ({ messages: await linePort.getMessagesSince(sinceMs, { limit: 5000 }) }) })
                 .catch((error) => console.warn('[unsent-scan] failed:', (error as Error).name))
             })
           },
-          afterStart: (db) => {
+          afterStart: (db, schedule) => {
             if (acceptanceMode) return
-            if (reconcileStarted) return
-            reconcileStarted = true
-            const reconcile = settings.get().reconcile
-            if (!reconcile.enabled) return
-            setImmediate(() => {
-              void runReconcile({ scopeMonths: reconcile.scopeMonths }, {
+            if (!reconcileStarted) {
+              reconcileStarted = true
+              const reconcile = settings.get().reconcile
+              if (reconcile.enabled) schedule(async (signal) => {
+                await runReconcile({ scopeMonths: reconcile.scopeMonths }, {
                 db,
                 checkHealth: () => ({ ok: db.pragma('quick_check', { simple: true }) === 'ok' }),
                 stateFile: join(dataDir, 'reconcile-state.json'),
                 lockFile: join(dataDir, '.reconcile_lock'),
-                onProgress: (progress) => pushToRenderer('evt:reconcile-progress', progress)
+                signal,
+                getMessagesSince: async (sinceMs, opts) => linePort.getMessagesSince(sinceMs, opts),
+                onProgress: (progress) => { if (!signal.aborted) pushToRenderer('evt:reconcile-progress', progress) }
               }).catch((error) => console.warn('[reconcile] failed:', (error as Error).name))
+              })
+            }
+            schedule(async (signal) => {
+              if (signal.aborted) return
+              mkdirSync(join(dataDir, 'ai-cli-workdir'), { recursive: true })
+              await sweepCodexTmpDirs({ tmpRoot: join(dataDir, 'ai-cli-tmp') })
             })
           },
           app: {
@@ -205,10 +229,6 @@ app.whenReady().then(async () => {
         app.quit()
       }).catch((error) => { console.error('[acceptance] fixture failed:', error); app.quit() })
       }
-      setImmediate(() => {
-        mkdirSync(join(dataDir, 'ai-cli-workdir'), { recursive: true })
-        void sweepCodexTmpDirs({ tmpRoot: join(dataDir, 'ai-cli-tmp') }).catch((error) => console.warn('[ai-cli] cleanup failed:', (error as Error).name))
-      })
     })
   } catch (error) {
     console.error('[runtime] startup failed:', error)
@@ -223,11 +243,11 @@ app.on('before-quit', (event) => {
   if (!runtime || quitting) return
   event.preventDefault()
   quitting = true
-  void runtime.dispose().finally(() => {
-    disposeApiEvents?.()
-    ipcDisposer?.()
-    mediaProtocolDisposer?.()
+  void runtime.dispose().then(() => {
     if (acceptanceMode) console.log(`[acceptance] runtime-dispose PASS ownerLockReleased=${!existsSync(join(app.getPath('userData'), '.line-todo-owner.lock'))}`)
     app.quit()
+  }, (error) => {
+    quitting = false
+    console.error('[runtime] shutdown failed before resources were safely disposed:', error instanceof Error ? error.name : 'unknown')
   })
 })

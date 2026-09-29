@@ -18,6 +18,8 @@ import { draftReply } from '../main/llm/draftReply'
 import type { PipelineDefaults } from '../main/config/defaults'
 import type { QwenConfig } from '../main/config/qwen'
 import { reviewLastDays, backfillMediaKeys } from '../main/pipeline/backfill'
+import type { ChatExtractInput } from '../main/pipeline/runOnce'
+import type { ExtractResult } from '../main/llm/schema'
 import { deriveMsgId } from '../main/db/schema'
 import type { PipelineScheduler } from '../main/pipeline/scheduler'
 import type { RawLineMessage as NativeLineMessage } from '../main/line/types'
@@ -32,12 +34,14 @@ export interface LineTodoApplicationPorts {
     status(): LineBridgeStatus
     onMessage(cb: (message: NativeLineMessage) => void): () => void
     onStatus(cb: (status: LineBridgeStatus) => void): () => void
+    getMessagesSince(sinceMs: number, opts: { limit: number }): Promise<NativeLineMessage[]>
   }
   scheduler?: PipelineScheduler
   schedulerFactory?: (db: import('better-sqlite3').Database, repos: ReturnType<typeof createRepositories>) => PipelineScheduler
   settings: SettingsStore
   pipelineConfig: { getDefaults(): PipelineDefaults; getQwenConfig(): QwenConfig; isProviderConfigured(): boolean }
   providers: { resolveProvider(): ReturnType<typeof import('../main/llm/provider').resolveProvider> }
+  makeExtract(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null
   media: {
     open(msgId: string, db: Database): Promise<{ ok: boolean; error?: string }>
     saveAs(msgId: string, db: Database): Promise<{ ok: boolean; canceled?: boolean; error?: string }>
@@ -48,10 +52,12 @@ export interface LineTodoApplicationPorts {
     openOriginal(chatId: string): Promise<{ ok: boolean; error?: string }>
   }
   onSettingsChanged?(): void
-  afterPipelineRun?(result: PipelineRunResult, db: Database): void
-  afterStart?(db: Database): void
+  afterPipelineRun?(result: PipelineRunResult, db: Database, schedule: (job: BackgroundJob) => void): void
+  afterStart?(db: Database, schedule: (job: BackgroundJob) => void): void
   onReconcileProgress?(subscribe: (cb: (progress: ReconcileProgress) => void) => () => void): void
 }
+
+export type BackgroundJob = (signal: AbortSignal) => void | Promise<void>
 
 export interface LineTodoApplication {
   api: Api
@@ -126,11 +132,60 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   }
   const events = new EventEmitter()
   const disposers: Array<() => void> = []
-  let state: 'stopped' | 'running' | 'disposed' = 'stopped'
+  let state: 'stopped' | 'running' | 'stopping' | 'disposed' = 'stopped'
   let transition: Promise<void> | null = null
   const recent: RawLineMessage[] = []
+  const backgroundJobs = new Set<{
+    controller: AbortController
+    handle: NodeJS.Immediate | null
+    done: Promise<void>
+    finish(): void
+  }>()
+
+  const scheduleBackground = (job: BackgroundJob): void => {
+    if (state !== 'running') return
+    let resolveDone!: () => void
+    let finished = false
+    const controller = new AbortController()
+    const entry = {
+      controller,
+      handle: null as NodeJS.Immediate | null,
+      done: new Promise<void>((resolve) => { resolveDone = resolve }),
+      finish: () => {
+        if (finished) return
+        finished = true
+        backgroundJobs.delete(entry)
+        resolveDone()
+      }
+    }
+    backgroundJobs.add(entry)
+    entry.handle = setImmediate(() => {
+      entry.handle = null
+      if (state !== 'running' || controller.signal.aborted) {
+        entry.finish()
+        return
+      }
+      void Promise.resolve().then(() => job(controller.signal)).catch((error) => {
+        if (!controller.signal.aborted) console.warn('[runtime] background job failed:', error instanceof Error ? error.name : 'unknown')
+      }).finally(entry.finish)
+    })
+  }
+
+  const stopBackground = async (): Promise<void> => {
+    const jobs = Array.from(backgroundJobs)
+    for (const job of jobs) {
+      job.controller.abort()
+      if (job.handle) {
+        clearImmediate(job.handle)
+        job.handle = null
+        job.finish()
+      }
+    }
+    await Promise.all(jobs.map((job) => job.done))
+  }
 
   disposers.push(ports.line.onMessage((message) => {
+    if (state !== 'running') return
     const native = { ...message }
     delete native.keyMaterial
     delete native.oid
@@ -154,16 +209,17 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
       console.error('[db] insertMessage failed:', error)
     }
   }))
-  disposers.push(ports.line.onStatus((status) => events.emit('line-status', status)))
+  disposers.push(ports.line.onStatus((status) => { if (state === 'running') events.emit('line-status', status) }))
   const onSchedulerRun = (result: PipelineRunResult) => {
+    if (state !== 'running') return
     events.emit('pipeline-run', result)
     if (result.createdIds.length || result.resolvedIds.length || result.updatedIds.length) {
       const changed: TodosChangedEvent = { createdIds: result.createdIds, resolvedIds: result.resolvedIds, updatedIds: result.updatedIds }
       events.emit('todos-changed', changed)
     }
-    ports.afterPipelineRun?.(result, database.db)
+    ports.afterPipelineRun?.(result, database.db, scheduleBackground)
   }
-  const onSchedulerStatus = (status: PipelineStatus) => events.emit('pipeline-status', status)
+  const onSchedulerStatus = (status: PipelineStatus) => { if (state === 'running') events.emit('pipeline-status', status) }
   scheduler.on('run', onSchedulerRun)
   scheduler.on('status', onSchedulerStatus)
   disposers.push(() => scheduler.off('run', onSchedulerRun), () => scheduler.off('status', onSchedulerStatus))
@@ -254,9 +310,27 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
       status: async () => scheduler.getStatus(),
       loadStats: async (): Promise<PipelineLoadStats> => ({ ...repos.pipeline.getChatsSeenStats(), recentDays: RECENT_DAYS, chatsWithRecentMessages: repos.messages.countChatsWithRecent(RECENT_DAYS) }),
       runOnce: async () => scheduler.triggerNow(),
-      reviewLastDays: async (days = 7): Promise<ReviewLastDaysResult> => reviewLastDays(Number.isFinite(days) && days > 0 ? Math.floor(days) : 7, { db: database.db, onProgress: (progress: BackfillProgress) => events.emit('backfill-progress', progress) }),
+      reviewLastDays: async (days = 7): Promise<ReviewLastDaysResult> => reviewLastDays(Number.isFinite(days) && days > 0 ? Math.floor(days) : 7, {
+        db: database.db,
+        config: ports.pipelineConfig.getDefaults(),
+        fetchWindow: async (sinceMs) => {
+          try { return { messages: await ports.line.getMessagesSince(sinceMs, { limit: 20000 }) } }
+          catch (error) { return { messages: [], error: error instanceof Error ? error.message : String(error) } }
+        },
+        extractFn: ports.makeExtract(),
+        onProgress: (progress: BackfillProgress) => { if (state === 'running') events.emit('backfill-progress', progress) }
+      }),
       backfillMediaKeys: async (days = 7) => {
-        try { const result = await backfillMediaKeys(Number.isFinite(days) && days > 0 ? Math.floor(days) : 7, { db: database.db }); return { ok: true, scanned: result.scanned, mediaBackfilled: result.mediaBackfilled } }
+        try {
+          const result = await backfillMediaKeys(Number.isFinite(days) && days > 0 ? Math.floor(days) : 7, {
+            db: database.db,
+            fetchWindow: async (sinceMs) => {
+              try { return { messages: await ports.line.getMessagesSince(sinceMs, { limit: 20000 }) } }
+              catch (error) { return { messages: [], error: error instanceof Error ? error.message : String(error) } }
+            }
+          })
+          return { ok: true, scanned: result.scanned, mediaBackfilled: result.mediaBackfilled }
+        }
         catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) } }
       },
       setRunning: async (running) => scheduler.setRunning(!!running),
@@ -299,7 +373,9 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
     if (state !== 'running') return transition ?? Promise.resolve()
     if (transition) return transition.then(() => stop())
     transition = (async () => {
+      state = 'stopping'
       try {
+        await stopBackground()
         await scheduler.stop()
         await ports.line.stop()
         state = 'stopped'
@@ -316,11 +392,13 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
       if (transition) return transition
       transition = (async () => {
         try {
+          state = 'running'
           await ports.line.start()
           scheduler.start()
-          state = 'running'
-          ports.afterStart?.(database.db)
+          ports.afterStart?.(database.db, scheduleBackground)
         } catch (error) {
+          state = 'stopping'
+          await stopBackground()
           try { await scheduler.stop() } catch { /* preserve startup failure */ }
           try { await ports.line.stop() } catch { /* preserve startup failure */ }
           state = 'stopped'

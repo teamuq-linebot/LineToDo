@@ -151,8 +151,13 @@ export function registerLinemediaScheme(): void {
  * 註冊 linemedia:// handler（app ready 後）。
  * 僅服務「content_type=1（圖片）且 key_material+file_size 有值」的列；其餘一律 404。
  */
-export function registerLinemediaHandler(database: () => Database = getDb, decrypt: typeof decryptCachedMedia = decryptCachedMedia): () => void {
+export function registerLinemediaHandler(database: () => Database = getDb, decrypt: typeof decryptCachedMedia = decryptCachedMedia): () => Promise<void> {
+  let accepting = true
+  let active = 0
+  let resolveIdle: (() => void) | null = null
   protocol.handle(SCHEME, (req): Response => {
+    if (!accepting) return new Response(null, { status: 404 })
+    active += 1
     try {
       const msgId = parseMsgId(req.url)
       if (!msgId) {
@@ -187,9 +192,16 @@ export function registerLinemediaHandler(database: () => Database = getDb, decry
     } catch (err) {
       console.error(`[media] protocol-error ${err instanceof Error ? err.name : 'unknown'}`)
       return new Response(null, { status: 404 })
+    } finally {
+      active -= 1
+      if (active === 0) { resolveIdle?.(); resolveIdle = null }
     }
   })
-  return () => protocol.unhandle(SCHEME)
+  return async () => {
+    accepting = false
+    protocol.unhandle(SCHEME)
+    if (active > 0) await new Promise<void>((resolve) => { resolveIdle = resolve })
+  }
 }
 
 /** Host-owned media commands used by the application facade and the IPC forwarding adapter. */

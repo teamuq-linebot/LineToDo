@@ -526,6 +526,7 @@ export interface ScanRecentUnsentDeps {
   fetchWindow?: (sinceMs: number) => Promise<{ messages: RawLineMessage[]; error?: string }>
   db?: Database
   now?: () => number
+  signal?: AbortSignal
 }
 
 /**
@@ -551,6 +552,7 @@ export async function scanRecentUnsent(
   const sinceMs = nowMs - days * 24 * 60 * 60 * 1000
 
   const win = await fetchWindow(sinceMs)
+  if (deps.signal?.aborted) return { scanned: 0, unsentMarked: 0 }
   if (win.error) {
     throw new Error(`撈窗口訊息失敗: ${win.error}`)
   }

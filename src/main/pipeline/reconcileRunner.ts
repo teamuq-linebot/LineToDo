@@ -117,6 +117,8 @@ export interface ReconcileDeps {
   sourceDbPath?: string | null
   /** 單飛鎖檔路徑；省略則 <userData>/.reconcile_lock。 */
   lockFile?: string
+  /** Runtime owner cancellation; no new callback, database write, or checkpoint write after abort. */
+  signal?: AbortSignal
 }
 
 /** runReconcile 執行結果（供啟動 log / 測試 assertion；非 UI 契約）。 */
@@ -229,14 +231,16 @@ function sourceMaxTs(source: Map<YearMonth, MonthFingerprint>): number {
  */
 async function reconcileMonth(
   gap: Gap,
-  deps: Required<Pick<ReconcileDeps, 'getMessagesSince'>> & { db?: Db },
+  deps: Required<Pick<ReconcileDeps, 'getMessagesSince'>> & { db?: Db; signal?: AbortSignal },
   opts: { limit: number; maxSubWindows: number; llmSkipCutoffMs: number }
 ): Promise<number> {
   let inserted = 0
   // 首批 cursor = monthStartMs - 1（含月起點當刻的列，因 engine 為嚴格 >）。
   let cursor = gap.monthStartMs - 1
   for (let round = 0; round < opts.maxSubWindows; round++) {
+    if (deps.signal?.aborted) throw new Error('reconcile aborted')
     const batch = await deps.getMessagesSince(cursor, { limit: opts.limit })
+    if (deps.signal?.aborted) throw new Error('reconcile aborted')
     if (batch.length === 0) break
 
     // 只落「落在本月窗口 [monthStartMs, monthEndMs)」的列；超出月尾的列屬其他（已對齊）
@@ -306,7 +310,7 @@ export async function runReconcile(
   // ts >= cutoff（近 7 天）的回填列不標，留給排程器抽。本次執行內一致（各月/子窗共用）。
   const llmSkipCutoffMs = Date.now() - RECONCILE_LLM_SKIP_OLDER_THAN_DAYS * 86_400_000
 
-  const emit = deps.onProgress ?? ((): void => {})
+  const emit = (progress: ReconcileProgress): void => { if (!deps.signal?.aborted) deps.onProgress?.(progress) }
   const checkHealth = deps.checkHealth ?? checkDbHealth
   const getSourceFingerprint =
     deps.getSourceFingerprint ?? (() => getSourceMonthlyFingerprint())
@@ -331,6 +335,7 @@ export async function runReconcile(
 
   // ── 1. 健康 gate（決策 G/H；絕不在壞庫上寫）──────────────────
   const health = checkHealth()
+  if (deps.signal?.aborted) { result.reason = 'aborted'; return result }
   if (!health.ok) {
     result.phase = 'db-unhealthy'
     result.reason = health.reason ?? 'db-unhealthy'
@@ -355,6 +360,7 @@ export async function runReconcile(
     let source: Map<YearMonth, MonthFingerprint>
     try {
       source = await getSourceFingerprint()
+      if (deps.signal?.aborted) { result.reason = 'aborted'; return result }
     } catch (err) {
       // 來源不可得（key miss / 找不到 DB / 解密失敗）→ 不動 App DB、不前移 checkpoint。
       result.phase = 'source-unavailable'
@@ -396,11 +402,12 @@ export async function runReconcile(
     let done = 0
     let anyMonthFailed = false
     for (const gap of toBackfill) {
+      if (deps.signal?.aborted) { result.reason = 'aborted'; return result }
       emit({ phase: 'backfilling', ym: gap.ym, done, total })
       try {
         const insertedThisMonth = await reconcileMonth(
           gap,
-          { getMessagesSince, db: deps.db },
+          { getMessagesSince, db: deps.db, signal: deps.signal },
           { limit: monthBatchLimit, maxSubWindows, llmSkipCutoffMs }
         )
         result.totalInserted += insertedThisMonth
@@ -409,6 +416,7 @@ export async function runReconcile(
           `[reconcile] month ${gap.ym} backfilled inserted=${insertedThisMonth} (deficit=${gap.deficit})`
         )
       } catch (err) {
+        if (deps.signal?.aborted) { result.reason = 'aborted'; return result }
         // 單月失敗：log、標記、不中斷其他月（比照 backfill per-chat fail 隔離）。
         anyMonthFailed = true
         console.warn(
@@ -425,6 +433,7 @@ export async function runReconcile(
     if (!hasRemainder && !anyMonthFailed) {
       const maxTs = sourceMaxTs(source)
       if (maxTs > 0) {
+        if (deps.signal?.aborted) { result.reason = 'aborted'; return result }
         const state: WatchState = { last_ts: maxTs, sig: walSig(sourceDbPath) }
         engineSaveState(stateFile, state)
         result.checkpointAdvanced = true
