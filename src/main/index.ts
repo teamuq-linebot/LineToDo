@@ -18,7 +18,10 @@ import { registerApplicationApiIpc } from './ipc/application.ipc'
 import { registerLinemediaScheme, registerLinemediaHandler, openMediaFile, saveMediaAsFile } from './media/protocol'
 import { backupNewMedia } from './media/backup'
 import { scanRecentUnsent } from './pipeline/backfill'
-import { getMessagesSince } from './line/engine/watchEngine'
+import { getMessagesSince, getLineImportBatch } from './line/engine/watchEngine'
+import type { LineImportBatch } from './line/importTypes'
+import { createParticipantIdentityProvider } from './line/identity'
+import { commitLineImportBatch, isLineImportSchemaReady } from './db/lineImport.repo'
 import { runReconcile } from './pipeline/reconcileRunner'
 import { createMediaDecryptor } from './media/decrypt'
 import { createDriver, handBackNotice, hwndFromNativeHandle, type Driver } from './driver'
@@ -88,6 +91,7 @@ app.whenReady().then(async () => {
   const dataDir = app.getPath('userData')
   settingsStore = createSettingsStore({ userDataDir: dataDir, secrets: safeStorage })
   const settings = settingsStore
+  const participantIdentity = createParticipantIdentityProvider({ userDataDir: dataDir, safeStorage })
   const mediaDecryptor = createMediaDecryptor()
   const getQwenConfig = createQwenConfig({ readApiKey: settings.readApiKey, readBaseUrl: () => settings.get().aiBaseUrl })
   const getDefaults = createPipelineConfig(() => {
@@ -117,6 +121,11 @@ app.whenReady().then(async () => {
     start: () => watcher!.start(), stop: () => watcher!.stop(), status: () => watcher!.getStatus(),
     onMessage(listener: (message: typeof fixtureMessage) => void) { watcher!.on('message', listener); return () => watcher!.off('message', listener) },
     onStatus(listener: (status: LineBridgeStatus) => void) { watcher!.on('status', listener); return () => watcher!.off('status', listener) },
+    setBatchCommitter(committer: (batch: LineImportBatch) => void | Promise<void>) {
+      watcher!.setBatchCommitter(committer)
+    },
+    getLineImportBatch: (cursor: { createdTime: number; rowId: number }, opts: { limit: number; createdTimeExclusive?: number; source?: LineImportBatch['source'] }) =>
+      getLineImportBatch({ ...opts, cursor, source: opts.source ?? 'line-backfill' }),
     getMessagesSince: (sinceMs: number, opts: { limit: number }) => getMessagesSince(sinceMs, opts)
   }
   try {
@@ -148,6 +157,7 @@ app.whenReady().then(async () => {
           providers,
           onSettingsChanged: () => { scheduler?.notifySettingsChanged(); invalidateCliCache(); applyLoginItemSettings(settings) },
           line: linePort,
+          participantIdentity,
           makeExtract: acceptanceMode
             ? () => async (input) => ({ importance: 'action', newTodos: [{ bucket: 'todo', title: 'Manual review fixture task', detail: null, priority: 1, confidence: 0.95, sourceMsgIds: input.newMessages.map((item) => item.msgId) }], resolved: [], updates: [] })
             : makeExtract,
@@ -173,7 +183,12 @@ app.whenReady().then(async () => {
               if (signal.aborted) return
               if (Date.now() - lastUnsentScan < 5 * 60 * 1000) return
               lastUnsentScan = Date.now()
-              await scanRecentUnsent(3, { db, signal, fetchWindow: async (sinceMs) => ({ messages: await linePort.getMessagesSince(sinceMs, { limit: 5000 }) }) })
+              const importReady = isLineImportSchemaReady(db)
+              await scanRecentUnsent(3, { db, signal,
+                fetchWindow: async (sinceMs) => ({ messages: await linePort.getMessagesSince(sinceMs, { limit: 5000 }) }),
+                fetchImportBatch: importReady ? linePort.getLineImportBatch : undefined,
+                commitImportBatch: importReady ? (batch) => commitLineImportBatch(db, batch, participantIdentity) : undefined
+              })
                 .catch((error) => console.warn('[unsent-scan] failed:', (error as Error).name))
             })
           },
@@ -190,6 +205,8 @@ app.whenReady().then(async () => {
                 lockFile: join(dataDir, '.reconcile_lock'),
                 signal,
                 getMessagesSince: async (sinceMs, opts) => linePort.getMessagesSince(sinceMs, opts),
+                getImportBatch: isLineImportSchemaReady(db) ? linePort.getLineImportBatch : undefined,
+                commitImportBatch: isLineImportSchemaReady(db) ? (batch, options) => commitLineImportBatch(db, batch, participantIdentity, options) : undefined,
                 onProgress: (progress) => { if (!signal.aborted) pushToRenderer('evt:reconcile-progress', progress) }
               }).catch((error) => console.warn('[reconcile] failed:', (error as Error).name))
               })

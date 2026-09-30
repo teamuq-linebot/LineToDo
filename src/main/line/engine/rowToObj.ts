@@ -255,7 +255,10 @@ export function rowToObj(row: MessageRow, ctx: RowContext): RawLineMessage {
     ts: row.createdTime,
     time: ctx.iso(row.createdTime) as string,
     direction,
-    sender: direction === 'out' ? 'me' : ctx.senderName || row.from,
+    // Never surface LINE MID as a display-name fallback. A missing contact label is
+    // explicitly unknown; raw source identity is reserved for the main-process importer.
+    sender: direction === 'out' ? 'me' :
+      (ctx.senderName && ctx.senderName !== row.from ? ctx.senderName : '未知發話者'),
     text: body,
     contentType: ct !== null && ct !== undefined ? ct : 0,
     // 已收回旗標；_attribute==1 與 UNSENT 全庫 1:1。None/非數字 -> false。

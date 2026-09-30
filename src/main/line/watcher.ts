@@ -2,7 +2,8 @@ import { watch as fsWatch, type FSWatcher } from 'node:fs'
 import { watchFile as fsWatchFile, type StatWatcher } from 'node:fs'
 import { EventEmitter } from 'node:events'
 import type { RawLineMessage, LineBridgeStatus, LineBridgeState } from './types'
-import { getNewMessagesOnce } from './engine/watchEngine'
+import type { LineImportBatch } from './importTypes'
+import { commitAndAcknowledgeLineImportBatch, getLineImportBatch } from './engine/watchEngine'
 
 /**
  * LineWatcher — 在 main 進程以 in-process TS 引擎（engine/watchEngine）取增量新訊息。
@@ -48,6 +49,7 @@ export class LineWatcher extends EventEmitter {
   private opts: LineWatcherOptions
   private stopped = false
   private busy = false
+  private batchCommitter: ((batch: LineImportBatch) => void | Promise<void>) | null = null
 
   // 事件驅動觸發
   private intervalTimer: NodeJS.Timeout | null = null
@@ -70,6 +72,11 @@ export class LineWatcher extends EventEmitter {
 
   getStatus(): LineBridgeStatus {
     return { ...this.status }
+  }
+
+  /** Install the main-process durable sink before start; failed commits leave the cursor untouched. */
+  setBatchCommitter(committer: (batch: LineImportBatch) => void | Promise<void>): void {
+    this.batchCommitter = committer
   }
 
   private setState(state: LineBridgeState, error?: string | null): void {
@@ -241,11 +248,14 @@ export class LineWatcher extends EventEmitter {
     if (this.status.state !== 'running' && this.status.state !== 'starting') {
       this.setState('starting', null)
     }
-    this.emit('log', `[watcher] engine=ts getNewMessagesOnce(${trigger}) limit=${limit}`)
+    this.emit('log', `[watcher] engine=ts getLineImportBatch(${trigger}) limit=${limit}`)
     try {
-      const msgs = await getNewMessagesOnce({ limit })
+      if (!this.batchCommitter) throw new Error('durable LINE import sink is not configured')
+      const batch = await getLineImportBatch({ limit })
       if (this.stopped) return // stop() 在 await 期間發生：本輪結果整批丟棄，不 emit、不改狀態
-      for (const msg of msgs) this.emitMessage(msg)
+      await commitAndAcknowledgeLineImportBatch(batch, this.batchCommitter)
+      if (this.stopped) return
+      for (const item of batch.items) this.emitMessage(item.message)
       // 正常完成：若還沒切到 running（e.g. 沒有新訊息），至少設 running 消除 starting 狀態。
       if (this.status.state === 'starting') this.setState('running', null)
     } catch (err) {

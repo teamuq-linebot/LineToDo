@@ -44,6 +44,8 @@ import {
   defaultStateFile
 } from '../line/engine/watchEngine'
 import type { WatchState } from '../line/engine/watchEngine'
+import type { LineImportBatch, LineSourceCursor } from '../line/importTypes'
+import type { CommitLineImportResult } from '../db/lineImport.repo'
 import { findDb } from '../line/engine/linedb'
 import {
   detectGaps,
@@ -109,6 +111,9 @@ export interface ReconcileDeps {
   getAppCounts?: (db?: Db) => Map<YearMonth, number>
   /** 取某 cursor 之後的來源訊息。預設 engine getMessagesSince。 */
   getMessagesSince?: (ms: number, opts: { limit: number }) => Promise<RawLineMessage[]>
+  /** Production import path: composite cursor page plus atomic message/participant/receipt sink. */
+  getImportBatch?: (cursor: LineSourceCursor, opts: { limit: number; createdTimeExclusive?: number }) => Promise<LineImportBatch>
+  commitImportBatch?: (batch: LineImportBatch, options: { processedBeforeMs: number }) => CommitLineImportResult
   /** 健康檢查。預設 checkDbHealth。 */
   checkHealth?: () => { ok: boolean; reason?: string }
   /** checkpoint 檔路徑；省略則 defaultStateFile()。 */
@@ -229,12 +234,39 @@ function sourceMaxTs(source: Map<YearMonth, MonthFingerprint>): number {
  *
  * 回傳本月新插入列數（跨子窗加總）。任何一月失敗由呼叫端（runReconcile）catch 隔離。
  */
-async function reconcileMonth(
+export async function reconcileMonth(
   gap: Gap,
-  deps: Required<Pick<ReconcileDeps, 'getMessagesSince'>> & { db?: Db; signal?: AbortSignal },
+  deps: Pick<ReconcileDeps, 'getMessagesSince' | 'getImportBatch' | 'commitImportBatch'> & { db?: Db; signal?: AbortSignal },
   opts: { limit: number; maxSubWindows: number; llmSkipCutoffMs: number }
 ): Promise<number> {
   let inserted = 0
+  if (deps.getImportBatch && deps.commitImportBatch) {
+    let cursor: LineSourceCursor = { createdTime: gap.monthStartMs - 1, rowId: 0 }
+    for (let round = 0; round < opts.maxSubWindows; round++) {
+      if (deps.signal?.aborted) throw new Error('reconcile aborted')
+      const batch = await deps.getImportBatch(cursor, { limit: opts.limit, createdTimeExclusive: gap.monthEndMs })
+      if (deps.signal?.aborted) throw new Error('reconcile aborted')
+      if (batch.cursorFrom.createdTime !== cursor.createdTime || batch.cursorFrom.rowId !== cursor.rowId) {
+        throw new Error('reconcile import cursor mismatch')
+      }
+      if (!batch.items.length) {
+        if (batch.hasMore) throw new Error('reconcile import returned empty continuation page')
+        deps.commitImportBatch(batch, { processedBeforeMs: opts.llmSkipCutoffMs })
+        break
+      }
+      const committed = deps.commitImportBatch(batch, { processedBeforeMs: opts.llmSkipCutoffMs })
+      inserted += committed.inserted
+      if (!batch.hasMore) break
+      if (batch.cursorTo.createdTime < cursor.createdTime ||
+          (batch.cursorTo.createdTime === cursor.createdTime && batch.cursorTo.rowId <= cursor.rowId)) {
+        throw new Error('reconcile import cursor did not advance')
+      }
+      cursor = batch.cursorTo
+      if (round === opts.maxSubWindows - 1) throw new Error('reconcile import page limit reached with more rows')
+    }
+    return inserted
+  }
+  if (!deps.getMessagesSince) throw new Error('reconcile source page provider missing')
   // 首批 cursor = monthStartMs - 1（含月起點當刻的列，因 engine 為嚴格 >）。
   let cursor = gap.monthStartMs - 1
   for (let round = 0; round < opts.maxSubWindows; round++) {
@@ -407,7 +439,7 @@ export async function runReconcile(
       try {
         const insertedThisMonth = await reconcileMonth(
           gap,
-          { getMessagesSince, db: deps.db, signal: deps.signal },
+          { getMessagesSince, getImportBatch: deps.getImportBatch, commitImportBatch: deps.commitImportBatch, db: deps.db, signal: deps.signal },
           { limit: monthBatchLimit, maxSubWindows, llmSkipCutoffMs }
         )
         result.totalInserted += insertedThisMonth

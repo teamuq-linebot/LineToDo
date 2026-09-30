@@ -583,7 +583,44 @@ export interface LineTodoApi {
     open(msgId: string): Promise<{ ok: boolean; error?: string }>
     saveAs(msgId: string): Promise<{ ok: boolean; canceled?: boolean; error?: string }>
   }
+  /** Optional main-owned group discussion projection. Never carries LINE participant keys or raw source identities. */
+  groupTopics?: {
+    setEnabled(chatId: string, enabled: boolean): Promise<{ ok: boolean }>
+    setCrossChatEnabled(chatId: string, enabled: boolean): Promise<{ ok: boolean }>
+    crossChatEnabled(chatId: string): Promise<boolean>
+    list(chatId: string): Promise<{ ok: boolean; topics: GroupTopicDTO[] }>
+    linkCandidates(chatId: string): Promise<GroupTopicLinkCandidateDTO[]>
+    analyze(chatId: string): Promise<{ ok: boolean; reason?: string; count?: number }>
+    todoRefs(topicId: string): Promise<Array<{ todoId: string; status: string; bucket: string; matchedMsgIds: string[] }>>
+  }
   /** 主機能力（選填）：Electron preload 提供；core application 不實作。 */
   driver?: DriverApi
 }
 export type Api = LineTodoApi
+
+export interface GroupTopicDTO {
+  topicId: string
+  chatId: string
+  title: string
+  summary: string
+  lastSourceTs: number
+  evidenceCount: number
+  evidenceMsgIds: string[]
+  participantLowerBound: number | null
+  userParticipation: 'i_participated' | 'unknown'
+  relevance: 'action' | 'awareness' | 'unrelated' | 'unknown'
+  relevanceEvidenceMsgIds: string[]
+  relevanceEvidence: Array<{ relevance: 'action' | 'awareness' | 'unrelated' | 'unknown'; evidenceMsgIds: string[] }>
+  observation: 'unknown'
+  heat: 'unvalidated'
+  trend: 'unknown'
+}
+export interface GroupTopicLinkCandidateDTO {
+  linkId: string
+  otherChatName: string | null
+  topicTitle: string
+  relation: 'unknown'
+  identityEvidence: 'unknown'
+  eventEvidenceCount: number
+  eventEvidenceMsgIds: string[]
+}

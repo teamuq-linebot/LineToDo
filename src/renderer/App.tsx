@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { MessageStream } from './components/MessageStream'
 import { KanbanBoard } from './components/Board/KanbanBoard'
 import { SettingsPanel } from './components/Settings/SettingsPanel'
+import { GroupTopicsPanel } from './features/groupTopics/GroupTopicsPanel'
 
 /**
  * App（M3：代辦看板）。
@@ -11,7 +12,7 @@ import { SettingsPanel } from './components/Settings/SettingsPanel'
  *   - 設定：輪詢頻率、降噪黑名單、AI 判斷引擎（API 金鑰 + AI 端點）。
  */
 
-type Tab = 'board' | 'stream' | 'settings'
+type Tab = 'board' | 'stream' | 'topics' | 'settings'
 type Theme = 'dark' | 'light'
 
 function App(): JSX.Element {
@@ -63,6 +64,12 @@ function App(): JSX.Element {
             即時訊息流
           </button>
           <button
+            className={`tab ${tab === 'topics' ? 'active' : ''}`}
+            onClick={() => setTab('topics')}
+          >
+            群組議題
+          </button>
+          <button
             className={`tab ${tab === 'settings' ? 'active' : ''}`}
             onClick={() => setTab('settings')}
           >
@@ -82,6 +89,7 @@ function App(): JSX.Element {
       <main className={`app-main ${tab === 'stream' ? 'stream-main' : ''}`}>
         {tab === 'board' && <KanbanBoard />}
         {tab === 'stream' && <MessageStream />}
+        {tab === 'topics' && <GroupTopicsPanel />}
         {tab === 'settings' && <SettingsPanel />}
       </main>
     </div>

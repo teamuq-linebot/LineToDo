@@ -26,6 +26,9 @@ import { evaluateChatAutoBlock, isBatchNoise, matchesChatIgnoreKeyword } from '.
 import { findDuplicateOpenTodo } from './dedup'
 import { mapLimited } from './concurrency'
 import type { RawLineMessage } from '../line/types'
+import type { LineImportBatch, LineSourceCursor } from '../line/importTypes'
+import type { CommitLineImportResult } from '../db/lineImport.repo'
+import { fetchAndCommitImportWindow } from './importWindow'
 
 /**
  * backfill.ts — 「回顧過去 N 天」一次性補抓（重用 runOnce 既有抽取/去重/完成偵測邏輯，
@@ -81,6 +84,8 @@ export interface ReviewLastDaysResult {
 export interface ReviewLastDaysDeps {
   /** 取窗口訊息。預設走 in-process 引擎的 getMessagesSince；測試可注入固定陣列。 */
   fetchWindow?: (sinceMs: number) => Promise<{ messages: RawLineMessage[]; error?: string }>
+  fetchImportBatch?: (cursor: LineSourceCursor, opts: { limit: number }) => Promise<LineImportBatch>
+  commitImportBatch?: (batch: LineImportBatch) => CommitLineImportResult
   /** 對單一 chat 抽取。預設 makeExtractFn()；無金鑰回 null。 */
   extractFn?: ((input: ChatExtractInput) => Promise<ExtractResult>) | null
   /** 進度回呼（emit 給 IPC push）。 */
@@ -91,6 +96,8 @@ export interface ReviewLastDaysDeps {
   correctionsForChat?: (chatId: string) => Array<{id:string;revision:number;condition:string;effect:string}>
   onCorrectionsPayloadBuilt?: (chatId:string,messageIds:string[],rules:Array<{id:string;revision:number;condition:string;effect:string}>) => void
 }
+
+type ImportWindowResult = Awaited<ReturnType<typeof fetchAndCommitImportWindow>>
 
 /** bucket → 建立時 active 狀態（與 runOnce.bucketToActiveStatus 一致）。 */
 function bucketToActiveStatus(bucket: TodoDTO['bucket']): TodoDTO['status'] {
@@ -183,7 +190,18 @@ export async function reviewLastDays(
 
   // ── 1. 取窗口訊息 ──────────────────────────────────────────
   emit({ processed: 0, total: 0, phase: 'fetching' })
-  const win = await fetchWindow(sinceMs)
+  let win: { messages: RawLineMessage[]; error?: string }
+  let importWindow: ImportWindowResult | null = null
+  try {
+    if (deps.fetchImportBatch && deps.commitImportBatch) {
+      importWindow = await fetchAndCommitImportWindow(sinceMs, deps.fetchImportBatch, deps.commitImportBatch)
+      win = { messages: importWindow.messages }
+    } else {
+      win = await fetchWindow(sinceMs)
+    }
+  } catch (err) {
+    win = { messages: [], error: err instanceof Error ? err.message : String(err) }
+  }
   if (win.error) {
     result.ok = false
     result.note = `撈窗口訊息失敗: ${win.error}`
@@ -193,7 +211,13 @@ export async function reviewLastDays(
   }
 
   // ── 2. 落庫 messages（去重）+ chats upsert（套自動黑名單）─────
-  const ins = insertMessages(win.messages, db)
+  const ins = importWindow
+    ? {
+        inserted: importWindow.commits.reduce((sum, commit) => sum + commit.inserted, 0),
+        insertedMsgIds: importWindow.commits.flatMap((commit) => commit.insertedMsgIds),
+        chatIds: [...new Set(importWindow.commits.flatMap((commit) => commit.chatIds))]
+      }
+    : insertMessages(win.messages, db)
   result.newMsgs = ins.inserted
   for (const chatId of ins.chatIds) {
     const chat = getChat(chatId, db)
@@ -485,6 +509,8 @@ export interface BackfillMediaKeysResult {
 export interface BackfillMediaKeysDeps {
   /** 取窗口訊息。預設走 in-process 引擎的 getMessagesSince；測試可注入固定陣列。 */
   fetchWindow?: (sinceMs: number) => Promise<{ messages: RawLineMessage[]; error?: string }>
+  fetchImportBatch?: (cursor: LineSourceCursor, opts: { limit: number }) => Promise<LineImportBatch>
+  commitImportBatch?: (batch: LineImportBatch) => CommitLineImportResult
   db?: Database
   now?: () => number
 }
@@ -509,12 +535,25 @@ export async function backfillMediaKeys(
   const nowMs = nowFn()
   const sinceMs = nowMs - days * 24 * 60 * 60 * 1000
 
-  const win = await fetchWindow(sinceMs)
+  let win: { messages: RawLineMessage[]; error?: string }
+  let importWindow: ImportWindowResult | null = null
+  if (deps.fetchImportBatch && deps.commitImportBatch) {
+    try {
+      importWindow = await fetchAndCommitImportWindow(sinceMs, deps.fetchImportBatch, deps.commitImportBatch)
+      win = { messages: importWindow.messages }
+    } catch (err) {
+      win = { messages: [], error: err instanceof Error ? err.message : String(err) }
+    }
+  } else {
+    win = await fetchWindow(sinceMs)
+  }
   if (win.error) {
     throw new Error(`撈窗口訊息失敗: ${win.error}`)
   }
 
-  const ins = insertMessages(win.messages, db)
+  const ins = importWindow
+    ? { mediaBackfilled: importWindow.commits.reduce((sum, commit) => sum + commit.mediaBackfilled, 0) }
+    : insertMessages(win.messages, db)
   // mediaBackfilled 取自 insertMessages 回傳（BF-1 並行批新增的 media 補欄計數）。
   const mediaBackfilled = (ins as { mediaBackfilled?: number }).mediaBackfilled ?? 0
 
@@ -531,6 +570,8 @@ export interface ScanRecentUnsentResult {
 export interface ScanRecentUnsentDeps {
   /** 取窗口訊息。預設走 in-process 引擎的 getMessagesSince；測試可注入固定陣列。 */
   fetchWindow?: (sinceMs: number) => Promise<{ messages: RawLineMessage[]; error?: string }>
+  fetchImportBatch?: (cursor: LineSourceCursor, opts: { limit: number }) => Promise<LineImportBatch>
+  commitImportBatch?: (batch: LineImportBatch) => CommitLineImportResult
   db?: Database
   now?: () => number
   signal?: AbortSignal
@@ -558,12 +599,25 @@ export async function scanRecentUnsent(
   const nowMs = nowFn()
   const sinceMs = nowMs - days * 24 * 60 * 60 * 1000
 
-  const win = await fetchWindow(sinceMs)
+  let win: { messages: RawLineMessage[]; error?: string }
+  let importWindow: ImportWindowResult | null = null
+  if (deps.fetchImportBatch && deps.commitImportBatch) {
+    try {
+      importWindow = await fetchAndCommitImportWindow(sinceMs, deps.fetchImportBatch, deps.commitImportBatch, 5000, deps.signal)
+      win = { messages: importWindow.messages }
+    } catch (err) {
+      win = { messages: [], error: err instanceof Error ? err.message : String(err) }
+    }
+  } else {
+    win = await fetchWindow(sinceMs)
+  }
   if (deps.signal?.aborted) return { scanned: 0, unsentMarked: 0 }
   if (win.error) {
     throw new Error(`撈窗口訊息失敗: ${win.error}`)
   }
 
-  const ins = insertMessages(win.messages, db)
+  const ins = importWindow
+    ? { unsentMarked: importWindow.commits.reduce((sum, commit) => sum + commit.unsentMarked, 0) }
+    : insertMessages(win.messages, db)
   return { scanned: win.messages.length, unsentMarked: ins.unsentMarked ?? 0 }
 }

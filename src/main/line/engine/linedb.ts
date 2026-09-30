@@ -46,6 +46,8 @@ export const CT: Record<number, string | null> = {
 
 /** `newMessages` 回傳的原始 row（對齊 watch_json.py `new_messages` 的 SELECT 欄位）。 */
 export interface NewMessageRow {
+  /** Source SQLite rowid; used only as a deterministic paging tie-breaker. */
+  rowId: number
   chatId: string
   createdTime: number
   from: string | null
@@ -319,7 +321,7 @@ export function newMessages(
 ): NewMessageRow[] {
   const cid = name ? resolveChat(con, name) : null
   let q =
-    'SELECT _chatId,_createdTime,_from,_text,_contentType,_id,' +
+    'SELECT rowid AS _rowid,_chatId,_createdTime,_from,_text,_contentType,_id,' +
     '_contentMetadata,_contentInfo,_attribute FROM _message ' +
     'WHERE _createdTime > ?'
   const args: Array<number | string> = [sinceTs]
@@ -327,9 +329,10 @@ export function newMessages(
     q += ' AND _chatId=?'
     args.push(cid)
   }
-  q += ' ORDER BY _createdTime LIMIT ?'
+  q += ' ORDER BY _createdTime, rowid LIMIT ?'
   args.push(limit)
   const rows = con.prepare(q).all(...args) as Array<{
+    _rowid: number
     _chatId: string
     _createdTime: number
     _from: string | null
@@ -341,6 +344,60 @@ export function newMessages(
     _attribute: number | null
   }>
   return rows.map((r) => ({
+    rowId: r._rowid,
+    chatId: r._chatId,
+    createdTime: r._createdTime,
+    from: r._from,
+    text: r._text,
+    contentType: r._contentType,
+    msgId: r._id,
+    contentMetadata: r._contentMetadata,
+    contentInfo: r._contentInfo,
+    attribute: r._attribute,
+  }))
+}
+
+/**
+ * Read one deterministic page after the composite LINE cursor. Timestamp ties are
+ * completed with the source rowid so a limit boundary cannot skip same-ms rows.
+ */
+export function newMessagesAfter(
+  con: Db,
+  cursor: { createdTime: number; rowId: number },
+  name?: string | null,
+  limit = 500,
+  createdTimeExclusive?: number,
+): NewMessageRow[] {
+  const cid = name ? resolveChat(con, name) : null
+  let q =
+    'SELECT rowid AS _rowid,_chatId,_createdTime,_from,_text,_contentType,_id,' +
+    '_contentMetadata,_contentInfo,_attribute FROM _message ' +
+    'WHERE (_createdTime > ? OR (_createdTime = ? AND rowid > ?))'
+  const args: Array<number | string> = [cursor.createdTime, cursor.createdTime, cursor.rowId]
+  if (cid) {
+    q += ' AND _chatId=?'
+    args.push(cid)
+  }
+  if (createdTimeExclusive !== undefined) {
+    q += ' AND _createdTime < ?'
+    args.push(createdTimeExclusive)
+  }
+  q += ' ORDER BY _createdTime, rowid LIMIT ?'
+  args.push(limit)
+  const rows = con.prepare(q).all(...args) as Array<{
+    _rowid: number
+    _chatId: string
+    _createdTime: number
+    _from: string | null
+    _text: string | null
+    _contentType: number | null
+    _id: number | string | null
+    _contentMetadata: string | null
+    _contentInfo: string | null
+    _attribute: number | null
+  }>
+  return rows.map((r) => ({
+    rowId: r._rowid,
     chatId: r._chatId,
     createdTime: r._createdTime,
     from: r._from,

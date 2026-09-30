@@ -45,6 +45,16 @@ const api = {
   ping: (): Promise<{ ok: boolean; ts: number; version: string }> =>
     ipcRenderer.invoke('app:ping'),
 
+  groupTopics: {
+    setEnabled: (chatId: string, enabled: boolean) => ipcRenderer.invoke('groupTopics:setEnabled', { chatId, enabled }),
+    setCrossChatEnabled: (chatId: string, enabled: boolean) => ipcRenderer.invoke('groupTopics:setCrossChatEnabled', { chatId, enabled }),
+    crossChatEnabled: (chatId: string) => ipcRenderer.invoke('groupTopics:crossChatEnabled', { chatId }),
+    list: (chatId: string) => ipcRenderer.invoke('groupTopics:list', { chatId }),
+    linkCandidates: (chatId: string) => ipcRenderer.invoke('groupTopics:linkCandidates', { chatId }),
+    analyze: (chatId: string) => ipcRenderer.invoke('groupTopics:analyze', { chatId }),
+    todoRefs: (topicId: string) => ipcRenderer.invoke('groupTopics:todoRefs', { topicId })
+  },
+
   messages: {
     /** 最近 N 則訊息（main 端 ring buffer），掛載時用來回放 backlog。 */
     recent: (): Promise<RawLineMessage[]> => ipcRenderer.invoke('messages:recent')

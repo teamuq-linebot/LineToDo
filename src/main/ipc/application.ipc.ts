@@ -10,6 +10,13 @@ export function registerApplicationApiIpc(api: Api): () => void {
   }
   handle('app:ping', () => api.ping())
   handle('messages:recent', () => api.messages.recent())
+  handle('groupTopics:setEnabled', (args) => api.groupTopics?.setEnabled(args?.chatId, !!args?.enabled) ?? { ok: false })
+  handle('groupTopics:setCrossChatEnabled', (args) => api.groupTopics?.setCrossChatEnabled(args?.chatId, !!args?.enabled) ?? { ok: false })
+  handle('groupTopics:crossChatEnabled', (args) => api.groupTopics?.crossChatEnabled(args?.chatId) ?? false)
+  handle('groupTopics:list', (args) => api.groupTopics?.list(args?.chatId) ?? { ok: false, topics: [] })
+  handle('groupTopics:linkCandidates', (args) => api.groupTopics?.linkCandidates(args?.chatId) ?? [])
+  handle('groupTopics:analyze', (args) => api.groupTopics?.analyze(args?.chatId) ?? { ok: false, reason: 'unavailable' })
+  handle('groupTopics:todoRefs', (args) => api.groupTopics?.todoRefs(args?.topicId) ?? [])
   handle('line:status', () => api.line.status())
   handle('line:setRunning', (running) => api.line.setRunning(!!running))
   handle('messages:list', (query) => api.db.messages.list(query ?? {}))

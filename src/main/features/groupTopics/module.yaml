@@ -1,0 +1,25 @@
+module: groupTopics
+status: implemented_unreviewed
+enabled_by_default: false
+owner: main/features/groupTopics
+production_entry: core/application.ts
+public_api:
+  - setEnabled
+  - setCrossChatEnabled
+  - list
+  - linkCandidates
+  - analyze
+  - todoRefs
+authority:
+  executable_todos: existing_todo_pipeline_only
+privacy:
+  raw_line_identity_to_renderer: false
+  participant_keys_to_prompt: false
+  cross_chat_identity: unknown
+calibration:
+  observation: unknown
+  heat: unvalidated
+  trend: unknown
+rollback:
+  - stop exposing the optional groupTopics API
+  - retain additive tables; do not modify messages or todos

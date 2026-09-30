@@ -10,7 +10,7 @@
  *
  * ── 提供的 async API（對照 watch_json.py 的 CLI 模式）──
  *   - getMessagesSince(ms, opts?)   → py `--since <ms>`：不吃 checkpoint、不改 state（backfill 用）
- *   - getNewMessagesOnce(opts?)     → py `--once`（預設）：自 checkpoint 讀 last_ts → 取增量 → 更新 checkpoint
+ *   - getLineImportBatch/commitAndAcknowledgeLineImportBatch：durable watch import。
  *   - resetNow(opts?)               → py `--reset-now`：checkpoint 設到目前最新訊息（不回舊訊息）
  *
  * ── stat-gate ──
@@ -38,15 +38,16 @@
  *   - DB 找不到 / 解密失敗 → openDb 拋 Error（訊息為 py 風格 JSON 字串）。
  *   - 媒體解不了的 gate 已在 rowToObj（回 null，不 throw）。
  */
-import { readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
-import type { Database as Db } from 'better-sqlite3'
-
-import { chatName, findDb, iso, myMid, newMessages, openDb } from './linedb'
+import { chatName, findDb, iso, myMid, newMessagesAfter, openDb } from './linedb'
 import { getKey, type GetKeyOptions } from './linekey'
-import { rowToObj, type MessageRow, type RowContext } from './rowToObj'
+import { rowToObj } from './rowToObj'
 import type { RawLineMessage } from '../types'
+import type { LineImportBatch, LineImportItem, LineSourceCursor } from '../importTypes'
 
 /** 預設每次 poll 的安全上限（對齊 watch_json.py argparse `--limit` default 500）。 */
 export const DEFAULT_LIMIT = 500
@@ -55,6 +56,8 @@ export const DEFAULT_LIMIT = 500
 export interface WatchState {
   /** 已報過的最大 `_createdTime`（epoch ms）。 */
   last_ts: number
+  /** Durable importer cursor; old last_ts-only state is replayed from origin safely. */
+  cursor?: LineSourceCursor
   /** stat-gate 簽章（edb/wal 的 size+mtime_ns）；未知為 null。 */
   sig: WalSig | null
 }
@@ -77,6 +80,8 @@ export interface WatchEngineOptions {
   limit?: number
   /** 限定單一 chat（名稱或 chatId，對齊 py --name）。 */
   name?: string | null
+  /** Backfill/reconcile upper bound (exclusive), so a month scan never commits rows owned by the next month. */
+  createdTimeExclusive?: number
   /** getKey 選項透傳（測試冷啟/自訂快取用）。 */
   keyOpts?: GetKeyOptions
 }
@@ -157,6 +162,8 @@ export function loadState(stateFile: string): WatchState {
     const parsed = JSON.parse(raw) as Partial<WatchState>
     return {
       last_ts: typeof parsed.last_ts === 'number' ? parsed.last_ts : 0,
+      cursor: parsed.cursor && typeof parsed.cursor.createdTime === 'number' && typeof parsed.cursor.rowId === 'number'
+        ? parsed.cursor : undefined,
       sig: parsed.sig ?? null,
     }
   } catch {
@@ -179,48 +186,12 @@ export function saveState(stateFile: string, s: WatchState): void {
   }
 }
 
-/**
- * rowsToContract — 開好的 DB 連線上，取 since 之後的新訊息並轉 NDJSON 契約物件。
- *
- * 組合 linedb.newMessages（原始 row）+ linedb.chatName/myMid/iso（上下文）+
- * rowToObj（純函式契約轉換）。等同 watch_json.py `new_messages` 迴圈裡對每 row
- * 呼叫 `row_to_obj(con, me, ...)`——py 版 row_to_obj 內部即時查 chat_name(c)/
- * chat_name(frm)、算 iso(t)；這裡把那些查詢提到呼叫端注入（rowToObj 為純函式）。
- */
-function rowsToContract(
-  con: Db,
-  sinceTs: number,
-  name: string | null | undefined,
-  limit: number,
-): RawLineMessage[] {
-  const me = myMid(con)
-  const rows = newMessages(con, sinceTs, name, limit)
-  const out: RawLineMessage[] = []
-  for (const r of rows) {
-    const msgRow: MessageRow = {
-      chatId: r.chatId,
-      createdTime: r.createdTime,
-      // rowToObj.MessageRow.from 為 string；LINE row `_from` 可能為 null（系統列），
-      // 以空字串代入使 direction 判定與 sender fallback 與 py 一致（py `frm==me`
-      // 對 None 為 False → 'in'，sender 回 chat_name(None)||None）。這裡 senderName
-      // 已由 chatName(null-ish) 解出，from 空字串僅作 sender 的最終 fallback。
-      from: r.from ?? '',
-      text: r.text,
-      contentType: r.contentType,
-      id: r.msgId,
-      contentMetadata: r.contentMetadata,
-      contentInfo: r.contentInfo,
-      attribute: r.attribute,
-    }
-    const ctx: RowContext = {
-      myMid: me,
-      iso: (ts: number) => iso(ts),
-      chatName: chatName(con, r.chatId),
-      senderName: r.from ? chatName(con, r.from) : null,
-    }
-    out.push(rowToObj(msgRow, ctx))
-  }
-  return out
+/** Strict checkpoint write used only after a durable import transaction succeeds. */
+export function saveStateStrict(stateFile: string, s: WatchState): void {
+  const tmp = stateFile + '.tmp'
+  mkdirSync(dirname(stateFile), { recursive: true })
+  writeFileSync(tmp, JSON.stringify(s), 'utf8')
+  renameSync(tmp, stateFile)
 }
 
 /**
@@ -244,72 +215,81 @@ export async function getMessagesSince(
   ms: number,
   opts: WatchEngineOptions = {},
 ): Promise<RawLineMessage[]> {
-  const dbPath = opts.dbPath ?? findDb()
-  const key = resolveKeyOrThrow(dbPath, opts.keyOpts)
-  const limit = opts.limit ?? DEFAULT_LIMIT
-  const { con, cleanup } = openDb(key, dbPath)
-  try {
-    return rowsToContract(con, ms, opts.name, limit)
-  } finally {
-    cleanup()
-  }
+  // Legacy callers retain a RawLineMessage[] API, but use the same import page
+  // reader/converter as live watch. Durable receipt/participant commit is owned by
+  // the caller's existing persistence path until those backfill callers migrate.
+  // Preserve the legacy `_createdTime > ms` contract while import callers use explicit composite cursors.
+  const batch = await getLineImportBatch({ ...opts, source: 'line-backfill', cursor: { createdTime: ms, rowId: Number.MAX_SAFE_INTEGER } })
+  return batch.items.map((item) => item.message)
 }
 
 /**
- * getNewMessagesOnce(opts?) — 對照 py `--once`（預設）+ `poll`。
- *
- * 自 checkpoint 讀 last_ts → stat-gate → 取增量 → 更新 checkpoint → 回增量。
- *
- * 逐步對照 watch_json.py `poll`：
- *   1. load_state()。
- *   2. wal_sig()；若 sig 未變且已有 last_ts → 回 []（跳過開 DB，省 decrypt/copy）。
- *   3. 開 DB、newMessages(last_ts)。
- *   4. 有新訊息 → last_ts = max(m.ts)；否則若尚無 last_ts → last_ts = MAX(_createdTime)。
- *   5. sig = 新 sig；save_state。
- *   6. 回新訊息（下游負責 emit / 入庫）。
+ * Read one import page without advancing the source checkpoint. The caller must
+ * commit messages, participant pseudonyms and the receipt, then call
+ * acknowledgeLineImportBatch. Cursor ordering is (createdTime, source rowid).
  */
-export async function getNewMessagesOnce(
-  opts: WatchEngineOptions = {},
-): Promise<RawLineMessage[]> {
+export async function getLineImportBatch(
+  opts: WatchEngineOptions & { source?: LineImportBatch['source']; cursor?: LineSourceCursor } = {},
+): Promise<LineImportBatch> {
   const dbPath = opts.dbPath ?? findDb()
   const stateFile = opts.stateFile ?? defaultStateFile()
-  const limit = opts.limit ?? DEFAULT_LIMIT
-
-  const s = loadState(stateFile)
-  const sig = walSig(dbPath)
-  // stat-gate：sig 未變且已有 last_ts → 跳過開 DB。
-  if (s.sig !== null && sigEqual(s.sig, sig) && s.last_ts) {
-    return []
+  const persisted = loadState(stateFile)
+  const cursorFrom = opts.cursor ?? persisted.cursor ?? { createdTime: 0, rowId: 0 }
+  const sourceSig = walSig(dbPath)
+  if (!opts.cursor && persisted.cursor && persisted.sig !== null && sigEqual(persisted.sig, sourceSig)) {
+    const batchId = createHash('sha256').update(`${opts.source ?? 'line-watch'}\0${cursorFrom.createdTime}:${cursorFrom.rowId}\0${cursorFrom.createdTime}:${cursorFrom.rowId}`).digest('hex')
+    return { batchId, source: opts.source ?? 'line-watch', cursorFrom, cursorTo: cursorFrom, hasMore: false, observedAt: new Date().toISOString(), items: [] }
   }
-
   const key = resolveKeyOrThrow(dbPath, opts.keyOpts)
   const { con, cleanup } = openDb(key, dbPath)
-  let msgs: RawLineMessage[]
   try {
-    msgs = rowsToContract(con, s.last_ts ?? 0, opts.name, limit)
-    if (msgs.length > 0) {
-      // reduce（非 Math.max(...spread)）：msgs 可達數十萬筆（首啟/backfill 大批），
-      // 把大陣列 spread 進 Math.max 會爆 call stack（RangeError）。
-      let maxTs = msgs[0].ts
-      for (let i = 1; i < msgs.length; i++) {
-        if (msgs[i].ts > maxTs) maxTs = msgs[i].ts
-      }
-      s.last_ts = maxTs
-    } else if (!s.last_ts) {
-      // 尚無 checkpoint 且無新訊息 → 起算點設到目前最新訊息（對照 py）。
-      const row = con.prepare('SELECT MAX(_createdTime) AS m FROM _message').get() as
-        | { m: number | null }
-        | undefined
-      s.last_ts = (row && row.m) || 0
-    }
+    const limit = opts.limit ?? DEFAULT_LIMIT
+    const rows = newMessagesAfter(con, cursorFrom, opts.name, limit + 1, opts.createdTimeExclusive)
+    const hasMore = rows.length > limit
+    if (hasMore) rows.pop()
+    const accountMid = myMid(con)
+    const items: LineImportItem[] = rows.map((r) => {
+      const message = rowToObj({ chatId: r.chatId, createdTime: r.createdTime, from: r.from ?? '', text: r.text,
+        contentType: r.contentType, id: r.msgId, contentMetadata: r.contentMetadata, contentInfo: r.contentInfo,
+        attribute: r.attribute }, {
+        myMid: accountMid, iso: (ts) => iso(ts), chatName: chatName(con, r.chatId), senderName: r.from ? chatName(con, r.from) : null
+      })
+      return { message, sourceRowId: r.rowId, senderMid: r.from, accountMid }
+    })
+    const cursorTo = rows.length ? { createdTime: rows[rows.length - 1].createdTime, rowId: rows[rows.length - 1].rowId } : cursorFrom
+    const batchId = createHash('sha256').update(`${opts.source ?? 'line-watch'}\0${cursorFrom.createdTime}:${cursorFrom.rowId}\0${cursorTo.createdTime}:${cursorTo.rowId}`).digest('hex')
+    return { batchId, source: opts.source ?? 'line-watch', cursorFrom, cursorTo, hasMore, observedAt: new Date().toISOString(), items }
   } finally {
     cleanup()
   }
-  s.sig = sig
-  saveState(stateFile, s)
-  return msgs
 }
 
+/** Advance checkpoint only after the main-process DB commit has returned success. */
+export function acknowledgeLineImportBatch(batch: LineImportBatch, opts: Pick<WatchEngineOptions, 'stateFile' | 'dbPath'> = {}): void {
+  const stateFile = opts.stateFile ?? defaultStateFile()
+  const state = loadState(stateFile)
+  const current = state.cursor ?? { createdTime: 0, rowId: 0 }
+  if (current.createdTime !== batch.cursorFrom.createdTime || current.rowId !== batch.cursorFrom.rowId) {
+    throw new Error('LINE import cursor changed before batch acknowledgement')
+  }
+  state.cursor = batch.cursorTo
+  state.last_ts = batch.cursorTo.createdTime
+  state.sig = walSig(opts.dbPath ?? findDb())
+  saveStateStrict(stateFile, state)
+}
+
+/** The source cursor moves only after the caller's durable transaction resolves. */
+export async function commitAndAcknowledgeLineImportBatch(
+  batch: LineImportBatch,
+  commit: (batch: LineImportBatch) => void | Promise<void>,
+  opts: Pick<WatchEngineOptions, 'stateFile' | 'dbPath'> = {},
+): Promise<void> {
+  // Empty terminal pages are durable observations too; commit their receipt before acknowledging.
+  await commit(batch)
+  acknowledgeLineImportBatch(batch, opts)
+}
+
+/**
 /**
  * resetNow(opts?) — 對照 py `--reset-now`。
  *
@@ -324,13 +304,13 @@ export async function resetNow(opts: WatchEngineOptions = {}): Promise<number> {
   const { con, cleanup } = openDb(key, dbPath)
   let ts: number
   try {
-    const row = con.prepare('SELECT MAX(_createdTime) AS m FROM _message').get() as
-      | { m: number | null }
+    const row = con.prepare('SELECT _createdTime AS m, rowid AS rid FROM _message ORDER BY _createdTime DESC, rowid DESC LIMIT 1').get() as
+      | { m: number | null; rid: number }
       | undefined
     ts = (row && row.m) || 0
+    saveState(stateFile, { last_ts: ts, cursor: row ? { createdTime: row.m ?? 0, rowId: row.rid } : { createdTime: 0, rowId: 0 }, sig: walSig(dbPath) })
   } finally {
     cleanup()
   }
-  saveState(stateFile, { last_ts: ts, sig: walSig(dbPath) })
   return ts
 }

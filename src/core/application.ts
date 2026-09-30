@@ -24,6 +24,13 @@ import type { ExtractResult } from '../main/llm/schema'
 import { deriveMsgId } from '../main/db/schema'
 import type { PipelineScheduler } from '../main/pipeline/scheduler'
 import type { RawLineMessage as NativeLineMessage } from '../main/line/types'
+import type { LineImportBatch } from '../main/line/importTypes'
+import type { ParticipantIdentityProvider } from '../main/line/identity'
+import { commitLineImportBatch, ensureLineImportSchema } from '../main/db/lineImport.repo'
+import { insertMessages } from '../main/db/messages.repo'
+import { ensureGroupTopicsSchema } from '../main/features/groupTopics/repository'
+import { createGroupTopicsService } from '../main/features/groupTopics/service'
+import { GROUP_TOPICS_BUNDLE_ENABLED } from '../main/features/groupTopics/prompts/bundle'
 
 export interface LineTodoApplicationPorts {
   dataDir: string
@@ -36,7 +43,10 @@ export interface LineTodoApplicationPorts {
     onMessage(cb: (message: NativeLineMessage) => void): () => void
     onStatus(cb: (status: LineBridgeStatus) => void): () => void
     getMessagesSince(sinceMs: number, opts: { limit: number }): Promise<NativeLineMessage[]>
+    getLineImportBatch?(cursor: { createdTime: number; rowId: number }, opts: { limit: number; createdTimeExclusive?: number; source?: LineImportBatch['source'] }): Promise<LineImportBatch>
+    setBatchCommitter?(committer: (batch: LineImportBatch) => void | Promise<void>): void
   }
+  participantIdentity?: ParticipantIdentityProvider
   scheduler?: PipelineScheduler
   schedulerFactory?: (db: import('better-sqlite3').Database, repos: ReturnType<typeof createRepositories>) => PipelineScheduler
   settings: SettingsStore
@@ -135,6 +145,13 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   const events = new EventEmitter()
   const disposers: Array<() => void> = []
   let state: 'stopped' | 'running' | 'stopping' | 'disposed' = 'stopped'
+  let durableLineBatchInstalled = false
+  let lineImportSchemaReady = false
+  let groupTopicsService: ReturnType<typeof createGroupTopicsService> | null = null
+  const unknownIdentity: ParticipantIdentityProvider = {
+    resolve: () => ({ participantKey: null, scope: 'unknown', keyVersion: null, status: 'unknown', reason: 'safe_storage_unavailable' }),
+    epoch: () => null
+  }
   let transition: Promise<void> | null = null
   const recent: RawLineMessage[] = []
   const backgroundJobs = new Set<{
@@ -186,6 +203,35 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
     await Promise.all(jobs.map((job) => job.done))
   }
 
+  if (ports.line.setBatchCommitter) {
+    durableLineBatchInstalled = true
+    try {
+      ensureLineImportSchema(database.db)
+      lineImportSchemaReady = true
+    } catch (error) {
+      // Import coverage is additive and must not prevent the existing TODO app from starting.
+      console.warn('[line-import] additive schema unavailable; receipt and identity coverage disabled:', error instanceof Error ? error.name : 'unknown')
+    }
+    ports.line.setBatchCommitter((batch) => {
+      const persisted = lineImportSchemaReady
+        ? commitLineImportBatch(database.db, batch, ports.participantIdentity ?? unknownIdentity)
+        : insertMessages(batch.items.map((item) => item.message), database.db)
+      if (persisted.inserted > 0) {
+        const payload: MessagesPersistedEvent = { chatIds: persisted.chatIds, inserted: persisted.inserted }
+        events.emit('messages-persisted', payload)
+      }
+    })
+  }
+
+  // Feature-owned additive tables are optional and must never gate core/todo startup.
+  try {
+    if (!GROUP_TOPICS_BUNDLE_ENABLED) throw new Error('prompt_bundle_invalid')
+    ensureGroupTopicsSchema(database.db)
+    groupTopicsService = createGroupTopicsService(database.db)
+  } catch (error) {
+    console.warn('[group-topics] additive schema unavailable; feature disabled:', error instanceof Error ? error.name : 'unknown')
+  }
+
   disposers.push(ports.line.onMessage((message) => {
     if (state !== 'running') return
     const native = { ...message }
@@ -201,14 +247,16 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
     recent.push(safe)
     if (recent.length > 300) recent.splice(0, recent.length - 300)
     events.emit('line-message', safe)
-    try {
-      const persisted = repos.messages.insert(message)
-      if (persisted.inserted > 0) {
-        const payload: MessagesPersistedEvent = { chatIds: persisted.chatIds, inserted: persisted.inserted }
-        events.emit('messages-persisted', payload)
+    if (!durableLineBatchInstalled) {
+      try {
+        const persisted = repos.messages.insert(message)
+        if (persisted.inserted > 0) {
+          const payload: MessagesPersistedEvent = { chatIds: persisted.chatIds, inserted: persisted.inserted }
+          events.emit('messages-persisted', payload)
+        }
+      } catch (error) {
+        console.error('[db] insertMessage failed:', error instanceof Error ? error.name : 'unknown')
       }
-    } catch (error) {
-      console.error('[db] insertMessage failed:', error)
     }
   }))
   disposers.push(ports.line.onStatus((status) => { if (state === 'running') events.emit('line-status', status) }))
@@ -230,6 +278,15 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
 
   const api: Api = {
     ping: async () => ports.app.ping(),
+    groupTopics: groupTopicsService ? {
+      setEnabled: async (chatId, enabled) => groupTopicsService?.enable(chatId, !!enabled) ?? { ok: false },
+      setCrossChatEnabled: async (chatId, enabled) => groupTopicsService?.enableCrossChat(chatId, !!enabled) ?? { ok: false },
+      crossChatEnabled: async (chatId) => groupTopicsService?.crossChatEnabled(chatId) ?? false,
+      list: async (chatId) => groupTopicsService?.list(chatId) ?? { ok: false, topics: [] },
+      linkCandidates: async (chatId) => groupTopicsService?.listLinkCandidates(chatId) ?? [],
+      analyze: async (chatId) => groupTopicsService?.analyze(chatId, () => ports.providers.resolveProvider()) ?? { ok: false, reason: 'unavailable' },
+      todoRefs: async (topicId) => groupTopicsService?.todoRefs(topicId) ?? []
+    } : undefined,
     messages: { recent: async () => recent.slice() },
     line: {
       status: async () => ports.line.status(),
@@ -349,6 +406,10 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
           try { return { messages: await ports.line.getMessagesSince(sinceMs, { limit: 20000 }) } }
           catch (error) { return { messages: [], error: error instanceof Error ? error.message : String(error) } }
         },
+        fetchImportBatch: lineImportSchemaReady && ports.line.getLineImportBatch
+          ? (cursor, opts) => ports.line.getLineImportBatch!(cursor, { ...opts, source: 'line-backfill' })
+          : undefined,
+        commitImportBatch: (batch) => commitLineImportBatch(database.db, batch, ports.participantIdentity ?? unknownIdentity),
         extractFn: ports.makeExtract(),
         correctionsForChat: (chatId) => repos.notMine.corrections(chatId),
         onCorrectionsPayloadBuilt: (chatId,messageIds,rules) => rules.forEach(rule=>repos.notMine.effect(rule,chatId,messageIds,'reviewLastDays')),
@@ -361,7 +422,11 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
             fetchWindow: async (sinceMs) => {
               try { return { messages: await ports.line.getMessagesSince(sinceMs, { limit: 20000 }) } }
               catch (error) { return { messages: [], error: error instanceof Error ? error.message : String(error) } }
-            }
+            },
+            fetchImportBatch: lineImportSchemaReady && ports.line.getLineImportBatch
+              ? (cursor, opts) => ports.line.getLineImportBatch!(cursor, { ...opts, source: 'line-backfill' })
+              : undefined,
+            commitImportBatch: (batch) => commitLineImportBatch(database.db, batch, ports.participantIdentity ?? unknownIdentity)
           })
           return { ok: true, scanned: result.scanned, mediaBackfilled: result.mediaBackfilled }
         }
