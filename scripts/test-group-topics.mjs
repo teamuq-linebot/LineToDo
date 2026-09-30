@@ -10,6 +10,8 @@ import { ensureGroupTopicsSchema } from '../src/main/features/groupTopics/reposi
 import { ensureLineImportSchema } from '../src/main/db/lineImport.repo.ts'
 import { completedInputExists, countPendingMessages, GROUP_TOPICS_VALIDATOR_VERSION, loadMessages, listTopics, saveAnalysis, todoRefs } from '../src/main/features/groupTopics/repository.ts'
 import { GROUP_TOPICS_JSON_SCHEMA, GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_SCHEMA_HASH } from '../src/main/features/groupTopics/prompts/bundle.ts'
+import { makeHttpProvider } from '../src/main/llm/provider/httpOpenAi.ts'
+import { LlmProviderError } from '../src/main/llm/provider/types.ts'
 
 function dbFixture(filename = ':memory:') {
   const db = new Database(filename)
@@ -31,7 +33,7 @@ function dbFixture(filename = ':memory:') {
 }
 
 function fakeProvider(result, capture = () => {}) {
-  return { complete: async (req) => { capture(req); return { text: JSON.stringify(result), meta: { provider:'http',model:'fake',durationMs:0 } } } }
+  return { kind:'http', complete: async (req) => { capture(req); return { text: JSON.stringify(result), meta: { provider:'http',model:'fake',durationMs:0 } } } }
 }
 
 const analysisA = {
@@ -152,11 +154,129 @@ test('completion key changes when prompt or schema contract versions change', as
 test('malformed outputs are rejected and stored only as safe retryable error codes', async () => {
   const db=dbFixture(); const service=createGroupTopicsService(db); service.enable('group-a',true)
   const failed=await service.analyze('group-a',()=>fakeProvider({topics:[],assignments:[]}))
-  assert.deepEqual(failed,{ok:false,reason:'analysis_failed'})
+  assert.deepEqual(failed,{ok:false,reason:'analysis_failed',failure:{stage:'domain_validate',path:'$.assignments',code:'missing_assignment'}})
   assert.equal(db.prepare("SELECT state FROM topic_analysis_runs ORDER BY created_at DESC LIMIT 1").get().state,'failed')
   assert.equal(db.prepare("SELECT error_code FROM topic_analysis_runs ORDER BY created_at DESC LIMIT 1").get().error_code,'invalid_output')
+  assert.deepEqual({...db.prepare("SELECT failure_stage,failure_path,failure_reason,provider_kind FROM topic_analysis_runs ORDER BY created_at DESC LIMIT 1").get()},{failure_stage:'domain_validate',failure_path:'$.assignments',failure_reason:'missing_assignment',provider_kind:'http'})
   assert.equal(db.prepare('SELECT COUNT(*) n FROM discussion_topics').get().n,0)
   db.close()
+})
+
+test('production HTTP adapter sends the exact batch contract without unsupported uniqueItems', async () => {
+  const db=dbFixture(); const service=createGroupTopicsService(db); service.enable('group-a',true)
+  let sentBody
+  const fetch=async (_url,init) => {
+    sentBody=JSON.parse(String(init.body))
+    return new Response(JSON.stringify({id:'synthetic',object:'chat.completion',created:1,model:'mock-model',choices:[{index:0,message:{role:'assistant',content:JSON.stringify(analysisA)},finish_reason:'stop'}],usage:{prompt_tokens:1,completion_tokens:1,total_tokens:2}}),{status:200,headers:{'content-type':'application/json'}})
+  }
+  const provider=makeHttpProvider({apiKey:'synthetic-secret-canary',baseURL:'https://mock.invalid/v1',model:'mock-model',maxRetries:0,fetch})
+  const result=await service.analyze('group-a',()=>provider)
+  assert.deepEqual(result,{ok:true,count:2,analyzedCount:2})
+  const assignments=sentBody.response_format.json_schema.schema.properties.assignments
+  assert.equal(assignments.minItems,2)
+  assert.equal(assignments.maxItems,2)
+  assert.deepEqual(assignments.items.properties.msgId.enum,['a1','a2'])
+  assert.equal(assignments.items.properties.relevanceEvidenceMsgIds.maxItems,2)
+  assert.deepEqual(assignments.items.properties.relevanceEvidenceMsgIds.items.enum,['a1','a2'])
+  const unsupportedPaths=(node,path='$')=>{
+    if(Array.isArray(node)) return node.flatMap((value,index)=>unsupportedPaths(value,`${path}[${index}]`))
+    if(!node||typeof node!=='object') return []
+    return [...(Object.hasOwn(node,'uniqueItems')?[`${path}.uniqueItems`]:[]),...Object.entries(node).flatMap(([key,value])=>unsupportedPaths(value,`${path}.${key}`))]
+  }
+  assert.deepEqual(unsupportedPaths(sentBody.response_format.json_schema.schema),[])
+  const knownUnsupported={...sentBody.response_format.json_schema.schema,properties:{...sentBody.response_format.json_schema.schema.properties,assignments:{...assignments,items:{...assignments.items,properties:{...assignments.items.properties,relevanceEvidenceMsgIds:{...assignments.items.properties.relevanceEvidenceMsgIds,uniqueItems:true}}}}}}
+  assert.deepEqual(unsupportedPaths(knownUnsupported),['$.properties.assignments.items.properties.relevanceEvidenceMsgIds.uniqueItems'])
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_message_decisions WHERE chat_id=\'group-a\'').get().n,2)
+  db.close()
+})
+
+test('duplicate evidence IDs are rejected by the domain even though provider schema omits uniqueItems', async () => {
+  const db=dbFixture(); const service=createGroupTopicsService(db); service.enable('group-a',true)
+  const duplicate={topics:[{ref:'orion',title:'Project Orion',summary:'Planning.'}],assignments:[
+    {msgId:'a1',topicRef:'orion',relation:'about',confidence:.8,relevance:'action',relevanceEvidenceMsgIds:['a1','a1']},
+    {msgId:'a2',topicRef:'orion',relation:'about',confidence:.8,relevance:'unknown',relevanceEvidenceMsgIds:[]}
+  ]}
+  const result=await service.analyze('group-a',()=>fakeProvider(duplicate))
+  assert.deepEqual(result,{ok:false,reason:'analysis_failed',failure:{stage:'domain_validate',path:'$.assignments[*].relevanceEvidenceMsgIds',code:'invalid_evidence'}})
+  assert.equal(service.pendingCount('group-a'),2)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_message_decisions').get().n,0)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_message_checkpoints').get().n,0)
+  db.close()
+})
+
+test('production HTTP LlmProviderError mapping and malformed body persist only safe enums and fixed paths', async () => {
+  const db=dbFixture(); const service=createGroupTopicsService(db); service.enable('group-a',true)
+  const fetch=async () => new Response(JSON.stringify({error:{message:'synthetic-private-response-canary',type:'server_error',param:null,code:'rate_limited'}}),{status:429,headers:{'content-type':'application/json'}})
+  const provider=makeHttpProvider({apiKey:'synthetic-secret-canary',baseURL:'https://mock.invalid/v1',model:'mock-model',maxRetries:0,fetch})
+  const mapped=await provider.complete({system:'synthetic',user:'{}'}).then(()=>null,(error)=>error)
+  assert.ok(mapped instanceof LlmProviderError)
+  assert.equal(mapped.code,'rate_limited')
+  const result=await service.analyze('group-a',()=>provider)
+  assert.deepEqual(result,{ok:false,reason:'analysis_failed',failure:{stage:'provider_complete',path:null,code:'rate_limited'}})
+  let stored=db.prepare("SELECT failure_stage,failure_path,failure_reason,provider_kind,error_code FROM topic_analysis_runs WHERE chat_id='group-a'").get()
+  assert.deepEqual({...stored},{failure_stage:'provider_complete',failure_path:null,failure_reason:'rate_limited',provider_kind:'http',error_code:'rate_limited'})
+  const bodyCanaryFetch=async () => new Response(JSON.stringify({id:'synthetic',object:'chat.completion',created:1,model:'mock-model',choices:[{index:0,message:{role:'assistant',content:'synthetic-raw-output-canary'},finish_reason:'stop'}]}),{status:200,headers:{'content-type':'application/json'}})
+  const malformed=makeHttpProvider({apiKey:'synthetic-secret-canary',baseURL:'https://mock.invalid/v1',model:'mock-model',maxRetries:0,fetch:bodyCanaryFetch})
+  const decoded=await service.analyze('group-a',()=>malformed)
+  assert.deepEqual(decoded,{ok:false,reason:'analysis_failed',failure:{stage:'response_decode',path:null,code:'invalid_json'}})
+  stored=db.prepare("SELECT failure_stage,failure_path,failure_reason,provider_kind,error_code FROM topic_analysis_runs WHERE chat_id='group-a'").get()
+  assert.deepEqual({...stored},{failure_stage:'response_decode',failure_path:null,failure_reason:'invalid_json',provider_kind:'http',error_code:'invalid_json'})
+  const durable=JSON.stringify(db.prepare('SELECT * FROM topic_analysis_runs').all())
+  assert.equal(durable.includes('synthetic-private-response-canary'),false)
+  assert.equal(durable.includes('synthetic-raw-output-canary'),false)
+  assert.equal(durable.includes('synthetic-secret-canary'),false)
+  assert.equal(Object.hasOwn(decoded.failure,'detail'),false)
+  assert.equal(service.pendingCount('group-a'),2)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_message_decisions').get().n,0)
+  db.close()
+})
+
+test('legacy analysis run table upgrades additively and retains rows', () => {
+  const db=new Database(':memory:'); db.pragma('foreign_keys=ON'); db.exec(SCHEMA_DDL)
+  db.exec(`CREATE TABLE topic_analysis_runs (run_id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,input_digest TEXT NOT NULL,prompt_version TEXT NOT NULL,prompt_hash TEXT NOT NULL,schema_version TEXT NOT NULL,schema_hash TEXT NOT NULL,state TEXT NOT NULL,error_code TEXT,created_at TEXT NOT NULL,UNIQUE(chat_id,input_digest))`)
+  db.prepare(`INSERT INTO topic_analysis_runs VALUES('legacy-run','synthetic-chat','digest','p','ph','s','sh','failed','invalid_output','2026-09-30')`).run()
+  ensureGroupTopicsSchema(db)
+  const columns=new Set(db.prepare('PRAGMA table_info(topic_analysis_runs)').all().map((column)=>column.name))
+  for(const name of ['failure_stage','failure_path','failure_reason','provider_kind']) assert.equal(columns.has(name),true)
+  assert.deepEqual({...db.prepare("SELECT run_id,state,error_code FROM topic_analysis_runs WHERE run_id='legacy-run'").get()},{run_id:'legacy-run',state:'failed',error_code:'invalid_output'})
+  assert.throws(()=>db.prepare("UPDATE topic_analysis_runs SET failure_stage='raw provider response' WHERE run_id='legacy-run'").run())
+  db.close()
+})
+
+test('failed run diagnostics survive reopen, remain retryable, and clear after durable success', async () => {
+  const dir=mkdtempSync(join(tmpdir(),'line-todo-topics-safe-failure-')); const filename=join(dir,'topics.sqlite')
+  let db
+  try {
+    db=dbFixture(filename); let service=createGroupTopicsService(db); service.enable('group-a',true)
+    const failing={kind:'cli',complete:async()=>{throw new LlmProviderError('timeout','synthetic-private-message','synthetic-private-detail')}}
+    const result=await service.analyze('group-a',()=>failing)
+    assert.deepEqual(result,{ok:false,reason:'analysis_failed',failure:{stage:'provider_complete',path:null,code:'timeout'}})
+    const failure=db.prepare("SELECT failure_stage,failure_path,failure_reason,provider_kind,error_code FROM topic_analysis_runs WHERE chat_id='group-a'").get()
+    assert.deepEqual({...failure},{failure_stage:'provider_complete',failure_path:null,failure_reason:'timeout',provider_kind:'cli',error_code:'timeout'})
+    assert.equal(service.pendingCount('group-a'),2)
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_message_decisions').get().n,0)
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_message_checkpoints').get().n,0)
+    assert.equal(JSON.stringify(db.prepare('SELECT * FROM topic_analysis_runs').all()).includes('synthetic-private'),false)
+    db.close(); db=null
+
+    db=new Database(filename); db.pragma('foreign_keys=ON'); ensureGroupTopicsSchema(db); service=createGroupTopicsService(db)
+    assert.equal(service.pendingCount('group-a'),2)
+    const retry=await service.analyze('group-a',()=>fakeProvider(analysisA))
+    assert.deepEqual(retry,{ok:true,count:2,analyzedCount:2})
+    assert.equal(service.pendingCount('group-a'),0)
+    const recovered=db.prepare("SELECT state,failure_stage,failure_path,failure_reason,provider_kind,error_code FROM topic_analysis_runs WHERE chat_id='group-a'").get()
+    assert.deepEqual({...recovered},{state:'complete',failure_stage:null,failure_path:null,failure_reason:null,provider_kind:null,error_code:null})
+    db.close(); db=null
+
+    db=new Database(filename); db.pragma('foreign_keys=ON'); ensureGroupTopicsSchema(db)
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM discussion_topics WHERE chat_id='group-a'").get().n,2)
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM topic_message_decisions WHERE chat_id='group-a'").get().n,2)
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM topic_analysis_runs WHERE chat_id='group-a' AND state='complete'").get().n,1)
+    db.close(); db=null
+  } finally {
+    if(db?.open) db.close()
+    rmSync(dir,{recursive:true,force:true})
+  }
 })
 
 test('single-participant repeated messages retain local evidence but cannot produce hot/up or a multi-person claim', async () => {
@@ -168,8 +288,9 @@ test('single-participant repeated messages retain local evidence but cannot prod
     VALUES(?, 'group-a','chat-scoped-synthetic','chat',1,'keyed',0)`)
   const assignments=[]
   for(let i=0;i<30;i++){const id=`spam-${i}`;insert.run(id,10+i);participant.run(id);assignments.push({msgId:id,topicRef:'launch',relation:'repost',confidence:.9,relevance:'unknown',relevanceEvidenceMsgIds:[]})}
-  const result=await service.analyze('group-a',()=>fakeProvider({topics:[{ref:'launch',title:'Project Orion launch',summary:'Repeated launch update.'}],assignments}))
-  assert.deepEqual(result,{ok:true,count:1,analyzedCount:30})
+  const provider={kind:'http',complete:async(req)=>{const supplied=JSON.parse(req.user).messages;return {text:JSON.stringify({topics:[{ref:'launch',title:'Project Orion launch',summary:'Repeated launch update.'}],assignments:supplied.map((m)=>({msgId:m.msgId,topicRef:'launch',relation:'repost',confidence:.9,relevance:'unknown',relevanceEvidenceMsgIds:[]}))}),meta:{provider:'http',model:'mock',durationMs:0}}}}
+  assert.deepEqual(await service.analyze('group-a',()=>provider),{ok:true,count:1,analyzedCount:20})
+  assert.deepEqual(await service.analyze('group-a',()=>provider),{ok:true,count:1,analyzedCount:10})
   const topic=service.list('group-a').topics[0]
   assert.equal(topic.evidenceCount,30)
   assert.equal(topic.participantLowerBound,1)
@@ -220,7 +341,7 @@ test('new runs analyze only pending messages, preserve stable topics and prior e
 test('failed pending batch remains retryable and same-chat concurrent calls share one provider run', async () => {
   const db=dbFixture(); const service=createGroupTopicsService(db); service.enable('group-a',true)
   const invalid=fakeProvider({topics:[],assignments:[]})
-  assert.deepEqual(await service.analyze('group-a',()=>invalid),{ok:false,reason:'analysis_failed'})
+  assert.deepEqual(await service.analyze('group-a',()=>invalid),{ok:false,reason:'analysis_failed',failure:{stage:'domain_validate',path:'$.assignments',code:'missing_assignment'}})
   assert.equal(service.pendingCount('group-a'),2)
   assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_message_decisions').get().n,0)
   assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_message_checkpoints').get().n,0)
@@ -304,7 +425,7 @@ test('pending selection is capped to the latest 100 eligible messages', () => {
   db.close()
 })
 
-test('more than 100 arrivals drain across restarts and same-timestamp messages are not skipped', async () => {
+test('more than 100 arrivals drain in bounded 20-message batches without skipping pending messages', async () => {
   const db=dbFixture(); let service=createGroupTopicsService(db); service.enable('group-a',true)
   const seed={topics:[{ref:'orion',title:'Project Orion',summary:'Planning.'}],assignments:[
     {msgId:'a1',topicRef:'orion',relation:'about',confidence:.8,relevance:'unknown',relevanceEvidenceMsgIds:[]},
@@ -325,17 +446,15 @@ test('more than 100 arrivals drain across restarts and same-timestamp messages a
     return {result,sent}
   }
   assert.equal(service.pendingCount('group-a'),101)
-  const first=await drain()
-  assert.equal(first.sent.length,100)
-  assert.equal(service.pendingCount('group-a'),101)
-  service=createGroupTopicsService(db)
-  const second=await drain()
-  assert.equal(second.sent.length,100)
-  assert.equal(service.pendingCount('group-a'),50)
-  service=createGroupTopicsService(db)
-  const third=await drain()
-  assert.equal(third.sent.length,50)
-  assert.equal(service.pendingCount('group-a'),0)
+  let remaining=250
+  while(remaining>0){
+    service=createGroupTopicsService(db)
+    const batch=await drain()
+    assert.equal(batch.sent.length,Math.min(20,remaining))
+    assert.equal(batch.sent.length<=20,true)
+    remaining-=batch.sent.length
+    assert.equal(service.pendingCount('group-a'),remaining===0?0:Math.min(101,remaining))
+  }
   const ids=db.prepare("SELECT msg_id FROM topic_message_decisions WHERE chat_id='group-a'").all().map((r)=>r.msg_id)
   assert.equal(ids.length,252)
   assert.equal(new Set(ids).size,252)

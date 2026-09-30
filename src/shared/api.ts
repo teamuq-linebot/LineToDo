@@ -591,7 +591,7 @@ export interface LineTodoApi {
     pendingCount(chatId: string): Promise<number>
     list(chatId: string): Promise<{ ok: boolean; topics: GroupTopicDTO[] }>
     linkCandidates(chatId: string): Promise<GroupTopicLinkCandidateDTO[]>
-    analyze(chatId: string): Promise<{ ok: boolean; reason?: string; count?: number; analyzedCount?: number }>
+    analyze(chatId: string): Promise<{ ok: boolean; reason?: string; failure?: { stage: 'provider_resolve'|'provider_complete'|'response_decode'|'domain_validate'|'persist'; path: string|null; code: string }; count?: number; analyzedCount?: number }>
     todoRefs(topicId: string): Promise<Array<{ todoId: string; status: string; bucket: string; matchedMsgIds: string[] }>>
   }
   /** 主機能力（選填）：Electron preload 提供；core application 不實作。 */

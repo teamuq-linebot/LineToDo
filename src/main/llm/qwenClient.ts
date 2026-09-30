@@ -16,6 +16,8 @@ export interface MakeQwenOpts {
   timeoutMs?: number
   /** 失敗自動重試次數（openai SDK 內建）；預設 1，避免拖慢整輪。 */
   maxRetries?: number
+  /** 測試用 transport override；正式 registry 不傳入。 */
+  fetch?: typeof fetch
 }
 
 /** 建立 qwen client。dangerouslyAllowBrowser 不需要（僅 main 進程使用）。 */
@@ -24,7 +26,8 @@ export function makeQwen(opts: MakeQwenOpts): OpenAI {
     apiKey: opts.apiKey,
     baseURL: opts.baseURL,
     timeout: opts.timeoutMs ?? 60_000,
-    maxRetries: opts.maxRetries ?? 1
+    maxRetries: opts.maxRetries ?? 1,
+    fetch: opts.fetch
   })
 }
 

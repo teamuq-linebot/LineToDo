@@ -21,7 +21,12 @@ export function ensureGroupTopicsSchema(db: Database): void {
     CREATE TABLE IF NOT EXISTS topic_analysis_runs (
       run_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, input_digest TEXT NOT NULL, prompt_version TEXT NOT NULL,
       prompt_hash TEXT NOT NULL, schema_version TEXT NOT NULL, schema_hash TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('complete','failed')),
-      error_code TEXT, created_at TEXT NOT NULL, UNIQUE(chat_id,input_digest), FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+      error_code TEXT,
+      failure_stage TEXT CHECK(failure_stage IS NULL OR failure_stage IN ('provider_resolve','provider_complete','response_decode','domain_validate','persist')),
+      failure_path TEXT CHECK(failure_path IS NULL OR failure_path IN ('$','$.topics','$.topics[*].ref','$.topics[*].title','$.topics[*].summary','$.assignments','$.assignments[*]','$.assignments[*].msgId','$.assignments[*].topicRef','$.assignments[*].relation','$.assignments[*].confidence','$.assignments[*].relevance','$.assignments[*].relevanceEvidenceMsgIds')),
+      failure_reason TEXT CHECK(failure_reason IS NULL OR failure_reason IN ('invalid_shape','invalid_value','duplicate_ref','duplicate_assignment','unknown_message_ref','unknown_topic_ref','missing_assignment','invalid_evidence','too_many_topics','invalid_json','provider_unavailable','invalid_config','not_authenticated','not_installed','timeout','rate_limited','quota_exceeded','bad_output','transport','unknown','persistence_failed','analysis_failed')),
+      provider_kind TEXT CHECK(provider_kind IS NULL OR provider_kind IN ('http','cli','unknown')),
+      created_at TEXT NOT NULL, UNIQUE(chat_id,input_digest), FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
     );
     CREATE TABLE IF NOT EXISTS topic_message_checkpoints (
       chat_id TEXT PRIMARY KEY, baseline_ts INTEGER NOT NULL, baseline_msg_id TEXT NOT NULL,
@@ -54,6 +59,14 @@ export function ensureGroupTopicsSchema(db: Database): void {
     INSERT OR IGNORE INTO group_topics_meta(key,value) VALUES ('schema_version','1');
   `))
   tx()
+  const columns = new Set((db.prepare('PRAGMA table_info(topic_analysis_runs)').all() as Array<{name:string}>).map((column) => column.name))
+  const additiveColumns: Array<[string,string]> = [
+    ['failure_stage', "TEXT CHECK(failure_stage IS NULL OR failure_stage IN ('provider_resolve','provider_complete','response_decode','domain_validate','persist'))"],
+    ['failure_path', "TEXT CHECK(failure_path IS NULL OR failure_path IN ('$','$.topics','$.topics[*].ref','$.topics[*].title','$.topics[*].summary','$.assignments','$.assignments[*]','$.assignments[*].msgId','$.assignments[*].topicRef','$.assignments[*].relation','$.assignments[*].confidence','$.assignments[*].relevance','$.assignments[*].relevanceEvidenceMsgIds'))"],
+    ['failure_reason', "TEXT CHECK(failure_reason IS NULL OR failure_reason IN ('invalid_shape','invalid_value','duplicate_ref','duplicate_assignment','unknown_message_ref','unknown_topic_ref','missing_assignment','invalid_evidence','too_many_topics','invalid_json','provider_unavailable','invalid_config','not_authenticated','not_installed','timeout','rate_limited','quota_exceeded','bad_output','transport','unknown','persistence_failed','analysis_failed'))"],
+    ['provider_kind', "TEXT CHECK(provider_kind IS NULL OR provider_kind IN ('http','cli','unknown'))"]
+  ]
+  for (const [name, definition] of additiveColumns) if (!columns.has(name)) db.exec(`ALTER TABLE topic_analysis_runs ADD COLUMN ${name} ${definition}`)
 }
 
 export function setEnabled(db: Database, chatId: string, enabled: boolean): boolean {
@@ -86,8 +99,9 @@ export function loadMessages(db: Database, chatId: string, limit = 100): TopicMe
 }
 
 /** Only undecided messages in a bounded recent window are eligible for a new run. */
-export function loadPendingMessages(db: Database, chatId: string, limit = 100): TopicMessageInput[] {
+export function loadPendingMessages(db: Database, chatId: string, limit = 100, initialWindow = limit): TopicMessageInput[] {
   const boundedLimit = Math.max(1, Math.min(100, limit))
+  const boundedInitialWindow = Math.max(boundedLimit, Math.min(100, initialWindow))
   const checkpoint = db.prepare(`SELECT baseline_ts,baseline_msg_id FROM topic_message_checkpoints WHERE chat_id=?`).get(chatId) as {baseline_ts:number;baseline_msg_id:string}|undefined
   const legacyCheckpoint = checkpoint ?? db.prepare(`SELECT m.ts,m.msg_id FROM topic_message_decisions d JOIN messages m ON m.msg_id=d.msg_id
     WHERE d.chat_id=? ORDER BY m.ts DESC,m.msg_id DESC LIMIT 1`).get(chatId) as {ts:number;msg_id:string}|undefined
@@ -102,7 +116,7 @@ export function loadPendingMessages(db: Database, chatId: string, limit = 100): 
           AND recent.content_type=0 AND recent.text IS NOT NULL AND trim(recent.text)<>''
           ORDER BY recent.ts DESC,recent.msg_id DESC LIMIT ?)
         AND NOT EXISTS (SELECT 1 FROM topic_message_decisions d WHERE d.chat_id=m.chat_id AND d.msg_id=m.msg_id)
-      ORDER BY m.ts,m.msg_id`).all(chatId,chatId,boundedLimit) as Array<{msg_id:string;ts:number;direction:'in'|'out';text:string}>
+      ORDER BY m.ts,m.msg_id LIMIT ?`).all(chatId,chatId,boundedInitialWindow,boundedLimit) as Array<{msg_id:string;ts:number;direction:'in'|'out';text:string}>
   const typedRows = rows as Array<{msg_id:string;ts:number;direction:'in'|'out';text:string}>
   return typedRows.map((row)=>({msgId:row.msg_id,ts:row.ts,direction:row.direction,text:row.text.slice(0,3000)}))
 }
@@ -130,7 +144,8 @@ export function saveAnalysis(db: Database, chatId: string, input: TopicMessageIn
     if (existing?.state === 'complete') return false
     db.prepare(`INSERT INTO topic_analysis_runs(run_id,chat_id,input_digest,prompt_version,prompt_hash,schema_version,schema_hash,state,error_code,created_at)
       VALUES(?,?,?,?,?,?,?,'complete',NULL,?) ON CONFLICT(chat_id,input_digest) DO UPDATE SET run_id=excluded.run_id,
-      prompt_version=excluded.prompt_version,prompt_hash=excluded.prompt_hash,schema_version=excluded.schema_version,schema_hash=excluded.schema_hash,state='complete',error_code=NULL,created_at=excluded.created_at`).run(runId,chatId,digest,versions.promptVersion,versions.promptHash,versions.schemaVersion,versions.schemaHash,now)
+      prompt_version=excluded.prompt_version,prompt_hash=excluded.prompt_hash,schema_version=excluded.schema_version,schema_hash=excluded.schema_hash,state='complete',error_code=NULL,
+      failure_stage=NULL,failure_path=NULL,failure_reason=NULL,provider_kind=NULL,created_at=excluded.created_at`).run(runId,chatId,digest,versions.promptVersion,versions.promptHash,versions.schemaVersion,versions.schemaHash,now)
     const refs = new Map<string,string>()
     for (const topic of result.topics) {
       const topicId = randomUUID(); refs.set(topic.ref,topicId)
@@ -252,16 +267,20 @@ export function todoRefs(db: Database, topicId: string): Array<{todoId:string;st
     .map(({todo,matched})=>({todoId:todo.id,status:todo.status,bucket:todo.bucket,matchedMsgIds:matched}))
 }
 
-export const GROUP_TOPICS_VALIDATOR_VERSION='group-topics-validator-v2'
+export const GROUP_TOPICS_VALIDATOR_VERSION='group-topics-validator-v3'
 function completionDigest(input:TopicMessageInput[],versions:AnalysisVersions):string {
   return createHash('sha256').update(JSON.stringify({messages:input.map((m)=>[m.msgId,m.ts,m.direction,m.text]),promptVersion:versions.promptVersion,promptHash:versions.promptHash,schemaVersion:versions.schemaVersion,schemaHash:versions.schemaHash,validatorVersion:versions.validatorVersion}),'utf8').digest('hex')
 }
 
-export function recordFailure(db: Database, chatId: string, input: TopicMessageInput[], versions: AnalysisVersions, errorCode='analysis_failed'): void {
+export type TopicFailureStage='provider_resolve'|'provider_complete'|'response_decode'|'domain_validate'|'persist'
+export type TopicProviderKind='http'|'cli'|'unknown'
+export type TopicFailureRecord={stage:TopicFailureStage;code:string;path?:string|null;reason:string;providerKind:TopicProviderKind}
+
+export function recordFailure(db: Database, chatId: string, input: TopicMessageInput[], versions: AnalysisVersions, failure:TopicFailureRecord): void {
   const digest=completionDigest(input,versions)
-  db.prepare(`INSERT INTO topic_analysis_runs(run_id,chat_id,input_digest,prompt_version,prompt_hash,schema_version,schema_hash,state,error_code,created_at)
-    VALUES(?,?,?,?,?, ?,?,'failed',?,?) ON CONFLICT(chat_id,input_digest) DO UPDATE SET state='failed',error_code=excluded.error_code,created_at=excluded.created_at WHERE topic_analysis_runs.state<>'complete'`)
-    .run(randomUUID(),chatId,digest,versions.promptVersion,versions.promptHash,versions.schemaVersion,versions.schemaHash,errorCode,new Date().toISOString())
+  db.prepare(`INSERT INTO topic_analysis_runs(run_id,chat_id,input_digest,prompt_version,prompt_hash,schema_version,schema_hash,state,error_code,failure_stage,failure_path,failure_reason,provider_kind,created_at)
+    VALUES(?,?,?,?,?, ?,?,'failed',?,?,?,?,?,?) ON CONFLICT(chat_id,input_digest) DO UPDATE SET state='failed',error_code=excluded.error_code,failure_stage=excluded.failure_stage,failure_path=excluded.failure_path,failure_reason=excluded.failure_reason,provider_kind=excluded.provider_kind,created_at=excluded.created_at WHERE topic_analysis_runs.state<>'complete'`)
+    .run(randomUUID(),chatId,digest,versions.promptVersion,versions.promptHash,versions.schemaVersion,versions.schemaHash,failure.code,failure.stage,failure.path ?? null,failure.reason,failure.providerKind,new Date().toISOString())
 }
 
 export function completedInputExists(db: Database, chatId: string, input: TopicMessageInput[], versions: AnalysisVersions): boolean {

@@ -32,6 +32,8 @@ export interface HttpOpenAiProviderOptions {
   timeoutMs?: number
   /** 失敗自動重試次數（SDK 內建）；預設沿用 qwenClient 的 1。 */
   maxRetries?: number
+  /** Mocked transport for provider contract tests; production registry leaves this unset. */
+  fetch?: typeof fetch
 }
 
 /** 從 completion 取出 assistant 文字內容（防呆）。原 extractor.contentOf。 */
@@ -130,7 +132,8 @@ class HttpOpenAiProvider implements LlmProvider {
       apiKey: opts.apiKey,
       baseURL: opts.baseURL,
       timeoutMs: opts.timeoutMs,
-      maxRetries: opts.maxRetries
+      maxRetries: opts.maxRetries,
+      fetch: opts.fetch
     })
   }
 

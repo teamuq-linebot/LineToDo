@@ -5,6 +5,32 @@ const relevanceText: Record<GroupTopicDTO['relevance'], string> = {
   action: '行動相關', awareness: '知會相關', unrelated: '無關', unknown: '不確定'
 }
 
+const failureCodeText: Record<string,string> = {
+  invalid_shape: '輸出結構不符', invalid_value: '欄位值不符', duplicate_ref: '議題參照重複',
+  duplicate_assignment: '訊息被重複指派', unknown_message_ref: '訊息參照不在本批輸入',
+  unknown_topic_ref: '議題參照不存在', missing_assignment: '部分訊息沒有指派',
+  invalid_evidence: '相關性證據不完整', too_many_topics: '議題數超出上限',
+  invalid_json: '回應不是有效 JSON', persistence_failed: '結果保存失敗',
+  not_installed: '找不到已設定的 AI 工具', not_authenticated: 'AI 工具尚未登入或驗證失敗',
+  timeout: 'AI 工具逾時', rate_limited: 'AI 工具暫時限流', quota_exceeded: 'AI 額度不足',
+  bad_output: 'AI 工具輸出無效', invalid_config: 'AI 設定無效', transport: 'AI 工具連線失敗', unknown: 'AI 工具發生未分類錯誤'
+}
+
+function safeFailureNotice(failure:{stage:string;path:string|null;code:string}):string {
+  if (failure.stage==='provider_resolve') return 'AI provider 尚未就緒；訊息仍待處理，可檢查 AI 設定後重試'
+  if (failure.stage==='provider_complete') return `AI provider 執行失敗：${failureCodeText[failure.code] ?? 'AI 工具執行失敗'}；訊息仍待處理，可重試`
+  if (failure.stage==='response_decode') return 'AI 回應無法解碼；訊息仍待處理，可重試'
+  if (failure.stage==='persist') return '議題結果保存失敗；訊息仍待處理，可重試'
+  const pathLabels:Record<string,string>={
+    '$':'輸出根節點','$.topics':'topics','$.topics[*].ref':'topics.ref','$.topics[*].title':'topics.title',
+    '$.topics[*].summary':'topics.summary','$.assignments':'assignments','$.assignments[*]':'assignments[*]',
+    '$.assignments[*].msgId':'assignments[*].msgId','$.assignments[*].topicRef':'assignments[*].topicRef',
+    '$.assignments[*].relation':'assignments[*].relation','$.assignments[*].confidence':'assignments[*].confidence',
+    '$.assignments[*].relevance':'assignments[*].relevance','$.assignments[*].relevanceEvidenceMsgIds':'assignments[*].relevanceEvidenceMsgIds'
+  }
+  return `AI 輸出契約未通過：${pathLabels[failure.path ?? '$'] ?? '輸出欄位'}，${failureCodeText[failure.code] ?? '格式不符'}；訊息仍待處理，可重試`
+}
+
 export function GroupTopicsPanel(): JSX.Element {
   const api = window.api.groupTopics
   const [chats, setChats] = useState<ChatDTO[]>([])
@@ -59,7 +85,7 @@ export function GroupTopicsPanel(): JSX.Element {
     setBusy(true); setNotice('正在分析此群最近訊息…')
     try {
       const result = await api.analyze(chatId)
-      setNotice(result.ok ? (result.analyzedCount === 0 ? '沒有新增訊息待處理；既有議題結果已保留' : `已整理 ${result.analyzedCount ?? 0} 則新訊息，議題共 ${result.count ?? 0} 項`) : result.reason === 'provider_unavailable' ? 'AI provider 不可用；訊息仍待處理，可稍後重試' : '分析失敗；訊息仍待處理，可稍後重試')
+      setNotice(result.ok ? (result.analyzedCount === 0 ? '沒有新增訊息待處理；既有議題結果已保留' : `已整理 ${result.analyzedCount ?? 0} 則新訊息，議題共 ${result.count ?? 0} 項`) : result.failure ? safeFailureNotice(result.failure) : result.reason === 'provider_unavailable' ? 'AI provider 不可用；訊息仍待處理，可稍後重試' : '分析失敗；訊息仍待處理，可稍後重試')
       await refresh()
     } catch { setNotice('分析失敗；可稍後重試') }
     finally { setBusy(false) }
@@ -83,7 +109,7 @@ export function GroupTopicsPanel(): JSX.Element {
       <p><label><input type="checkbox" checked={enabled} disabled={!api} onChange={(event) => void toggleEnabled(event.target.checked)} /> 啟用此群議題分析</label></p>
       <p><label><input type="checkbox" checked={crossEnabled} disabled={!api || !enabled} onChange={(event) => void toggleCrossChat(event.target.checked)} /> 顯示跨群語意候選（人物一致性不會由此確認）</label></p>
       <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '分析中…' : '分析最近群組訊息'}</button>
-      {enabled && <p>{busy ? '目前訊息正在整理；若失敗可重試。' : pending > 100 ? '有 100 則以上新訊息待整理。' : pending > 0 ? `有 ${pending} 則新訊息待整理。` : '沒有新增訊息待處理，既有議題結果已保留。'}</p>}
+      {enabled && <p>{busy ? '目前每批最多整理 20 則；若仍有待整理訊息，可再次執行。' : pending > 100 ? '有 100 則以上新訊息待整理；每批最多整理 20 則。' : pending > 0 ? `有 ${pending} 則新訊息待整理；每批最多整理 20 則。` : '沒有新增訊息待處理，既有議題結果已保留。'}</p>}
       {notice && <p role="status">{notice}</p>}
       {enabled && <div>
         <h3>此群近期議題</h3>

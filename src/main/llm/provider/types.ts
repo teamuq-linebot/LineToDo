@@ -67,15 +67,23 @@ export type LlmErrorCode =
   | 'unknown'
 
 export class LlmProviderError extends Error {
+  readonly code: LlmErrorCode
+  readonly userMessage: string
+  readonly detail?: string
+  override readonly cause?: unknown
   constructor(
-    readonly code: LlmErrorCode,
+    code: LlmErrorCode,
     /** 給使用者看的繁中訊息（會直接進 UI，不可含路徑以外的技術細節）。 */
-    readonly userMessage: string,
+    userMessage: string,
     /** 只進 log 的細節（stderr 摘要、exit code、原始 error）。 */
-    readonly detail?: string,
-    readonly cause?: unknown
+    detail?: string,
+    cause?: unknown
   ) {
     super(userMessage)
+    this.code = code
+    this.userMessage = userMessage
+    this.detail = detail
+    this.cause = cause
     this.name = 'LlmProviderError'
   }
 
