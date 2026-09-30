@@ -1,5 +1,6 @@
 import { useLineTodoApi } from '../platform/LineTodoApi'
 import { useCallback, useEffect, useState } from 'react'
+import { buildChatNameMap, createChatRefreshScheduler } from './chatRefreshScheduler'
 import type {
   TodoDTO,
   ChatDTO,
@@ -98,13 +99,12 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
   const sortDirection = options.sortDirection
   const chatId = options.chatId
 
-  const loadChats = useCallback(async (): Promise<void> => {
+  const loadChats = useCallback(async (isActive: () => boolean = () => true): Promise<void> => {
     try {
       // 含黑名單一起拉，確保黑名單 chat 產生的歷史 todo 也能顯示正確名稱。
       const chats: ChatDTO[] = await api.db.chats.list(true)
-      const map: ChatNameMap = {}
-      for (const c of chats) map[c.chatId] = { name: c.name, isGroup: c.isGroup }
-      setChatMap(map)
+      if (!isActive()) return
+      setChatMap(buildChatNameMap(chats))
     } catch (err) {
       console.error('[useTodos] loadChats 失敗：', err)
     }
@@ -127,7 +127,8 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
   }, [chatId, sortBy, sortDirection])
 
   useEffect(() => {
-    void loadChats()
+    const chatRefresh = createChatRefreshScheduler(loadChats)
+    chatRefresh.request()
     void refresh()
 
     // 推播自動刷新：每輪結束、todos 異動、有新訊息落庫（名稱可能更新）皆重拉。
@@ -137,14 +138,13 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
     const offTodos = api.pipeline.onTodosChanged(() => {
       void refresh()
     })
-    const offPersisted = api.db.onMessagesPersisted(() => {
-      void loadChats()
-    })
+    const offPersisted = api.db.onMessagesPersisted(chatRefresh.request)
 
     return () => {
       offRun()
       offTodos()
       offPersisted()
+      chatRefresh.dispose()
     }
   }, [loadChats, refresh])
 

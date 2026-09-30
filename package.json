@@ -14,6 +14,7 @@
     "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test:chat-refresh": "node --experimental-strip-types --test scripts/test-chat-refresh.mjs",
     "rebuild": "electron-rebuild -f -w better-sqlite3,better-sqlite3-multiple-ciphers",
     "dist": "electron-vite build && electron-builder --win",
     "smoke:qwen": "node scripts/smoke-qwen.mjs",

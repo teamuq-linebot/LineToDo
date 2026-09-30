@@ -1,8 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App'
 import './styles/index.css'
-import { LineTodoApiProvider } from './platform/LineTodoApi'
+import { RendererRoot } from './RendererRoot'
 
 const container = document.getElementById('root')
 if (!container) {
@@ -11,8 +10,6 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <LineTodoApiProvider api={window.api}>
-      <App />
-    </LineTodoApiProvider>
+    <RendererRoot api={window.api} />
   </StrictMode>
 )
