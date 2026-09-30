@@ -14,6 +14,7 @@ export function GroupTopicsPanel(): JSX.Element {
   const [topics, setTopics] = useState<GroupTopicDTO[]>([])
   const [links, setLinks] = useState<GroupTopicLinkCandidateDTO[]>([])
   const [busy, setBusy] = useState(false)
+  const [pending, setPending] = useState(0)
   const [notice, setNotice] = useState('')
 
   useEffect(() => {
@@ -26,21 +27,22 @@ export function GroupTopicsPanel(): JSX.Element {
 
   useEffect(() => {
     let active = true
-    if (!api || !chatId) { setTopics([]); setLinks([]); setEnabled(false); setCrossEnabled(false); return }
-    void Promise.all([api.list(chatId), api.crossChatEnabled(chatId), api.linkCandidates(chatId)]).then(([result, cross, candidates]) => {
+    if (!api || !chatId) { setTopics([]); setLinks([]); setEnabled(false); setCrossEnabled(false); setPending(0); return }
+    void Promise.all([api.list(chatId), api.crossChatEnabled(chatId), api.linkCandidates(chatId), api.pendingCount(chatId)]).then(([result, cross, candidates, pendingCount]) => {
       if (!active) return
       setEnabled(result.ok)
       setTopics(result.topics)
       setCrossEnabled(cross)
       setLinks(candidates)
+      setPending(pendingCount)
     }).catch(() => { if (active) setNotice('議題功能尚未啟用或資料庫不可用') })
     return () => { active = false }
   }, [api, chatId])
 
   const refresh = async (): Promise<void> => {
     if (!api || !chatId) return
-    const [result, candidates] = await Promise.all([api.list(chatId), api.linkCandidates(chatId)])
-    setEnabled(result.ok); setTopics(result.topics); setLinks(candidates)
+    const [result, candidates, pendingCount] = await Promise.all([api.list(chatId), api.linkCandidates(chatId), api.pendingCount(chatId)])
+    setEnabled(result.ok); setTopics(result.topics); setLinks(candidates); setPending(pendingCount)
   }
 
   const toggleEnabled = async (value: boolean): Promise<void> => {
@@ -48,7 +50,7 @@ export function GroupTopicsPanel(): JSX.Element {
     const result = await api.setEnabled(chatId, value)
     setEnabled(result.ok && value)
     setNotice(result.ok ? (value ? '已為此群組啟用議題分析' : '已停用；既有本機議題保留') : '僅可為未封鎖群組啟用')
-    if (!value) { setTopics([]); setLinks([]) }
+    if (!value) { setTopics([]); setLinks([]); setPending(0) }
     else await refresh()
   }
 
@@ -57,7 +59,7 @@ export function GroupTopicsPanel(): JSX.Element {
     setBusy(true); setNotice('正在分析此群最近訊息…')
     try {
       const result = await api.analyze(chatId)
-      setNotice(result.ok ? `議題已更新（${result.count ?? 0} 項）` : result.reason === 'provider_unavailable' ? 'AI provider 不可用' : result.reason === 'no_messages' ? '沒有可分析的文字訊息' : '分析失敗；可稍後重試')
+      setNotice(result.ok ? (result.analyzedCount === 0 ? '沒有新增訊息待處理；既有議題結果已保留' : `已整理 ${result.analyzedCount ?? 0} 則新訊息，議題共 ${result.count ?? 0} 項`) : result.reason === 'provider_unavailable' ? 'AI provider 不可用；訊息仍待處理，可稍後重試' : '分析失敗；訊息仍待處理，可稍後重試')
       await refresh()
     } catch { setNotice('分析失敗；可稍後重試') }
     finally { setBusy(false) }
@@ -81,6 +83,7 @@ export function GroupTopicsPanel(): JSX.Element {
       <p><label><input type="checkbox" checked={enabled} disabled={!api} onChange={(event) => void toggleEnabled(event.target.checked)} /> 啟用此群議題分析</label></p>
       <p><label><input type="checkbox" checked={crossEnabled} disabled={!api || !enabled} onChange={(event) => void toggleCrossChat(event.target.checked)} /> 顯示跨群語意候選（人物一致性不會由此確認）</label></p>
       <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '分析中…' : '分析最近群組訊息'}</button>
+      {enabled && <p>{busy ? '目前訊息正在整理；若失敗可重試。' : pending > 100 ? '有 100 則以上新訊息待整理。' : pending > 0 ? `有 ${pending} 則新訊息待整理。` : '沒有新增訊息待處理，既有議題結果已保留。'}</p>}
       {notice && <p role="status">{notice}</p>}
       {enabled && <div>
         <h3>此群近期議題</h3>

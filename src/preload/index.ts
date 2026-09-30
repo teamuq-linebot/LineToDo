@@ -49,6 +49,7 @@ const api = {
     setEnabled: (chatId: string, enabled: boolean) => ipcRenderer.invoke('groupTopics:setEnabled', { chatId, enabled }),
     setCrossChatEnabled: (chatId: string, enabled: boolean) => ipcRenderer.invoke('groupTopics:setCrossChatEnabled', { chatId, enabled }),
     crossChatEnabled: (chatId: string) => ipcRenderer.invoke('groupTopics:crossChatEnabled', { chatId }),
+    pendingCount: (chatId: string) => ipcRenderer.invoke('groupTopics:pendingCount', { chatId }),
     list: (chatId: string) => ipcRenderer.invoke('groupTopics:list', { chatId }),
     linkCandidates: (chatId: string) => ipcRenderer.invoke('groupTopics:linkCandidates', { chatId }),
     analyze: (chatId: string) => ipcRenderer.invoke('groupTopics:analyze', { chatId }),

@@ -588,9 +588,10 @@ export interface LineTodoApi {
     setEnabled(chatId: string, enabled: boolean): Promise<{ ok: boolean }>
     setCrossChatEnabled(chatId: string, enabled: boolean): Promise<{ ok: boolean }>
     crossChatEnabled(chatId: string): Promise<boolean>
+    pendingCount(chatId: string): Promise<number>
     list(chatId: string): Promise<{ ok: boolean; topics: GroupTopicDTO[] }>
     linkCandidates(chatId: string): Promise<GroupTopicLinkCandidateDTO[]>
-    analyze(chatId: string): Promise<{ ok: boolean; reason?: string; count?: number }>
+    analyze(chatId: string): Promise<{ ok: boolean; reason?: string; count?: number; analyzedCount?: number }>
     todoRefs(topicId: string): Promise<Array<{ todoId: string; status: string; bucket: string; matchedMsgIds: string[] }>>
   }
   /** 主機能力（選填）：Electron preload 提供；core application 不實作。 */

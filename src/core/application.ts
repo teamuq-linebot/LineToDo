@@ -282,6 +282,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
       setEnabled: async (chatId, enabled) => groupTopicsService?.enable(chatId, !!enabled) ?? { ok: false },
       setCrossChatEnabled: async (chatId, enabled) => groupTopicsService?.enableCrossChat(chatId, !!enabled) ?? { ok: false },
       crossChatEnabled: async (chatId) => groupTopicsService?.crossChatEnabled(chatId) ?? false,
+      pendingCount: async (chatId) => groupTopicsService?.pendingCount(chatId) ?? 0,
       list: async (chatId) => groupTopicsService?.list(chatId) ?? { ok: false, topics: [] },
       linkCandidates: async (chatId) => groupTopicsService?.listLinkCandidates(chatId) ?? [],
       analyze: async (chatId) => groupTopicsService?.analyze(chatId, () => ports.providers.resolveProvider()) ?? { ok: false, reason: 'unavailable' },

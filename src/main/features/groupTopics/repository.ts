@@ -23,6 +23,10 @@ export function ensureGroupTopicsSchema(db: Database): void {
       prompt_hash TEXT NOT NULL, schema_version TEXT NOT NULL, schema_hash TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('complete','failed')),
       error_code TEXT, created_at TEXT NOT NULL, UNIQUE(chat_id,input_digest), FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS topic_message_checkpoints (
+      chat_id TEXT PRIMARY KEY, baseline_ts INTEGER NOT NULL, baseline_msg_id TEXT NOT NULL,
+      FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE
+    );
     CREATE TABLE IF NOT EXISTS topic_message_decisions (
       chat_id TEXT NOT NULL, msg_id TEXT NOT NULL, run_id TEXT NOT NULL, disposition TEXT NOT NULL CHECK(disposition IN ('assigned','not_topic','uncertain')),
       PRIMARY KEY(chat_id,msg_id), FOREIGN KEY(msg_id) REFERENCES messages(msg_id) ON DELETE CASCADE,
@@ -81,17 +85,47 @@ export function loadMessages(db: Database, chatId: string, limit = 100): TopicMe
   return rows.reverse().map((row) => ({ msgId: row.msg_id, ts: row.ts, direction: row.direction, text: row.text.slice(0, 3000) }))
 }
 
+/** Only undecided messages in a bounded recent window are eligible for a new run. */
+export function loadPendingMessages(db: Database, chatId: string, limit = 100): TopicMessageInput[] {
+  const boundedLimit = Math.max(1, Math.min(100, limit))
+  const checkpoint = db.prepare(`SELECT baseline_ts,baseline_msg_id FROM topic_message_checkpoints WHERE chat_id=?`).get(chatId) as {baseline_ts:number;baseline_msg_id:string}|undefined
+  const legacyCheckpoint = checkpoint ?? db.prepare(`SELECT m.ts,m.msg_id FROM topic_message_decisions d JOIN messages m ON m.msg_id=d.msg_id
+    WHERE d.chat_id=? ORDER BY m.ts DESC,m.msg_id DESC LIMIT 1`).get(chatId) as {ts:number;msg_id:string}|undefined
+  const rows = legacyCheckpoint
+    ? db.prepare(`SELECT m.msg_id,m.ts,m.direction,m.text FROM messages m
+      WHERE m.chat_id=? AND m.unsent=0 AND m.content_type=0 AND m.text IS NOT NULL AND trim(m.text)<>'' AND m.ts>=?
+        AND NOT EXISTS (SELECT 1 FROM topic_message_decisions d WHERE d.chat_id=m.chat_id AND d.msg_id=m.msg_id)
+      ORDER BY m.ts,m.msg_id LIMIT ?`).all(chatId,'baseline_ts' in legacyCheckpoint ? legacyCheckpoint.baseline_ts : legacyCheckpoint.ts,boundedLimit)
+    : db.prepare(`SELECT m.msg_id,m.ts,m.direction,m.text FROM messages m
+      WHERE m.chat_id=? AND m.unsent=0 AND m.content_type=0 AND m.text IS NOT NULL AND trim(m.text)<>''
+        AND m.msg_id IN (SELECT recent.msg_id FROM messages recent WHERE recent.chat_id=? AND recent.unsent=0
+          AND recent.content_type=0 AND recent.text IS NOT NULL AND trim(recent.text)<>''
+          ORDER BY recent.ts DESC,recent.msg_id DESC LIMIT ?)
+        AND NOT EXISTS (SELECT 1 FROM topic_message_decisions d WHERE d.chat_id=m.chat_id AND d.msg_id=m.msg_id)
+      ORDER BY m.ts,m.msg_id`).all(chatId,chatId,boundedLimit) as Array<{msg_id:string;ts:number;direction:'in'|'out';text:string}>
+  const typedRows = rows as Array<{msg_id:string;ts:number;direction:'in'|'out';text:string}>
+  return typedRows.map((row)=>({msgId:row.msg_id,ts:row.ts,direction:row.direction,text:row.text.slice(0,3000)}))
+}
+
+export function countPendingMessages(db: Database, chatId: string, limit = 100): number {
+  const pending = loadPendingMessages(db,chatId,Math.min(100,limit)).length
+  return pending === Math.min(100,limit) ? pending + 1 : pending
+}
+
 export function loadTopicCandidates(db: Database, chatId: string): Array<{ref:string;title:string;summary:string}> {
   return db.prepare('SELECT local_ref AS ref,title,summary FROM discussion_topics WHERE chat_id=? ORDER BY last_source_ts DESC LIMIT 100').all(chatId) as Array<{ref:string;title:string;summary:string}>
 }
 
 type AnalysisVersions={promptVersion:string;promptHash:string;schemaVersion:string;schemaHash:string;validatorVersion:string}
 
-export function saveAnalysis(db: Database, chatId: string, input: TopicMessageInput[], result: TopicAnalysis, versions: AnalysisVersions): boolean {
+export function saveAnalysis(db: Database, chatId: string, input: TopicMessageInput[], result: TopicAnalysis, versions: AnalysisVersions): boolean | 'inactive' {
   const digest = completionDigest(input, versions)
   const runId = randomUUID()
   const now = new Date().toISOString()
   const tx = db.transaction(() => {
+    const active = db.prepare(`SELECT c.is_group,c.blocked,p.enabled FROM chats c
+      LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {is_group:number;blocked:number;enabled:number|null}|undefined
+    if (!active || active.is_group !== 1 || active.blocked === 1 || active.enabled !== 1) return 'inactive' as const
     const existing = db.prepare('SELECT state FROM topic_analysis_runs WHERE chat_id=? AND input_digest=?').get(chatId,digest) as { state: string } | undefined
     if (existing?.state === 'complete') return false
     db.prepare(`INSERT INTO topic_analysis_runs(run_id,chat_id,input_digest,prompt_version,prompt_hash,schema_version,schema_hash,state,error_code,created_at)
@@ -133,6 +167,9 @@ export function saveAnalysis(db: Database, chatId: string, input: TopicMessageIn
       if (topicId) writeEvidence.run(topicId,assignment.msgId,assignment.relation,assignment.confidence,assignment.relevance,
         JSON.stringify(assignment.relevanceEvidenceMsgIds.filter((id)=>allowed.has(id))),runId)
     }
+    const firstInput = input[0]
+    if (firstInput) db.prepare(`INSERT OR IGNORE INTO topic_message_checkpoints(chat_id,baseline_ts,baseline_msg_id) VALUES(?,?,?)`)
+      .run(chatId,firstInput.ts,firstInput.msgId)
     // Candidate recall only: this lexical overlap cannot verify either participant identity
     // or that two groups mean the same occurrence. Persist as unknown/proposed with local evidence refs.
     if (crossChatIsEnabled(db, chatId)) {
