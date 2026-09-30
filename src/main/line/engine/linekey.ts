@@ -74,6 +74,8 @@ export interface GetKeyOptions {
   skipCache?: boolean
   /** recover 命中後是否寫快取（預設 true）。 */
   cache?: boolean
+  /** 略過 live recover（不掃 LINE 記憶體）：env／cache 都 miss 時直接回 null。driver_post D5。 */
+  skipRecover?: boolean
 }
 
 /**
@@ -309,6 +311,7 @@ export function getKey(opts: GetKeyOptions = {}): string | null {
     }
   }
 
-  // 3. live recover
+  // 3. live recover（skipRecover：由使用者觸發的流程只用快取，不掃記憶體）
+  if (opts.skipRecover) return null
   return recoverKey({ ...opts, dbPath })
 }

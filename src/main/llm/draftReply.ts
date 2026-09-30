@@ -5,7 +5,9 @@ import type { LlmProvider } from './provider/types'
 /**
  * draftReply.ts — 為「等回覆 / 待辦」草擬一則回覆（IMPLEMENTATION_PLAN.md §5 todos:draftReply）。
  *
- * MVP 只「草擬」不送出（真送出 driver_post 延後）。本模組純呼叫 LLM provider，回一段繁中文字草稿。
+ * 本模組只「草擬」。對話框的「填入 LINE」（driver_post，src/main/driver）只把草稿填進 LINE 輸入框、永遠不送出；
+ * 下面 system prompt 的「你只是草稿，不會真的送出」維持不變（對 LLM 仍然只是草稿，也避免影響 eval 基準）。
+ * 本模組純呼叫 LLM provider，回一段繁中文字草稿。
  * 不碰 DB、不讀金鑰；provider 由呼叫端傳入（金鑰即用即丟；model 由 provider 自己解析）。
  * 失敗一律 throw，IPC 呼叫端 catch 後回友善錯誤。
  */

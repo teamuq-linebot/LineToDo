@@ -10,6 +10,7 @@ import type {
 import { ApiKeyField } from './ApiKeyField'
 import { BlocklistEditor } from './BlocklistEditor'
 import { ProviderHealthCheck } from './ProviderHealthCheck'
+import { DriverPostSettings } from './DriverPostSettings'
 import {
   POLL_SEC_MAX,
   PROVIDERS,
@@ -553,6 +554,7 @@ export function SettingsPanel(): JSX.Element {
           </div>
         )}
       </div>
+      <DriverPostSettings view={view} onPatch={(p) => void patch({ driverPost: p })} />
 
       {/* 黑名單 */}
       <div className="set-section">

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, Notification, safeStorage, shell } from 'electron'
 import { join, resolve } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
 import { createWindow } from './window'
@@ -21,6 +21,10 @@ import { scanRecentUnsent } from './pipeline/backfill'
 import { getMessagesSince } from './line/engine/watchEngine'
 import { runReconcile } from './pipeline/reconcileRunner'
 import { createMediaDecryptor } from './media/decrypt'
+import { createDriver, handBackNotice, hwndFromNativeHandle, type Driver } from './driver'
+import { createProgressPusher, registerDriverIpc } from './ipc/driver.ipc'
+import { getTodo as getTodoRow } from './db/todos.repo'
+import { getChat as getChatRow } from './db/chats.repo'
 import type { Database } from 'better-sqlite3'
 import type { LineBridgeStatus, LineTodoApi } from '../shared/api'
 
@@ -47,6 +51,8 @@ let quitting = false
 let lastUnsentScan = 0
 let reconcileStarted = false
 let settingsStore: ReturnType<typeof createSettingsStore> | null = null
+let driver: Driver | null = null
+let driverIpcDisposer: (() => void) | null = null
 
 function pushToRenderer(channel: string, payload: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
@@ -122,6 +128,11 @@ app.whenReady().then(async () => {
         disposeApiEvents = null
         try { ipcDisposer?.() } catch (error) { failure ??= error }
         ipcDisposer = null
+        try { driverIpcDisposer?.() } catch (error) { failure ??= error }
+        driverIpcDisposer = null
+        const disposeDriver = driver
+        driver = null
+        try { await disposeDriver?.dispose() } catch (error) { failure ??= error }
         const disposeMedia = mediaProtocolDisposer
         mediaProtocolDisposer = null
         try { await disposeMedia?.() } catch (error) { failure ??= error }
@@ -204,6 +215,33 @@ app.whenReady().then(async () => {
     }, mediaDecryptor.decrypt)
     api = runtime.api
     ipcDisposer = registerApplicationApiIpc(api)
+    // 草稿填入 LINE（driver_post）：只在使用者按「填入 LINE」時才會 spawn helper／讀 LINE DB。
+    // 驗收模式（假 LINE）不註冊，renderer 的 api.driver 呼叫會失敗而退回「只能複製」。
+    if (!acceptanceMode) {
+      driver = createDriver({
+        getSettings: () => settings.get().driverPost,
+        getTodo: (todoId) => {
+          const db = runtimeDatabase
+          const todo = db ? getTodoRow(todoId, db) : null
+          return todo ? { chatId: todo.chatId } : null
+        },
+        getChatName: (chatId) => {
+          const db = runtimeDatabase
+          return db ? getChatRow(chatId, db)?.name ?? null : null
+        },
+        lineTodoHwnd: () => (mainWindow && !mainWindow.isDestroyed() ? hwndFromNativeHandle(mainWindow.getNativeWindowHandle()) : null),
+        onHandBackFailed: (chatName) => {
+          // design-v2 §9.3-6：交還焦點失敗 → 工作列閃爍＋系統通知（不含草稿）。
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.flashFrame(true)
+          if (Notification.isSupported()) new Notification({ title: 'line-todo', body: handBackNotice(chatName) }).show()
+        },
+        pushProgress: createProgressPusher(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null))
+      })
+      driverIpcDisposer = registerDriverIpc({
+        driver,
+        isTrustedSender: (sender) => !!mainWindow && !mainWindow.isDestroyed() && sender === mainWindow.webContents
+      })
+    }
     disposeApiEvents = bindApiEvents(api)
     mainWindow = createWindow()
     if (acceptanceMode) mainWindow.webContents.once('did-finish-load', () => console.log('[acceptance] renderer-loaded (isolated dataDir, fake line, fake extract, no LINE/AI I/O)'))

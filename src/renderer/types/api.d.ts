@@ -31,7 +31,24 @@ export type {
   BlocklistRules,
   SettingsView,
   SettingsPatch,
-  DraftReplyResult
+  DraftReplyResult,
+  DriverPostMode,
+  DriverPostSettings,
+  DriverStatus,
+  DriverPostRequest,
+  DriverPostStage,
+  DriverPostProgress,
+  DriverPostErrorCode,
+  DraftLeftInLine,
+  LineSideEffects,
+  VisibilityHint,
+  LocateEvidence,
+  OpenEvidence,
+  DriverPostResult,
+  DriverQuietAction,
+  DriverFollowUpAction,
+  DriverFollowUpResult,
+  DriverApi
 } from '../../shared/api'
 
 declare global {

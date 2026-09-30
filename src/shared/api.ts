@@ -285,6 +285,8 @@ export interface SettingsView {
   claudeCli: CliProviderSettings
   /** Codex CLI provider 設定（aiProvider='codexCli' 時生效）。 */
   codexCli: CliProviderSettings
+  /** 草稿填入 LINE 設定。 */
+  driverPost: DriverPostSettings
   /** AI 引擎是否已就緒（http=有金鑰；CLI=設定無誤）。欄位名沿用歷史，語意見 main scheduler。 */
   hasApiKey: boolean
   apiKeySource: 'safeStorage' | 'env' | 'none'
@@ -308,7 +310,211 @@ export type SettingsPatch = Partial<{
   claudeCli: Partial<CliProviderSettings>
   /** 部分更新 Codex CLI 設定。 */
   codexCli: Partial<CliProviderSettings>
+  /** 部分更新草稿填入 LINE 設定（mode 一律正規化成 fillOnly）。 */
+  driverPost: Partial<DriverPostSettings>
 }>
+
+// ── 草稿填入 LINE（driver_post）：與 main/config/settings.ts、main/driver/{types,locate}.ts 對齊 ──
+
+/** 型別保留 'fillAndSend' 作為擴充點；目前一律正規化成 'fillOnly'。 */
+export type DriverPostMode = 'fillOnly' | 'fillAndSend'
+
+export interface DriverPostSettings {
+  enabled: boolean
+  mode: DriverPostMode
+  /** 開啟聊天室後用 LINE 本機 DB 檢查是否有其他聊天室被標成已讀（預設開啟）。 */
+  verifyReadByDb: boolean
+}
+
+export interface DriverStatus {
+  enabled: boolean
+  mode: 'fillOnly'
+  sendAvailable: false
+  busy: boolean
+  lastHostProblem: { code: DriverPostErrorCode; message: string } | null
+  /** 帶 todoId 查詢時：不碰 LINE 的前置檢查就會停下的原因；null＝沒有問題或沒有帶 todoId。 */
+  targetProblem: { code: DriverPostErrorCode; message: string } | null
+}
+
+export interface DriverPostRequest {
+  todoId: string
+  text: string
+  mode?: DriverPostMode
+}
+
+export type DriverPostStage =
+  | 'preflight'
+  | 'host_start'
+  | 'locate_line'
+  | 'read_order'
+  | 'read_list'
+  | 'locate_row'
+  | 'activate_line'
+  | 'open_chat'
+  | 'verify_open'
+  | 'check_input_empty'
+  | 'fill'
+  | 'hand_back'
+  | 'cleanup'
+
+/** 等安靜期的是哪一個會改變 LINE 狀態的動作。 */
+export type DriverQuietAction = 'activate' | 'click' | 'fill'
+
+export interface DriverPostProgress {
+  attemptId: string
+  stage: DriverPostStage
+  /** 正在等安靜期：開始等待時 true，該動作回來後 false；一般階段進度不帶。 */
+  waitingForQuiet?: boolean
+  quietAction?: DriverQuietAction
+  quietMaxWaitMs?: number
+}
+
+export type DriverPostErrorCode =
+  | 'disabled'
+  | 'busy'
+  | 'rate_limited'
+  | 'invalid_request'
+  | 'text_too_long'
+  | 'send_not_available'
+  | 'todo_not_found'
+  | 'chat_name_missing'
+  | 'chat_name_unverifiable'
+  | 'test_allowlist_blocked'
+  | 'host_unavailable'
+  | 'powershell_restricted'
+  | 'ocr_unavailable'
+  | 'line_db_unavailable'
+  | 'line_key_unavailable'
+  | 'line_not_running'
+  | 'line_no_window'
+  | 'line_multiple_windows'
+  | 'line_activate_failed'
+  | 'line_capture_failed'
+  | 'line_ui_unrecognized'
+  | 'line_search_active'
+  | 'user_busy'
+  | 'target_not_in_line'
+  | 'list_changing'
+  | 'list_unrecognized'
+  | 'list_order_mismatch'
+  | 'target_not_visible'
+  | 'row_unconfirmed'
+  | 'row_identifies_other'
+  | 'row_changed'
+  | 'occluded'
+  | 'click_missed'
+  | 'title_unreadable'
+  | 'title_unconfirmed'
+  | 'title_identifies_other'
+  | 'title_changed'
+  | 'opened_other_suspected'
+  | 'draft_present'
+  | 'fill_readback_mismatch'
+  | 'timeout'
+  | 'internal'
+
+export type DraftLeftInLine = 'none' | 'filled_in_identified' | 'unknown'
+
+export interface LineSideEffects {
+  /** LINE 是否曾被切到前景（最小化還原、切前景都算）。 */
+  activated: boolean
+  searchChanged: false
+  searchRestored: false
+  /** 是否點開過聊天室（可能已變成已讀）。 */
+  chatOpened: boolean
+  /** 點擊已送出但沒有拿到結果就停止：無法確定是否已開啟（只在 chatOpened=false 時為 true）。 */
+  chatOpenUncertain?: true
+}
+
+export interface VisibilityHint {
+  direction: 'above' | 'below' | 'edge'
+  rows: number
+  /** direction='edge' 時：目標在可見範圍的上緣或下緣。 */
+  edgeSide?: 'top' | 'bottom'
+}
+
+export interface LocateEvidence {
+  rank: number
+  pinned: boolean
+  offset: number
+  anchors: number
+  path: 'T' | 'A' | 'B'
+  row: number
+}
+
+export interface OpenEvidence {
+  selectionMatched: boolean
+  titleSim: number
+  titleGap: number
+  titlePass: number
+  dbAck: 'target_cleared' | 'no_change' | 'na' | 'skipped'
+  seenTitle: string
+}
+
+export type DriverPostResult =
+  | {
+      ok: true
+      outcome: 'filled'
+      attemptId: string
+      chatName: string
+      locate: LocateEvidence
+      open: OpenEvidence
+      handedBack: boolean
+      elapsedMs: number
+      /** 可展開的「辨識細節」。 */
+      details: string
+      /** handedBack=false 時的提醒；否則 null。 */
+      handBackNote: string | null
+      /** 「切到 LINE」「從 LINE 清除這段草稿」的有效時間（ms）。 */
+      followUpTtlMs: number
+      /** 超過 followUpTtlMs 後顯示的說明。 */
+      expiredNote: string
+    }
+  | {
+      ok: false
+      attemptId: string
+      code: DriverPostErrorCode
+      /** 完整訊息（body＋tail；本文已說明 LINE 端狀態的碼不重複附 tail）。 */
+      message: string
+      body: string
+      /** LINE 端狀態（副作用列）；前置檢查失敗時為 null。 */
+      tail: string | null
+      stage: DriverPostStage
+      draftLeftInLine: DraftLeftInLine
+      lineSideEffects: LineSideEffects
+      otherChatName?: string
+      seenTitle?: string
+      visibility?: VisibilityHint
+    }
+
+export type DriverFollowUpAction = 'focusLine' | 'clearFilled'
+
+/**
+ * driver:focusLine／driver:clearFilled 的結果。成功後的四種後續：
+ *   清除成功 clearFilled→ok cleared；清除被拒 clearFilled→edit_changed|title_changed；
+ *   切到 LINE 時已換 focusLine→title_changed；超過 5 分鐘 → attempt_expired。
+ */
+export type DriverFollowUpResult =
+  | { ok: true; action: DriverFollowUpAction; outcome: 'focused' | 'cleared'; message: string }
+  | {
+      ok: false
+      action: DriverFollowUpAction
+      code: 'attempt_expired' | 'title_changed' | 'edit_changed' | 'line_not_running' | 'user_busy' | 'busy' | 'disabled' | 'invalid_request' | 'internal'
+      message: string
+      activated: boolean
+    }
+
+/**
+ * 草稿填入 LINE（window.api.driver）。由 Electron 主機（preload）提供；core application 不實作，
+ * 沒有這個能力的主機省略它，renderer 就只提供「複製」。
+ */
+export interface DriverApi {
+  status(query?: { todoId?: string }): Promise<DriverStatus>
+  postDraft(req: DriverPostRequest): Promise<DriverPostResult>
+  focusLine(attemptId: string): Promise<DriverFollowUpResult>
+  clearFilled(attemptId: string): Promise<DriverFollowUpResult>
+  onProgress(cb: (p: DriverPostProgress) => void): () => void
+}
 
 /** todos:draftReply 結果（只草擬不送出）。 */
 export interface DraftReplyResult {
@@ -377,5 +583,7 @@ export interface LineTodoApi {
     open(msgId: string): Promise<{ ok: boolean; error?: string }>
     saveAs(msgId: string): Promise<{ ok: boolean; canceled?: boolean; error?: string }>
   }
+  /** 主機能力（選填）：Electron preload 提供；core application 不實作。 */
+  driver?: DriverApi
 }
 export type Api = LineTodoApi

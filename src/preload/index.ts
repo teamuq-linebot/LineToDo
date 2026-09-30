@@ -4,7 +4,8 @@ import type {
   TodoSortBy, TodoSortDirection, MessagesPersistedEvent, PipelineStatus,
   PipelineLoadStats, PipelineRunResult, TodosChangedEvent, BackfillProgress,
   ReconcileProgress, ReviewLastDaysResult, QwenTestResult, ProviderHealth,
-  SettingsView, SettingsPatch, DraftReplyResult
+  SettingsView, SettingsPatch, DraftReplyResult,
+  DriverStatus, DriverPostRequest, DriverPostResult, DriverPostProgress, DriverFollowUpResult
 } from '../shared/api'
 export * from '../shared/api'
 
@@ -30,6 +31,7 @@ const PIPELINE_STATUS_CHANNEL = 'evt:pipeline-status'
 const TODOS_CHANGED_CHANNEL = 'evt:todos-changed'
 const BACKFILL_PROGRESS_CHANNEL = 'evt:backfill-progress'
 const RECONCILE_PROGRESS_CHANNEL = 'evt:reconcile-progress'
+const DRIVER_PROGRESS_CHANNEL = 'evt:driver-post-progress'
 
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -252,6 +254,28 @@ const api = {
     /** 解密→另存新檔（使用者選路；預設檔名用 orig_filename）。 */
     saveAs: (msgId: string): Promise<{ ok: boolean; canceled?: boolean; error?: string }> =>
       ipcRenderer.invoke('media:saveAs', { msgId })
+  },
+
+  /**
+   * 草稿填入 LINE（driver_post）。只填入、永遠不送出；每個動作都由使用者在「草擬回覆」對話框觸發。
+   * channel 見 src/main/ipc/driver.ipc.ts。
+   */
+  driver: {
+    /** 輕量狀態（不 spawn helper、不碰 LINE）；帶 todoId 時一併回傳前置檢查問題。 */
+    status: (query?: { todoId?: string }): Promise<DriverStatus> =>
+      ipcRenderer.invoke('driver:status', { todoId: query?.todoId }),
+    /** 在 LINE 開啟聊天室並填入草稿（不送出）。整個流程跑完才回。 */
+    postDraft: (req: DriverPostRequest): Promise<DriverPostResult> =>
+      ipcRenderer.invoke('driver:postDraft', req),
+    /** 成功填入後：切到 LINE 並把游標放進輸入框（不注入按鍵）。 */
+    focusLine: (attemptId: string): Promise<DriverFollowUpResult> =>
+      ipcRenderer.invoke('driver:focusLine', { attemptId }),
+    /** 成功填入後：只清除仍等於填入內容的輸入框。 */
+    clearFilled: (attemptId: string): Promise<DriverFollowUpResult> =>
+      ipcRenderer.invoke('driver:clearFilled', { attemptId }),
+    /** 訂閱進度（含 waitingForQuiet）；回傳 unsubscribe。 */
+    onProgress: (cb: (p: DriverPostProgress) => void): (() => void) =>
+      subscribe<DriverPostProgress>(DRIVER_PROGRESS_CHANNEL, cb)
   }
 } satisfies LineTodoApi
 

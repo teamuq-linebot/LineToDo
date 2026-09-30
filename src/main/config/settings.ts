@@ -44,6 +44,45 @@ const CLI_TIMEOUT_DEFAULT_MS = 120_000
 
 const AI_PROVIDER_IDS: AiProviderId[] = ['http', 'claudeCli', 'codexCli']
 
+/**
+ * 草稿填入 LINE（driver_post）的模式。型別保留 'fillAndSend' 作為擴充點；
+ * 目前一律正規化成 'fillOnly'（design-v2 §9.1、design-v3 §0）。
+ */
+export type DriverPostMode = 'fillOnly' | 'fillAndSend'
+
+/** 草稿填入 LINE 的設定（design-v2 §9.1；verifyReadByDb 為使用者裁定，design-v3 §4 C3）。 */
+export interface DriverPostSettings {
+  /** 總開關。false → 對話框回到「只能複製」。預設 true。 */
+  enabled: boolean
+  /** 永遠是 'fillOnly'（SEND_UNLOCKED 為 false）。 */
+  mode: DriverPostMode
+  /**
+   * 開啟聊天室後，用 LINE 本機 DB 檢查是否有「其他」聊天室被標成已讀（design-v3 §4 C3，stop-only）。
+   * 使用者裁定：預設開啟，可在設定中關閉。關閉時結果的 dbAck = 'skipped'。
+   */
+  verifyReadByDb: boolean
+}
+
+/**
+ * 自動送出解鎖旗標（常數，不是設定）。目前 = false，所有已存的 'fillAndSend' 一律改成 'fillOnly'。
+ * 解鎖條件（design-v2 §9.1）：新的辨識方式、另一份設計與 spike、誤判率門檻至少比 design-v2 §10.4 嚴 10 倍、
+ * 使用者書面授權，並恢復送出守門的設計。以上都不在目前範圍。
+ */
+export const SEND_UNLOCKED = false as const
+
+const DRIVER_POST_MODES: DriverPostMode[] = ['fillOnly', 'fillAndSend']
+
+/** 缺席或非法欄位一律退回 d（呼叫端傳現值當 d）；mode 在 SEND_UNLOCKED 為 false 時一律是 'fillOnly'。 */
+export function normalizeDriverPost(input: unknown, d: DriverPostSettings): DriverPostSettings {
+  const r = (input && typeof input === 'object' ? input : {}) as Partial<DriverPostSettings>
+  const wanted: DriverPostMode = DRIVER_POST_MODES.includes(r.mode as DriverPostMode) ? (r.mode as DriverPostMode) : d.mode
+  return {
+    enabled: typeof r.enabled === 'boolean' ? r.enabled : d.enabled,
+    mode: SEND_UNLOCKED ? wanted : 'fillOnly',
+    verifyReadByDb: typeof r.verifyReadByDb === 'boolean' ? r.verifyReadByDb : d.verifyReadByDb
+  }
+}
+
 /** 開機自我對帳設定（Batch 5a；reconcileRunner 讀取）。 */
 export interface ReconcileSettings {
   /** 是否啟用開機自我對帳。false → 啟動時完全跳過對帳（不掃描、不寫入）。預設 true。 */
@@ -71,6 +110,8 @@ export interface AppSettings {
   claudeCli: CliProviderSettings
   /** Codex CLI provider 設定（aiProvider='codexCli' 時生效）。 */
   codexCli: CliProviderSettings
+  /** 草稿填入 LINE（driver_post）設定。 */
+  driverPost: DriverPostSettings
 }
 
 /** 回傳 renderer 的設定（不含任何金鑰；以 hasApiKey 表達金鑰是否已設定）。 */
@@ -100,6 +141,8 @@ export type SettingsPatch = Partial<{
   claudeCli: Partial<CliProviderSettings>
   /** 部分更新 Codex CLI 設定。 */
   codexCli: Partial<CliProviderSettings>
+  /** 部分更新草稿填入 LINE 設定（mode 一律正規化成 fillOnly）。 */
+  driverPost: Partial<DriverPostSettings>
 }>
 
 const SETTINGS_FILE = 'settings.json'
@@ -144,7 +187,8 @@ export function createSettingsStore(ports: { userDataDir: string; secrets: Setti
       chatIgnoreKeywords: patch.chatIgnoreKeywords ?? cur.chatIgnoreKeywords,
       reconcile: normalizeReconcile({ ...cur.reconcile, ...(patch.reconcile ?? {}) }, cur.reconcile),
       claudeCli: normalizeCli({ ...cur.claudeCli, ...(patch.claudeCli ?? {}) }, cur.claudeCli),
-      codexCli: normalizeCli({ ...cur.codexCli, ...(patch.codexCli ?? {}) }, cur.codexCli)
+      codexCli: normalizeCli({ ...cur.codexCli, ...(patch.codexCli ?? {}) }, cur.codexCli),
+      driverPost: normalizeDriverPost({ ...cur.driverPost, ...(patch.driverPost ?? {}) }, cur.driverPost)
     })
     instanceCache = merged
     try { mkdirSync(ports.userDataDir, { recursive: true }); writeFileSync(settingsFile, JSON.stringify(merged, null, 2), 'utf-8') }
@@ -225,7 +269,9 @@ function defaultSettings(): AppSettings {
     aiProvider: 'http',
     // execPath/model 空字串＝自動偵測 / 用 provider 內建建議預設（單一真實來源留在 provider）。
     claudeCli: { execPath: '', model: '', timeoutMs: CLI_TIMEOUT_DEFAULT_MS },
-    codexCli: { execPath: '', model: '', timeoutMs: CLI_TIMEOUT_DEFAULT_MS }
+    codexCli: { execPath: '', model: '', timeoutMs: CLI_TIMEOUT_DEFAULT_MS },
+    // 草稿填入 LINE：預設啟用、只填入；開啟後 DB 已讀檢查預設開啟（使用者裁定）。
+    driverPost: { enabled: true, mode: 'fillOnly', verifyReadByDb: true }
   }
 }
 
@@ -315,7 +361,9 @@ function normalize(input: Partial<AppSettings>): AppSettings {
       ? (input.aiProvider as AiProviderId)
       : d.aiProvider,
     claudeCli: normalizeCli(input.claudeCli, d.claudeCli),
-    codexCli: normalizeCli(input.codexCli, d.codexCli)
+    codexCli: normalizeCli(input.codexCli, d.codexCli),
+    // 缺席（舊 settings.json）→ 預設；已存的 fillAndSend 一律改成 fillOnly。
+    driverPost: normalizeDriverPost(input.driverPost, d.driverPost)
   }
 }
 
@@ -377,7 +425,8 @@ export function updateSettings(patch: SettingsPatch): AppSettings {
       cur.reconcile
     ),
     claudeCli: normalizeCli({ ...cur.claudeCli, ...(patch.claudeCli ?? {}) }, cur.claudeCli),
-    codexCli: normalizeCli({ ...cur.codexCli, ...(patch.codexCli ?? {}) }, cur.codexCli)
+    codexCli: normalizeCli({ ...cur.codexCli, ...(patch.codexCli ?? {}) }, cur.codexCli),
+    driverPost: normalizeDriverPost({ ...cur.driverPost, ...(patch.driverPost ?? {}) }, cur.driverPost)
   })
   cached = merged
   try {

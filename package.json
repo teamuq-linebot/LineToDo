@@ -56,6 +56,15 @@
       "out/**",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "resources/line-driver",
+        "to": "line-driver",
+        "filter": [
+          "*.ps1"
+        ]
+      }
+    ],
     "asarUnpack": [
       "node_modules/better-sqlite3/build/Release/*.node",
       "node_modules/better-sqlite3-multiple-ciphers/build/Release/*.node",
