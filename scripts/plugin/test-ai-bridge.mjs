@@ -11,6 +11,8 @@ import {
 } from '../../src/plugin/backend/aiTaskQueue.ts'
 import { Dispatcher, SUPPORTED_API_PATHS, UNSUPPORTED_API_PATHS } from '../../src/plugin/backend/dispatcher.ts'
 import { EventHub } from '../../src/plugin/backend/eventHub.ts'
+import { AI_COMMIT_TEXT_MAX_BYTES, MAX_REQUEST_BYTES, REPLY_TRUNCATED_MARK, fitReplyText, utf8Bytes } from '../../src/shared/pluginWire.ts'
+import { toWire } from '../../src/renderer/platform/pluginTransport.ts'
 import { CONTRACT } from '../lib/mock-tuq-ai.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -290,4 +292,71 @@ test('dispatcher: an extract.pull counts as the UI being present, so a user acti
   aiTasks.commit({ results: [{ taskId: task.taskId, ok: true, text: '好' }] })
   assert.deepEqual((await run).value, { draft: '好' })
   done()
+})
+
+// ───────────── review F8: the commit text limit is in UTF-8 bytes, the same unit as the view's 60 KiB request limit ─────────────
+
+test('F8: ai.commit limits the text by UTF-8 bytes (not characters): a CJK reply that the view could never send is refused with reply_too_long, one at the byte limit is accepted', async () => {
+  assert.equal(AI_COMMIT_TEXT_MAX_BYTES, 48 * 1024)
+  assert.ok(AI_COMMIT_TEXT_MAX_BYTES < MAX_REQUEST_BYTES, 'the text limit leaves room for the request envelope')
+  const { q } = queue()
+  q.touch()
+  // exactly at the byte limit: 16,384 CJK characters x 3 bytes = 49,152 bytes (well under the old 64,000-character cap, which would have accepted one more)
+  const atLimit = '字'.repeat(AI_COMMIT_TEXT_MAX_BYTES / 3)
+  assert.equal(utf8Bytes(atLimit), AI_COMMIT_TEXT_MAX_BYTES)
+  const ok = q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
+  const t1 = q.pull().tasks[0].taskId
+  assert.equal(q.commit({ results: [{ taskId: t1, ok: true, text: atLimit }] }).results[0].status, 'accepted')
+  assert.equal((await ok).text.length, 16_384)
+
+  // one more character: 49,155 bytes — 16,385 characters is far below the old 64,000-character cap, yet the request could not have been sent
+  const over = q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
+  const t2 = q.pull().tasks[0].taskId
+  assert.deepEqual(q.commit({ results: [{ taskId: t2, ok: true, text: atLimit + '字' }] }).results, [{ taskId: t2, status: 'bad_request', code: 'text_too_large' }])
+  assert.equal((await rejection(over)).code, 'reply_too_long')
+
+  // ASCII: 48 KiB is accepted, 48 KiB + 1 byte is not
+  const ascii = q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
+  const t3 = q.pull().tasks[0].taskId
+  assert.equal(q.commit({ results: [{ taskId: t3, ok: true, text: 'a'.repeat(AI_COMMIT_TEXT_MAX_BYTES) }] }).results[0].status, 'accepted')
+  assert.equal((await ascii).text.length, AI_COMMIT_TEXT_MAX_BYTES)
+  const asciiOver = q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
+  const t4 = q.pull().tasks[0].taskId
+  assert.equal(q.commit({ results: [{ taskId: t4, ok: true, text: 'a'.repeat(AI_COMMIT_TEXT_MAX_BYTES + 1) }] }).results[0].code, 'text_too_large')
+  assert.equal((await rejection(asciiOver)).code, 'reply_too_long')
+})
+
+test('F8: fitReplyText keeps what fits, truncates a plain-text draft at a character boundary with a visible mark, and refuses to cut JSON; whatever it returns can be sent as one request', () => {
+  const small = fitReplyText('好的，我今天處理。', true)
+  assert.deepEqual(small, { ok: true, text: '好的，我今天處理。', truncated: false })
+
+  const cjk = '很長的草稿。'.repeat(8000) // 48,000 characters = 144,000 bytes
+  const cut = fitReplyText(cjk, true)
+  assert.equal(cut.ok, true)
+  assert.equal(cut.truncated, true)
+  assert.ok(cut.text.endsWith(REPLY_TRUNCATED_MARK))
+  assert.ok(cut.text.startsWith('很長的草稿。很長的草稿。'))
+  assert.ok(utf8Bytes(cut.text) <= AI_COMMIT_TEXT_MAX_BYTES, `kept ${utf8Bytes(cut.text)} bytes`)
+  assert.ok(utf8Bytes(cut.text) > AI_COMMIT_TEXT_MAX_BYTES - 6, 'the longest prefix that fits is kept (within one character)')
+  const wire = (text) => toWire('ai.commit', [{ results: [{ taskId: '00000000-0000-4000-8000-000000000000', ok: true, text, model: 'gpt-5-codex' }] }])
+  assert.doesNotThrow(() => wire(cut.text), 'the truncated reply is a valid request (what the old 64,000-character cap could not guarantee)')
+  assert.throws(() => wire(cjk), (e) => e.code === 'request_too_large')
+
+  // never splits a surrogate pair
+  const emoji = '😀'.repeat(20_000)
+  const cutEmoji = fitReplyText(emoji, true)
+  assert.equal(cutEmoji.ok, true)
+  assert.doesNotThrow(() => new TextEncoder().encode(cutEmoji.text))
+  assert.equal(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(cutEmoji.text), false, 'no lone surrogate')
+
+  // JSON escaping can make a text bigger on the wire than its raw bytes: quotes and control characters count at their escaped size
+  const quotes = '"'.repeat(40_000) // 40,000 raw bytes (under the raw limit) but 80,000 bytes once escaped
+  assert.ok(utf8Bytes(quotes) < AI_COMMIT_TEXT_MAX_BYTES)
+  const cutQuotes = fitReplyText(quotes, true)
+  assert.equal(cutQuotes.ok && cutQuotes.truncated, true)
+  assert.doesNotThrow(() => wire(cutQuotes.text))
+
+  // a JSON answer is never truncated (it would no longer parse): the caller records reply_too_long instead
+  assert.deepEqual(fitReplyText(cjk, false), { ok: false, code: 'reply_too_long' })
+  assert.equal(fitReplyText('{"a":1}', false).ok, true)
 })

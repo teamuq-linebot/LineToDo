@@ -104,20 +104,17 @@ function isNullHandle(h: unknown): boolean {
 }
 
 /**
- * scanRegions(pid, onChunk) — 走遍目標程序可讀記憶體，逐 chunk 把原始 bytes
- * 交給 callback。callback 回傳字面 false 可提早中止（例如已命中 key）。
+ * regionChunks(pid) — 走遍目標程序可讀記憶體，逐 chunk 產出原始 bytes（generator）。
  *
  * 逐步對齊 linekey.py:89-126（`scan_candidates`）：
  *   OpenProcess → while VirtualQueryEx → readable gate（committed / 非 guard /
  *   非 noaccess）→ 分 chunk ReadProcessMemory（含 OVERLAP 回退避免跨 chunk 漏字）
  *   → finally CloseHandle。
  *
- * ★ CloseHandle 於 finally 保證釋放，避免 handle leak。
+ * ★ CloseHandle 於 finally 保證釋放：消費端提早 return／throw 時（for…of 會呼叫 generator.return()）也一樣。
+ * 同步版 `scanRegions` 與非同步版 `scanRegionsAsync` 共用這一份走訪邏輯。
  */
-export function scanRegions(
-  pid: number,
-  onChunk: (bytes: Buffer) => boolean | void,
-): void {
+function* regionChunks(pid: number): Generator<Buffer, void, undefined> {
   const k = kernel32()
   const h = k.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
   if (isNullHandle(h)) {
@@ -145,8 +142,7 @@ export function scanRegions(
           const ok = k.ReadProcessMemory(h, base + off, buf, want, nread)
           if (ok && nread[0]) {
             // 只把實際讀到的 bytes 交出去（copy，避免下一輪覆寫）。
-            const chunk = Buffer.from(buf.subarray(0, nread[0]))
-            if (onChunk(chunk) === false) return
+            yield Buffer.from(buf.subarray(0, nread[0]))
           }
           // 對齊 py：滿 chunk 才回退 OVERLAP，避免跨 chunk 邊界漏掉候選。
           off += want === CHUNK ? want - OVERLAP : want
@@ -158,5 +154,31 @@ export function scanRegions(
     }
   } finally {
     k.CloseHandle(h)
+  }
+}
+
+/**
+ * scanRegions(pid, onChunk) — 走遍目標程序可讀記憶體，逐 chunk 把原始 bytes
+ * 交給 callback。callback 回傳字面 false 可提早中止（例如已命中 key）。同步版（standalone 沿用）。
+ */
+export function scanRegions(
+  pid: number,
+  onChunk: (bytes: Buffer) => boolean | void,
+): void {
+  for (const chunk of regionChunks(pid)) {
+    if (onChunk(chunk) === false) return
+  }
+}
+
+/**
+ * scanRegionsAsync(pid, onChunk) — 同 `scanRegions`，但 callback 可以是 async：每個 chunk 之間 callback 有機會 `await` 讓出事件迴圈
+ * （外掛 backend 掃 LINE 記憶體時不能把事件迴圈卡住，否則 host 收不到心跳／回應；review F2）。callback 回傳 false 提早中止。
+ */
+export async function scanRegionsAsync(
+  pid: number,
+  onChunk: (bytes: Buffer) => boolean | void | Promise<boolean | void>,
+): Promise<void> {
+  for (const chunk of regionChunks(pid)) {
+    if ((await onChunk(chunk)) === false) return
   }
 }

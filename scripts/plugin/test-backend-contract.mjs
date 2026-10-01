@@ -40,6 +40,11 @@ function getSetup() {
         preseed: ({ dataDir }) => {
           writeFileSync(join(dataDir, '.linekey'), expected.key)
           writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ version: 1, reconcile: { enabled: false, scopeMonths: 0 } }))
+          // review F4: what a backend killed in the middle of openDb() / the key scan leaves behind (copies of the encrypted LINE database); activate() sweeps them
+          for (const orphan of ['linedb-killedRun', 'linekey-scan-killedRun']) {
+            mkdirSync(join(dataDir, 'line-engine', orphan), { recursive: true })
+            writeFileSync(join(dataDir, 'line-engine', orphan, 'm.edb'), Buffer.alloc(8192, 3))
+          }
         },
         scenario,
       })
@@ -131,7 +136,9 @@ test('Electron 44.2.0 + 1.6.8 flags: the production backend bundle activates; se
   assertSelfCheckPassed('afterActivate', r.selfCheckAfterActivate)
   assertSelfCheckPassed('end', r.selfCheckEnd)
   assert.deepEqual(r.handlerKeys, ['call', 'diagnostics', 'dispose', 'openSession'])
-  assert.ok(r.activateMs < 30_000, `activate took ${r.activateMs} ms (host boot timeout is 30 s in the manifest draft)`)
+  // review F2: activate() no longer includes the key extraction or the first import (they start after it returns), so it is far below the manifest's 30 s boot timeout
+  assert.ok(r.activateMs < 5000, `activate took ${r.activateMs} ms (manifest bootTimeoutSec is 30)`)
+  assert.equal(r.lineStatusRightAfterActivate, 'starting', 'right after activate() the watcher is up but its first poll (key + first import) has not run yet')
   // stderr carries only Node's own --allow-addons notice
   const noisy = run.stderr.split('\n').filter((l) => l.trim() && !/PERM0001|trace-warnings|--allow-addons/.test(l))
   assert.deepEqual(noisy, [], 'no unexpected stderr output')
@@ -266,7 +273,7 @@ test('deactivate: no DB connection, watcher, timer or other handle is left; the 
   assert.deepEqual(after.diagnostics.extract, { pending: 0, leased: 0, awaiting: 0 })
   assert.equal(after.call.code, 'backend_stopped')
   assert.equal(after.ownerLock, false)
-  assert.deepEqual(after.lineEngineDir, [], 'no snapshot working directory left in dataDir')
+  assert.deepEqual(after.lineEngineDir, [], 'no snapshot working directory left in dataDir (this includes the two orphans seeded before activate: the start-up sweep removed them, review F4)')
   assert.ok(r.closingPoll.code === 'backend_stopped' || r.closingPoll.value?.closed === true, 'a long poll that was waiting during dispose is released')
   assert.ok(r.disposeMs < 3000, `dispose took ${r.disposeMs} ms`)
   // no leaked handle of any kind compared with the state before activate

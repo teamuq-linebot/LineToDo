@@ -30,6 +30,12 @@ export interface PluginHostBoot {
 export interface BootOptions {
   /** AI 功能的連線狀態（看板 view 由 orchestrator 提供；設定 view 不給＝「尚未接上」）。 */
   aiConnection?: PluginAiConnection
+  /**
+   * 這個 view 的 host 呼叫預算（含事件長輪詢）。看板 3（預設）、設定 1：manifest 的 `maxSessions` 是 4，兩個 view 同時開著剛好用滿。
+   */
+  maxConcurrentCalls?: number
+  /** false＝這個 view 不開事件長輪詢（設定 view）。 */
+  events?: boolean
   /** view 被關閉／重新載入時，在關掉 adapter 之前先做的收尾（例如停止 orchestrator 並把租約還給 backend）。 */
   beforeDispose?: () => Promise<void> | void
 }
@@ -37,7 +43,12 @@ export interface BootOptions {
 export function bootPluginApi(options: BootOptions = {}): PluginHostBoot | null {
   const host = window.tuqPlugin
   if (!host || !host.backend || typeof host.backend.call !== 'function') return null
-  const api = createPluginLineTodoApi({ host, aiConnection: options.aiConnection })
+  const api = createPluginLineTodoApi({
+    host,
+    aiConnection: options.aiConnection,
+    ...(options.maxConcurrentCalls !== undefined ? { maxConcurrentCalls: options.maxConcurrentCalls } : {}),
+    ...(options.events === false ? { events: { enabled: false } } : {})
+  })
   // view 被關閉／重新載入：先收尾（orchestrator 把租約還回 backend 需要 adapter 還活著），再停事件長輪詢並關掉 backend 的 session（backend 也會在閒置後自己回收）。
   window.addEventListener('pagehide', () => {
     const finish = (): void => api.dispose()

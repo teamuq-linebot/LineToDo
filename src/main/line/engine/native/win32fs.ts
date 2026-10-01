@@ -18,7 +18,7 @@
  * koffi 的載入點是可注入的（`loadKoffi`）：外掛打包後要從固定路徑載入（addon shim，Phase 5），
  * 不做 PATH／PWD probing。預設用 `createRequire(import.meta.url)('koffi')`。
  */
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, win32 } from 'node:path'
 
@@ -159,15 +159,40 @@ function fileTimeToUnixNs(ft: { dwLowDateTime: number; dwHighDateTime: number })
   return (t - FILETIME_UNIX_EPOCH_100NS) * 100n
 }
 
+/**
+ * 引擎在 `workspaceRoot` 底下建的暫存快照目錄前綴（`linedb.ts` 的 `openDb`、`linekey.ts` 的 `BatchVerifier`）。
+ * 它們是 LINE 加密資料庫的副本（約 200 MB）；正常流程在 `finally` 裡刪除，backend 被強制結束時沒有機會刪，所以啟動時清掃（review F4）。
+ */
+export const ENGINE_TEMP_PREFIXES: readonly string[] = ['linedb-', 'linekey-scan-']
+
 export class Win32LineFsPort implements LineFsPort {
   private readonly api: Win32Api
   private readonly workspaceRoot: string
+  /** 建構時清掉的殘留快照目錄數（診斷／測試）。 */
+  readonly sweptOrphans: number
 
   constructor(options: Win32LineFsPortOptions) {
     const load = options.loadKoffi ?? (() => createRequire(import.meta.url)('koffi'))
     this.api = bindApi(load())
     this.workspaceRoot = options.workspaceRoot
     mkdirSync(this.workspaceRoot, { recursive: true })
+    this.sweptOrphans = this.sweepOrphans()
+  }
+
+  /**
+   * 清掉 `workspaceRoot` 底下殘留的暫存快照目錄（只刪 `ENGINE_TEMP_PREFIXES` 開頭的「目錄」；其他檔案與目錄，例如 `.linekey`、checkpoint，一律不碰）。
+   * workspaceRoot 是 dataDir 底下專屬於這個 backend 的資料夾，一個外掛同時只有一個 backend 行程，所以建構時不會有「別人正在用」的快照。
+   * 刪不掉的（檔案被占用等）略過、不丟錯：清掃是盡力而為，不能讓 backend 起不來。
+   */
+  private sweepOrphans(): number {
+    let removed = 0
+    let entries: Array<{ name: string; isDirectory(): boolean }>
+    try { entries = readdirSync(this.workspaceRoot, { withFileTypes: true }) } catch { return 0 }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !ENGINE_TEMP_PREFIXES.some((prefix) => entry.name.startsWith(prefix))) continue
+      try { rmSync(join(this.workspaceRoot, entry.name), { recursive: true, force: true }); removed += 1 } catch { /* 盡力而為 */ }
+    }
+    return removed
   }
 
   // ── 1. LINE 來源讀取（koffi） ──

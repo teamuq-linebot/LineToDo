@@ -18,6 +18,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { LlmProviderError } from '../../main/llm/provider/types'
 import type { LlmErrorCode, LlmProvider, LlmRequest, LlmResponse } from '../../main/llm/provider/types'
+import { AI_COMMIT_TEXT_MAX_BYTES, utf8Bytes } from '../../shared/pluginWire'
 import { outputContractFor } from './aiOutputContract'
 
 export type AiTaskKind = 'draftReply' | 'analyzeNotMine' | 'groupTopics' | 'unknown'
@@ -192,7 +193,9 @@ export class AiTaskQueue {
         out.push({ taskId, status: 'failed_recorded', code })
         continue
       }
-      if (typeof item.text !== 'string' || item.text.length === 0 || item.text.length > 64_000) { out.push({ taskId, status: 'bad_request', code: 'invalid_text' }); this.fail(task, new AiTaskError('empty_reply')); continue }
+      if (typeof item.text !== 'string' || item.text.length === 0) { out.push({ taskId, status: 'bad_request', code: 'invalid_text' }); this.fail(task, new AiTaskError('empty_reply')); continue }
+      // 上限用 UTF-8 位元組（與 view 端 60 KiB 的請求上限同一個單位）：字元數會讓中文回覆在 view 的 toWire 先被擋掉（review F8）。view 送出前以 fitReplyText() 保證不超過。
+      if (utf8Bytes(item.text) > AI_COMMIT_TEXT_MAX_BYTES) { out.push({ taskId, status: 'bad_request', code: 'text_too_large' }); this.fail(task, new AiTaskError('reply_too_long')); continue }
       this.settle(task, { text: item.text, model: typeof item.model === 'string' && item.model.length > 0 ? item.model.slice(0, 96) : null })
       out.push({ taskId, status: 'accepted' })
     }

@@ -19,8 +19,9 @@ import { bootBoard } from '../../src/plugin/ui/board.ts'
 import { bootPluginApi } from '../../src/plugin/ui/host.ts'
 import { createPluginLineTodoApi, PLUGIN_AI_NOT_CONNECTED } from '../../src/renderer/platform/pluginApi.ts'
 import { CONTRACT, createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
+import { RESOURCES } from './lib/manifest.mjs'
 
-// ───────────── host mock (JSON-only, 64 KiB, in-flight <= 8: pluginViewBridge.ts + backendInvokeContracts.ts) ─────────────
+// ───────────── host mock (JSON-only, 64 KiB; busy when the calls being handled reach the manifest's maxSessions: backendController.ts:395, review F1) ─────────────
 
 const LIMIT = 64 * 1024
 const isJson = (value, depth = 0) => {
@@ -34,7 +35,7 @@ const isJson = (value, depth = 0) => {
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength
 
 function makeBackendHost(target) {
-  const state = { calls: [], inFlight: 0, maxInFlight: 0 }
+  const state = { calls: [], inFlight: 0, maxInFlight: 0, busyRejections: 0, maxSessions: RESOURCES.maxSessions }
   return {
     state,
     count: (path) => state.calls.filter((c) => c.path === path).length,
@@ -43,9 +44,10 @@ function makeBackendHost(target) {
         async call(method, params) {
           if (!/^[A-Za-z0-9._@-]{1,64}$/.test(method) || !isJson(params) || bytes(params) > LIMIT) throw new Error('backend_invoke_invalid')
           state.calls.push({ method, path: params.path, args: params.args })
+          // the controller refuses a call when the calls already being handled reach resources.maxSessions; the view sees the invoke gate's spelling
+          if (state.inFlight >= state.maxSessions) { state.busyRejections += 1; throw new Error('plugin_backend_unavailable') }
           state.inFlight += 1
           state.maxInFlight = Math.max(state.maxInFlight, state.inFlight)
-          if (state.inFlight > 8) { state.inFlight -= 1; throw new Error('backend_invoke_busy') }
           try {
             const result = JSON.parse(JSON.stringify((await target.call(method, JSON.parse(JSON.stringify(params)))) ?? null))
             if (bytes(result) > LIMIT) throw new Error('backend_invoke_too_large')
@@ -118,7 +120,12 @@ async function withStack(options, body) {
   const visibility = { visible: true, listeners: new Set(), isVisible() { return this.visible }, subscribe(cb) { this.listeners.add(cb); return () => this.listeners.delete(cb) }, set(v) { this.visible = v; for (const cb of [...this.listeners]) cb(v) } }
   orch = createAiOrchestrator({ ai: ai.ai, extract: api.plugin.extract, tasks: api.plugin.aiTasks, visibility, config: { ...FAST_ORCH, ...options.orch } })
   if (options.start !== false) orch.start()
-  try { await body({ api, backend, line, mock, ai, orch, visibility, calls, dataDir }) } finally {
+  try {
+    await body({ api, backend, line, mock, ai, orch, visibility, calls, dataDir })
+    // review F1: in every scenario the board view (orchestrator pulls/commits, job polls, event long poll) stayed within the manifest's maxSessions and was never refused
+    assert.equal(mock.state.busyRejections, 0, 'the host (maxSessions from the manifest) never refused a call')
+    assert.ok(mock.state.maxInFlight <= RESOURCES.maxSessions, `in flight peaked at ${mock.state.maxInFlight}`)
+  } finally {
     await orch.stop()
     api.dispose()
     await backend.dispose()
@@ -166,7 +173,7 @@ test('e2e: a new LINE message becomes a todo — backend 供料 -> orchestrator 
     assert.equal(calls.length, 1, 'no second AI round for already-processed messages')
     const stats = await api.plugin.extract.stats()
     assert.equal(stats.pending + stats.leased, 0)
-    assert.ok(mock.state.maxInFlight <= 7, `in flight peaked at ${mock.state.maxInFlight} (host limit 8)`)
+    assert.ok(mock.state.maxInFlight <= RESOURCES.maxSessions, `in flight peaked at ${mock.state.maxInFlight} (manifest maxSessions ${RESOURCES.maxSessions})`)
   })
 })
 
@@ -405,6 +412,28 @@ test('e2e draftReply failures are explicit and friendly: model refuses (empty re
   })
 })
 
+test('e2e F8: a very long Chinese draft (more than fits one request) is trimmed by the view to what ai.commit can carry — it is delivered with a visible mark instead of being lost; an over-long JSON answer fails with reply_too_long', async () => {
+  const long = '您好，關於報價單的說明如下。'.repeat(1800) // ~ 23,400 characters ~ 70 KB: above the 60 KiB request limit, below the 32,000-character ai:chat reply cap
+  assert.ok(new TextEncoder().encode(long).byteLength > 60 * 1024)
+  await withStack({ reply: (ctx) => (ctx.system.includes('草擬') ? long : fenced(todoFor(ctx.user))) }, async ({ api, line, mock }) => {
+    const todo = await seedTodo(api, line)
+    const result = await api.db.todos.draftReply(todo.id)
+    assert.equal(result.error, undefined, 'the draft is delivered, not lost to request_too_large and a lease timeout')
+    assert.ok(result.draft.endsWith('（回覆過長，已截斷）'))
+    assert.ok(result.draft.startsWith('您好，關於報價單的說明如下。'))
+    assert.ok(new TextEncoder().encode(result.draft).byteLength <= 48 * 1024)
+    assert.equal(mock.count('ai.commit'), 1, 'one commit, accepted')
+  })
+  const bigJson = JSON.stringify({ inferredCauseCode: 'general_announcement', summary: '很長'.repeat(12_000), suggestedCondition: 'x', suggestedEffect: 'y' })
+  await withStack({ reply: (ctx) => (ctx.system.includes('分類誤判分析') ? '```json\n' + bigJson + '\n```' : fenced(todoFor(ctx.user))) }, async ({ api, line }) => {
+    const todo = await seedTodo(api, line)
+    const marked = await api.db.todos.markNotMine(todo.id, 'general_announcement', '只是公告')
+    const analysis = await api.db.todos.analyzeNotMine(marked.feedbackId)
+    assert.equal(analysis.ok, false)
+    assert.match(String(analysis.reason), /過長/, 'a JSON answer is never cut: it fails with the reply_too_long message')
+  })
+})
+
 test('e2e analyzeNotMine: the fenced JSON from ai:chat is cleaned by the orchestrator, validated and SAVED by the backend\'s own logic (analysis shows up in the review)', async () => {
   await withStack({
     reply: (ctx) => (ctx.system.includes('分類誤判分析') ? '```json\n' + JSON.stringify({ inferredCauseCode: 'general_announcement', summary: '這是群組公告，不需要我處理', suggestedCondition: '群組公告類訊息', suggestedEffect: '不要產生待辦' }) + '\n```' : fenced(todoFor(ctx.user)))
@@ -518,6 +547,7 @@ test('board.ts / host.ts: bootBoard wires adapter + visibility + orchestrator fo
     globalThis.window = { tuqPlugin: { ...host, ai: ai.ai, presentation: { get: async () => ({ visible: true }), onChange: () => () => {} } }, addEventListener: (type, cb) => handlers.set(`window:${type}`, cb) }
     const boot = bootBoard()
     assert.ok(boot?.orchestrator, 'board view: orchestrator created')
+    assert.equal(boot.api.plugin.transportStats().limit, 3, 'review F1: the board view budget is 3 host calls (event long poll included)')
     assert.equal(boot.orchestrator.status().state === 'running' || boot.orchestrator.status().state === 'paused', true)
     assert.equal(boot.orchestrator.connected(), true)
 
@@ -545,6 +575,15 @@ test('board.ts / host.ts: bootBoard wires adapter + visibility + orchestrator fo
     assert.equal(settingsBoot.orchestrator, undefined, 'the settings boot has no orchestrator at all')
     assert.deepEqual(await settingsBoot.api.db.todos.draftReply('x'), { error: PLUGIN_AI_NOT_CONNECTED })
     settingsBoot.api.dispose()
+    // the way settings.tsx boots: budget 1 and no event long poll, so board (3) + settings (1) = the manifest's maxSessions (4)
+    const settingsView = bootPluginApi({ maxConcurrentCalls: 1, events: false })
+    assert.equal(settingsView.api.plugin.transportStats().limit, 1)
+    const off = settingsView.api.pipeline.onStatus(() => undefined)
+    await sleep(60)
+    assert.equal(settingsView.api.plugin.eventsStats().running, false, 'the settings view never starts an event long poll')
+    assert.equal(settingsView.api.plugin.eventsStats().pulls, 0)
+    off()
+    settingsView.api.dispose()
 
     // a TeamUQ without ai:chat: board view still works, AI features explain why
     handlers.clear()

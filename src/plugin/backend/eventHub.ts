@@ -9,8 +9,10 @@
  *   - 主傳輸：長輪詢 `events.open` / `events.pull {afterSeq, waitMs}` / `events.close`（走 `api.invoke`）。
  *     以 `afterSeq` 取代 server 端游標，所以回應掉了可以原樣重問、不遺失也不重複；ring 已滾掉的部分用 `gap:true` 告知，
  *     view 端應重新拉一次狀態（pipeline.status／todos.list）。
- *   - 副傳輸：host 的 capability session `openSession({capability:'linetodo.events'})`，事件經 `channel.send` 推送
- *     （單則 ≤ 16 KiB、合併成 `{type:'events'}` 批次、節流避免超過 host 的每秒訊息數）。
+ *   - 副傳輸（**目前未啟用**，review F9）：host 的 capability session `openSession({capability:'linetodo.events'})`，事件經 `channel.send` 推送
+ *     （單則 ≤ 16 KiB、合併成 `{type:'events'}` 批次、節流避免超過 host 的每秒訊息數）。manifest 沒有宣告任何 provided capability，所以 1.6.8 的 host
+ *     永遠不會對這個外掛呼叫 `ext-session-open`；實際的事件傳輸只有上面的長輪詢。程式與測試保留，是為了日後 manifest 宣告
+ *     `linetodo.events` 時不必再動 backend；在那之前它是沒有呼叫端的備援，不要把它當成第二條會被用到的傳輸。
  *
  * 全部 timer 都 unref 並在 close／dispose 清掉（deactivate 後不留 handle）。
  */

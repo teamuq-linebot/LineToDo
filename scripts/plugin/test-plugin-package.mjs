@@ -2,7 +2,7 @@
 // 1.6.8 backend contract (Electron 44.2.0 run-as-node + the verbatim permission flags + self-check). Needs the same runtimes as test-backend-contract.mjs
 // (Electron 31 writes the fake LINE DB, Electron 44 is the backend runtime) and the shared development key file (only read, to sign).
 import assert from 'node:assert/strict'
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
@@ -18,6 +18,8 @@ import { WORK } from './lib/paths.mjs'
 import { runPluginContract } from '../lib/plugin-contract-harness.mjs'
 import { generateFixtures, makeTempRoot, rmQuiet } from '../lib/runtimes.mjs'
 
+// the plugin version is package.json's (0.1.1 is the review-repair release; 0.1.0 was never published)
+const VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version
 const TAR = process.platform === 'win32' ? 'C:/Windows/System32/tar.exe' : 'tar'
 const PUB = 'C:/teamuq/teamuq-plugins/_install/windows/dev-e6301dd7a2967155.pub'
 
@@ -37,7 +39,7 @@ test.after(async () => { if (built) rmQuiet((await built).dir) })
 
 test('manifest: composed full-trust, ai:chat, both native modules, delete-on-uninstall, least permissions', async () => {
   const { baseManifest } = await loadTeBuilder()
-  const manifest = buildManifest({ baseManifest, version: '0.1.0' })
+  const manifest = buildManifest({ baseManifest, version: VERSION })
   assert.equal(manifest.id, PLUGIN_ID)
   assert.equal(manifest.trustTier, 'full-trust')
   assert.deepEqual(manifest.entry, { ui: 'ui/index.html', backend: 'backend/index.mjs' })
@@ -65,7 +67,8 @@ test('the build is deterministic: two builds from different work directories giv
   assert.equal(a.report.sha256, b.report.sha256)
   assert.ok(a.zip.equals(b.zip))
   assert.equal(a.report.signerKeyId, 'dev-e6301dd7a2967155')
-  assert.equal(a.outName, 'tuqdev.line-todo-0.1.0-win.tuqplugin')
+  assert.equal(VERSION, '0.1.1')
+  assert.equal(a.outName, `tuqdev.line-todo-${VERSION}-win.tuqplugin`)
 })
 
 test('TeamUQ 1.6.8 validators (pinned commit b8b96cb3): zip + integrity + signature + manifest + native + icon pass; tampering / old core / unknown signer are refused', async () => {

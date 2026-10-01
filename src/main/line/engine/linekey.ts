@@ -26,7 +26,7 @@ import { join } from 'node:path'
 import { getLineEnginePorts } from './enginePorts'
 import type { LineFsPort } from './fsPort'
 import { CIPHER, findDb, KDF_ITER, openDb, type Db } from './linedb'
-import { scanRegions } from '../native/procmem'
+import { scanRegions, scanRegionsAsync } from '../native/procmem'
 
 /**
  * 快取檔預設路徑：<userData>/.linekey。
@@ -65,6 +65,81 @@ export interface GetKeyOptions {
   cache?: boolean
   /** 略過 live recover（不掃 LINE 記憶體）：env／cache 都 miss 時直接回 null。driver_post D5。 */
   skipRecover?: boolean
+  /**
+   * 協作式金鑰解析（外掛 backend；review F2）。給了 guard，呼叫端（watchEngine／reconcile）改走 `getKeyAsync`：
+   * 掃記憶體時定期讓出事件迴圈、同一時間只有一次掃描（single-flight）、掃不到時指數退避（不會每個 poll 都重掃）。
+   * standalone 不給＝走原本的同步 `getKey`，行為完全不變。
+   */
+  recoverGuard?: RecoverGuard
+  /** 測試注入：取代真正的記憶體掃描（預設 `scanRegionsAsync`）。只影響 `getKeyAsync`／`recoverKeyAsync`。 */
+  scanner?: (pid: number, onChunk: (bytes: Buffer) => boolean | void | Promise<boolean | void>) => Promise<void>
+}
+
+export interface RecoverGuardOptions {
+  /** 掃完沒找到 key 之後，第一次退避多久（預設 30 s）；連續失敗每次加倍。 */
+  minBackoffMs?: number
+  /** 退避上限（預設 5 分鐘）。 */
+  maxBackoffMs?: number
+  /** 連續占用事件迴圈超過多久就讓出一次（預設 20 ms）。 */
+  yieldSliceMs?: number
+  now?: () => number
+  /** 讓出事件迴圈（預設 `setImmediate`）。 */
+  yieldFn?: () => Promise<void>
+}
+
+/**
+ * RecoverGuard — 外掛 backend 的金鑰掃描守衛：single-flight、失敗退避、可取消、讓出事件迴圈。一個 backend 一個實例（assemble.ts 建立）。
+ *
+ * 只有「真的掃了 LINE 記憶體而沒找到」才退避；LINE 沒在跑（找不到 LINE.exe）不算——那一步很便宜，LINE 一啟動下一輪 poll 就能馬上開始掃。
+ */
+export class RecoverGuard {
+  private readonly o: Required<RecoverGuardOptions>
+  private failures = 0
+  private nextAllowedAt = 0
+  private inflight: Promise<string | null> | null = null
+  private cancelled = false
+  scans = 0
+
+  constructor(options: RecoverGuardOptions = {}) {
+    this.o = {
+      minBackoffMs: options.minBackoffMs ?? 30_000,
+      maxBackoffMs: options.maxBackoffMs ?? 5 * 60_000,
+      yieldSliceMs: options.yieldSliceMs ?? 20,
+      now: options.now ?? Date.now,
+      yieldFn: options.yieldFn ?? (() => new Promise<void>((resolve) => { setImmediate(resolve) }))
+    }
+  }
+
+  /** 目前還在退避期間（不該再掃）嗎？ */
+  blocked(): boolean { return this.o.now() < this.nextAllowedAt }
+  /** 距離下一次允許掃描還要多久（0＝現在就可以）。 */
+  retryInMs(): number { return Math.max(0, this.nextAllowedAt - this.o.now()) }
+  get isCancelled(): boolean { return this.cancelled }
+  /** 取消進行中的掃描（backend dispose）：掃描在下一個讓出點結束，之後的 `getKeyAsync` 一律回 null。 */
+  cancel(): void { this.cancelled = true }
+  /** 進行中的掃描（沒有就是已結束的 promise）。dispose 時等它收尾（刪暫存目錄、關 handle）。 */
+  idle(): Promise<void> { return this.inflight ? this.inflight.then(() => undefined, () => undefined) : Promise.resolve() }
+
+  noteSuccess(): void { this.failures = 0; this.nextAllowedAt = 0 }
+  noteScanFailure(): void {
+    this.failures += 1
+    this.nextAllowedAt = this.o.now() + Math.min(this.o.minBackoffMs * 2 ** (this.failures - 1), this.o.maxBackoffMs)
+  }
+
+  /** 讓出事件迴圈（距離上次讓出超過 yieldSliceMs 才真的讓；`force` 一定讓）。 */
+  async maybeYield(state: { since: number }, force = false): Promise<void> {
+    if (!force && this.o.now() - state.since < this.o.yieldSliceMs) return
+    await this.o.yieldFn()
+    state.since = this.o.now()
+  }
+
+  /** 同一時間只跑一次掃描；並行的呼叫共用同一個結果。 */
+  singleFlight(run: () => Promise<string | null>): Promise<string | null> {
+    if (this.inflight) return this.inflight
+    const flight = run().finally(() => { if (this.inflight === flight) this.inflight = null })
+    this.inflight = flight
+    return flight
+  }
 }
 
 /**
@@ -235,6 +310,11 @@ export function recoverKey(opts: GetKeyOptions = {}): string | null {
     verifier.dispose()
   }
 
+  return finishRecover(dbPath, hit, opts)
+}
+
+/** 掃描 chunk 之後的共同收尾：最終確認（正規 openDb）＋寫快取。 */
+function finishRecover(dbPath: string, hit: string | null, opts: GetKeyOptions): string | null {
   // 最終確認：命中的 key 過一次正規 openDb（snapshot + WAL merge），確保與
   // 日常開檔路徑一致；理論上必過（BatchVerifier 已驗），失敗即視為未命中。
   if (hit && !decrypts(dbPath, hit)) hit = null
@@ -247,6 +327,90 @@ export function recoverKey(opts: GetKeyOptions = {}): string | null {
     }
   }
   return hit
+}
+
+/**
+ * recoverKeyAsync(opts) — `recoverKey` 的協作式版本（外掛 backend）：同樣的流程（BatchVerifier 複製一次、邊掃邊試、命中再確認、寫快取），
+ * 但每個 chunk 之後、以及每試解 yieldSliceMs 之後都讓出事件迴圈；有 `opts.recoverGuard` 時 single-flight、失敗退避、可取消。
+ * 一個 chunk 內的 regex 抽取、單次試解、以及複製一次 edb 仍是同步的（各約數十毫秒到一秒）。
+ */
+export async function recoverKeyAsync(opts: GetKeyOptions = {}): Promise<string | null> {
+  const guard = opts.recoverGuard
+  const run = async (): Promise<string | null> => {
+    if (guard?.isCancelled) return null
+    const dbPath = opts.dbPath ?? findDb()
+    if (!dbPath) return null
+    const pid = findPid('LINE.exe')
+    if (!pid) return null // LINE 沒在跑：便宜，不退避
+
+    const scan = opts.scanner ?? scanRegionsAsync
+    const seen = new Set<string>()
+    let hit: string | null = null
+    const slice = { since: Date.now() }
+    const verifier = new BatchVerifier(dbPath)
+    if (guard) guard.scans += 1
+    try {
+      await scan(pid, async (chunk) => {
+        if (guard?.isCancelled) return false
+        const fresh: string[] = []
+        extractCandidates(chunk, seen, fresh)
+        for (const key of fresh) {
+          if (verifier.test(key)) {
+            hit = key
+            return false // 中止掃描
+          }
+          if (guard) await guard.maybeYield(slice)
+          if (guard?.isCancelled) return false
+        }
+        // 每個 chunk 之後一定讓出一次（一個 4 MB chunk 的抽取本身就要數十毫秒）。
+        if (guard) await guard.maybeYield(slice, true)
+        return true
+      })
+    } catch (error) {
+      guard?.noteScanFailure()
+      throw error
+    } finally {
+      verifier.dispose()
+    }
+    if (guard?.isCancelled) return null
+    const key = finishRecover(dbPath, hit, opts)
+    if (guard) { if (key) guard.noteSuccess(); else guard.noteScanFailure() }
+    return key
+  }
+  return guard ? guard.singleFlight(run) : run()
+}
+
+/**
+ * getKeyAsync(opts) — `getKey` 的協作式版本：env → cache → live recover（`recoverKeyAsync`）。
+ * 與 `getKey` 的差別只有：(1) recover 會讓出事件迴圈；(2) 有 `recoverGuard` 且還在退避期間時，env 之外一律直接回 null（不開 cache、不掃）。
+ */
+export async function getKeyAsync(opts: GetKeyOptions = {}): Promise<string | null> {
+  const dbPath = opts.dbPath ?? findDb()
+
+  if (!opts.skipEnv) {
+    const env = process.env.LINE_DB_KEY
+    if (env && env.trim()) return env.trim()
+  }
+  if (opts.recoverGuard?.isCancelled) return null
+  // 退避期間：快取在上一輪已經驗證失敗（否則不會走到掃描），不必再複製一次 200 MB 的資料庫去驗證同一把 key。
+  if (opts.recoverGuard?.blocked()) return null
+
+  if (!opts.skipCache) {
+    const cacheFile = opts.cacheFile ?? defaultCacheFile()
+    const fs = getLineEnginePorts().fs
+    if (fs.exists(cacheFile)) {
+      let cached = ''
+      try {
+        cached = fs.readTextFile(cacheFile).trim()
+      } catch {
+        cached = ''
+      }
+      if (cached && dbPath && decrypts(dbPath, cached)) return cached
+    }
+  }
+
+  if (opts.skipRecover) return null
+  return recoverKeyAsync({ ...opts, dbPath })
 }
 
 /**

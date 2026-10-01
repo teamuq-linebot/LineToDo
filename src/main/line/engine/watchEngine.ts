@@ -44,7 +44,7 @@ import { join } from 'node:path'
 
 import { getLineEnginePorts } from './enginePorts'
 import { chatName, findDb, iso, myMid, newMessagesAfter, openDb } from './linedb'
-import { getKey, type GetKeyOptions } from './linekey'
+import { getKey, getKeyAsync, type GetKeyOptions } from './linekey'
 import { rowToObj } from './rowToObj'
 import type { RawLineMessage } from '../types'
 import type { LineImportBatch, LineImportItem, LineSourceCursor } from '../importTypes'
@@ -209,6 +209,16 @@ function resolveKeyOrThrow(dbPath: string | null, keyOpts?: GetKeyOptions): stri
 }
 
 /**
+ * resolveKeyCooperative — 外掛 backend 的金鑰解析（`keyOpts.recoverGuard` 有給）：掃記憶體時讓出事件迴圈、single-flight、失敗退避（review F2）。
+ * 沒給 guard（standalone）一律走上面的同步 `resolveKeyOrThrow`，與先前逐字相同。
+ */
+async function resolveKeyCooperative(dbPath: string | null, keyOpts: GetKeyOptions): Promise<string> {
+  const key = await getKeyAsync({ ...keyOpts, dbPath })
+  if (!key) throw new KeyUnavailableError()
+  return key
+}
+
+/**
  * getMessagesSince(ms, opts?) — 對照 py `--since <ms>`。
  *
  * **不吃 checkpoint、不改 state**（backfill / debug 用）。開 DB → newMessages(ms)
@@ -244,7 +254,7 @@ export async function getLineImportBatch(
     const batchId = createHash('sha256').update(`${opts.source ?? 'line-watch'}\0${cursorFrom.createdTime}:${cursorFrom.rowId}\0${cursorFrom.createdTime}:${cursorFrom.rowId}`).digest('hex')
     return { batchId, source: opts.source ?? 'line-watch', cursorFrom, cursorTo: cursorFrom, hasMore: false, observedAt: new Date().toISOString(), items: [] }
   }
-  const key = resolveKeyOrThrow(dbPath, opts.keyOpts)
+  const key = opts.keyOpts?.recoverGuard ? await resolveKeyCooperative(dbPath, opts.keyOpts) : resolveKeyOrThrow(dbPath, opts.keyOpts)
   const { con, cleanup } = openDb(key, dbPath)
   try {
     const limit = opts.limit ?? DEFAULT_LIMIT
@@ -311,7 +321,7 @@ export async function commitAndAcknowledgeLineImportBatch(
 export async function resetNow(opts: WatchEngineOptions = {}): Promise<number> {
   const dbPath = opts.dbPath ?? findDb()
   const stateFile = opts.stateFile ?? defaultStateFile()
-  const key = resolveKeyOrThrow(dbPath, opts.keyOpts)
+  const key = opts.keyOpts?.recoverGuard ? await resolveKeyCooperative(dbPath, opts.keyOpts) : resolveKeyOrThrow(dbPath, opts.keyOpts)
   const { con, cleanup } = openDb(key, dbPath)
   let ts: number
   try {

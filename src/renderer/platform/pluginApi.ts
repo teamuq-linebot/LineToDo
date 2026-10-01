@@ -22,7 +22,7 @@ import type {
 } from '../../shared/api'
 import { PLUGIN_CAPABILITIES, type HostCapabilities } from './capabilities'
 import { PluginEventPump, type PluginEventPumpOptions, type PluginEventType } from './pluginEvents'
-import { PluginApiError, PluginTransport, PluginUnsupportedError, type TuqPluginHost } from './pluginTransport'
+import { PluginApiError, PluginTransport, PluginUnsupportedError, type BusyRetryOptions, type TuqPluginHost } from './pluginTransport'
 
 export { PluginApiError, PluginBackendError, PluginUnsupportedError } from './pluginTransport'
 export type { TuqPluginHost } from './pluginTransport'
@@ -55,10 +55,18 @@ export interface PluginApiOptions {
   extractionConnected?: boolean
   /** 動態版的 `extractionConnected`（orchestrator 的即時狀態）。給了就以它為準。 */
   aiConnection?: PluginAiConnection
-  /** 同時進行中的一般請求上限（host 上限 8）。預設 6。 */
+  /**
+   * 這個 view 同時進行中的 host 呼叫上限，**含事件長輪詢**（manifest 的 `maxSessions` 是 4）。預設 3（長輪詢 1 ＋ 其他 2）；設定 view 用 1 並關掉事件輪詢，
+   * 所以兩個 view 同時開著也只有 4。見 pluginTransport.ts 檔頭。
+   */
   maxConcurrentCalls?: number
   jobPollWaitMs?: number
-  events?: Pick<PluginEventPumpOptions, 'waitMs' | 'idleStopMs' | 'backoffBaseMs' | 'backoffMaxMs' | 'minLoopMs' | 'onDiagnostic'>
+  /** host 回忙碌（`plugin_backend_busy`／`plugin_backend_unavailable`）時的退避重試；預設最多 4 次、100 ms 起。 */
+  busyRetry?: BusyRetryOptions
+  events?: Pick<PluginEventPumpOptions, 'waitMs' | 'idleStopMs' | 'backoffBaseMs' | 'backoffMaxMs' | 'minLoopMs' | 'onDiagnostic'> & {
+    /** false＝不開事件長輪詢（`on*` 訂閱不會收到任何事件）。設定 view 用：它的畫面不依賴即時事件，每次動作後會自己重讀狀態。 */
+    enabled?: boolean
+  }
 }
 
 /** Phase 4 orchestrator 用的 AI 抽取通道（backend `ExtractQueue` 的供料／收料）。 */
@@ -95,6 +103,8 @@ export interface PluginExtras {
   reviewStatus(): Promise<{ running: boolean; state: 'idle' | 'running' | 'done' | 'paused' | 'incomplete'; chatsDone: number; chatsTotal: number; resumableMessages: number; summary: string; [key: string]: unknown }>
   /** 事件輪詢的狀態（測試／診斷）。 */
   eventsStats(): ReturnType<PluginEventPump['stats']>
+  /** 傳輸層的併發統計（測試／診斷）：目前在飛／排隊、歷來最大同時在飛、忙碌重試次數。 */
+  transportStats(): ReturnType<PluginTransport['stats']>
 }
 
 export interface PluginLineTodoApi extends LineTodoApi {
@@ -131,7 +141,7 @@ async function orUnsupported<T>(run: () => Promise<unknown>, fallback: (error: P
 export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTodoApi {
   const { host } = options
   if (!host || !host.backend || typeof host.backend.call !== 'function') throw new TypeError('createPluginLineTodoApi needs window.tuqPlugin.backend.call')
-  const transport = new PluginTransport({ host, maxConcurrentCalls: options.maxConcurrentCalls, jobPollWaitMs: options.jobPollWaitMs })
+  const transport = new PluginTransport({ host, maxConcurrentCalls: options.maxConcurrentCalls, jobPollWaitMs: options.jobPollWaitMs, busyRetry: options.busyRetry })
   const ai = options.ai ?? {}
   const connected = (): boolean => (options.aiConnection ? options.aiConnection.connected() : options.extractionConnected === true)
   const notConnectedText = (): string => options.aiConnection?.note?.() || PLUGIN_AI_NOT_CONNECTED
@@ -149,9 +159,10 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
   const call = <T>(path: string, ...args: unknown[]): Promise<T> => transport.invoke(path, args) as Promise<T>
 
   // ── 事件 ──
+  const { enabled: eventsEnabled = true, ...pumpOptions } = options.events ?? {}
   const pump = new PluginEventPump({
-    ...options.events,
-    call: (path, args) => transport.invokeUnlimited(path, args),
+    ...pumpOptions,
+    call: (path, args) => transport.invokeEvents(path, args),
     // 重新同步（gap／backend 重啟／payload 溢出）：重拉兩個「狀態」事件；todos／messages 由 pump 發空事件讓看板整個重載。
     resync: async () => {
       const out: Array<[PluginEventType, unknown]> = []
@@ -161,7 +172,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       return out
     }
   })
-  const on = <T>(type: PluginEventType) => (cb: (payload: T) => void): (() => void) => pump.subscribe(type, (payload) => cb(payload as T))
+  const on = <T>(type: PluginEventType) => (cb: (payload: T) => void): (() => void) => (eventsEnabled ? pump.subscribe(type, (payload) => cb(payload as T)) : () => undefined)
 
   // ── 媒體 URL（成功的才快取；not_cached 之類之後可能成功）──
   const assetUrls = new Map<string, string>()
@@ -285,7 +296,8 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       aiTasks,
       info: () => call('backend.info'),
       reviewStatus: () => call('review.status'),
-      eventsStats: () => pump.stats()
+      eventsStats: () => pump.stats(),
+      transportStats: () => transport.stats()
     },
     dispose: () => {
       pump.dispose() // 先停輪詢（同步送出 events.close），再關傳輸

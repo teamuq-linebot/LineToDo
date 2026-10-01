@@ -1,6 +1,6 @@
 {
   "name": "line-todo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "LINE 新訊息語意抽取代辦看板（Electron + qwen）",
   "main": "out/main/index.js",
   "author": "",
@@ -26,7 +26,7 @@
     "test:wasm-contract": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-wasm-contract.mjs",
     "test:wasm-engine": "npm run test:wasm-vfs && npm run test:wasm-linedb && npm run test:wasm-contract",
     "build:plugin-backend": "node scripts/plugin/build-backend.mjs",
-    "test:plugin-backend-unit": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-backend-units.mjs scripts/plugin/test-backend-media-reconcile.mjs scripts/plugin/test-extract-throughput.mjs scripts/plugin/test-review-resume.mjs",
+    "test:plugin-backend-unit": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-backend-units.mjs scripts/plugin/test-backend-media-reconcile.mjs scripts/plugin/test-extract-throughput.mjs scripts/plugin/test-review-resume.mjs scripts/plugin/test-backend-startup.mjs",
     "test:plugin-backend-contract": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/plugin/test-backend-contract.mjs",
     "test:plugin-backend": "npm run test:plugin-backend-unit && npm run test:plugin-backend-contract",
     "build:plugin-ui": "node scripts/plugin/build-ui.mjs",

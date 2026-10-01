@@ -34,12 +34,15 @@ import { getLastRun } from '../../main/db/pipeline.repo'
 import { commitLineImportBatch, isLineImportSchemaReady } from '../../main/db/lineImport.repo'
 import { configureLineEnginePorts } from '../../main/line/engine/enginePorts'
 import type { LineEnginePorts } from '../../main/line/engine/enginePorts'
+import { RecoverGuard } from '../../main/line/engine/linekey'
+import type { GetKeyOptions, RecoverGuardOptions } from '../../main/line/engine/linekey'
 import { getLineImportBatch, getMessagesSince } from '../../main/line/engine/watchEngine'
 import type { LineImportBatch } from '../../main/line/importTypes'
 import type { ParticipantIdentityProvider } from '../../main/line/identity'
 import type { LineFsPort } from '../../main/line/engine/fsPort'
 import { createMediaDecryptor } from '../../main/media/decrypt'
 import { scanRecentUnsent } from '../../main/pipeline/backfill'
+import { getSourceMonthlyFingerprint } from '../../main/pipeline/reconcile'
 import { runReconcile } from '../../main/pipeline/reconcileRunner'
 import type { ReconcileDeps } from '../../main/pipeline/reconcileRunner'
 import { LineWatcher } from '../../main/line/watcher'
@@ -74,6 +77,14 @@ const UNKNOWN_IDENTITY: ParticipantIdentityProvider = {
 /** 近期收回掃描的最短間隔（對齊 standalone 的 5 分鐘）。 */
 const UNSENT_SCAN_MIN_INTERVAL_MS = 5 * 60 * 1000
 
+/**
+ * 真實 LINE 來源（有 linePorts）時，第一輪 poll（金鑰擷取＋首批匯入）與開機對帳延後多久才開始：
+ * `activate()` 要先回傳，host 才收得到 boot-ack（manifest `bootTimeoutSec: 30`）；金鑰擷取與匯入再久都不能算在 boot 時間裡（review F2）。
+ */
+const DEFAULT_STARTUP_DELAY_MS = 250
+/** dispose 最多等進行中的 poll／金鑰掃描收尾多久（刪暫存快照、關 handle）；超過就放手（下次啟動會清掃殘留，見 win32fs）。 */
+const DISPOSE_IDLE_WAIT_MS = 2000
+
 export interface PluginBackendOptions {
   pluginId: string
   version: string
@@ -83,7 +94,12 @@ export interface PluginBackendOptions {
   /** 直接指定 LINE port（fake LINE source）。省略＝用 `LineWatcher` 讀 `linePorts` 指向的 LINE 資料。 */
   line?: LineTodoApplicationPorts['line']
   /** `LineWatcher` 參數（只在沒給 `line` 時使用）。 */
-  watcher?: { intervalSec?: number; limit?: number; drainBacklog?: boolean }
+  watcher?: { intervalSec?: number; limit?: number; drainBacklog?: boolean; startupDelayMs?: number }
+  /**
+   * 金鑰擷取（review F2）：`RecoverGuard`（失敗退避、讓出事件迴圈的時間片）的參數；`scanner` 供測試取代真的記憶體掃描。
+   * 預設：掃不到時 30 s → 5 分鐘指數退避，連續占用事件迴圈超過 20 ms 就讓出。
+   */
+  keyRecovery?: { guard?: RecoverGuardOptions; scanner?: GetKeyOptions['scanner'] }
   /** app DB 引擎；預設 standalone 的 better-sqlite3（外掛 build 會把它指到 13.0.2）。 */
   appDbEngine?: AppDbEngine
   /**
@@ -118,6 +134,17 @@ const EVENT_BRIDGE: Array<[string, (api: LineTodoApi, emit: (payload: unknown) =
   ['backfill-progress', (api, emit) => api.pipeline.onBackfillProgress(emit)],
   ['reconcile-progress', (api, emit) => api.pipeline.onReconcileProgress(emit)]
 ]
+
+/** 可被 AbortSignal 提前喚醒的 sleep（timer 不阻止行程結束）。 */
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return }
+    const timer = setTimeout(done, ms)
+    timer.unref?.()
+    function done(): void { clearTimeout(timer); signal.removeEventListener('abort', done); resolve() }
+    signal.addEventListener('abort', done, { once: true })
+  })
+}
 
 /** 連線是否還能用（better-sqlite3 close 之後 prepare 會 throw）。 */
 function isOpen(db: { prepare(sql: string): { get(): unknown } }): boolean {
@@ -162,7 +189,12 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   const log = (line: string): void => { recentLog.push(line.slice(0, 300)); if (recentLog.length > 40) recentLog.shift() }
 
   // ── LINE port ──
-  const engineOptions = { stateFile: join(dataDir, '.watch_json_state'), keyOpts: { cacheFile: join(dataDir, '.linekey') } }
+  // recoverGuard：金鑰擷取走協作式路徑（掃記憶體時讓出事件迴圈、single-flight、失敗退避、dispose 時取消）。cacheFile 一律明確指到 dataDir
+  // （reconcile 的預設路徑也經由 keyOpts 帶進來，不再依賴 host 的 cwd 剛好是 dataDir；review F6）。
+  const keyGuard = new RecoverGuard(options.keyRecovery?.guard)
+  const keyOpts: GetKeyOptions = { cacheFile: join(dataDir, '.linekey'), recoverGuard: keyGuard, ...(options.keyRecovery?.scanner ? { scanner: options.keyRecovery.scanner } : {}) }
+  const engineOptions = { stateFile: join(dataDir, '.watch_json_state'), keyOpts }
+  const startupDelayMs = options.watcher?.startupDelayMs ?? (options.linePorts ? DEFAULT_STARTUP_DELAY_MS : 0)
   let watcher: LineWatcher | null = null
   let line = options.line
   if (!line) {
@@ -171,6 +203,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       limit: options.watcher?.limit ?? 500,
       dbWatchEnabled: false, // fs.watch 對 LINE 目錄在權限模型下沒意義：只用間隔輪詢（設計 v2 §4.1.2）
       drainBacklog: options.watcher?.drainBacklog ?? true,
+      // 第一輪 poll 延後到 activate() 回傳之後（real LINE）；fake／測試（沒有 linePorts）維持立即開始。
+      ...(options.linePorts || options.watcher?.startupDelayMs !== undefined ? { startupDelayMs } : {}),
       engine: engineOptions
     })
     w.on('log', log)
@@ -249,9 +283,13 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
         const reconcile = settings.get().reconcile
         if (!reconcile.enabled) return
         schedule(async (signal) => {
+          // 與第一輪 poll 一樣等 activate() 回傳之後才開始（它也會用到金鑰；single-flight，不會重複掃描）。
+          if (startupDelayMs > 0) await sleepUnlessAborted(startupDelayMs, signal)
+          if (signal.aborted) return
           const importReady = isLineImportSchemaReady(db)
           await runReconcile({ scopeMonths: reconcile.scopeMonths }, {
             db,
+            getSourceFingerprint: () => getSourceMonthlyFingerprint({ keyOpts }),
             checkHealth: () => ({ ok: db.pragma('quick_check', { simple: true }) === 'ok' }),
             stateFile: join(dataDir, 'reconcile-state.json'),
             lockFile: join(dataDir, '.reconcile_lock'),
@@ -314,6 +352,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       rssMB: Math.round((process.memoryUsage.rss() / 1048576) * 10) / 10,
       line: line!.status() as unknown as JsonValue,
       watcher: watcher !== null,
+      keyRecovery: { scans: keyGuard.scans, blocked: keyGuard.blocked(), retryInMs: keyGuard.retryInMs() },
       appDb: appDbInfo(appDb),
       extract: queue.stats(),
       review: review.status() as unknown as JsonValue,
@@ -329,6 +368,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     if (options.autoStart !== false) await runtime.start()
   } catch (error) {
     disposed = true
+    keyGuard.cancel()
     for (const off of unsubscribers) off()
     dispatcher.dispose()
     hub.dispose()
@@ -343,10 +383,13 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
 
   return {
     call: (method, params) => dispatcher.call(method, params),
+    // 目前未啟用（review F9）：manifest 沒有宣告 provided capability，host 不會呼叫 openSession；事件走 api.invoke 的長輪詢（見 eventHub.ts 檔頭）。
     openSession: async (info: SessionInfo, channel: SessionChannel) => hub.attachChannel(info, channel),
     dispose: async () => {
       if (disposed) return
       disposed = true
+      // 進行中的金鑰掃描在下一個讓出點結束（之後的金鑰解析一律回 null），不會在 dispose 之後還掃著 LINE 記憶體。
+      keyGuard.cancel()
       // 順序：先關入口（新的 call 拿到 backend_stopped）、解除等待中的長輪詢／同步抽取，再停 runtime（waitForCalls 才不會卡住）。
       dispatcher.dispose()
       for (const off of unsubscribers) { try { off() } catch { /* 已解除 */ } }
@@ -355,6 +398,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       aiTasks.dispose()
       review.dispose()
       await runtime.dispose()
+      // 讓進行中的 poll／掃描收尾（刪掉暫存快照、關 handle）；等不到就放手，殘留的快照目錄會在下次啟動時清掉。
+      await Promise.race([Promise.all([watcher?.idle(), keyGuard.idle()]), new Promise<void>((resolve) => { setTimeout(resolve, DISPOSE_IDLE_WAIT_MS).unref?.() })])
     },
     diagnostics: (): BackendDiagnostics => ({
       appDbOpen: appDb ? isOpen(appDb) : false,

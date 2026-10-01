@@ -21,6 +21,7 @@
  * 不依賴 DOM／React；時間與可見性都是注入的（測試用手動時鐘與假的 ai:chat）。
  */
 import { validateExtractResult } from '../../shared/extractResult'
+import { fitReplyText } from '../../shared/pluginWire'
 
 // ───────────────────────── 1.6.8 ai:chat 的型別（只列用到的）─────────────────────────
 
@@ -721,9 +722,14 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
       }
     }
     try {
-      if (result.ok) {
+      // 回覆文字要放得進一個 ai.commit 請求（UTF-8 位元組，與 backend 的上限同一個常數）：純文字草稿過長就截斷並註記；JSON 輸出截斷會壞掉，改回報 reply_too_long。
+      const fitted = result.ok ? fitReplyText(result.text, task.expectJson !== true) : null
+      if (result.ok && fitted?.ok) {
         counters.tasksDone += 1
-        await deps.tasks.commit([{ taskId: task.taskId, ok: true, text: result.text, ...(result.model ? { model: result.model } : {}) }])
+        await deps.tasks.commit([{ taskId: task.taskId, ok: true, text: fitted.text, ...(result.model ? { model: result.model } : {}) }])
+      } else if (result.ok) {
+        counters.tasksFailed += 1
+        await deps.tasks.commit([{ taskId: task.taskId, ok: false, failCode: 'reply_too_long' }])
       } else {
         counters.tasksFailed += 1
         // 使用者動作不重排：把原因交給呼叫端顯示（rate_limited／quota_exhausted／view_not_visible…都是明確訊息）

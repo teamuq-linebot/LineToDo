@@ -49,6 +49,11 @@ export interface LineWatcherOptions {
    * 外掛首次匯入大量歷史訊息時開啟。
    */
   drainBacklog?: boolean
+  /**
+   * 給了就把 start() 的「立即跑一次」延後這麼多毫秒才開始（外掛 backend：`activate()` 要先回傳讓 host 收到 boot-ack，
+   * 第一次金鑰擷取與首批匯入才開始；review F2）。省略＝像以前一樣在 start() 裡立刻開始（standalone）。
+   */
+  startupDelayMs?: number
 }
 
 const DB_WATCH_DEBOUNCE_MS = 800
@@ -65,6 +70,8 @@ export class LineWatcher extends EventEmitter {
   private intervalTimer: NodeJS.Timeout | null = null
   private debounceTimer: NodeJS.Timeout | null = null
   private drainHandle: NodeJS.Immediate | null = null
+  private startupTimer: NodeJS.Timeout | null = null
+  private current: Promise<void> | null = null
   private fsWatcher: FSWatcher | null = null
   private statWatcher: StatWatcher | null = null
 
@@ -104,8 +111,16 @@ export class LineWatcher extends EventEmitter {
     this.setState('starting', null)
     this.emit('log', `[watcher] start — interval=${this.opts.intervalSec}s dbWatch=${this.opts.dbWatchEnabled ?? true}`)
 
-    // 立即跑一次，不等第一個間隔
-    void this.poll('startup')
+    // 立即跑一次，不等第一個間隔（外掛：startupDelayMs 之後，讓 activate() 先回傳）
+    if (this.opts.startupDelayMs === undefined) {
+      void this.poll('startup')
+    } else {
+      this.startupTimer = setTimeout(() => {
+        this.startupTimer = null
+        void this.poll('startup')
+      }, this.opts.startupDelayMs)
+      this.startupTimer.unref?.()
+    }
 
     // 間隔 fallback：每 intervalSec 秒一定跑一次
     this.intervalTimer = setInterval(() => {
@@ -122,6 +137,10 @@ export class LineWatcher extends EventEmitter {
   stop(): void {
     this.stopped = true
 
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer)
+      this.startupTimer = null
+    }
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = null
@@ -230,11 +249,19 @@ export class LineWatcher extends EventEmitter {
       return
     }
     this.busy = true
+    const run = this.pollOnceInProcess(trigger)
+    this.current = run
     try {
-      await this.pollOnceInProcess(trigger)
+      await run
     } finally {
       this.busy = false
+      if (this.current === run) this.current = null
     }
+  }
+
+  /** 進行中的那一輪 poll 結束時 resolve（沒有進行中的就立刻 resolve）。外掛 dispose 用它等掃描／匯入收尾。 */
+  idle(): Promise<void> {
+    return this.current ? this.current.then(() => undefined, () => undefined) : Promise.resolve()
   }
 
   /**
@@ -244,7 +271,8 @@ export class LineWatcher extends EventEmitter {
   private emitMessage(msg: RawLineMessage): void {
     if (this.stopped) return
     if (typeof msg.chatId !== 'string' || typeof msg.ts !== 'number') {
-      this.emit('log', `[watcher] skip malformed message: ${JSON.stringify(msg).slice(0, 200)}`)
+      // log 不帶訊息內容（review F7）：只記欄位型別，內容（文字、寄件人、聊天室）不進任何 log。
+      this.emit('log', `[watcher] skip malformed message: chatId=${typeof msg.chatId} ts=${typeof msg.ts}`)
       return
     }
     if (this.status.state !== 'running') this.setState('running', null)

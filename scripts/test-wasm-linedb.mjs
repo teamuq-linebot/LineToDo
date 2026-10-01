@@ -341,3 +341,47 @@ test('SQL drift guard: the raw SQL used by the suite still appears verbatim in t
   assert.ok(order.includes(`'${RAW_SQL.lineOrderProfile}'`), 'lineOrder profile')
   assert.ok(order.includes(`'${RAW_SQL.lineOrderSquareChat}'`), 'lineOrder square chat')
 })
+
+// ── review F4: orphaned snapshot working directories are swept when the port starts ─────────────────────────────
+
+test('F4: createWin32LineFsPort() sweeps linedb-* / linekey-scan-* snapshot directories left by a killed backend, and nothing else', () => {
+  const root = makeTempRoot('wasm-linedb-sweep-')
+  try {
+    const workspace = join(root, 'line-engine')
+    mkdirSync(workspace, { recursive: true })
+    // what a backend killed in the middle of openDb() / BatchVerifier leaves behind: copies of the (encrypted) LINE database
+    for (const dir of ['linedb-AbC123', 'linedb-zzzzzz', 'linekey-scan-Q1w2E3']) {
+      mkdirSync(join(workspace, dir, 'nested'), { recursive: true })
+      writeFileSync(join(workspace, dir, 'm.edb'), Buffer.alloc(4096, 7))
+      writeFileSync(join(workspace, dir, 'm.edb-wal'), Buffer.alloc(512, 9))
+      writeFileSync(join(workspace, dir, 'nested', 'x'), 'x')
+    }
+    // everything that is not a snapshot directory must survive: engine state, the key cache, other directories, a *file* that merely starts with the prefix
+    mkdirSync(join(workspace, 'media-tmp'))
+    writeFileSync(join(workspace, 'media-tmp', 'keep.bin'), 'keep')
+    writeFileSync(join(workspace, '.linekey'), '0123456789abcdef0123456789abcdef')
+    writeFileSync(join(workspace, '.watch_json_state'), '{}')
+    writeFileSync(join(workspace, 'linedb-note.txt'), 'a file, not a snapshot directory')
+    mkdirSync(join(workspace, 'Linedb-other-case-is-not-ours'))
+
+    const port = createWin32LineFsPort({ workspaceRoot: workspace })
+    assert.equal(port.sweptOrphans, 3, 'three snapshot directories were swept')
+    assert.deepEqual(readdirSync(workspace).sort(), ['.linekey', '.watch_json_state', 'Linedb-other-case-is-not-ours', 'linedb-note.txt', 'media-tmp'].sort())
+    assert.equal(readFileSync(join(workspace, 'media-tmp', 'keep.bin'), 'utf8'), 'keep')
+    assert.equal(readFileSync(join(workspace, '.linekey'), 'utf8').length, 32)
+
+    // idempotent; and the engine's own temp dirs (made after construction) are untouched until their owner removes them
+    assert.equal(createWin32LineFsPort({ workspaceRoot: workspace }).sweptOrphans, 0)
+    const live = port.makeTempDir('linedb-')
+    assert.ok(existsSync(live))
+    port.removeDir(live)
+    assert.equal(existsSync(live), false)
+
+    // a workspace that does not exist yet is created, nothing to sweep
+    const fresh = createWin32LineFsPort({ workspaceRoot: join(root, 'brand-new', 'line-engine') })
+    assert.equal(fresh.sweptOrphans, 0)
+    assert.ok(existsSync(join(root, 'brand-new', 'line-engine')))
+  } finally {
+    rmQuiet(root)
+  }
+})

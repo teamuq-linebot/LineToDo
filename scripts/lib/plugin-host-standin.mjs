@@ -61,6 +61,8 @@ try {
   if (!handler || typeof handler.call !== 'function') throw new Error('activate must return an object with call()')
   out.activateMs = Math.round(performance.now() - t0)
   out.handlerKeys = Object.keys(handler).sort()
+  // review F2: activate() must return before the first key extraction / import begin (the host sends boot-ack right after it); the watcher is up but has not polled yet
+  out.lineStatusRightAfterActivate = (await handler.call('api.invoke', { path: 'line.status', args: [] }))?.value?.state ?? null
   out.selfCheckAfterActivate = runPermissionSelfCheck(init)
 
   // ── the host's call wire (JSON in/out, size + time limits) ──

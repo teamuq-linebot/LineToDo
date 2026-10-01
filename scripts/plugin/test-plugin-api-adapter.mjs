@@ -23,6 +23,7 @@ import {
   PLUGIN_AI_NOT_CONNECTED, PluginApiError, PluginBackendError, PluginUnsupportedError, createPluginLineTodoApi
 } from '../../src/renderer/platform/pluginApi.ts'
 import { Limiter, toWire } from '../../src/renderer/platform/pluginTransport.ts'
+import { RESOURCES } from './lib/manifest.mjs'
 
 // ───────────── the mock host ─────────────
 
@@ -37,10 +38,17 @@ const isJson = (value, depth = 0) => {
 }
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength
 
-/** `backend`: anything with `call(method, params)`; swap it with `.target` to simulate a restart. */
-function makeHost({ target, assetsOrigin = 'tuqplugin://tuqdev.line-todo' }) {
+/**
+ * `backend`: anything with `call(method, params)`; swap it with `.target` to simulate a restart.
+ *
+ * Busy semantics are the real 1.6.8 ones (review F1): the backend controller refuses a call when the calls already being handled reach the manifest's
+ * `resources.maxSessions` (backendController.ts:395, `BackendError('plugin_backend_busy')`); `maxSessions` defaults to the value in the plugin manifest
+ * (scripts/plugin/lib/manifest.mjs), not to a made-up number. `busyCode` is what the VIEW sees: the invoke gate turns the controller's busy error into
+ * `plugin_backend_unavailable` (backendInvokeGate.ts:156-160), so tests run both spellings. `state.busyRejections` counts the refusals.
+ */
+function makeHost({ target, assetsOrigin = 'tuqplugin://tuqdev.line-todo', maxSessions = RESOURCES.maxSessions, busyCode = 'plugin_backend_busy' }) {
   const state = {
-    target, calls: [], inFlight: 0, maxInFlight: 0, failNext: null, hold: null,
+    target, calls: [], inFlight: 0, maxInFlight: 0, busyRejections: 0, maxSessions, failNext: null, hold: null,
     // 'events.pull' can be held to simulate a slow or stalled backend
   }
   const host = {
@@ -52,6 +60,7 @@ function makeHost({ target, assetsOrigin = 'tuqplugin://tuqdev.line-todo' }) {
         if (bytes(params) > LIMIT) throw new Error('backend_invoke_too_large')
         const record = { method, path: params.path, args: params.args }
         state.calls.push(record)
+        if (state.inFlight >= state.maxSessions) { state.busyRejections += 1; throw new Error(busyCode) }
         state.inFlight += 1
         state.maxInFlight = Math.max(state.maxInFlight, state.inFlight)
         try {
@@ -109,7 +118,7 @@ async function withBackend(options, body) {
   const dataDir = mkdtempSync(join(tmpdir(), 'plugin-adapter-'))
   const line = fakeLine()
   const backend = await createPluginBackend({ pluginId: 'tuqdev.line-todo', version: '7.7.7', dataDir, line: line.port, extract: { retryBaseMs: 20 }, ...options.backend })
-  const mock = makeHost({ target: backend })
+  const mock = makeHost({ target: backend, ...options.host })
   const api = createPluginLineTodoApi({ host: mock.host, events: FAST_EVENTS, ...options.api })
   try { await body({ api, backend, line, mock, dataDir }) } finally {
     api.dispose()
@@ -171,8 +180,8 @@ test('adapter: failures are typed — in-band backend errors, host errors, malfo
   await withBackend({}, async ({ api, mock }) => {
     await assert.rejects(api.plugin.invoke('no.such.path'), (e) => e instanceof PluginApiError && e.code === 'path_unknown' && e.path === 'no.such.path')
     await assert.rejects(api.plugin.invoke('__proto__'), (e) => e instanceof PluginApiError && e.code === 'path_unknown')
-    mock.state.failNext = 'plugin_backend_unavailable'
-    await assert.rejects(api.db.chats.list(), (e) => e instanceof PluginBackendError && e.code === 'plugin_backend_unavailable')
+    mock.state.failNext = 'plugin_backend_crashed'
+    await assert.rejects(api.db.chats.list(), (e) => e instanceof PluginBackendError && e.code === 'plugin_backend_crashed')
     mock.state.failNext = 'backend_invoke_timeout'
     await assert.rejects(api.ping(), (e) => e instanceof PluginBackendError && /timeout/.test(e.message))
     assert.equal((await api.ping()).ok, true, 'the adapter keeps working after a host failure')
@@ -203,11 +212,141 @@ test('adapter: wire format — trailing undefined dropped, JSON round trip, size
   await Promise.all(Array.from({ length: 12 }, () => limiter.run(async () => { active += 1; peak = Math.max(peak, active); await sleep(5); active -= 1 })))
   assert.equal(peak, 3)
   assert.deepEqual(limiter.stats(), { active: 0, waiting: 0 })
-  // many simultaneous calls from the UI never exceed the cap against a real host (the host rejects more than 8 in flight)
-  await withBackend({ api: { maxConcurrentCalls: 4 } }, async ({ api, mock }) => {
+  // many simultaneous calls from the UI never exceed the cap (an explicit maxConcurrentCalls is honoured)
+  await withBackend({ api: { maxConcurrentCalls: 2 } }, async ({ api, mock }) => {
     await Promise.all(Array.from({ length: 30 }, () => api.db.chats.list()))
-    assert.ok(mock.state.maxInFlight <= 4, `max in flight ${mock.state.maxInFlight}`)
+    assert.ok(mock.state.maxInFlight <= 2, `max in flight ${mock.state.maxInFlight}`)
   })
+})
+
+// ───────────── review F1: the UI never exceeds the manifest's maxSessions; a busy answer is retried with backoff ─────────────
+
+/** What a board view does when it opens (status, settings, lists) plus 10 images and the orchestrator's pulls — all at once, with the event long poll running. */
+async function loadBoardLikeBurst(api) {
+  const media = Array.from({ length: 10 }, (_, i) => api.media.assetUrl(`i:m${i}`))
+  return Promise.all([
+    api.pipeline.status(), api.settings.get(), api.db.todos.list(), api.db.chats.list(), api.line.status(), api.pipeline.loadStats(),
+    api.plugin.extract.system(), api.plugin.extract.pull({ max: 1 }), api.plugin.aiTasks.pull({ max: 1 }), api.plugin.reviewStatus(), api.plugin.info(),
+    ...media
+  ])
+}
+
+for (const busyCode of ['plugin_backend_busy', 'plugin_backend_unavailable']) {
+  test(`F1 (${busyCode}): the fake host judges busy by the manifest maxSessions (${RESOURCES.maxSessions}); a board-like burst with the long poll running never exceeds it and is never refused`, async () => {
+    assert.equal(RESOURCES.maxSessions, 4, 'the manifest says 4 (1.6.8 Core limit)')
+    await withBackend({ host: { busyCode } }, async ({ api, line, mock }) => {
+      assert.equal(mock.state.maxSessions, RESOURCES.maxSessions, 'the fake host takes its limit from the manifest, not from a constant of its own')
+      const events = []
+      const off = api.line.onMessage((m) => events.push(m.msgId)) // starts the event long poll (it holds one slot of the view's budget)
+      await until(() => mock.count('events.pull') >= 1, { message: 'the long poll to start' })
+      for (let round = 0; round < 3; round += 1) {
+        await loadBoardLikeBurst(api)
+        line.emit(raw(round + 1))
+      }
+      await until(() => events.length === 3, { message: 'events still arrive through the long poll during the bursts' })
+      assert.equal(mock.state.busyRejections, 0, 'the host never had to refuse a call')
+      assert.ok(mock.state.maxInFlight <= RESOURCES.maxSessions, `max in flight ${mock.state.maxInFlight} <= maxSessions ${RESOURCES.maxSessions}`)
+      const transport = api.plugin.transportStats()
+      assert.ok(transport.maxActive <= 3, `the board's own budget is 3 (long poll + 2); saw ${transport.maxActive}`)
+      assert.equal(transport.busyRetries, 0)
+      assert.ok(mock.state.maxInFlight >= 2, 'the burst really ran concurrently (the test is not vacuous)')
+      off()
+    })
+  })
+}
+
+test('F1: board view (budget 3, long poll) and settings view (budget 1, no poll) open at the same time against one host: the sum stays within maxSessions', async () => {
+  await withBackend({}, async ({ api: board, line, mock }) => {
+    const settings = createPluginLineTodoApi({ host: mock.host, maxConcurrentCalls: 1, events: { ...FAST_EVENTS, enabled: false } })
+    try {
+      const got = []
+      board.line.onMessage((m) => got.push(m.msgId))
+      settings.pipeline.onStatus(() => got.push('never')) // the settings view subscribes too, but opens no poll
+      await until(() => mock.count('events.pull') >= 1, { message: 'the board long poll' })
+      for (let round = 0; round < 4; round += 1) {
+        await Promise.all([loadBoardLikeBurst(board), Promise.all(Array.from({ length: 8 }, () => settings.settings.get()))])
+      }
+      line.emit(raw(1))
+      await until(() => got.includes('i:m1'), { message: 'the board still gets its events' })
+      assert.equal(mock.count('events.open'), 1, 'only the board opened an event session')
+      assert.equal(mock.state.busyRejections, 0)
+      assert.ok(mock.state.maxInFlight <= RESOURCES.maxSessions, `both views together: max in flight ${mock.state.maxInFlight}`)
+      assert.ok(settings.plugin.transportStats().maxActive <= 1)
+      assert.deepEqual(got.filter((x) => x === 'never'), [])
+    } finally { settings.dispose() }
+  })
+})
+
+test('F1: the fake host is not vacuous — the old shape (6 concurrent calls, no retry) is refused by a host that applies maxSessions', async () => {
+  await withBackend({ api: { maxConcurrentCalls: 6, busyRetry: { attempts: 0 } } }, async ({ api, mock }) => {
+    const settled = await Promise.allSettled(Array.from({ length: 10 }, () => api.db.chats.list()))
+    assert.ok(mock.state.busyRejections > 0, 'the host refused calls above maxSessions')
+    assert.ok(settled.some((r) => r.status === 'rejected' && r.reason instanceof PluginBackendError && r.reason.code === 'plugin_backend_busy'))
+  })
+})
+
+test('F1: a busy host answer is retried with exponential backoff (the slot is released while waiting); both spellings; bounded; a closed transport stops retrying', async () => {
+  for (const busyCode of ['plugin_backend_busy', 'plugin_backend_unavailable']) {
+    const delays = []
+    const calls = []
+    let busyFor = 3
+    const host = {
+      backend: { call: async (method, params) => { calls.push(params.path); if (busyFor > 0) { busyFor -= 1; throw new Error(busyCode) } return { ok: true, value: params.path } } },
+      assets: { url: String }
+    }
+    const api = createPluginLineTodoApi({ host, events: { ...FAST_EVENTS, enabled: false }, busyRetry: { baseMs: 100, maxMs: 1000, random: () => 0.5, sleep: async (ms) => { delays.push(ms) } } })
+    assert.equal(await api.plugin.invoke('ping'), 'ping', `succeeds after the host stops being busy (${busyCode})`)
+    assert.deepEqual(delays, [100, 200, 400], 'exponential backoff from 100 ms')
+    assert.equal(calls.length, 4)
+    assert.equal(api.plugin.transportStats().busyRetries, 3)
+    assert.equal(api.plugin.transportStats().active, 0, 'no slot is held after the call')
+
+    // a permanently busy host: bounded retries (4) and then the host code reaches the caller
+    delays.length = 0
+    busyFor = Infinity
+    await assert.rejects(api.plugin.invoke('ping'), (e) => e instanceof PluginBackendError && e.code === busyCode)
+    assert.equal(delays.length, 4)
+    api.dispose()
+  }
+  // other host failures are not retried; backoff is capped; closing the transport during a backoff ends the call with 'disposed'
+  let n = 0
+  const crashed = createPluginLineTodoApi({ host: { backend: { call: async () => { n += 1; throw new Error('plugin_backend_crashed') } }, assets: { url: String } }, events: { enabled: false } })
+  await assert.rejects(crashed.plugin.invoke('ping'), (e) => e.code === 'plugin_backend_crashed')
+  assert.equal(n, 1, 'a crash is not a busy answer: no retry')
+  crashed.dispose()
+  const capped = []
+  const never = createPluginLineTodoApi({ host: { backend: { call: async () => { throw new Error('plugin_backend_busy') } }, assets: { url: String } }, events: { enabled: false }, busyRetry: { attempts: 6, baseMs: 400, maxMs: 1000, random: () => 0.5, sleep: async (ms) => { capped.push(ms) } } })
+  await assert.rejects(never.plugin.invoke('ping'))
+  assert.deepEqual(capped, [400, 800, 1000, 1000, 1000, 1000])
+  never.dispose()
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const closing = createPluginLineTodoApi({ host: { backend: { call: async () => { throw new Error('plugin_backend_busy') } }, assets: { url: String } }, events: { enabled: false }, busyRetry: { sleep: () => gate } })
+  const pending = closing.plugin.invoke('ping')
+  await sleep(20)
+  closing.dispose()
+  release()
+  await assert.rejects(pending, (e) => e instanceof PluginApiError && e.code === 'disposed')
+})
+
+test('F1: a long job (reviewLastDays) does not hold a slot between polls — other requests keep flowing with a budget of 3, long poll included', async () => {
+  const hub = new EventHub()
+  let finish
+  const fakeApi = { pipeline: { runOnce: () => new Promise((resolve) => { finish = resolve }) }, ping: async () => ({ ok: true }) }
+  const dispatcher = new Dispatcher({ getApi: () => fakeApi, hub, queue: { stats: () => ({}) }, softDeadlineMs: 20, maxJobWaitMs: 60 })
+  const mock = makeHost({ target: { call: (m, p) => dispatcher.call(m, p) } })
+  const api = createPluginLineTodoApi({ host: mock.host, jobPollWaitMs: 40, events: FAST_EVENTS })
+  try {
+    api.line.onMessage(() => undefined) // long poll running
+    await until(() => mock.count('events.pull') >= 1, { message: 'the long poll' })
+    const job = api.pipeline.runOnce()
+    await until(() => mock.count('job.poll') >= 2, { message: 'the job to be polled' })
+    for (let i = 0; i < 5; i += 1) assert.equal((await api.ping()).ok, true)
+    finish({ runId: 'r', todosCreated: 1 })
+    assert.deepEqual(await job, { runId: 'r', todosCreated: 1 })
+    assert.equal(mock.state.busyRejections, 0)
+    assert.ok(mock.state.maxInFlight <= 3)
+  } finally { api.dispose(); dispatcher.dispose(); hub.dispose() }
 })
 
 test('adapter: a result above the 64 KiB response limit comes back in chunks and is reassembled exactly; a long call becomes a job that is polled to completion', async () => {
