@@ -303,6 +303,12 @@ try {
     stats: (await must('backend.info')).aiTasks
   })
 
+  // 4c. review tracking (Phase 4 repair): the status route and backend.info.review exist in the production bundle; an empty window review (no messages that recent) completes at once
+  const reviewIdle = await must('review.status')
+  const reviewEmpty = await invoke('pipeline.reviewLastDays', 1)
+  const reviewAfter = await must('review.status')
+  step('reviewStatus', { idle: { state: reviewIdle.state, running: reviewIdle.running, resumable: reviewIdle.resumableMessages }, empty: { ok: reviewEmpty.ok, resultOk: reviewEmpty.value?.ok, chatsSeen: reviewEmpty.value?.chatsSeen }, after: { state: reviewAfter.state, running: reviewAfter.running }, info: (await must('backend.info')).review?.state })
+
   // 5. refusals
   step('refusals', {
     driver: await invoke('driver.postDraft', {}), draft: await invoke('db.todos.draftReply', 'x'), proto: await invoke('__proto__'),

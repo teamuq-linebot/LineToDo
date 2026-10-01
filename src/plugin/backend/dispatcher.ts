@@ -11,7 +11,7 @@
  *     整個 backend，所以：
  *       * 回傳超過預算 → 切成字串分段存起來，回 `{chunked, resultId, chunks}`，view 用 `result.chunk` 逐段取回再 JSON.parse。
  *       * 執行超過 soft deadline（預設 20 s）→ 回 `{pending, jobId}`，view 用 `job.poll` 取結果（長時間的 reviewLastDays 等）。
- *   - 另外有七組內部路徑：`backend.info`、`events.*`（事件長輪詢）、`extract.*`（AI 抽取供料／收料／還租約）、`ai.*`（UI 中轉的單次 AI 呼叫：
+ *   - 另外有八組內部路徑：`backend.info`、`review.status`（回顧的進行中／已完成 N/M／可續跑）、`events.*`（事件長輪詢）、`extract.*`（AI 抽取供料／收料／還租約）、`ai.*`（UI 中轉的單次 AI 呼叫：
  *     `ai.run` 由 UI 發起草擬回覆／誤判分析／群組議題分析，`ai.pull`／`ai.commit`／`ai.release` 是 UI orchestrator 領取並交回 ai:chat 的文字）、
  *     `media.prepare`（解密圖片寫進 dataDir，回相對路徑給 view 的 `assets.url()`）、`result.chunk`、`job.poll`。
  */
@@ -25,6 +25,7 @@ import type { ExtractQueue } from './extractQueue'
 import { DEFAULT_MAX_USER_CHARS, EXTRACT_SYSTEM_SHA256 } from './extractQueue'
 import type { EventHub } from './eventHub'
 import type { PluginMedia } from './media'
+import type { ReviewCoordinator } from './reviewRun'
 import type { Envelope, JsonValue } from './types'
 import { BACKEND_LIMITS } from './types'
 
@@ -72,6 +73,8 @@ export interface DispatcherOptions {
   aiTasks?: AiTaskQueue
   /** 媒體服務（`media.prepare`）；省略＝回 media_unavailable。 */
   media?: PluginMedia
+  /** 回顧的續跑／single-flight／進度（`pipeline.reviewLastDays`、`review.status`）；省略＝直接呼叫 core（單元測試）。 */
+  review?: ReviewCoordinator
   /** `backend.info` 的內容。 */
   info(): Record<string, JsonValue>
   /** 超過這個時間就把執行中的呼叫轉成 job（必須 < host 的 30 s）。 */
@@ -157,6 +160,7 @@ export class Dispatcher {
         return this.finalize(lift(this.opts.queue.commit({ results: body.results as never })))
       }
       case 'extract.stats': return this.finalize(this.opts.queue.stats())
+      case 'review.status': return this.opts.review ? this.finalize(this.opts.review.status()) : fail('review_unavailable', 'review tracking is not available in this build')
       case 'media.prepare': return this.mediaPrepare(args[0])
       case 'result.chunk': return this.chunk(args[0])
       case 'job.poll': return this.pollJob(args[0])
@@ -171,7 +175,13 @@ export class Dispatcher {
     try { target = resolvePath(this.opts.getApi(), path) } catch (error) { return mapError(error) }
     if (!target) return fail('unavailable', `${path} is not available in this build`)
 
-    return this.settle(Promise.resolve().then(() => (target as (...a: unknown[]) => unknown)(...args)))
+    const run = target as (...a: unknown[]) => unknown
+    // 回顧：同時只跑一個、可續跑、有進度（reviewRun.ts）。
+    if (path === 'pipeline.reviewLastDays' && this.opts.review) {
+      const review = this.opts.review
+      return this.settle(Promise.resolve().then(() => review.run(args[0], () => run(...args) as Promise<never>)))
+    }
+    return this.settle(Promise.resolve().then(() => run(...args)))
   }
 
   // ── ai.*：UI 中轉的單次 AI 呼叫 ──

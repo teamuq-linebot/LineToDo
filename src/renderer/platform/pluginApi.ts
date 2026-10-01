@@ -91,6 +91,8 @@ export interface PluginExtras {
   aiTasks: PluginAiTasksApi
   /** backend 診斷資訊（`backend.info`）。 */
   info(): Promise<Record<string, unknown>>
+  /** 「回顧最近 N 天」的狀態：進行中／已完成 N/M／可續跑（`review.status`；`summary` 是給使用者看的一句話）。 */
+  reviewStatus(): Promise<{ running: boolean; state: 'idle' | 'running' | 'done' | 'paused' | 'incomplete'; chatsDone: number; chatsTotal: number; resumableMessages: number; summary: string; [key: string]: unknown }>
   /** 事件輪詢的狀態（測試／診斷）。 */
   eventsStats(): ReturnType<PluginEventPump['stats']>
 }
@@ -282,6 +284,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       extract,
       aiTasks,
       info: () => call('backend.info'),
+      reviewStatus: () => call('review.status'),
       eventsStats: () => pump.stats()
     },
     dispose: () => {

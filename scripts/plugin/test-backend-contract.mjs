@@ -229,6 +229,17 @@ test('AI relay (Phase 4) under the real permission model: core draftReply -> rel
   assert.deepEqual(a.stats, { pending: 0, leased: 0, consumerActive: true })
 })
 
+test('review tracking (Phase 4 repair) in the production bundle under the real permission model: review.status answers, an empty-window review completes and is single-flight bookkeeping-clean', async () => {
+  const { run } = await getSetup()
+  const r = run.result.reviewStatus
+  assert.deepEqual(r.idle, { state: 'idle', running: false, resumable: 0 })
+  assert.equal(r.empty.ok, true)
+  assert.equal(r.empty.resultOk, true)
+  assert.equal(r.empty.chatsSeen, 0)
+  assert.deepEqual(r.after, { state: 'done', running: false })
+  assert.equal(r.info, 'done')
+})
+
 test('unsupported paths answer in-band; unknown paths and methods are refused', async () => {
   const { run } = await getSetup()
   const x = run.result.refusals

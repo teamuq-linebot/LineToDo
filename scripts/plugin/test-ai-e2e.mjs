@@ -219,23 +219,50 @@ test('e2e limits: a chat with far more text than one turn can carry is split by 
   const titles = ['寄報價單給客戶', '訂明天的會議室', '回覆廠商合約條款', '匯款給設計師', '更新官網banner', '預約牙醫看診', '整理報稅資料', '採購辦公室咖啡豆']
   let n = 0
   await withStack({ reply: ({ user }) => fenced(todoFor(user, titles[n++ % titles.length])) }, async ({ api, line, calls, ai }) => {
-    for (let i = 1; i <= 16; i += 1) line.emit(raw(i, { chatId: 'u-big', chat: '大客戶', text: `第 ${i} 則：` + '很長的需求描述，'.repeat(60) }))
+    for (let i = 1; i <= 30; i += 1) line.emit(raw(i, { chatId: 'u-big', chat: '大客戶', text: `第 ${i} 則：` + '很長的需求描述，'.repeat(60) }))
     await api.pipeline.runOnce()
     await until(async () => { const s = await api.plugin.extract.stats(); return calls.length >= 3 && s.pending + s.leased === 0 ? s : null }, { message: 'every part to be processed' })
-    assert.ok(calls.length >= 3, `${calls.length} turns for ~8.6k chars of messages`)
+    assert.ok(calls.length >= 3, `${calls.length} turns for ~20k chars of messages (each turn carries ~10 messages)`)
     for (const call of calls) {
       assert.ok(call.user.length <= CONTRACT.limits.inputChars, `user ${call.user.length} <= 8000`)
       assert.ok(call.system.length <= CONTRACT.limits.systemChars)
     }
     const covered = calls.flatMap((call) => JSON.parse(call.user).newMessages.map((m) => m.msgId))
-    assert.equal(covered.length, 16, 'each message is sent once as a new message')
-    assert.deepEqual([...new Set(covered)].sort(), Array.from({ length: 16 }, (_, i) => `i:m${i + 1}`).sort())
+    assert.equal(covered.length, 30, 'each message is sent once as a new message')
+    assert.deepEqual([...new Set(covered)].sort(), Array.from({ length: 30 }, (_, i) => `i:m${i + 1}`).sort())
     assert.equal(ai.stats.errors.request_invalid, 0, 'the host never saw an over-long input')
     const list = await todos(api)
     assert.equal(list.length, calls.length, 'one todo per part')
     await api.pipeline.runOnce()
     await sleep(150)
     assert.equal(calls.length, list.length, 'nothing is sent twice')
+  })
+})
+
+test('e2e throughput: a long chat (200 new messages x ~100 chars, with recentContext) is carried in turns that are nearly full — ~ new-message chars / per-turn budget, not one turn per message — each <= 7,500 chars', async () => {
+  await withStack({ reply: ({ user }) => fenced({ importance: 'fyi', newTodos: [], resolved: [], updates: [] }) }, async ({ api, line, calls, ai }) => {
+    const text = (i) => `第 ${i} 則：請幫我確認一下這件事情的進度，並且在明天中午之前回覆給客戶，謝謝。` + '補充說明內容。'.repeat(8)
+    // 40 older messages first: they are processed, and become the recentContext of the next cycle
+    for (let i = 1; i <= 40; i += 1) line.emit(raw(i, { chatId: 'u-long', chat: '長聊天室', isGroup: true, text: text(i) }))
+    await api.pipeline.runOnce()
+    await until(async () => { const s = await api.plugin.extract.stats(); return calls.length >= 1 && s.pending + s.leased === 0 }, { message: 'the first batch to be processed' })
+    calls.length = 0
+    for (let i = 41; i <= 240; i += 1) line.emit(raw(i, { chatId: 'u-long', chat: '長聊天室', isGroup: true, text: text(i) }))
+    await api.pipeline.runOnce()
+    await until(async () => { const s = await api.plugin.extract.stats(); return calls.length >= 1 && s.pending + s.leased === 0 }, { message: 'the long batch to be processed', timeout: 15_000 })
+    const payloads = calls.map((c) => JSON.parse(c.user))
+    const messageChars = payloads.flatMap((p) => p.newMessages).reduce((sum, m) => sum + JSON.stringify(m).length, 0)
+    const lowerBound = Math.ceil(messageChars / CONTRACT.limits.inputChars)
+    assert.equal(payloads.flatMap((p) => p.newMessages).length, 200, 'all 200 messages were sent, once each')
+    assert.ok(calls.length >= lowerBound, `${calls.length} turns >= lower bound ${lowerBound}`)
+    assert.ok(calls.length <= Math.ceil(lowerBound * 1.5) + 1, `${calls.length} turns for ${messageChars} chars of new messages (lower bound ${lowerBound}) — it used to be one turn per message`)
+    for (const [index, call] of calls.entries()) {
+      assert.ok(call.user.length <= 7500, `turn ${index + 1}: user ${call.user.length} <= 7,500`)
+      assert.ok(call.user.length <= CONTRACT.limits.inputChars)
+      assert.ok(payloads[index].recentContext.length > 0, `turn ${index + 1} carries recentContext`)
+      assert.ok(JSON.stringify(payloads[index].recentContext).length <= 1500 + 50, `turn ${index + 1}: recentContext is capped at ~20% of a turn (${JSON.stringify(payloads[index].recentContext).length} chars)`)
+    }
+    assert.equal(ai.stats.errors.request_invalid, 0, 'the host never saw an over-long input')
   })
 })
 

@@ -30,9 +30,15 @@ export const EXTRACT_SYSTEM_SHA256 = createHash('sha256').update(EXTRACT_SYSTEM_
 
 /** `AI_CHAT_LIMITS.inputChars` 是 8000；留餘裕給 UI 加的包裝。 */
 export const DEFAULT_MAX_USER_CHARS = 7500
+/** recentContext 最多佔單輪預算的比例（其餘留給新訊息與 openTodos）。 */
+export const CONTEXT_BUDGET_RATIO = 0.2
 const DEFAULT_LEASE_MS = 120_000
 const DEFAULT_RETRY_BASE_MS = 30_000
 const DEFAULT_RETRY_MAX_MS = 30 * 60_000
+/**
+ * 同步呼叫端（回顧）的「停滯」上限：整個佇列已經這麼久沒有任何結果被交回（commit），這個呼叫自己也沒有進展，才算停滯。
+ * 不是「從發出請求起算的總等待時間」——UI 在跑、只是受 ai:chat 18 輪/分限制而慢，不會被它判失敗（修正前是總時間上限 15 分鐘）。
+ */
 const DEFAULT_AWAIT_TIMEOUT_MS = 15 * 60_000
 /** 單次 pull 回傳的 JSON 預算（host 上限 64 KiB，留餘裕給 envelope）。 */
 const DEFAULT_PULL_BUDGET_BYTES = 40 * 1024
@@ -70,18 +76,44 @@ function buildPayload(input: ChatExtractInput, newMessages: MessageDTO[], recent
 /**
  * 依字元預算切片。順序：先放滿新訊息；一則都放不下時先縮 recentContext（丟最舊的）、再截短該則文字。
  * 後一片的 recentContext 接在前一片的新訊息之後（最多 contextLimit 則）。openTodos 若單獨就吃掉一半預算，截成前綴。
+ *
+ * **recentContext 有自己的預算上限**（`contextBudgetChars`，預設單輪的 20%）：只拿最近的幾則、放得下為止，絕不讓上下文
+ * 把單輪預算吃光（修正前：contextLimit 較大或訊息較長時，上下文佔滿預算，每輪只剩一則新訊息，長聊天室退化成「一則一輪」，
+ * 吃光 ai:chat 的 18 輪/分）。每輪的新訊息因此至少有 `maxChars × (1 − 20%) − openTodos` 可用。
  */
-export function partitionExtractInput(input: ChatExtractInput, opts: { maxChars: number; contextLimit: number }): ExtractPart[] {
+export function partitionExtractInput(input: ChatExtractInput, opts: { maxChars: number; contextLimit: number; contextBudgetChars?: number }): ExtractPart[] {
   const { maxChars } = opts
   const contextLimit = Math.max(0, opts.contextLimit)
+  const contextBudget = Math.max(0, Math.floor(opts.contextBudgetChars ?? maxChars * CONTEXT_BUDGET_RATIO))
   let openTodos = input.openTodos
   while (openTodos.length > 0 && buildPayload(input, [], [], openTodos).length > maxChars / 2) {
     openTodos = openTodos.slice(0, Math.floor(openTodos.length / 2))
   }
 
+  /** 上下文佔用的字元數（序列化後，扣掉沒有上下文時的基底）。 */
+  const emptyContextChars = buildPayload(input, [], [], []).length
+  const contextCost = (list: MessageDTO[]): number => buildPayload(input, [], list, []).length - emptyContextChars
+  /** 從候選（舊到新）取最近的幾則，總成本 ≤ contextBudget；最新一則本身就超過預算時截短它的文字（不整則丟掉）。 */
+  const fitContext = (candidates: MessageDTO[]): MessageDTO[] => {
+    let picked = takeLast(candidates, contextLimit)
+    while (picked.length > 1 && contextCost(picked) > contextBudget) picked = picked.slice(1)
+    if (picked.length === 1 && contextCost(picked) > contextBudget) {
+      const only = picked[0]
+      let room = contextBudget - contextCost([{ ...only, text: '' }])
+      let cut: MessageDTO = { ...only, text: (only.text ?? '').slice(0, Math.max(0, room)) }
+      while (room > 0 && contextCost([cut]) > contextBudget) {
+        room = Math.floor(room * 0.8)
+        cut = { ...only, text: (only.text ?? '').slice(0, room) }
+      }
+      picked = room >= 20 ? [cut] : []
+    }
+    return picked
+  }
+
   const messages = input.newMessages
   const parts: ExtractPart[] = []
-  let context = takeLast(input.recentContext, contextLimit)
+  let history: MessageDTO[] = takeLast(input.recentContext, contextLimit)
+  let context = fitContext(history)
   let index = 0
   while (index < messages.length) {
     let count = 0
@@ -128,7 +160,8 @@ export function partitionExtractInput(input: ChatExtractInput, opts: { maxChars:
       user,
       truncated
     })
-    context = takeLast([...context, ...taken], contextLimit)
+    history = takeLast([...history, ...taken], contextLimit)
+    context = fitContext(history)
     index += count
   }
   return parts
@@ -148,7 +181,10 @@ export interface ExtractQueueOptions {
   leaseMs?: number
   retryBaseMs?: number
   retryMaxMs?: number
+  /** 同步呼叫端的停滯上限（見 DEFAULT_AWAIT_TIMEOUT_MS）。 */
   awaitTimeoutMs?: number
+  /** 測試用：取代 setTimeout（回傳取消函式）。預設用 unref 的 setTimeout。 */
+  schedule?(fn: () => void, ms: number): () => void
   pullBudgetBytes?: number
   maxItemsPerPull?: number
 }
@@ -219,7 +255,10 @@ interface AwaitGroup {
   reject(error: Error): void
   results: Array<ExtractResult | undefined>
   remaining: number
-  timer: NodeJS.Timeout | null
+  /** 取消停滯計時器。 */
+  cancel: (() => void) | null
+  /** 這個呼叫最近一次有進展（建立、或有片段被領走／回來）的時間。 */
+  progressAt: number
   settled: boolean
 }
 
@@ -269,12 +308,24 @@ export class ExtractQueue implements ExtractSink {
   private gen = 0
   private disposed = false
   private lastPendingKey = ''
+  /** UI 最近一次碰這個佇列（pull／commit／release）的時間；從沒碰過＝佇列建立時間。看板在前景時 UI 至少每 15 秒會 pull 一次。 */
+  private uiSeenAt: number
+  /** UI 最近一次交回結果（commit，不論成功失敗）的時間——「有在做事」的證據。只有領了又還回去（Codex 沒登入、被限流）不算。 */
+  private commitAt: number
 
   constructor(opts: ExtractQueueOptions) {
     this.opts = opts
+    this.uiSeenAt = this.stallNow()
+    this.commitAt = this.uiSeenAt
   }
 
   private now(): number { return this.opts.now ? this.opts.now() : Date.now() }
+  /**
+   * 停滯判斷用的時鐘，必須和停滯計時器同一個時間基準：有注入 `schedule`（假時鐘）就用注入的 `now`，否則用真時間
+   * （`now` 單獨注入時只是拿來控制租約／退避，計時器仍是真的 setTimeout）。
+   */
+  private stallNow(): number { return this.opts.schedule && this.opts.now ? this.opts.now() : Date.now() }
+  private get awaitTimeoutMs(): number { return this.opts.awaitTimeoutMs ?? DEFAULT_AWAIT_TIMEOUT_MS }
   private get maxChars(): number { return this.opts.maxUserChars ?? DEFAULT_MAX_USER_CHARS }
 
   // ── ExtractSink（供料）──
@@ -311,14 +362,22 @@ export class ExtractQueue implements ExtractSink {
     this.announce()
   }
 
-  /** 呼叫端要同步拿結果（reviewLastDays）：切片 → 同一個 pull/commit 通道 → 全部片段回來後合併 resolve。 */
+  /**
+   * 呼叫端要同步拿結果（reviewLastDays）：切片 → 同一個 pull/commit 通道 → 全部片段回來後合併 resolve。
+   *
+   * 等待上限是「停滯」而不是「總時間」：只要佇列還在交回結果（任何 chat 的 commit）或這個呼叫自己有片段回來，就一直等
+   * （長聊天室、300 個聊天室的回顧，在 ai:chat 18 輪/分下本來就要跑很久）。已在等的請求，整個佇列超過上限都沒有結果被交回
+   * （看板被隱藏／關掉、Codex 掉線），以 `extract_await_timeout` 失敗；UI 已經超過上限完全沒碰過佇列（pull／commit／release 都沒有）
+   * 時，新的請求**立刻**以 `extract_ui_offline` 失敗——不再讓成百上千個請求各自傻等 15 分鐘。
+   */
   request(input: ChatExtractInput): Promise<ExtractResult> {
     if (this.disposed) return Promise.reject(new Error('extract queue disposed'))
+    if (this.stallNow() - this.uiSeenAt >= this.awaitTimeoutMs) return Promise.reject(new Error('extract_ui_offline'))
     const chatId = input.chat.chatId
     const parts = partitionExtractInput(input, { maxChars: this.maxChars, contextLimit: this.opts.getConfig().recentContextLimit })
     if (parts.length === 0) return Promise.resolve({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
     return new Promise<ExtractResult>((resolve, reject) => {
-      const group: AwaitGroup = { resolve, reject, results: new Array(parts.length).fill(undefined), remaining: parts.length, timer: null, settled: false }
+      const group: AwaitGroup = { resolve, reject, results: new Array(parts.length).fill(undefined), remaining: parts.length, cancel: null, progressAt: this.stallNow(), settled: false }
       const ids: string[] = []
       parts.forEach((part, partIndex) => {
         const id = randomUUID()
@@ -328,8 +387,7 @@ export class ExtractQueue implements ExtractSink {
           partIndex, partCount: parts.length, mode: 'await', gen: -1, attempts: 0, notBefore: 0, state: 'pending', itemId: null, leaseUntil: 0, group
         })
       })
-      group.timer = setTimeout(() => this.failGroup(group, new Error('extract_await_timeout')), this.opts.awaitTimeoutMs ?? DEFAULT_AWAIT_TIMEOUT_MS)
-      group.timer.unref?.()
+      this.armStall(group, this.awaitTimeoutMs)
       this.announce()
     })
   }
@@ -339,6 +397,7 @@ export class ExtractQueue implements ExtractSink {
   pull(params: { max?: number; leaseMs?: number } = {}): PullResult {
     this.reap()
     const now = this.now()
+    this.uiSeenAt = this.stallNow()
     const maxItems = Math.min(Math.max(1, Math.floor(params.max ?? this.opts.maxItemsPerPull ?? DEFAULT_MAX_ITEMS_PER_PULL)), 16)
     const leaseMs = Math.min(Math.max(1000, params.leaseMs ?? this.opts.leaseMs ?? DEFAULT_LEASE_MS), 10 * 60_000)
     const budget = this.opts.pullBudgetBytes ?? DEFAULT_PULL_BUDGET_BYTES
@@ -376,6 +435,7 @@ export class ExtractQueue implements ExtractSink {
 
   commit(params: { results: CommitRequestItem[] }): CommitResult {
     this.reap()
+    this.uiSeenAt = this.commitAt = this.stallNow()
     const out: CommitItemResult[] = []
     const tally: ApplyTally & { chatsProcessed: number; chatsFailed: number } = {
       todosCreated: 0, todosMerged: 0, todosResolvedDone: 0, todosSuggestedDone: 0, createdIds: [], resolvedIds: [], updatedIds: [], chatsProcessed: 0, chatsFailed: 0
@@ -413,6 +473,7 @@ export class ExtractQueue implements ExtractSink {
         const group = entry.group!
         this.entries.delete(entry.id)
         if (!group.settled) {
+          group.progressAt = this.stallNow()
           group.results[entry.partIndex] = extract
           group.remaining -= 1
           if (group.remaining === 0) this.settleGroup(group, mergeResults(group.results as ExtractResult[]))
@@ -469,6 +530,7 @@ export class ExtractQueue implements ExtractSink {
    */
   release(params: { itemIds: string[] }): { ok: true; released: number; unknown: string[] } {
     this.reap()
+    this.uiSeenAt = this.stallNow()
     const wanted = new Set(params.itemIds.filter((id) => typeof id === 'string'))
     let released = 0
     for (const e of this.entries.values()) {
@@ -547,17 +609,32 @@ export class ExtractQueue implements ExtractSink {
     return delay
   }
 
+  /** 停滯計時器：到點時若 UI 與這個呼叫都還有動靜就續等剩餘時間，否則判停滯。 */
+  private armStall(group: AwaitGroup, delayMs: number): void {
+    const fire = (): void => {
+      if (group.settled || this.disposed) return
+      const idle = this.stallNow() - Math.max(group.progressAt, this.commitAt)
+      if (idle >= this.awaitTimeoutMs) { this.failGroup(group, new Error('extract_await_timeout')); return }
+      this.armStall(group, Math.max(1, this.awaitTimeoutMs - idle))
+    }
+    group.cancel?.()
+    if (this.opts.schedule) { group.cancel = this.opts.schedule(fire, delayMs); return }
+    const timer = setTimeout(fire, delayMs)
+    timer.unref?.()
+    group.cancel = () => clearTimeout(timer)
+  }
+
   private settleGroup(group: AwaitGroup, value: ExtractResult): void {
     if (group.settled) return
     group.settled = true
-    if (group.timer) clearTimeout(group.timer)
+    group.cancel?.()
     group.resolve(value)
   }
 
   private failGroup(group: AwaitGroup, error: Error): void {
     if (group.settled) return
     group.settled = true
-    if (group.timer) clearTimeout(group.timer)
+    group.cancel?.()
     for (const [id, e] of this.entries) if (e.group === group) this.entries.delete(id)
     group.reject(error)
     this.announce()

@@ -55,6 +55,7 @@ import { ExtractQueue } from './extractQueue'
 import type { ExtractQueueOptions } from './extractQueue'
 import { createPluginMedia } from './media'
 import type { MediaDb } from './media'
+import { ReviewCoordinator, ReviewLedger } from './reviewRun'
 import type { BackendDiagnostics, JsonValue, PluginBackendHandler, SessionChannel, SessionInfo } from './types'
 
 /** backend 不持有任何 AI 金鑰；settings store 只需要這個「不可用」的 secrets。 */
@@ -97,6 +98,8 @@ export interface PluginBackendOptions {
    */
   reconcile?: false | Partial<ReconcileDeps>
   extract?: Partial<Omit<ExtractQueueOptions, 'db' | 'getConfig'>>
+  /** 回顧的續跑帳本（預設 `<dataDir>/review-ledger.json`、24 小時過期）；`now` 供測試的假時鐘。 */
+  review?: { ledgerFile?: string | null; ttlMs?: number; now?(): number }
   /** UI 中轉的單次 AI 呼叫（草擬回覆／誤判分析／群組議題分析）。 */
   aiTasks?: Omit<AiTaskQueueOptions, 'onPending'>
   hub?: EventHubOptions
@@ -184,6 +187,16 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     }
   }
 
+  // ── 回顧（reviewLastDays）：續跑帳本＋進度 ──
+  const review = new ReviewCoordinator({
+    ledger: new ReviewLedger({
+      ...(options.review?.ledgerFile === null ? {} : { file: options.review?.ledgerFile ?? join(dataDir, 'review-ledger.json') }),
+      ttlMs: options.review?.ttlMs,
+      now: options.review?.now
+    }),
+    now: options.review?.now
+  })
+
   // ── AI 供料/收料 + scheduler ──
   let queue!: ExtractQueue
   // 草擬回覆／誤判分析／群組議題分析：core 照 standalone 的邏輯跑，只有 provider.complete() 變成「排隊等 UI 用 ai:chat 完成」。
@@ -207,7 +220,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       onSettingsChanged: () => { scheduler?.notifySettingsChanged() },
       line,
       // 同步呼叫端（reviewLastDays 回顧）也走 ExtractQueue：同一個 pull/commit 通道，結果直接 resolve 給呼叫端。
-      makeExtract: () => (input) => queue.request(input),
+      makeExtract: () => review.wrapExtract((input) => queue.request(input)),
       schedulerFactory: (db, repos) => {
         queue = new ExtractQueue({
           ...options.extract,
@@ -274,7 +287,10 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   })
 
   // ── 事件橋接 ──
-  const unsubscribers = EVENT_BRIDGE.map(([type, subscribe]) => subscribe(runtime.api, (payload) => hub.publish(type, payload)))
+  const unsubscribers = EVENT_BRIDGE.map(([type, subscribe]) => subscribe(runtime.api, (payload) => {
+    if (type === 'backfill-progress') review.noteProgress(payload)
+    hub.publish(type, payload)
+  }))
 
   let disposed = false
   const dispatcher: Dispatcher = new Dispatcher({
@@ -287,6 +303,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     queue,
     aiTasks,
     media,
+    review,
     info: (): Record<string, JsonValue> => ({
       plugin: options.pluginId,
       version: options.version,
@@ -299,6 +316,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       watcher: watcher !== null,
       appDb: appDbInfo(appDb),
       extract: queue.stats(),
+      review: review.status() as unknown as JsonValue,
       aiTasks: aiTasks.stats(),
       media: media.stats() as unknown as JsonValue,
       events: hub.stats(),
@@ -316,6 +334,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     hub.dispose()
     queue.dispose()
     aiTasks.dispose()
+    review.dispose()
     await runtime.dispose().catch(() => undefined)
     throw error
   }
@@ -334,6 +353,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       hub.dispose()
       queue.dispose()
       aiTasks.dispose()
+      review.dispose()
       await runtime.dispose()
     },
     diagnostics: (): BackendDiagnostics => ({
