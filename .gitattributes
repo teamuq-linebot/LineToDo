@@ -1,0 +1,3 @@
+# Vendored third-party WASM build: keep byte-for-byte (core.autocrlf must not rewrite sqlite3.mjs,
+# or its sha256 in PROVENANCE.json — verified by scripts/test-wasm-vfs.mjs — stops matching).
+vendor/sqlite3mc-wasm/* -text

@@ -21,6 +21,7 @@
 import { copySnapshot, findDbPath } from './fsPort'
 import { DEFAULT_LINE_DB_DIR, getLineEnginePorts } from './enginePorts'
 import type { LineDbHandle } from './sqlitePort'
+import { normalizeMsgId, toSafeNumber } from './wasm/int64'
 
 /** 引擎中立的 LINE DB 連線型別（better-sqlite3 Database 結構相容）。 */
 export type Db = LineDbHandle
@@ -282,6 +283,40 @@ export function resolveChat(con: Db, name: string): string {
   throw new Error(JSON.stringify({ error: `no chat named '${name}'` }))
 }
 
+/** `_message` 查詢的原始列（引擎中立；WASM 引擎的 int64 欄位在超出安全範圍時是 bigint）。 */
+interface RawMessageRow {
+  _rowid: number | bigint
+  _chatId: string
+  _createdTime: number | bigint
+  _from: string | null
+  _text: string | null
+  _contentType: number | null
+  _id: number | string | bigint | null
+  _contentMetadata: string | null
+  _contentInfo: string | null
+  _attribute: number | null
+}
+
+/**
+ * 原始列 → NewMessageRow。bigint 規則（見 wasm/int64.ts）：`msgId` 的 bigint 轉成精確的十進位字串；
+ * rowid／_createdTime 必須落在安全整數範圍（否則 throw，不靜默失真）。對 standalone（引擎只回
+ * number／string）是 no-op。
+ */
+function mapMessageRow(r: RawMessageRow): NewMessageRow {
+  return {
+    rowId: toSafeNumber(r._rowid),
+    chatId: r._chatId,
+    createdTime: toSafeNumber(r._createdTime),
+    from: r._from,
+    text: r._text,
+    contentType: r._contentType,
+    msgId: normalizeMsgId(r._id),
+    contentMetadata: r._contentMetadata,
+    contentInfo: r._contentInfo,
+    attribute: r._attribute,
+  }
+}
+
 /**
  * newMessages — `_createdTime > since` 的新訊息原始 row（未轉 NDJSON 契約）。
  *
@@ -308,30 +343,8 @@ export function newMessages(
   }
   q += ' ORDER BY _createdTime, rowid LIMIT ?'
   args.push(limit)
-  const rows = con.prepare(q).all(...args) as Array<{
-    _rowid: number
-    _chatId: string
-    _createdTime: number
-    _from: string | null
-    _text: string | null
-    _contentType: number | null
-    _id: number | string | null
-    _contentMetadata: string | null
-    _contentInfo: string | null
-    _attribute: number | null
-  }>
-  return rows.map((r) => ({
-    rowId: r._rowid,
-    chatId: r._chatId,
-    createdTime: r._createdTime,
-    from: r._from,
-    text: r._text,
-    contentType: r._contentType,
-    msgId: r._id,
-    contentMetadata: r._contentMetadata,
-    contentInfo: r._contentInfo,
-    attribute: r._attribute,
-  }))
+  const rows = con.prepare(q).all(...args) as RawMessageRow[]
+  return rows.map(mapMessageRow)
 }
 
 /**
@@ -361,28 +374,6 @@ export function newMessagesAfter(
   }
   q += ' ORDER BY _createdTime, rowid LIMIT ?'
   args.push(limit)
-  const rows = con.prepare(q).all(...args) as Array<{
-    _rowid: number
-    _chatId: string
-    _createdTime: number
-    _from: string | null
-    _text: string | null
-    _contentType: number | null
-    _id: number | string | null
-    _contentMetadata: string | null
-    _contentInfo: string | null
-    _attribute: number | null
-  }>
-  return rows.map((r) => ({
-    rowId: r._rowid,
-    chatId: r._chatId,
-    createdTime: r._createdTime,
-    from: r._from,
-    text: r._text,
-    contentType: r._contentType,
-    msgId: r._id,
-    contentMetadata: r._contentMetadata,
-    contentInfo: r._contentInfo,
-    attribute: r._attribute,
-  }))
+  const rows = con.prepare(q).all(...args) as RawMessageRow[]
+  return rows.map(mapMessageRow)
 }

@@ -23,6 +23,13 @@
 - `fsPort.ts` — `LineFsPort` 介面 + 共用純邏輯 `findDbPath`／`copySnapshot`。
 - `sqlitePort.ts` — `SqliteEnginePort`／`LineDbHandle`（better-sqlite3 子集，同步 `open`）。
 - `enginePorts.ts` — 組裝根注入點 `configureLineEnginePorts({ fs, sqlite, dbDir })`；未注入時惰性用 Node 預設。
-- `nodeLineFsPort.ts`、`betterSqliteCipherEngine.ts` — standalone 實作（唯一允許 import `node:fs` 的檔）。
+- `nodeLineFsPort.ts`、`betterSqliteCipherEngine.ts` — standalone 實作。
+- `native/win32fs.ts` — 外掛（Phase 1）的 `LineFsPort`：koffi 包 Win32（FindFirstFileW／CopyFileW／CreateFileW+ReadFile／Toolhelp32），
+  不經 Node fs 權限層；引擎工作區（snapshot 暫存、`.linekey`、checkpoint）仍用 node:fs，但只限 dataDir 底下。
+- `wasmSqliteCipherEngine.ts` — 外掛（Phase 1）的 `SqliteEnginePort`：SQLite3MultipleCiphers 2.5.1 WASM（`vendor/sqlite3mc-wasm/`）
+  + 唯讀 node:fs VFS（`wasm/nodeFsReadOnlyVfs.ts`，`sqlite3mc_vfs_create` 包 cipher 層）。**只讀、無 fsync、無跨程序鎖、不用 MEMFS**；
+  只開 dataDir 內由 koffi 複製進來的私有 snapshot。int64 規則見 `wasm/int64.ts`（預設 `exact`；`legacy-number` 與 standalone 逐位元相同）。
 
-守門：`grep -rn "from 'node:fs'" src/main/line/engine` 只應命中 `nodeLineFsPort.ts`；單元測試 `npm run test:line-fs-port`。
+守門：`grep -rn "from 'node:fs'" src/main/line/engine` 只應命中 port／VFS 實作檔：`nodeLineFsPort.ts`、`native/win32fs.ts`（工作區）、
+`wasm/nodeFsReadOnlyVfs.ts`、`wasmSqliteCipherEngine.ts`（讀 wasm 檔）。單元測試：`npm run test:line-fs-port`（Phase 0）、
+`npm run test:wasm-vfs`／`test:wasm-linedb`／`test:wasm-contract`（Phase 1，合稱 `npm run test:wasm-engine`）。

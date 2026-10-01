@@ -1,0 +1,14 @@
+{
+  "name": "SQLite3MultipleCiphers WASM",
+  "version": "2.5.1",
+  "sqliteVersion": "3.53.4",
+  "source": "https://github.com/utelle/SQLite3MultipleCiphers/releases/tag/v2.5.1 (asset sqlite3mc-2.5.1-sqlite-3.53.4-wasm.zip, jswasm/ directory)",
+  "releaseAssetSha256": "761a41b8dc996cfa21f193fc044739fbb0c4a31a1fd657a4df49cc59085577ce",
+  "files": {
+    "sqlite3.mjs": "058b526608afdd81c244540f525286275d7bcc6a11676d19fdda7be50502f10e",
+    "sqlite3.wasm": "b6aedab9eee5cd5de0f13498e0bf64bb5ee9cc786d1d0303cc365578b64d18ab"
+  },
+  "license": "SQLite3MultipleCiphers: MIT; SQLite: public domain; Emscripten glue: MIT / NCSA (see header of sqlite3.mjs)",
+  "usage": "Loaded only by src/main/line/engine/wasmSqliteCipherEngine.ts (plugin backend). Packaged as kind:'code' (a .wasm is not a native library in the 1.6.8 artifact classifier). Not used by the standalone app.",
+  "note": "Byte-for-byte identical to the files used by spike/wasm-sqlite and spike/wasm-vfs. scripts/test-wasm-vfs.mjs verifies the sha256 values above."
+}
