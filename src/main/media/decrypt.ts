@@ -1,6 +1,8 @@
 import { hkdfSync, createHmac, createDecipheriv, timingSafeEqual } from 'node:crypto'
-import { readdirSync, statSync, readFileSync, type Dirent } from 'node:fs'
 import { join } from 'node:path'
+
+import { getLineEnginePorts } from '../line/engine/enginePorts'
+import type { LineDirEntry, LineFsPort } from '../line/engine/fsPort'
 
 /**
  * decrypt.ts — 本機離線解密 LINE E2EE 媒體（`.eimg`）核心（純函式，零新依賴）。
@@ -112,23 +114,24 @@ interface MediaCacheState { cacheIndex: Map<number, string[]> | null; indexedDir
 const legacyCacheState: MediaCacheState = { cacheIndex: null, indexedDir: null }
 
 /**
- * 遞迴 walk `dir`，把所有 `.eimg` 依 `statSync().size` 收進 `index`。
+ * 遞迴 walk `dir`，把所有 `.eimg` 依 `stat().size` 收進 `index`。
  * 目錄不存在/無權限、單檔 stat 失敗皆跳過（不中斷整體掃描）；不追蹤 symlink（避免循環）。
+ * 檔案存取經 `LineFsPort`（standalone＝node:fs readdir/stat；plugin＝koffi Win32）。
  */
-function walkEimg(dir: string, index: Map<number, string[]>): void {
-  let entries: Dirent[]
+function walkEimg(fs: LineFsPort, dir: string, index: Map<number, string[]>): void {
+  let entries: LineDirEntry[]
   try {
-    entries = readdirSync(dir, { withFileTypes: true })
+    entries = fs.readDir(dir)
   } catch {
     return
   }
   for (const entry of entries) {
     const full = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      walkEimg(full, index)
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.eimg')) {
+    if (entry.isDirectory) {
+      walkEimg(fs, full, index)
+    } else if (entry.isFile && entry.name.toLowerCase().endsWith('.eimg')) {
       try {
-        const size = statSync(full).size
+        const size = fs.stat(full).size
         const arr = index.get(size)
         if (arr) arr.push(full)
         else index.set(size, [full])
@@ -140,9 +143,9 @@ function walkEimg(dir: string, index: Map<number, string[]>): void {
 }
 
 /** 為 `dir` 全掃一次並替換記憶化索引。 */
-function buildCacheIndex(dir: string, state: MediaCacheState): void {
+function buildCacheIndex(fs: LineFsPort, dir: string, state: MediaCacheState): void {
   const index = new Map<number, string[]>()
-  walkEimg(dir, index)
+  walkEimg(fs, dir, index)
   state.cacheIndex = index
   state.indexedDir = dir
 }
@@ -158,11 +161,19 @@ export interface MediaDecryptor {
   reset(): void
 }
 
+/** createMediaDecryptor 的注入選項（皆可省略；省略時用組裝根注入的 LINE 引擎 ports）。 */
+export interface MediaDecryptorOptions {
+  /** LINE Cache 檔案存取；省略時用 `getLineEnginePorts().fs`（呼叫當下解析）。 */
+  fs?: LineFsPort
+  /** 快取根目錄；省略時 `%LOCALAPPDATA%\LINE\Cache`。單次呼叫的 `input.cacheDir` 優先。 */
+  cacheDir?: string
+}
+
 /** Runtime-owned cache index; each application instance tracks its own LINE cache directory. */
-export function createMediaDecryptor(): MediaDecryptor {
+export function createMediaDecryptor(options: MediaDecryptorOptions = {}): MediaDecryptor {
   const state: MediaCacheState = { cacheIndex: null, indexedDir: null }
   return {
-    decrypt: (input) => decryptWithState(input, state),
+    decrypt: (input) => decryptWithState(input, state, options),
     reset: () => { state.cacheIndex = null; state.indexedDir = null }
   }
 }
@@ -174,11 +185,12 @@ export function createMediaDecryptor(): MediaDecryptor {
  * 失敗一律回結構化狀態（不 throw、不 log 敏感值），由呼叫端決定 fallback/log。
  */
 export function decryptCachedMedia(input: DecryptMediaInput): DecryptMediaResult {
-  return decryptWithState(input, legacyCacheState)
+  return decryptWithState(input, legacyCacheState, {})
 }
 
-function decryptWithState(input: DecryptMediaInput, state: MediaCacheState): DecryptMediaResult {
+function decryptWithState(input: DecryptMediaInput, state: MediaCacheState, options: MediaDecryptorOptions): DecryptMediaResult {
   try {
+    const fs = options.fs ?? getLineEnginePorts().fs
     const ikm = Buffer.from(input.keyMaterial, 'base64')
 
     // 金鑰派生（HKDF-SHA256）
@@ -189,11 +201,11 @@ function decryptWithState(input: DecryptMediaInput, state: MediaCacheState): Dec
 
     // 定位：size == fileSize + 32 的候選（查記憶化索引；查無即 not-cached，不 rebuild）
     const targetSize = input.fileSize + HMAC_LEN
-    const dir = input.cacheDir ?? defaultCacheDir()
+    const dir = input.cacheDir ?? options.cacheDir ?? defaultCacheDir()
 
     // 首次用到、或換了 cacheDir → lazy 建索引一次；之後同一 dir 直接查記憶化 map（零重掃）。
     if (state.cacheIndex === null || state.indexedDir !== dir) {
-      buildCacheIndex(dir, state)
+      buildCacheIndex(fs, dir, state)
     }
     // size 查無候選 → 直接回 not-cached，不逐次 rebuild（避免 backup 迴圈每筆 not-cached 觸發
     // 全量重掃 → O(N) 卡 main）；索引失效/涵蓋新 .eimg 由呼叫端主動 resetMediaCacheIndex()。
@@ -204,7 +216,7 @@ function decryptWithState(input: DecryptMediaInput, state: MediaCacheState): Dec
     for (const file of candidates) {
       let data: Buffer
       try {
-        data = readFileSync(file)
+        data = fs.readFile(file)
       } catch {
         continue
       }

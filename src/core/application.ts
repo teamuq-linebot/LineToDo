@@ -7,6 +7,7 @@ import type {
   , NotMineReasonCode
 } from '../shared/api'
 import { openDatabase } from '../main/db/database'
+import type { AppDbEngine } from '../main/db/appDbEngine'
 import { createRepositories } from '../main/db/repositories'
 import type { Database } from 'better-sqlite3'
 
@@ -35,6 +36,8 @@ import { GROUP_TOPICS_BUNDLE_ENABLED } from '../main/features/groupTopics/prompt
 export interface LineTodoApplicationPorts {
   dataDir: string
   dbPath: string
+  /** app DB 引擎（哪個 better-sqlite3 build／binding）；省略時用 standalone better-sqlite3。 */
+  appDbEngine?: AppDbEngine
   onDatabase?(db: Database): void
   line: {
     start(): Promise<void> | void
@@ -129,7 +132,7 @@ function buildSettingsView(settings: AppSettings, qwen: QwenConfig, isProviderCo
 }
 
 export async function createLineTodoApplication(ports: LineTodoApplicationPorts): Promise<LineTodoApplication> {
-  const database = openDatabase({ dbPath: ports.dbPath })
+  const database = openDatabase({ dbPath: ports.dbPath, engine: ports.appDbEngine })
   ports.onDatabase?.(database.db)
   const repos = createRepositories(database.db)
   const settings = ports.settings

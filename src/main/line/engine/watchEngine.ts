@@ -38,11 +38,11 @@
  *   - DB 找不到 / 解密失敗 → openDb 拋 Error（訊息為 py 風格 JSON 字串）。
  *   - 媒體解不了的 gate 已在 rowToObj（回 null，不 throw）。
  */
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
+import { getLineEnginePorts } from './enginePorts'
 import { chatName, findDb, iso, myMid, newMessagesAfter, openDb } from './linedb'
 import { getKey, type GetKeyOptions } from './linekey'
 import { rowToObj } from './rowToObj'
@@ -126,13 +126,15 @@ export function defaultStateFile(): string {
  * （~1.7e18）超過 Number.MAX_SAFE_INTEGER（9e15），故簽章比對只需「相等/不等」
  * 語意，這裡以字串化 bigint 轉 Number 會失精度但**兩次呼叫失精度方式一致**，
  * 比對仍正確（未變→同值、變了→不同值）。為穩妥直接存為 number（size 亦然）。
+ * stat 經 `LineFsPort.stat`（standalone＝`statSync(p, { bigint: true })`）。
  */
 export function walSig(src: string | null): WalSig {
+  const fs = getLineEnginePorts().fs
   const sig: WalSig = { edb: null, '-wal': null }
   for (const ext of ['', '-wal'] as const) {
     const p = (src || '') + ext
     try {
-      const st = statSync(p, { bigint: true })
+      const st = fs.stat(p)
       const key = ext === '' ? 'edb' : '-wal'
       sig[key] = [Number(st.size), Number(st.mtimeNs)]
     } catch {
@@ -158,7 +160,7 @@ function sigEqual(a: WalSig | null, b: WalSig | null): boolean {
  */
 export function loadState(stateFile: string): WatchState {
   try {
-    const raw = readFileSync(stateFile, 'utf8')
+    const raw = getLineEnginePorts().fs.readTextFile(stateFile)
     const parsed = JSON.parse(raw) as Partial<WatchState>
     return {
       last_ts: typeof parsed.last_ts === 'number' ? parsed.last_ts : 0,
@@ -178,9 +180,10 @@ export function loadState(stateFile: string): WatchState {
  */
 export function saveState(stateFile: string, s: WatchState): void {
   try {
+    const fs = getLineEnginePorts().fs
     const tmp = stateFile + '.tmp'
-    writeFileSync(tmp, JSON.stringify(s), 'utf8')
-    renameSync(tmp, stateFile)
+    fs.writeTextFile(tmp, JSON.stringify(s))
+    fs.renameFile(tmp, stateFile)
   } catch {
     // 非致命；最差下次重報一批訊息（下游 msgId 去重會擋）。
   }
@@ -188,10 +191,11 @@ export function saveState(stateFile: string, s: WatchState): void {
 
 /** Strict checkpoint write used only after a durable import transaction succeeds. */
 export function saveStateStrict(stateFile: string, s: WatchState): void {
+  const fs = getLineEnginePorts().fs
   const tmp = stateFile + '.tmp'
-  mkdirSync(dirname(stateFile), { recursive: true })
-  writeFileSync(tmp, JSON.stringify(s), 'utf8')
-  renameSync(tmp, stateFile)
+  fs.ensureDir(dirname(stateFile))
+  fs.writeTextFile(tmp, JSON.stringify(s))
+  fs.renameFile(tmp, stateFile)
 }
 
 /**

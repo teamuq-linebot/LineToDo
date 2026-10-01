@@ -13,20 +13,24 @@
  *
  * 本批只新增此檔（含型別），不改動任何現有執行路徑（watcher/pipeline/lineBridge）。
  * 金鑰採注入式 `getKey()` callback（recover 屬 Batch 2）。
+ *
+ * I/O 一律經 port（Phase 0）：檔案系統走 `LineFsPort`、SQLite 引擎走 `SqliteEnginePort`，
+ * 由組裝根經 `configureLineEnginePorts()` 注入；standalone 預設為 node:fs +
+ * better-sqlite3-multiple-ciphers，行為與先前相同。
  */
-import Database from 'better-sqlite3-multiple-ciphers'
-import type { Database as Db } from 'better-sqlite3'
-import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
-import { readdirSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { copySnapshot, findDbPath } from './fsPort'
+import { DEFAULT_LINE_DB_DIR, getLineEnginePorts } from './enginePorts'
+import type { LineDbHandle } from './sqlitePort'
+
+/** 引擎中立的 LINE DB 連線型別（better-sqlite3 Database 結構相容）。 */
+export type Db = LineDbHandle
 
 // cipher 參數 —— 逐字對齊 linekey.py:23-24。
 export const CIPHER = 'aes128cbc'
 export const KDF_ITER = 1
 
-/** %LOCALAPPDATA%\LINE\Data\db —— 對齊 linekey.py:19。 */
-export const DB_DIR = join(process.env.LOCALAPPDATA || '', 'LINE', 'Data', 'db')
+/** %LOCALAPPDATA%\LINE\Data\db —— 對齊 linekey.py:19。實際搜尋目錄以注入的 `dbDir` 為準（預設即此值）。 */
+export const DB_DIR = DEFAULT_LINE_DB_DIR
 
 /**
  * LINE message _contentType -> label（非文字訊息）。
@@ -72,31 +76,8 @@ export interface ChatRow {
  * 逐字對齊 linekey.py:27-33（`find_db`）：glob `qw*.edb`、排除檔名含 '_'、取最大。
  */
 export function findDb(): string | null {
-  let entries: string[]
-  try {
-    entries = readdirSync(DB_DIR)
-  } catch {
-    return null
-  }
-  const cands = entries
-    .filter((f) => f.startsWith('qw') && f.endsWith('.edb') && !f.includes('_'))
-    .map((f) => join(DB_DIR, f))
-  if (cands.length === 0) return null
-  let best = cands[0]
-  let bestSize = -1
-  for (const p of cands) {
-    let size = -1
-    try {
-      size = statSync(p).size
-    } catch {
-      size = -1
-    }
-    if (size > bestSize) {
-      bestSize = size
-      best = p
-    }
-  }
-  return best
+  const { fs, dbDir } = getLineEnginePorts()
+  return findDbPath(fs, dbDir)
 }
 
 /**
@@ -116,29 +97,25 @@ export function openDb(
   key: string,
   srcPath?: string | null,
 ): { con: Db; cleanup: () => void } {
-  const src = srcPath ?? findDb()
+  const { fs, sqlite, dbDir } = getLineEnginePorts()
+  const src = srcPath ?? findDbPath(fs, dbDir)
   if (!src) {
-    throw new Error(JSON.stringify({ error: 'LINE message DB not found', dir: DB_DIR }))
+    throw new Error(JSON.stringify({ error: 'LINE message DB not found', dir: dbDir }))
   }
-  const tmp = mkdtempSync(join(tmpdir(), 'linedb-'))
-  const path = join(tmp, 'm.edb')
+  const tmp = fs.makeTempDir('linedb-')
   const cleanup = (): void => {
     try {
-      rmSync(tmp, { recursive: true, force: true })
+      fs.removeDir(tmp)
     } catch {
       // 非致命
     }
   }
   // 複製 edb + -wal + -shm（若存在），照 py 迴圈。
-  for (const ext of ['', '-wal', '-shm']) {
-    if (existsSync(src + ext)) {
-      copyFileSync(src + ext, path + ext)
-    }
-  }
+  const path = copySnapshot(fs, src, tmp, 'm.edb')
   let con: Db
   try {
     // 開 COPY read-write，讓 WAL merge 進來（最新訊息可見）。
-    con = new Database(path) as unknown as Db
+    con = sqlite.open(path)
   } catch (e) {
     cleanup()
     throw e

@@ -21,22 +21,11 @@
  * （watcher/pipeline/lineBridge/types）。test-decrypt 驗證 import Batch 1 的
  * `openDb`，保持與 linedb.ts 一致。
  */
-import { execFileSync } from 'node:child_process'
-import {
-  copyFileSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import Database from 'better-sqlite3-multiple-ciphers'
-import type { Database as Db } from 'better-sqlite3'
-
-import { CIPHER, findDb, KDF_ITER, openDb } from './linedb'
+import { getLineEnginePorts } from './enginePorts'
+import type { LineFsPort } from './fsPort'
+import { CIPHER, findDb, KDF_ITER, openDb, type Db } from './linedb'
 import { scanRegions } from '../native/procmem'
 
 /**
@@ -81,31 +70,12 @@ export interface GetKeyOptions {
 /**
  * findPid(name) — 取指定執行檔的 PID。
  *
- * 對齊 linekey.py:36-47（`find_pid`）：用 `tasklist` CSV 輸出解析。Node 端
- * `tasklist` 穩定、無需額外 FFI（find_pid 不在 koffi 掃描熱路徑上）。回第一個
+ * 對齊 linekey.py:36-47（`find_pid`）。列舉經 `LineFsPort.listProcessIds`
+ * （standalone＝`tasklist` CSV 解析，plugin＝koffi Toolhelp32）。回第一個
  * 命中的 PID，找不到回 null。
  */
 export function findPid(name = 'LINE.exe'): number | null {
-  let out: string
-  try {
-    out = execFileSync(
-      'tasklist',
-      ['/FI', `IMAGENAME eq ${name}`, '/FO', 'CSV', '/NH'],
-      { encoding: 'utf8', windowsHide: true },
-    )
-  } catch {
-    return null
-  }
-  const target = name.toLowerCase()
-  for (const line of out.split(/\r?\n/)) {
-    // CSV 格式："LINE.exe","12345","Console",...；用 py 同款 '","' 切法。
-    const parts = line.split('","').map((p) => p.replace(/^"|"$/g, ''))
-    if (parts.length >= 2 && parts[0].toLowerCase() === target) {
-      const pid = parseInt(parts[1].trim(), 10)
-      if (Number.isFinite(pid)) return pid
-    }
-  }
-  return null
+  return getLineEnginePorts().fs.listProcessIds(name)[0] ?? null
 }
 
 /** ASCII 32-hex（前後不得再接 hex，對齊 linekey.py:85 `_ASCII_RE`）。 */
@@ -177,16 +147,18 @@ function decrypts(dbPath: string, key: string): boolean {
  * `openDb`（snapshot+WAL merge）做最終確認，確保與日常開檔路徑一致。
  */
 class BatchVerifier {
+  private fs: LineFsPort
   private tmp: string
   private copyPath: string
 
   constructor(dbPath: string) {
-    this.tmp = mkdtempSync(join(tmpdir(), 'linekey-scan-'))
+    this.fs = getLineEnginePorts().fs
+    this.tmp = this.fs.makeTempDir('linekey-scan-')
     this.copyPath = join(this.tmp, 'm.edb')
     // 只複製主 edb（驗 sqlite_master 不需 -wal/-shm）。以 readonly 開私有 copy，
     // 不會動到來源、也不需 WAL merge。（不走 file: URI immutable —— 該形式在
     // better-sqlite3(-multiple-ciphers) 下解析為「目錄不存在」，見 spike 診斷。）
-    copyFileSync(dbPath, this.copyPath)
+    this.fs.copyFile(dbPath, this.copyPath)
   }
 
   /** 試一把 key：能 SELECT count(*) FROM sqlite_master 即 true。 */
@@ -195,10 +167,10 @@ class BatchVerifier {
     try {
       // 開私有 copy（readonly，避免對共用 copy 寫 sidecar；spike 已驗
       // 好/壞 key 交錯開關不互相污染）。
-      con = new Database(this.copyPath, {
+      con = getLineEnginePorts().sqlite.open(this.copyPath, {
         readonly: true,
         fileMustExist: true,
-      }) as unknown as Db
+      })
       con.pragma(`cipher='${CIPHER}'`)
       con.pragma(`kdf_iter=${KDF_ITER}`)
       con.pragma(`key='${key}'`)
@@ -219,7 +191,7 @@ class BatchVerifier {
 
   dispose(): void {
     try {
-      rmSync(this.tmp, { recursive: true, force: true })
+      this.fs.removeDir(this.tmp)
     } catch {
       // 非致命
     }
@@ -269,7 +241,7 @@ export function recoverKey(opts: GetKeyOptions = {}): string | null {
 
   if (hit && opts.cache !== false) {
     try {
-      writeFileSync(opts.cacheFile ?? defaultCacheFile(), hit, { encoding: 'utf8' })
+      getLineEnginePorts().fs.writeTextFile(opts.cacheFile ?? defaultCacheFile(), hit)
     } catch {
       // 快取寫入失敗非致命（對齊 py try/except OSError: pass）。
     }
@@ -300,10 +272,11 @@ export function getKey(opts: GetKeyOptions = {}): string | null {
   // 2. cache（須 test-decrypt 驗證，rotate 後不採用舊 key）
   if (!opts.skipCache) {
     const cacheFile = opts.cacheFile ?? defaultCacheFile()
-    if (existsSync(cacheFile)) {
+    const fs = getLineEnginePorts().fs
+    if (fs.exists(cacheFile)) {
       let cached = ''
       try {
-        cached = readFileSync(cacheFile, 'utf8').trim()
+        cached = fs.readTextFile(cacheFile).trim()
       } catch {
         cached = ''
       }

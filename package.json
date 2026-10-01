@@ -20,6 +20,7 @@
     "test:complete-todo": "node --experimental-strip-types --test scripts/test-complete-todo.mjs",
     "test:line-import": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-line-import.mjs",
     "test:group-topics": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-group-topics.mjs",
+    "test:line-fs-port": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-line-fs-port.mjs",
     "check:group-topics-prompt": "node scripts/build-group-topics-prompts.mjs --check",
     "rebuild": "electron-rebuild -f -w better-sqlite3,better-sqlite3-multiple-ciphers",
     "dist": "electron-vite build && electron-builder --win",

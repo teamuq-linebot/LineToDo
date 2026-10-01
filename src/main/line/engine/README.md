@@ -15,3 +15,14 @@
 - `watchEngine.ts`（Batch 4）— 編排 + checkpoint + stat-gate，對下游提供 in-process API。
 
 > Batch 0（本批）僅建立此骨架與驗證依賴，未放任何 production 程式碼。
+
+## I/O ports（fulltrust-plugin Phase 0）
+
+引擎模組不直接 import `node:fs`／`node:child_process`／SQLite binding，一律經 port：
+
+- `fsPort.ts` — `LineFsPort` 介面 + 共用純邏輯 `findDbPath`／`copySnapshot`。
+- `sqlitePort.ts` — `SqliteEnginePort`／`LineDbHandle`（better-sqlite3 子集，同步 `open`）。
+- `enginePorts.ts` — 組裝根注入點 `configureLineEnginePorts({ fs, sqlite, dbDir })`；未注入時惰性用 Node 預設。
+- `nodeLineFsPort.ts`、`betterSqliteCipherEngine.ts` — standalone 實作（唯一允許 import `node:fs` 的檔）。
+
+守門：`grep -rn "from 'node:fs'" src/main/line/engine` 只應命中 `nodeLineFsPort.ts`；單元測試 `npm run test:line-fs-port`。

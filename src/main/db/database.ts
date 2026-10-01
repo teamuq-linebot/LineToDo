@@ -1,8 +1,16 @@
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import Database from 'better-sqlite3'
 import type { Database as Db } from 'better-sqlite3'
 import { migrate } from './migrate'
+import { createBetterSqlite3AppEngine, type AppDbEngine } from './appDbEngine'
+
+/** 未注入引擎時的預設（standalone 的 better-sqlite3，惰性建立）。 */
+let defaultEngine: AppDbEngine | null = null
+function resolveEngine(engine?: AppDbEngine): AppDbEngine {
+  if (engine) return engine
+  if (!defaultEngine) defaultEngine = createBetterSqlite3AppEngine()
+  return defaultEngine
+}
 
 /**
  * database.ts — better-sqlite3 連線單例。
@@ -61,12 +69,15 @@ export function configureDbPath(path: string): void {
   configuredDbPath = normalized
 }
 
-/** Open one owned database connection; no Electron or module singleton is used by this factory. */
-export function openDatabase(options: { dbPath: string }): OpenDatabaseResult {
+/**
+ * Open one owned database connection; no Electron or module singleton is used by this factory.
+ * `engine` selects the better-sqlite3 build/binding (default: standalone better-sqlite3).
+ */
+export function openDatabase(options: { dbPath: string; engine?: AppDbEngine }): OpenDatabaseResult {
   const path = options.dbPath.trim()
   if (!path) throw new Error('Database path cannot be empty')
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
-  const conn = new Database(path)
+  const conn = resolveEngine(options.engine).open(path)
 
   // 連線層 PRAGMA（每次開連線都要下；非 schema 的一部分）。
   conn.pragma('journal_mode = WAL')

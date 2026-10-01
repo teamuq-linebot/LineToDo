@@ -24,6 +24,10 @@ import { createParticipantIdentityProvider } from './line/identity'
 import { commitLineImportBatch, isLineImportSchemaReady } from './db/lineImport.repo'
 import { runReconcile } from './pipeline/reconcileRunner'
 import { createMediaDecryptor } from './media/decrypt'
+import { configureLineEnginePorts } from './line/engine/enginePorts'
+import { createNodeLineFsPort } from './line/engine/nodeLineFsPort'
+import { createBetterSqliteCipherEngine } from './line/engine/betterSqliteCipherEngine'
+import { createBetterSqlite3AppEngine } from './db/appDbEngine'
 import { createDriver, handBackNotice, hwndFromNativeHandle, type Driver } from './driver'
 import { createProgressPusher, registerDriverIpc } from './ipc/driver.ipc'
 import { getTodo as getTodoRow } from './db/todos.repo'
@@ -41,6 +45,9 @@ if (acceptanceMode) {
   app.setPath('userData', resolve(fixtureDataDir))
 }
 registerLinemediaScheme()
+// Standalone 組裝根：LINE 引擎 I/O 注入 Node 實作（node:fs + tasklist + better-sqlite3-multiple-ciphers），
+// dbDir 維持 %LOCALAPPDATA%\LINE\Data\db 預設。外掛 backend 在自己的 activate() 注入 koffi/WASM 版。
+configureLineEnginePorts({ fs: createNodeLineFsPort(), sqlite: createBetterSqliteCipherEngine() })
 
 let mainWindow: BrowserWindow | null = null
 let runtime: Awaited<ReturnType<typeof createLineTodoRuntime>> | null = null
@@ -151,6 +158,7 @@ app.whenReady().then(async () => {
         const application = await createLineTodoApplication({
           dataDir,
           dbPath: join(dataDir, 'line-todo.db'),
+          appDbEngine: createBetterSqlite3AppEngine(),
           onDatabase: (db) => { runtimeDatabase = db },
           settings,
           pipelineConfig: { getDefaults, getQwenConfig, isProviderConfigured: providers.isProviderConfigured },
