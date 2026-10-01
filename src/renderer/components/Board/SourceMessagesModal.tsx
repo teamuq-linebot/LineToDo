@@ -60,7 +60,9 @@ export function SourceMessagesModal({
   // messages 一律維持「舊→新」：最新在陣列尾、畫面底部。
   const [messages, setMessages] = useState<MessageDTO[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [loadingEarlier, setLoadingEarlier] = useState(false)
+  const [earlierError, setEarlierError] = useState<string | null>(null)
   const [noMore, setNoMore] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
   const didInitialScroll = useRef(false)
@@ -68,6 +70,8 @@ export function SourceMessagesModal({
   const pendingPrepend = useRef<{ prevHeight: number; prevTop: number } | null>(null)
   // 落點編排狀態：settle 後停止自動補載與再定位；autoBatches 記自動補載批數（安全上限用）。
   const didSettle = useRef(false)
+  const initialRequest = useRef(0)
+  const earlierRequest = useRef(0)
   const autoBatches = useRef(0)
   const [srcTooEarly, setSrcTooEarly] = useState(false)
   // 媒體：圖片載入失敗的 msgId（onError → 改渲染「尚未下載」）。
@@ -79,28 +83,36 @@ export function SourceMessagesModal({
 
   const sourceSet = useMemo(() => new Set(sourceMsgIds), [sourceMsgIds])
 
-  // 開窗載入過去 24 小時（舊→新）。
-  useEffect(() => {
-    let alive = true
+  // 開窗載入過去 24 小時（舊→新）；request identity 隔離關閉/重試後晚到的回應。
+  const loadInitial = useCallback(async (): Promise<void> => {
+    const requestId = ++initialRequest.current
+    didInitialScroll.current = false
+    didSettle.current = false
+    autoBatches.current = 0
+    pendingPrepend.current = null
     setLoading(true)
-    api.db.messages
-      .byChatSince(chatId, Date.now() - DAY_MS)
-      .then((list) => {
-        if (!alive) return
-        setMessages(list)
-        setNoMore(false)
-        setLoading(false)
-      })
-      .catch((err) => {
-        if (!alive) return
-        console.error('[SourceMessagesModal] byChatSince 失敗：', err)
-        setMessages([])
-        setLoading(false)
-      })
-    return () => {
-      alive = false
+    setLoadError(null)
+    try {
+      const list = await api.db.messages.byChatSince(chatId, Date.now() - DAY_MS)
+      if (initialRequest.current !== requestId) return
+      setMessages(list)
+      setNoMore(false)
+    } catch (err) {
+      if (initialRequest.current !== requestId) return
+      console.error('[SourceMessagesModal] byChatSince 失敗：', err)
+      setLoadError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (initialRequest.current === requestId) setLoading(false)
     }
-  }, [chatId])
+  }, [api, chatId])
+
+  useEffect(() => {
+    void loadInitial()
+    return () => {
+      initialRequest.current += 1
+      earlierRequest.current += 1
+    }
+  }, [loadInitial])
 
   // Esc 關閉。lightbox 開啟時，Esc 先關 lightbox、不關整個 modal。
   useEffect(() => {
@@ -137,7 +149,9 @@ export function SourceMessagesModal({
     const el = bodyRef.current
     const prevHeight = el ? el.scrollHeight : 0
     const prevTop = el ? el.scrollTop : 0
+    const requestId = ++earlierRequest.current
     setLoadingEarlier(true)
+    setEarlierError(null)
     try {
       const oldestTs = messages[0].ts
       // list 回新→舊，反轉成舊→新再 prepend。
@@ -146,6 +160,7 @@ export function SourceMessagesModal({
         beforeTs: oldestTs,
         limit: PAGE_SIZE
       })
+      if (earlierRequest.current !== requestId) return
       if (older.length < PAGE_SIZE) setNoMore(true)
       if (older.length > 0) {
         const asc = older.slice().reverse()
@@ -153,11 +168,13 @@ export function SourceMessagesModal({
         setMessages((cur) => asc.concat(cur))
       }
     } catch (err) {
+      if (earlierRequest.current !== requestId) return
       console.error('[SourceMessagesModal] list（載入更早）失敗：', err)
+      setEarlierError(err instanceof Error ? err.message : String(err))
     } finally {
-      setLoadingEarlier(false)
+      if (earlierRequest.current === requestId) setLoadingEarlier(false)
     }
-  }, [chatId, messages, loadingEarlier, noMore])
+  }, [api, chatId, messages, loadingEarlier, noMore])
 
   // 落點編排：初載/補載穩定後，把最早一則來源訊息捲到可視中央。
   // 若來源早於初載 24h 窗 → 自動往上補載（重用 loadEarlier，內部沿用維持捲動位置）；
@@ -276,12 +293,20 @@ export function SourceMessagesModal({
           </button>
         </div>
         <div className="sm-body" ref={bodyRef} onScroll={onBodyScroll}>
-          {loading ? (
+          {loading && messages.length === 0 && !loadError ? (
             <div className="sm-empty muted">載入中…</div>
+          ) : loadError && messages.length === 0 ? (
+            <div className="sm-empty muted" role="alert">
+              載入來源訊息失敗：{loadError}{' '}
+              <button type="button" onClick={() => void loadInitial()}>重試</button>
+            </div>
           ) : messages.length === 0 ? (
             <div className="sm-empty muted">此對話過去 24 小時沒有訊息</div>
           ) : (
             <>
+              {loading && <div className="sm-load-note" role="status">更新中，保留已載入訊息…</div>}
+              {loadError && <div className="sm-load-note" role="alert">更新失敗，保留已載入訊息：{loadError} <button type="button" onClick={() => void loadInitial()}>重試</button></div>}
+              {earlierError && <div className="sm-load-note" role="alert">載入更早訊息失敗：{earlierError} <button type="button" onClick={() => void loadEarlier()}>重試</button></div>}
               {srcTooEarly && (
                 <div
                   className="sm-load-note"

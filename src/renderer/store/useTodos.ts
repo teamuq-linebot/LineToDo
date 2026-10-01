@@ -1,5 +1,5 @@
 import { useLineTodoApi } from '../platform/LineTodoApi'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { buildChatNameMap, createChatRefreshScheduler } from './chatRefreshScheduler'
 import type {
   TodoDTO,
@@ -8,6 +8,7 @@ import type {
   TodoSortDirection
 } from '../types/api'
 import { BOARD_STATUSES, type ColumnId } from '../components/Board/buckets'
+import { createCompleteTodoRegistry, runCompleteTodo, type CompleteTodoRegistry, type CompleteTodoResult } from './completeTodo'
 
 /**
  * useTodos — 看板資料來源。
@@ -45,11 +46,12 @@ export interface UseTodos {
   chatMap: ChatNameMap
   loading: boolean
   /** 重新拉一次（手動刷新）。 */
-  refresh: () => Promise<void>
+  refresh: () => Promise<boolean>
   /** 標完成（done）。 */
-  complete: (id: string) => Promise<void>
+  complete: (id: string, onWriteConfirmed?: () => void) => Promise<CompleteTodoResult>
+  completion: CompleteTodoRegistry
   /** 確認「建議完成」→ done。 */
-  confirmDone: (id: string) => Promise<void>
+  confirmDone: (id: string, onWriteConfirmed?: () => void) => Promise<CompleteTodoResult>
   /** 「還沒」：suggested_done 退回原 bucket 對應的 active 狀態。 */
   rejectSuggested: (todo: TodoDTO) => Promise<void>
   /** 忽略這一筆（dismissed）。 */
@@ -61,7 +63,7 @@ export interface UseTodos {
   /** 延後：把 dueAt 往後推 N 小時（無 dueAt 則設為 now+N）。 */
   snooze: (todo: TodoDTO, hours: number) => Promise<void>
   /** 手動編輯欄位（標題/備註/bucket/優先級/到期）。 */
-  update: (id: string, patch: TodoUpdatePatch) => Promise<void>
+  update: (id: string, patch: TodoUpdatePatch, onWriteConfirmed?: () => void) => Promise<CompleteTodoResult>
   /** 看板拖曳搬移到目標欄（含同欄 no-op 防抖）。 */
   moveToColumn: (todo: TodoDTO, toColumn: ColumnId) => Promise<void>
 }
@@ -92,6 +94,9 @@ function isNoopMove(todo: TodoDTO, toColumn: ColumnId): boolean {
 
 export function useTodos(options: TodoListOptions = {}): UseTodos {
   const api = useLineTodoApi()
+  // Keep operation state keyed by TODO id across card remounts, but scope its
+  // lifetime to this API/provider identity rather than a module-global map.
+  const completion = useMemo(() => createCompleteTodoRegistry(), [api])
   const [todos, setTodos] = useState<TodoDTO[]>([])
   const [chatMap, setChatMap] = useState<ChatNameMap>({})
   const [loading, setLoading] = useState(true)
@@ -110,21 +115,27 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
     }
   }, [])
 
-  const refresh = useCallback(async (): Promise<void> => {
+  const readTodos = useCallback(async (): Promise<TodoDTO[]> => {
+    return await api.db.todos.list({
+      statuses: BOARD_STATUSES,
+      sortBy,
+      sortDirection,
+      chatId
+    })
+  }, [api, chatId, sortBy, sortDirection])
+
+  const refresh = useCallback(async (): Promise<boolean> => {
     try {
-      const list = await api.db.todos.list({
-        statuses: BOARD_STATUSES,
-        sortBy,
-        sortDirection,
-        chatId
-      })
-      setTodos(list)
+      setTodos(await readTodos())
+      completion.reconcileAfterRefresh()
+      return true
     } catch (err) {
       console.error('[useTodos] refresh 失敗：', err)
+      return false
     } finally {
       setLoading(false)
     }
-  }, [chatId, sortBy, sortDirection])
+  }, [completion, readTodos])
 
   useEffect(() => {
     const chatRefresh = createChatRefreshScheduler(loadChats)
@@ -149,33 +160,40 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
   }, [loadChats, refresh])
 
   const complete = useCallback(
-    async (id: string): Promise<void> => {
-      await api.db.todos.updateStatus(id, 'done')
-      await refresh()
-    },
-    [refresh]
+    async (id: string, onWriteConfirmed?: () => void): Promise<CompleteTodoResult> => completion.run(
+      id,
+      async () => Boolean(await api.db.todos.updateStatus(id, 'done')),
+      async () => {
+        try {
+          setTodos(await readTodos())
+        } finally {
+          setLoading(false)
+        }
+      },
+      onWriteConfirmed
+    ),
+    [api, completion, readTodos]
   )
 
   const confirmDone = useCallback(
-    async (id: string): Promise<void> => {
-      await api.db.todos.updateStatus(id, 'done')
-      await refresh()
-    },
-    [refresh]
+    (id: string, onWriteConfirmed?: () => void): Promise<CompleteTodoResult> => complete(id, onWriteConfirmed),
+    [complete]
   )
 
   const rejectSuggested = useCallback(
     async (todo: TodoDTO): Promise<void> => {
-      await api.db.todos.updateStatus(todo.id, activeStatusForBucket(todo.bucket))
-      await refresh()
+      const updated = await api.db.todos.updateStatus(todo.id, activeStatusForBucket(todo.bucket))
+      if (!updated) throw new Error('找不到此待辦')
+      if (!await refresh()) throw new Error('狀態已寫入，但看板更新失敗')
     },
     [refresh]
   )
 
   const ignore = useCallback(
     async (id: string): Promise<void> => {
-      await api.db.todos.updateStatus(id, 'dismissed')
-      await refresh()
+      const updated = await api.db.todos.updateStatus(id, 'dismissed')
+      if (!updated) throw new Error('找不到此待辦')
+      if (!await refresh()) throw new Error('忽略已寫入，但看板更新失敗')
     },
     [refresh]
   )
@@ -183,7 +201,8 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
   const ignoreByKeyword = useCallback(
     async (chatId: string, keyword: string): Promise<number> => {
       const res = await api.db.chats.addIgnoreKeyword(chatId, keyword)
-      await refresh()
+      if (!res.ok) throw new Error(res.error ?? '新增忽略關鍵字失敗')
+      if (!await refresh()) throw new Error('關鍵字已寫入，但看板更新失敗')
       return res.dismissed
     },
     [refresh]
@@ -192,7 +211,8 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
   const blockChat = useCallback(
     async (chatId: string): Promise<number> => {
       const res = await api.db.chats.blockAndClear(chatId)
-      await refresh()
+      if (!res.ok) throw new Error('封鎖對話失敗')
+      if (!await refresh()) throw new Error('封鎖已寫入，但看板更新失敗')
       return res.dismissed
     },
     [refresh]
@@ -205,18 +225,28 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
       const next = new Date(from + hours * 3600 * 1000)
       // 存本地秒精度、無 tz（與後端 time_iso 風格一致）。
       const iso = toLocalIso(next)
-      await api.db.todos.update(todo.id, { dueAt: iso })
-      await refresh()
+      const updated = await api.db.todos.update(todo.id, { dueAt: iso })
+      if (!updated) throw new Error('找不到此待辦')
+      if (!await refresh()) throw new Error('延後已寫入，但看板更新失敗')
     },
     [refresh]
   )
 
   const update = useCallback(
-    async (id: string, patch: TodoUpdatePatch): Promise<void> => {
-      await api.db.todos.update(id, patch)
-      await refresh()
-    },
-    [refresh]
+    (id: string, patch: TodoUpdatePatch, onWriteConfirmed?: () => void): Promise<CompleteTodoResult> =>
+      runCompleteTodo(
+        async () => Boolean(await api.db.todos.update(id, patch)),
+        async () => {
+          try {
+            setTodos(await readTodos())
+            completion.reconcileAfterRefresh()
+          } finally {
+            setLoading(false)
+          }
+        },
+        onWriteConfirmed
+      ),
+    [api, completion, readTodos]
   )
 
   const moveToColumn = useCallback(
@@ -234,6 +264,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
     loading,
     refresh,
     complete,
+    completion,
     confirmDone,
     rejectSuggested,
     ignore,

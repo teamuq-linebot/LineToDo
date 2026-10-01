@@ -1,5 +1,6 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { TodoDTO } from '../../types/api'
+import type { CompleteTodoRegistry, CompleteTodoResult } from '../../store/completeTodo'
 import { SourceMessagesModal } from './SourceMessagesModal'
 import {
   isSuggestedDone,
@@ -20,21 +21,23 @@ import type { CardDnd } from './KanbanBoard'
  */
 
 export interface TodoCardActions {
-  onComplete: (id: string) => void
-  onConfirmDone: (id: string) => void
-  onRejectSuggested: (todo: TodoDTO) => void
-  onIgnore: (id: string) => void
-  onMarkNotMine: (todo: TodoDTO) => void
+  onComplete: (id: string, onWriteConfirmed?: () => void) => Promise<CompleteTodoResult>
+  onConfirmDone: (id: string, onWriteConfirmed?: () => void) => Promise<CompleteTodoResult>
+  completion: CompleteTodoRegistry
+  onRefresh: () => Promise<boolean>
+  onRejectSuggested: (todo: TodoDTO) => Promise<void>
+  onIgnore: (id: string) => Promise<void>
+  onMarkNotMine: (todo: TodoDTO) => Promise<unknown>
   /** 依關鍵字忽略（此對話）：加關鍵字並立即忽略命中的未完成代辦。 */
-  onIgnoreByKeyword: (chatId: string, keyword: string) => void
+  onIgnoreByKeyword: (chatId: string, keyword: string) => Promise<number>
   /** 封鎖這個對話：不再抽代辦 + 清掉現有未完成代辦。 */
-  onBlockChat: (chatId: string) => void
-  onSnooze: (todo: TodoDTO, hours: number) => void
-  onReopen: (todo: TodoDTO) => void
-  onOpenChat: (chatId: string) => void
+  onBlockChat: (chatId: string) => Promise<number>
+  onSnooze: (todo: TodoDTO, hours: number) => Promise<void>
+  onReopen: (todo: TodoDTO) => Promise<void>
+  onOpenChat: (chatId: string) => Promise<{ ok: boolean; error?: string }>
   onDraftReply: (todo: TodoDTO) => void
   /** 手動編輯：把使用者改好的欄位寫回（呼叫端負責 update + 刷新看板）。 */
-  onEdit: (id: string, patch: TodoEditPatch) => void
+  onEdit: (id: string, patch: TodoEditPatch, onWriteConfirmed?: () => void) => Promise<CompleteTodoResult>
   /** 本機 session 的檢視標記，不代表 LINE 已讀狀態。 */
   onSetViewedLocal: (id: string, viewed: boolean) => void
 }
@@ -165,6 +168,20 @@ export function TodoCard({
   dnd
 }: Props): JSX.Element {
   const [showSources, setShowSources] = useState(false)
+  const subscribeCompletion = useCallback(
+    (listener: () => void) => actions.completion.subscribe(todo.id, listener),
+    [actions.completion, todo.id]
+  )
+  const getCompletionSnapshot = useCallback(
+    () => actions.completion.getSnapshot(todo.id),
+    [actions.completion, todo.id]
+  )
+  const completeUi = useSyncExternalStore(subscribeCompletion, getCompletionSnapshot, getCompletionSnapshot)
+  const [cardActionUi, setCardActionUi] = useState<
+    | null
+    | { phase: 'pending'; label: string }
+    | { phase: 'error'; label: string; message: string }
+  >(null)
   // 「依關鍵字忽略」inline 表單狀態。
   const [kwMode, setKwMode] = useState(false)
   const [kwText, setKwText] = useState('')
@@ -177,8 +194,22 @@ export function TodoCard({
   const [ePriority, setEPriority] = useState<number>(todo.priority)
   const [eDue, setEDue] = useState<string>(isoToLocalInput(todo.dueAt))
   const [editErr, setEditErr] = useState<string | null>(null)
+  const [editPhase, setEditPhase] = useState<'idle' | 'writing' | 'refreshing' | 'refresh-error'>('idle')
+  const editInFlight = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  const editBusy = editPhase === 'writing' || editPhase === 'refreshing'
+  const editLocked = editBusy || editPhase === 'refresh-error'
 
   function startEdit(): void {
+    // Reopening a cancelled form must not forget a write still awaiting reply.
+    if (editInFlight.current || editErr !== null || editPhase === 'refresh-error') {
+      setEditing(true)
+      return
+    }
     setETitle(todo.title)
     setEDetail(todo.detail ?? '')
     setEBucket(todo.bucket)
@@ -188,7 +219,8 @@ export function TodoCard({
     setEditing(true)
   }
 
-  function saveEdit(): void {
+  async function saveEdit(): Promise<void> {
+    if (editInFlight.current || editPhase === 'refresh-error') return
     const title = eTitle.trim()
     // 前端驗證：title 非空、bucket/priority 在列舉內、dueAt 合法 ISO 或 null。
     if (!title) {
@@ -211,14 +243,63 @@ export function TodoCard({
         return
       }
     }
-    actions.onEdit(todo.id, {
-      title,
-      detail: eDetail.trim() ? eDetail : null,
-      bucket: eBucket,
-      priority: ePriority,
-      dueAt
-    })
-    setEditing(false)
+    editInFlight.current = true
+    setEditErr(null)
+    setEditPhase('writing')
+    try {
+      const result = await actions.onEdit(todo.id, {
+        title,
+        detail: eDetail.trim() ? eDetail : null,
+        bucket: eBucket,
+        priority: ePriority,
+        dueAt
+      }, () => {
+        if (mounted.current) setEditPhase('refreshing')
+      })
+      if (!mounted.current) return
+      if (result.write === 'failed') {
+        setEditPhase('idle')
+        setEditErr(`儲存失敗：${result.error}`)
+      } else if (result.refresh === 'failed') {
+        setEditPhase('refresh-error')
+        setEditErr(`編輯已儲存；看板更新失敗：${result.error}`)
+      } else {
+        setEditPhase('idle')
+        setEditing(false)
+      }
+    } catch (error) {
+      if (mounted.current) {
+        setEditPhase('idle')
+        setEditErr(`儲存失敗：${error instanceof Error ? error.message : String(error)}`)
+      }
+    } finally {
+      editInFlight.current = false
+    }
+  }
+
+  async function retryEditRefresh(): Promise<void> {
+    if (editInFlight.current || editPhase !== 'refresh-error') return
+    editInFlight.current = true
+    setEditPhase('refreshing')
+    try {
+      const refreshed = await actions.onRefresh()
+      if (!mounted.current) return
+      if (refreshed) {
+        setEditPhase('idle')
+        setEditErr(null)
+        setEditing(false)
+      } else {
+        setEditPhase('refresh-error')
+        setEditErr('編輯已儲存；看板更新失敗，請重試同步')
+      }
+    } catch (error) {
+      if (mounted.current) {
+        setEditPhase('refresh-error')
+        setEditErr(`編輯已儲存；看板更新失敗：${error instanceof Error ? error.message : String(error)}`)
+      }
+    } finally {
+      editInFlight.current = false
+    }
   }
 
   function startKwIgnore(): void {
@@ -226,11 +307,10 @@ export function TodoCard({
     setKwMode(true)
   }
 
-  function confirmKw(): void {
+  async function confirmKw(): Promise<void> {
     const kw = kwText.trim()
     if (!kw) return
-    actions.onIgnoreByKeyword(todo.chatId, kw)
-    setKwMode(false)
+    if (await runCardAction('依關鍵字忽略', () => actions.onIgnoreByKeyword(todo.chatId, kw))) setKwMode(false)
   }
 
   function blockChatConfirm(): void {
@@ -240,7 +320,7 @@ export function TodoCard({
         `封鎖「${label}」？\n之後不再從這個對話抽代辦，並會清掉它目前的未完成代辦（可到設定頁解除）。`
       )
     ) {
-      actions.onBlockChat(todo.chatId)
+      void runCardAction('封鎖這個對話', () => actions.onBlockChat(todo.chatId))
     }
   }
 
@@ -249,6 +329,30 @@ export function TodoCard({
   const prio = priorityLabel(todo.priority)
   const due = fmtDue(todo.dueAt)
   const overdue = !done && isOverdue(todo.dueAt)
+
+  async function completeTodo(confirmSuggested: boolean): Promise<void> {
+    await (confirmSuggested ? actions.onConfirmDone(todo.id) : actions.onComplete(todo.id))
+  }
+
+  async function retryBoardRefresh(): Promise<void> {
+    await actions.onComplete(todo.id)
+  }
+
+  async function runCardAction(label: string, action: () => Promise<unknown>): Promise<boolean> {
+    if (cardActionUi?.phase === 'pending') return false
+    setCardActionUi({ phase: 'pending', label })
+    try {
+      const result = await action()
+      if (result && typeof result === 'object' && 'ok' in result && result.ok === false) {
+        throw new Error('error' in result && typeof result.error === 'string' ? result.error : '操作失敗')
+      }
+      setCardActionUi(null)
+      return true
+    } catch (err) {
+      setCardActionUi({ phase: 'error', label, message: err instanceof Error ? err.message : String(err) })
+      return false
+    }
+  }
 
   const cls = ['todo-card']
   if (suggested) cls.push('suggested')
@@ -265,6 +369,7 @@ export function TodoCard({
             <span className="edit-label">標題</span>
             <input
               className="edit-input"
+              disabled={editLocked}
               value={eTitle}
               onChange={(e) => setETitle(e.target.value)}
               placeholder="代辦標題"
@@ -275,6 +380,7 @@ export function TodoCard({
             <span className="edit-label">備註</span>
             <textarea
               className="edit-input edit-textarea"
+              disabled={editLocked}
               value={eDetail}
               onChange={(e) => setEDetail(e.target.value)}
               placeholder="補充說明（可留空）"
@@ -286,6 +392,7 @@ export function TodoCard({
               <span className="edit-label">分類</span>
               <select
                 className="edit-input"
+                disabled={editLocked}
                 value={eBucket}
                 onChange={(e) => setEBucket(e.target.value as TodoDTO['bucket'])}
               >
@@ -300,6 +407,7 @@ export function TodoCard({
               <span className="edit-label">優先級</span>
               <select
                 className="edit-input"
+                disabled={editLocked}
                 value={ePriority}
                 onChange={(e) => setEPriority(Number(e.target.value))}
               >
@@ -318,11 +426,12 @@ export function TodoCard({
               <input
                 type="datetime-local"
                 className="edit-input"
+                disabled={editLocked}
                 value={eDue}
                 onChange={(e) => setEDue(e.target.value)}
               />
               {eDue && (
-                <button className="link-btn" type="button" onClick={() => setEDue('')}>
+                <button className="link-btn" type="button" disabled={editLocked} onClick={() => setEDue('')}>
                   清除
                 </button>
               )}
@@ -330,13 +439,18 @@ export function TodoCard({
           </label>
 
           {editErr && <div className="edit-err txt-err">{editErr}</div>}
+          {editBusy && <div role="status">{editPhase === 'writing' ? '儲存中…' : '編輯已儲存，正在更新看板…'}</div>}
 
           <div className="edit-actions">
-            <button className="ok-btn" type="button" onClick={saveEdit}>
-              儲存
-            </button>
-            <button className="ghost" type="button" onClick={() => setEditing(false)}>
-              取消
+            {editPhase === 'refresh-error' ? (
+              <button className="ok-btn" type="button" onClick={() => void retryEditRefresh()}>重試同步</button>
+            ) : (
+              <button className="ok-btn" type="button" disabled={editBusy} onClick={() => void saveEdit()}>
+                {editPhase === 'writing' ? '儲存中…' : editPhase === 'refreshing' ? '更新中…' : '儲存'}
+              </button>
+            )}
+            <button className="ghost" type="button" onClick={() => { if (!editLocked) setEditErr(null); setEditing(false) }}>
+              {editLocked ? '收起' : '取消'}
             </button>
           </div>
         </div>
@@ -407,6 +521,7 @@ export function TodoCard({
         </button>
         {showSources && (
           <SourceMessagesModal
+            key={`${todo.id}:${todo.chatId}`}
             chatId={todo.chatId}
             chatName={chatName}
             sourceMsgIds={todo.sourceMsgIds}
@@ -414,6 +529,21 @@ export function TodoCard({
           />
         )}
       </div>
+
+      {completeUi?.phase === 'writing' && <div className="review-note" role="status">正在儲存完成狀態…</div>}
+      {completeUi?.phase === 'refreshing' && <div className="review-note" role="status">完成狀態已寫入，正在更新看板…</div>}
+      {completeUi?.phase === 'write-error' && <div className="txt-err" role="alert">完成失敗：{completeUi.message}</div>}
+      {completeUi?.phase === 'refresh-error' && (
+        <div className="txt-warn" role="status">
+          已寫入完成；看板更新失敗：{completeUi.message}{' '}
+          <button type="button" className="link-btn" onClick={() => void retryBoardRefresh()}>重試同步</button>
+        </div>
+      )}
+      {cardActionUi?.phase === 'pending' && <div className="review-note" role="status">{cardActionUi.label}處理中…</div>}
+      {cardActionUi?.phase === 'error' && <div className="txt-err" role="alert">{cardActionUi.label}失敗：{cardActionUi.message}</div>}
+      {editBusy && <div className="review-note" role="status">{editPhase === 'writing' ? '編輯儲存中…' : '編輯已儲存，正在更新看板…'}</div>}
+      {editErr && <div className="txt-err" role="alert">{editErr}</div>}
+      {editPhase === 'refresh-error' && <button type="button" className="link-btn" onClick={() => void retryEditRefresh()}>重試同步</button>}
 
       {/* 動作列：主要動作 + 「更多 ▾」收納次要動作；kwMode 時改顯示關鍵字忽略表單 */}
       {kwMode ? (
@@ -429,11 +559,11 @@ export function TodoCard({
               placeholder="輸入要忽略的關鍵字"
               autoFocus
               onKeyDown={(e) => {
-                if (e.key === 'Enter') confirmKw()
+                if (e.key === 'Enter') void confirmKw()
                 if (e.key === 'Escape') setKwMode(false)
               }}
             />
-            <button className="ok-btn" type="button" onClick={confirmKw} disabled={!kwText.trim()}>
+            <button className="ok-btn" type="button" onClick={() => void confirmKw()} disabled={!kwText.trim()}>
               忽略
             </button>
             <button className="ghost" type="button" onClick={() => setKwMode(false)}>
@@ -448,7 +578,7 @@ export function TodoCard({
         <div className="card-actions">
           {done ? (
             <>
-              <button className="ghost" onClick={() => actions.onReopen(todo)}>
+              <button className="ghost" onClick={() => void runCardAction('復原', () => actions.onReopen(todo))}>
                 ↩ 復原
               </button>
               <button className="ghost" onClick={startEdit}>
@@ -457,10 +587,10 @@ export function TodoCard({
             </>
           ) : suggested ? (
             <>
-              <button className="ok-btn" onClick={() => actions.onConfirmDone(todo.id)}>
-                ✓ 確認完成
+              <button className="ok-btn" disabled={completeUi?.phase === 'writing' || completeUi?.phase === 'refreshing'} onClick={() => void completeTodo(true)}>
+                {completeUi?.phase === 'writing' ? '儲存中…' : '✓ 確認完成'}
               </button>
-              <button className="ghost" onClick={() => actions.onRejectSuggested(todo)}>
+              <button className="ghost" onClick={() => void runCardAction('退回待確認', () => actions.onRejectSuggested(todo))}>
                 還沒
               </button>
               <OverflowMenu>
@@ -468,10 +598,10 @@ export function TodoCard({
                   ✏️ 編輯
                 </button>
                 <div className="menu-sep" />
-                <button className="menu-item" onClick={() => actions.onIgnore(todo.id)}>
+                <button className="menu-item" onClick={() => void runCardAction('忽略這一筆', () => actions.onIgnore(todo.id))}>
                   🚫 忽略這一筆
                 </button>
-                <button className="menu-item" onClick={() => actions.onMarkNotMine(todo)}>不是我的（保留來源）</button>
+                <button className="menu-item" onClick={() => void runCardAction('標記不是我的', () => actions.onMarkNotMine(todo))}>不是我的（保留來源）</button>
                 <button className="menu-item" onClick={startKwIgnore}>
                   🔑 依關鍵字忽略…
                 </button>
@@ -482,24 +612,24 @@ export function TodoCard({
             </>
           ) : (
             <>
-              <button className="ok-btn" onClick={() => actions.onComplete(todo.id)}>
-                ✓ 完成
+              <button className="ok-btn" disabled={completeUi?.phase === 'writing' || completeUi?.phase === 'refreshing'} onClick={() => void completeTodo(false)}>
+                {completeUi?.phase === 'writing' ? '儲存中…' : '✓ 完成'}
               </button>
               <OverflowMenu>
-                <button className="menu-item" onClick={() => actions.onOpenChat(todo.chatId)}>
+                <button className="menu-item" onClick={() => void runCardAction('開原聊天', () => actions.onOpenChat(todo.chatId))}>
                   💬 開原聊天
                 </button>
                 <button className="menu-item" onClick={() => actions.onDraftReply(todo)}>
                   ✍️ 草擬回覆
                 </button>
                 <div className="menu-sep" />
-                <button className="menu-item" onClick={() => actions.onSnooze(todo, 1)}>
+                <button className="menu-item" onClick={() => void runCardAction('延後 1 小時', () => actions.onSnooze(todo, 1))}>
                   ⏰ 延後 1 小時
                 </button>
-                <button className="menu-item" onClick={() => actions.onSnooze(todo, 3)}>
+                <button className="menu-item" onClick={() => void runCardAction('延後 3 小時', () => actions.onSnooze(todo, 3))}>
                   ⏰ 延後 3 小時
                 </button>
-                <button className="menu-item" onClick={() => actions.onSnooze(todo, 24)}>
+                <button className="menu-item" onClick={() => void runCardAction('延後到明天', () => actions.onSnooze(todo, 24))}>
                   ⏰ 延後到明天
                 </button>
                 <div className="menu-sep" />
@@ -507,10 +637,10 @@ export function TodoCard({
                   ✏️ 編輯
                 </button>
                 <div className="menu-sep" />
-                <button className="menu-item" onClick={() => actions.onIgnore(todo.id)}>
+                <button className="menu-item" onClick={() => void runCardAction('忽略這一筆', () => actions.onIgnore(todo.id))}>
                   🚫 忽略這一筆
                 </button>
-                <button className="menu-item" onClick={() => actions.onMarkNotMine(todo)}>不是我的（保留來源）</button>
+                <button className="menu-item" onClick={() => void runCardAction('標記不是我的', () => actions.onMarkNotMine(todo))}>不是我的（保留來源）</button>
                 <button className="menu-item" onClick={startKwIgnore}>
                   🔑 依關鍵字忽略…
                 </button>

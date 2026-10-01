@@ -1,15 +1,16 @@
 import { useLineTodoApi } from '../../platform/LineTodoApi'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   AiProviderId,
-  TodoDTO,
   BackfillProgress,
+  TodoDTO,
   TodoSortBy,
   TodoSortDirection
 } from '../../types/api'
 import { notReadyShortText } from '../../lib/aiProvider'
 import { COLUMNS, columnOf, type ColumnId } from './buckets'
 import { Column } from './Column'
+import { createProgressFrameCoalescer } from './progressFrame'
 import { useTodos } from '../../store/useTodos'
 import { TodaySummary } from '../TodaySummary'
 import { DraftReplyDialog } from '../DraftReplyDialog'
@@ -87,100 +88,6 @@ export function KanbanBoard(): JSX.Element {
   )
 
   // 「回顧最近 2 天」狀態。
-  const [reviewing, setReviewing] = useState(false)
-  const [progress, setProgress] = useState<BackfillProgress | null>(null)
-  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null)
-  // 引擎未就緒時的文案要看 provider：http＝缺金鑰；CLI＝找不到執行檔。
-  const [aiProvider, setAiProvider] = useState<AiProviderId>('http')
-  const [reviewNote, setReviewNote] = useState<string | null>(null)
-
-  // 「補媒體金鑰（近 7 天）」狀態（輕量 backfill：不跑 LLM、不需金鑰）。
-  const [backfilling, setBackfilling] = useState(false)
-  const [backfillNote, setBackfillNote] = useState<string | null>(null)
-
-  // 初次掛載：查 pipeline 狀態取得 hasApiKey（決定按鈕是否提示填金鑰）。
-  useEffect(() => {
-    let alive = true
-    void api.pipeline
-      .status()
-      .then((s) => {
-        if (alive) setHasApiKey(s.hasApiKey)
-      })
-      .catch(() => {
-        if (alive) setHasApiKey(null)
-      })
-    void api.settings
-      .get()
-      .then((v) => {
-        if (alive) setAiProvider(v.aiProvider)
-      })
-      .catch(() => undefined)
-    // 訂閱 backfill 進度推播。
-    const off = api.pipeline.onBackfillProgress((p) => {
-      setProgress(p)
-    })
-    return () => {
-      alive = false
-      off()
-    }
-  }, [])
-
-  async function onReviewRecentDays(): Promise<void> {
-    if (reviewing) return
-    setReviewing(true)
-    setReviewNote(null)
-    setProgress({ processed: 0, total: 0, phase: 'fetching' })
-    try {
-      const res = await api.pipeline.reviewLastDays(REVIEW_DAYS)
-      setHasApiKey(res.hasApiKey)
-      if (!res.ok && !res.hasApiKey) {
-        setReviewNote(notReadyShortText(aiProvider))
-      } else if (!res.ok) {
-        setReviewNote(res.note ?? '回顧失敗')
-      } else {
-        setReviewNote(
-          `完成：新增 ${res.todosCreated}、合併 ${res.todosMerged}、` +
-            `完成 ${res.todosResolvedDone}（處理 ${res.chatsProcessed}/${res.chatsSeen} 聊天）`
-        )
-      }
-      await t.refresh()
-    } catch (err) {
-      setReviewNote(`回顧失敗：${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setReviewing(false)
-      setProgress(null)
-    }
-  }
-
-  async function onBackfillMediaKeys(): Promise<void> {
-    if (backfilling) return
-    setBackfilling(true)
-    setBackfillNote(null)
-    try {
-      const res = await api.pipeline.backfillMediaKeys(7)
-      if (res.ok) {
-        setBackfillNote(
-          `已補 ${res.mediaBackfilled ?? 0} 筆媒體金鑰（掃描 ${res.scanned ?? 0} 則）；` +
-            '可重開來源訊息彈窗查看歷史媒體。'
-        )
-      } else {
-        setBackfillNote(`補金鑰失敗：${res.error ?? '未知錯誤'}`)
-      }
-    } catch (err) {
-      setBackfillNote(`補金鑰失敗：${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setBackfilling(false)
-    }
-  }
-
-  const reviewLabel = reviewing
-    ? progress && progress.phase === 'extracting' && progress.total > 0
-      ? `處理中 ${progress.processed}/${progress.total} 聊天…`
-      : progress?.phase === 'fetching'
-        ? '撈取訊息中…'
-        : '回顧中…'
-    : `🔄 回顧最近 ${REVIEW_DAYS} 天`
-
   const chatOptions = useMemo(
     () =>
       Object.entries(t.chatMap)
@@ -221,69 +128,50 @@ export function KanbanBoard(): JSX.Element {
     return g
   }, [visibleTodos])
 
-  function setViewedLocal(id: string, viewed: boolean): void {
+  const setViewedLocal = useCallback((id: string, viewed: boolean): void => {
     setViewedLocalIds((current) => {
       const next = new Set(current)
       if (viewed) next.add(id)
       else next.delete(id)
       return next
     })
-  }
+  }, [])
 
-  async function openChat(chatId: string): Promise<void> {
+  const openChat = useCallback(async (chatId: string): Promise<{ ok: boolean; error?: string }> => {
     const res = await api.db.chats.openOriginal(chatId)
     if (!res.ok) {
       // LINE Desktop 無精準 deep-link；失敗只記錄，不打斷使用者。
       console.warn('[board] 開原聊天失敗：', res.error)
     }
-  }
+    return res
+  }, [api])
 
-  const actions: TodoCardActions = {
-    onComplete: (id) => void t.complete(id),
-    onConfirmDone: (id) => void t.confirmDone(id),
-    onRejectSuggested: (todo) => void t.rejectSuggested(todo),
-    onIgnore: (id) => void t.ignore(id),
-    onMarkNotMine: (todo) => { void api.db.todos.markNotMine(todo.id,'unclear_context').then(()=>t.refresh()) },
-    onIgnoreByKeyword: (chatId, keyword) => void t.ignoreByKeyword(chatId, keyword),
-    onBlockChat: (chatId) => void t.blockChat(chatId),
-    onSnooze: (todo, hours) => void t.snooze(todo, hours),
-    onReopen: (todo) => void t.rejectSuggested(todo),
-    onOpenChat: (chatId) => void openChat(chatId),
+  const actions: TodoCardActions = useMemo(() => ({
+    onComplete: t.complete,
+    completion: t.completion,
+    onRefresh: t.refresh,
+    onConfirmDone: t.confirmDone,
+    onRejectSuggested: t.rejectSuggested,
+    onIgnore: t.ignore,
+    onMarkNotMine: async (todo) => {
+      const result = await api.db.todos.markNotMine(todo.id, 'unclear_context')
+      if (!result.ok) throw new Error(result.error ?? '標記失敗')
+      if (!await t.refresh()) throw new Error('標記已寫入，但看板更新失敗')
+      return result
+    },
+    onIgnoreByKeyword: t.ignoreByKeyword,
+    onBlockChat: t.blockChat,
+    onSnooze: t.snooze,
+    onReopen: t.rejectSuggested,
+    onOpenChat: openChat,
     onDraftReply: (todo) => setDraftTodo(todo),
-    onEdit: (id, patch) => void t.update(id, patch),
+    onEdit: t.update,
     onSetViewedLocal: setViewedLocal
-  }
+  }), [api, openChat, setViewedLocal, t.blockChat, t.complete, t.completion, t.confirmDone, t.ignore, t.ignoreByKeyword, t.moveToColumn, t.refresh, t.rejectSuggested, t.snooze, t.update])
 
   return (
     <div className="board-wrap">
-      <div className="board-toolbar">
-        <button className="btn-review-week" onClick={()=>setShowNotMine(v=>!v)}>不是我的回查</button>
-        <button
-          className="btn-review-week"
-          disabled={reviewing}
-          onClick={() => void onReviewRecentDays()}
-          title={
-            hasApiKey === false
-              ? notReadyShortText(aiProvider)
-              : `用 AI 判斷最近 ${REVIEW_DAYS} 天訊息、補建代辦`
-          }
-        >
-          {reviewLabel}
-        </button>
-        {hasApiKey === false && !reviewing && (
-          <span className="review-hint">{notReadyShortText(aiProvider)}</span>
-        )}
-        {reviewNote && <span className="review-note">{reviewNote}</span>}
-        <button
-          className="btn-review-week"
-          disabled={backfilling}
-          onClick={() => void onBackfillMediaKeys()}
-          title="重讀近 7 天訊息、補既有媒體卡片的金鑰（不需金鑰、不跑 AI）"
-        >
-          {backfilling ? '補金鑰中…' : '🖼️ 補媒體金鑰(近7天)'}
-        </button>
-        {backfillNote && <span className="review-note">{backfillNote}</span>}
-      </div>
+      <ReviewControls api={api} onRefresh={t.refresh} onShowNotMine={() => setShowNotMine((v) => !v)} />
 
       {showNotMine&&<NotMineReviewPanel api={api} onClose={()=>setShowNotMine(false)} onChanged={()=>void t.refresh()}/>}
 
@@ -375,6 +263,100 @@ export function KanbanBoard(): JSX.Element {
           onClose={() => setDraftTodo(null)}
         />
       )}
+    </div>
+  )
+}
+
+function ReviewControls({
+  api,
+  onRefresh,
+  onShowNotMine
+}: {
+  api: ReturnType<typeof useLineTodoApi>
+  onRefresh: () => Promise<boolean>
+  onShowNotMine: () => void
+}): JSX.Element {
+  const [reviewing, setReviewing] = useState(false)
+  const [progress, setProgress] = useState<BackfillProgress | null>(null)
+  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null)
+  const [aiProvider, setAiProvider] = useState<AiProviderId>('http')
+  const [reviewNote, setReviewNote] = useState<string | null>(null)
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillNote, setBackfillNote] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void api.pipeline.status().then((s) => { if (alive) setHasApiKey(s.hasApiKey) }).catch(() => {
+      if (alive) setHasApiKey(null)
+    })
+    void api.settings.get().then((v) => { if (alive) setAiProvider(v.aiProvider) }).catch(() => undefined)
+    const coalescer = createProgressFrameCoalescer(
+      (callback) => window.requestAnimationFrame(callback),
+      (id) => window.cancelAnimationFrame(id),
+      (progress) => { if (alive) setProgress(progress) }
+    )
+    const off = api.pipeline.onBackfillProgress(coalescer.push)
+    return () => {
+      alive = false
+      off()
+      coalescer.dispose()
+    }
+  }, [api])
+
+  async function onReviewRecentDays(): Promise<void> {
+    if (reviewing) return
+    setReviewing(true)
+    setReviewNote(null)
+    setProgress({ processed: 0, total: 0, phase: 'fetching' })
+    try {
+      const res = await api.pipeline.reviewLastDays(REVIEW_DAYS)
+      setHasApiKey(res.hasApiKey)
+      if (!res.ok && !res.hasApiKey) setReviewNote(notReadyShortText(aiProvider))
+      else if (!res.ok) setReviewNote(res.note ?? '回顧失敗')
+      else setReviewNote(`完成：新增 ${res.todosCreated}、合併 ${res.todosMerged}、完成 ${res.todosResolvedDone}（處理 ${res.chatsProcessed}/${res.chatsSeen} 聊天）`)
+      if (!await onRefresh()) setReviewNote((note) => `${note ?? '回顧完成'}；看板更新失敗`)
+    } catch (err) {
+      setReviewNote(`回顧失敗：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setReviewing(false)
+      setProgress(null)
+    }
+  }
+
+  async function onBackfillMediaKeys(): Promise<void> {
+    if (backfilling) return
+    setBackfilling(true)
+    setBackfillNote(null)
+    try {
+      const res = await api.pipeline.backfillMediaKeys(7)
+      setBackfillNote(res.ok
+        ? `已補 ${res.mediaBackfilled ?? 0} 筆媒體金鑰（掃描 ${res.scanned ?? 0} 則）；可重開來源訊息彈窗查看歷史媒體。`
+        : `補金鑰失敗：${res.error ?? '未知錯誤'}`)
+    } catch (err) {
+      setBackfillNote(`補金鑰失敗：${err instanceof Error ? err.message : String(err)}`)
+    } finally { setBackfilling(false) }
+  }
+
+  const reviewLabel = reviewing
+    ? progress?.phase === 'extracting' && progress.total > 0
+      ? `處理中 ${progress.processed}/${progress.total} 聊天…`
+      : progress?.phase === 'fetching' ? '撈取訊息中…' : '回顧中…'
+    : `🔄 回顧最近 ${REVIEW_DAYS} 天`
+
+  return (
+    <div className="board-toolbar">
+      <button className="btn-review-week" onClick={onShowNotMine}>不是我的回查</button>
+      <button className="btn-review-week" disabled={reviewing} onClick={() => void onReviewRecentDays()}
+        title={hasApiKey === false ? notReadyShortText(aiProvider) : `用 AI 判斷最近 ${REVIEW_DAYS} 天訊息、補建代辦`}>
+        {reviewLabel}
+      </button>
+      {hasApiKey === false && !reviewing && <span className="review-hint">{notReadyShortText(aiProvider)}</span>}
+      {reviewNote && <span className="review-note">{reviewNote}</span>}
+      <button className="btn-review-week" disabled={backfilling} onClick={() => void onBackfillMediaKeys()}
+        title="重讀近 7 天訊息、補既有媒體卡片的金鑰（不需金鑰、不跑 AI）">
+        {backfilling ? '補金鑰中…' : '🖼️ 補媒體金鑰(近7天)'}
+      </button>
+      {backfillNote && <span className="review-note">{backfillNote}</span>}
     </div>
   )
 }

@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { TodoDTO } from '../../types/api'
 import type { ColumnDef } from './buckets'
 import { TodoCard, type TodoCardActions } from './TodoCard'
@@ -40,7 +41,7 @@ function groupTodosByChat(todos: TodoDTO[]): TodoChatGroup[] {
   return groups
 }
 
-export function Column({
+function ColumnView({
   def,
   todos,
   chatMap,
@@ -114,3 +115,5 @@ export function Column({
     </section>
   )
 }
+
+export const Column = memo(ColumnView)

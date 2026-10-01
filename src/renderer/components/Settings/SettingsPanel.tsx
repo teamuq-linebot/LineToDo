@@ -3,7 +3,6 @@ import { useLineTodoApi } from '../../platform/LineTodoApi'
 import type {
   AiProviderId,
   CliProviderSettings,
-  PipelineLoadStats,
   SettingsView,
   ChatDTO
 } from '../../types/api'
@@ -12,15 +11,9 @@ import { BlocklistEditor } from './BlocklistEditor'
 import { ProviderHealthCheck } from './ProviderHealthCheck'
 import { DriverPostSettings } from './DriverPostSettings'
 import {
-  POLL_SEC_MAX,
   PROVIDERS,
   cliSettingsOf,
-  defaultChatsPerRound,
   effectiveConcurrency,
-  estimateRound,
-  fmtDuration,
-  hasEnoughLoadHistory,
-  modelRationaleText,
   providerMeta
 } from '../../lib/aiProvider'
 
@@ -41,13 +34,6 @@ export function SettingsPanel(): JSX.Element {
   const [view, setView] = useState<SettingsView | null>(null)
   const [chats, setChats] = useState<ChatDTO[]>([])
   const [saved, setSaved] = useState(false)
-  /**
-   * 延遲試算用的「每輪聊天室數」（純試算，不落檔）；
-   * null＝沿用 loadStats 算出的預設（見 defaultChatsPerRound）。
-   */
-  const [estimateChats, setEstimateChats] = useState<number | null>(null)
-  /** 歷史負載統計（pipeline:loadStats）；null＝還沒回來或查不到。 */
-  const [loadStats, setLoadStats] = useState<PipelineLoadStats | null>(null)
   /** 模型下拉是否切到「自訂模型名稱…」。 */
   const [customModel, setCustomModel] = useState(false)
   const execPathRef = useRef<HTMLInputElement>(null)
@@ -73,19 +59,13 @@ export function SettingsPanel(): JSX.Element {
     setEngineReady(st.hasApiKey)
   }, [])
 
-  /** 只在掛載時拉一次：這是統計，不是狀態，不需要跟著每輪更新。 */
-  const loadLoadStats = useCallback(async (): Promise<void> => {
-    setLoadStats(await api.pipeline.loadStats())
-  }, [])
-
   useEffect(() => {
     void loadView()
     void loadChats()
     void loadReady()
-    void loadLoadStats()
     // 設定改動會讓 main 重排排程器並推 status；順手跟著更新就緒狀態。
     return api.pipeline.onStatus((st) => setEngineReady(st.hasApiKey))
-  }, [loadView, loadChats, loadReady, loadLoadStats])
+  }, [loadView, loadChats, loadReady])
 
   function flashSaved(): void {
     setSaved(true)
@@ -122,13 +102,6 @@ export function SettingsPanel(): JSX.Element {
   const meta = providerMeta(v.aiProvider)
   const cli = cliSettingsOf(v, v.aiProvider)
   const isCli = meta.kind === 'cli'
-  /**
-   * 試算的預設值＝歷史上每輪實際處理過的聊天室數（p90），**不是**聊天室總數。
-   * 總數只出現在下方的說明文字裡（它是使用者關心的數字，但它不驅動試算）。
-   */
-  const activeChatTotal = chats.filter((c) => !c.blocked).length
-  const chatCount = estimateChats ?? defaultChatsPerRound(loadStats)
-  const est = estimateRound(v.aiProvider, chatCount, v.concurrency, v.pollIntervalSec)
   const modelIsPreset = !!cli && meta.models.some((m) => m.value === cli.model)
   const modelSelectValue = customModel || (!!cli?.model && !modelIsPreset) ? '__custom' : (cli?.model ?? '')
   const modelMissing = !!cli && cli.model.trim() === ''
@@ -301,88 +274,6 @@ export function SettingsPanel(): JSX.Element {
           ))}
         </fieldset>
 
-        {/* 延遲試算（CLI 才出現）：常駐事實 → 可編輯試算 → 追不上時才升級成警示 */}
-        {isCli && (
-          <div className={`set-notice ${est.behind ? 'warn' : 'info'}`} role="status" aria-live="polite">
-            <span className="set-notice-icon" aria-hidden="true">
-              {est.behind ? '⚠' : 'ℹ'}
-            </span>
-            <div className="set-notice-body">
-              <div className="set-notice-title">
-                {est.behind
-                  ? '以你目前的設定，背景輪詢會追不上'
-                  : '以你目前的設定，背景輪詢追得上'}
-              </div>
-              <div className="est-line">
-                <label>
-                  每輪要處理的聊天室數（只算有新訊息的）{' '}
-                  <input
-                    type="number"
-                    className="set-num"
-                    min={1}
-                    /* 無上限：使用者可以自己填大數字去看最壞情況（例如把總數填進來），
-                       宣告一個死板上限只會讓 input 一載入就 :invalid（見 Batch 驗收缺陷 2）。 */
-                    value={chatCount}
-                    onChange={(e) =>
-                      setEstimateChats(Math.max(1, Number(e.target.value) || 1))
-                    }
-                  />
-                </label>{' '}
-                × 每室約 <span className="est-num">{est.perCallSec} 秒</span> ÷ 併發{' '}
-                <span className="est-num">{est.concurrency}</span> ＝ 跑完一輪約{' '}
-                <span className="est-num">{fmtDuration(est.roundSec)}</span>，目前輪詢間隔{' '}
-                <span className="est-num">{fmtDuration(v.pollIntervalSec)}</span>。
-              </div>
-              {/* 聊天室總數要有地方安放（使用者會找它），但它不驅動試算——只當說明文字。 */}
-              <div className="muted set-hint">
-                {activeChatTotal > 0 && loadStats
-                  ? `你有 ${activeChatTotal} 個未封鎖聊天室，近 ${loadStats.recentDays} 天其中 ${loadStats.chatsWithRecentMessages} 個有過新訊息；`
-                  : ''}
-                每一輪只處理「上一輪之後剛有新訊息」的那幾間，不是每輪都掃全部聊天室。
-                {loadStats && hasEnoughLoadHistory(loadStats)
-                  ? `本機最近 ${loadStats.sampleRuns} 輪成功紀錄：每輪中位數 ${loadStats.chatsSeenP50} 間、p90 ${loadStats.chatsSeenP90} 間，所以上面預設填 ${defaultChatsPerRound(loadStats)}（最少以 1 間估算，因為「一輪 0 秒」沒有參考價值）。`
-                  : '目前還沒有足夠的執行紀錄可以估算，上面先以每輪 1 間計；想看最壞情況可以自己把數字改大。'}
-                {loadStats && loadStats.chatsSeenMax >= 10
-                  ? `例外是久沒開機後的第一次自我對帳，會一次補比較多（本機歷來單輪最多 ${loadStats.chatsSeenMax} 間），那是一次性的，跑完就回到常態。`
-                  : '例外是久沒開機後的第一次自我對帳，會一次補比較多；那是一次性的，跑完就回到常態。'}
-              </div>
-              {est.behind ? (
-                est.hopeless ? (
-                  <div className="est-line">
-                    這個規模跑完一輪要 {fmtDuration(est.roundSec)}
-                    ，已經超過輪詢間隔可以調到的上限（{fmtDuration(POLL_SEC_MAX)}
-                    ）—— 不管把輪詢間隔調多長都追不上，這不是調參數能解的問題。
-                    這個規模不適合背景自動輪詢；建議改用「今日摘要」面板的「立即抓取」手動觸發，
-                    或設法把要輪詢的聊天室數量／併發降到追得上的範圍。
-                  </div>
-                ) : (
-                  <>
-                    <div className="est-line">
-                      上一輪還沒跑完，下一輪就到了 ——
-                      多數輪次會被略過，而且這台電腦會一直有 CLI
-                      在跑。把輪詢間隔拉長就能解決，代價是新訊息晚一點被整理進看板。
-                    </div>
-                    <div className="set-notice-acts">
-                      <button onClick={() => void patch({ pollIntervalSec: est.suggestPollSec })}>
-                        把輪詢間隔改成 {fmtDuration(est.suggestPollSec)}
-                      </button>
-                    </div>
-                  </>
-                )
-              ) : (
-                <div className="est-line">
-                  CLI 每次抽取約 20 秒（實測 p90：Claude 21 秒、Codex 23
-                  秒），比 HTTP
-                  端點的數秒慢一個量級；目前這組數字追得上，單輪要處理的聊天室變多時這裡會再提醒你。
-                </div>
-              )}
-              <div className="muted set-hint">
-                數字來源：每室秒數為本機實測（{meta.name}，20 則對話 × 5 次），會隨對話長度變動；
-                每輪聊天室數取自本機 pipeline 執行紀錄（近 200 輪抽取成功的輪次）。
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* HTTP 專屬欄位 */}
         {!isCli && (
@@ -410,10 +301,7 @@ export function SettingsPanel(): JSX.Element {
                   還原為預設
                 </button>
               </div>
-              <div className="muted set-hint">
-                留空＝使用預設端點；填入你自己的 OpenAI 相容端點（Base
-                URL）即可換後端 LLM，讓別人也能用自己的模型安裝使用。
-              </div>
+
             </div>
 
             <ApiKeyField view={view} onChanged={() => void loadView()} />
@@ -445,10 +333,6 @@ export function SettingsPanel(): JSX.Element {
                     清除，改回自動偵測
                   </button>
                 )}
-              </div>
-              <div className="muted set-hint">
-                留空時會自動尋找 <code>{meta.cliName}</code>
-                。只有在下方檢查結果告訴你「找不到」或「找到的是批次檔」時，才需要手動填。
               </div>
             </div>
 
@@ -494,16 +378,7 @@ export function SettingsPanel(): JSX.Element {
                   onBlur={() => patchCli({ model: cli.model.trim() })}
                 />
               )}
-              <div className="muted set-hint" id="set-cli-modelhint">
-                {modelMissing ? (
-                  <>
-                    <span className="txt-err">必須指定模型。</span>
-                    {modelRationaleText(v.aiProvider)}
-                  </>
-                ) : (
-                  modelRationaleText(v.aiProvider)
-                )}
-              </div>
+
             </div>
 
             <div className="set-field">
@@ -524,15 +399,9 @@ export function SettingsPanel(): JSX.Element {
                   onBlur={() => patchCli({ timeoutMs: cli.timeoutMs })}
                 />
                 <span className="muted">
-                  超過就放棄這一室，換下一室（15–600）。實測 p90 約 21 秒，預設 120 秒留有餘裕。
+                  超過就放棄這一個聊天室，換下一個（15–600）。實測約 21 秒，預設 120 秒留有餘裕。
                 </span>
               </div>
-            </div>
-
-            <div className="muted set-hint">
-              會呼叫這台電腦上已安裝、且你已登入的 {meta.name}
-              ；用量計入該訂閱帳號，不需要另外的 API 金鑰。它也會沿用你本機的 CLI
-              設定，所以你改了自己的 CLI 設定時，抽取行為可能跟著變。
             </div>
           </>
         )}
@@ -558,7 +427,7 @@ export function SettingsPanel(): JSX.Element {
 
       {/* 黑名單 */}
       <div className="set-section">
-        <div className="set-section-title">降噪</div>
+        <div className="set-section-title">黑名單</div>
         <BlocklistEditor
           nameKeywords={view.blocklist.nameKeywords}
           chats={chats}

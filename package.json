@@ -16,6 +16,8 @@
     "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test:chat-refresh": "node --experimental-strip-types --test scripts/test-chat-refresh.mjs",
+    "test:board-progress": "node --experimental-strip-types --test scripts/test-board-progress.mjs",
+    "test:complete-todo": "node --experimental-strip-types --test scripts/test-complete-todo.mjs",
     "test:line-import": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-line-import.mjs",
     "test:group-topics": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-group-topics.mjs",
     "check:group-topics-prompt": "node scripts/build-group-topics-prompts.mjs --check",
