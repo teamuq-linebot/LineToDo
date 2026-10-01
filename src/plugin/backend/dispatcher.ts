@@ -11,12 +11,16 @@
  *     整個 backend，所以：
  *       * 回傳超過預算 → 切成字串分段存起來，回 `{chunked, resultId, chunks}`，view 用 `result.chunk` 逐段取回再 JSON.parse。
  *       * 執行超過 soft deadline（預設 20 s）→ 回 `{pending, jobId}`，view 用 `job.poll` 取結果（長時間的 reviewLastDays 等）。
- *   - 另外有六組內部路徑：`backend.info`、`events.*`（事件長輪詢）、`extract.*`（AI 抽取供料／收料）、`media.prepare`
- *     （解密圖片寫進 dataDir，回相對路徑給 view 的 `assets.url()`）、`result.chunk`、`job.poll`。
+ *   - 另外有七組內部路徑：`backend.info`、`events.*`（事件長輪詢）、`extract.*`（AI 抽取供料／收料／還租約）、`ai.*`（UI 中轉的單次 AI 呼叫：
+ *     `ai.run` 由 UI 發起草擬回覆／誤判分析／群組議題分析，`ai.pull`／`ai.commit`／`ai.release` 是 UI orchestrator 領取並交回 ai:chat 的文字）、
+ *     `media.prepare`（解密圖片寫進 dataDir，回相對路徑給 view 的 `assets.url()`）、`result.chunk`、`job.poll`。
  */
 import { randomBytes } from 'node:crypto'
 import type { LineTodoApi } from '../../shared/api'
 import { EXTRACT_SYSTEM_PROMPT } from '../../main/llm/extractPrompt'
+import { EXTRACT_OUTPUT_CONTRACT } from './aiOutputContract'
+import type { AiTaskKind, AiTaskQueue } from './aiTaskQueue'
+import { AI_RUN_PATHS } from './aiTaskQueue'
 import type { ExtractQueue } from './extractQueue'
 import { DEFAULT_MAX_USER_CHARS, EXTRACT_SYSTEM_SHA256 } from './extractQueue'
 import type { EventHub } from './eventHub'
@@ -64,6 +68,8 @@ export interface DispatcherOptions {
   getApi(): LineTodoApi
   hub: EventHub
   queue: ExtractQueue
+  /** UI 中轉的單次 AI 呼叫（`ai.*`）；省略＝這些路徑回 ai_bridge_unavailable。 */
+  aiTasks?: AiTaskQueue
   /** 媒體服務（`media.prepare`）；省略＝回 media_unavailable。 */
   media?: PluginMedia
   /** `backend.info` 的內容。 */
@@ -130,8 +136,21 @@ export class Dispatcher {
       case 'events.open': return this.finalize(lift(this.opts.hub.open(args[0])))
       case 'events.pull': return this.finalize(lift(await this.opts.hub.pull(args[0])))
       case 'events.close': return this.finalize(lift(this.opts.hub.close(args[0])))
-      case 'extract.system': return this.finalize({ system: EXTRACT_SYSTEM_PROMPT, sha256: EXTRACT_SYSTEM_SHA256, chars: EXTRACT_SYSTEM_PROMPT.length, maxUserChars: DEFAULT_MAX_USER_CHARS })
-      case 'extract.pull': return this.finalize(lift(this.opts.queue.pull(plain(args[0]) ? { max: numberOr(args[0].max), leaseMs: numberOr(args[0].leaseMs) } : {})))
+      case 'extract.system':
+        // `format`：ai:chat 沒有 structured output，UI 要把它接在 system 後面（EXTRACT_SYSTEM_PROMPT 只描述規則、沒有附 schema）。
+        return this.finalize({ system: EXTRACT_SYSTEM_PROMPT, sha256: EXTRACT_SYSTEM_SHA256, chars: EXTRACT_SYSTEM_PROMPT.length, maxUserChars: DEFAULT_MAX_USER_CHARS, format: EXTRACT_OUTPUT_CONTRACT })
+      case 'extract.pull':
+        this.opts.aiTasks?.touch()
+        return this.finalize(lift(this.opts.queue.pull(plain(args[0]) ? { max: numberOr(args[0].max), leaseMs: numberOr(args[0].leaseMs) } : {})))
+      case 'extract.release': {
+        const body = args[0]
+        if (!plain(body) || !Array.isArray(body.itemIds) || body.itemIds.length === 0 || body.itemIds.length > 16 || !body.itemIds.every((id) => typeof id === 'string')) return fail('invalid_args', 'itemIds must be an array of 1..16 strings')
+        return this.finalize(lift(this.opts.queue.release({ itemIds: body.itemIds as string[] })))
+      }
+      case 'ai.pull': return this.aiPull(args[0])
+      case 'ai.commit': return this.aiCommit(args[0])
+      case 'ai.release': return this.aiRelease(args[0])
+      case 'ai.run': return this.aiRun(args[0])
       case 'extract.commit': {
         const body = args[0]
         if (!plain(body) || !Array.isArray(body.results) || body.results.length === 0 || body.results.length > 16) return fail('invalid_args', 'results must be an array of 1..16 items')
@@ -153,6 +172,46 @@ export class Dispatcher {
     if (!target) return fail('unavailable', `${path} is not available in this build`)
 
     return this.settle(Promise.resolve().then(() => (target as (...a: unknown[]) => unknown)(...args)))
+  }
+
+  // ── ai.*：UI 中轉的單次 AI 呼叫 ──
+
+  private aiPull(raw: unknown): Envelope {
+    const tasks = this.opts.aiTasks
+    if (!tasks) return fail('ai_bridge_unavailable', 'the AI bridge is not available in this build')
+    return this.finalize(lift(tasks.pull(plain(raw) ? { max: numberOr(raw.max), leaseMs: numberOr(raw.leaseMs) } : {})))
+  }
+
+  private aiCommit(raw: unknown): Envelope {
+    const tasks = this.opts.aiTasks
+    if (!tasks) return fail('ai_bridge_unavailable', 'the AI bridge is not available in this build')
+    if (!plain(raw) || !Array.isArray(raw.results) || raw.results.length === 0 || raw.results.length > 4) return fail('invalid_args', 'results must be an array of 1..4 items')
+    return this.finalize(lift(tasks.commit({ results: raw.results as never })))
+  }
+
+  private aiRelease(raw: unknown): Envelope {
+    const tasks = this.opts.aiTasks
+    if (!tasks) return fail('ai_bridge_unavailable', 'the AI bridge is not available in this build')
+    if (!plain(raw) || !Array.isArray(raw.taskIds) || raw.taskIds.length === 0 || raw.taskIds.length > 4 || !raw.taskIds.every((id) => typeof id === 'string')) return fail('invalid_args', 'taskIds must be an array of 1..4 strings')
+    return this.finalize(lift(tasks.release({ taskIds: raw.taskIds as string[] })))
+  }
+
+  /**
+   * UI 發起「草擬回覆／誤判分析／群組議題分析」：照 standalone 的邏輯在 backend 跑（取證據、驗證、落庫都沿用 core），
+   * 只有「模型輸出」那一步經 `AiTaskQueue` 交給 UI 的 ai:chat。耗時久，所以走 settle（超過 soft deadline 轉成 job）。
+   */
+  private async aiRun(raw: unknown): Promise<Envelope> {
+    const tasks = this.opts.aiTasks
+    if (!tasks) return fail('ai_bridge_unavailable', 'the AI bridge is not available in this build')
+    if (!plain(raw) || typeof raw.kind !== 'string' || !OWN.call(AI_RUN_PATHS, raw.kind)) return fail('invalid_args', 'kind must be draftReply, analyzeNotMine or groupTopics')
+    const kind = raw.kind as Exclude<AiTaskKind, 'unknown'>
+    const runArgs = raw.args === undefined ? [] : raw.args
+    if (!Array.isArray(runArgs) || runArgs.length > 4) return fail('invalid_args', 'args must be an array of at most 4 items')
+    let target: ((...a: unknown[]) => unknown) | null
+    try { target = resolvePath(this.opts.getApi(), AI_RUN_PATHS[kind]) } catch (error) { return mapError(error) }
+    if (!target) return fail('unavailable', `${AI_RUN_PATHS[kind]} is not available in this build`)
+    const run = target
+    return this.settle(Promise.resolve().then(() => tasks.runAs(kind, () => run(...runArgs))))
   }
 
   private mediaPrepare(raw: unknown): Envelope {

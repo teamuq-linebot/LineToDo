@@ -463,6 +463,26 @@ export class ExtractQueue implements ExtractSink {
     return { ok: true, results: out, run, pending: this.countState('pending') }
   }
 
+  /**
+   * UI 暫時做不了（看板被隱藏、被 ai:chat 限流、額度用完、provider 還沒就緒…）時把租約還回去：
+   * 不算失敗——不增加 attempts、不啟動 per-chat 退避、不改訊息狀態，項目立刻回到可領取。
+   */
+  release(params: { itemIds: string[] }): { ok: true; released: number; unknown: string[] } {
+    this.reap()
+    const wanted = new Set(params.itemIds.filter((id) => typeof id === 'string'))
+    let released = 0
+    for (const e of this.entries.values()) {
+      if (e.state === 'leased' && e.itemId && wanted.delete(e.itemId)) {
+        e.state = 'pending'
+        e.itemId = null
+        e.leaseUntil = 0
+        released += 1
+      }
+    }
+    if (released > 0) this.announce()
+    return { ok: true, released, unknown: [...wanted] }
+  }
+
   // ── 觀測 ──
 
   stats(): { pending: number; leased: number; awaiting: number; chatsBackingOff: number; gen: number } {

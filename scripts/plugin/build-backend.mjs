@@ -72,8 +72,8 @@ const REQUIRED_INPUTS = [
   [/src\/plugin\/backend\/stubs\/llmProvider\.ts$/, 'provider stub'],
 ]
 
-/** Allowed external imports of the bundle: koffi + node built-ins that cannot spawn or open sockets. */
-const ALLOWED_NODE_BUILTINS = new Set(['fs', 'path', 'os', 'util', 'url', 'crypto', 'events', 'module', 'perf_hooks', 'buffer', 'assert', 'stream', 'string_decoder', 'timers', 'v8', 'zlib', 'tty'])
+/** Allowed external imports of the bundle: koffi + node built-ins that cannot spawn or open sockets (async_hooks: AsyncLocalStorage, used by the Phase 4 AI relay to tag which core method is asking the model). */
+const ALLOWED_NODE_BUILTINS = new Set(['fs', 'path', 'os', 'util', 'url', 'crypto', 'events', 'module', 'perf_hooks', 'buffer', 'assert', 'stream', 'string_decoder', 'timers', 'v8', 'zlib', 'tty', 'async_hooks'])
 
 /** Pure analysis (also used by the test with synthetic input). Returns { ok, problems, summary }. */
 export function analyzeBundle({ text, metafile, outfile }) {

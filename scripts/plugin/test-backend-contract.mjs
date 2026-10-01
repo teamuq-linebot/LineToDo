@@ -216,6 +216,19 @@ test('ExtractQueue: supplies work, UI JSON results become todos, malformed resul
   assert.ok(types.types.includes('todos-changed') && types.types.includes('pipeline-run') && types.types.includes('extract-pending'))
 })
 
+test('AI relay (Phase 4) under the real permission model: core draftReply -> relay provider -> ai.pull / ai.commit; extract.system carries the output format; bad kinds are refused', async () => {
+  const { run } = await getSetup()
+  const a = run.result.aiRelay
+  assert.deepEqual(a.systemFormat, { isString: true, mentionsSchema: true, chars: a.systemFormat.chars })
+  assert.ok(a.systemFormat.chars > 500)
+  assert.deepEqual({ kind: a.task.kind, expectJson: a.task.expectJson, draftPrompt: a.task.draftPrompt, userMentionsTodo: a.task.userMentionsTodo }, { kind: 'draftReply', expectJson: false, draftPrompt: true, userMentionsTodo: true })
+  assert.ok(a.task.userChars > 20 && a.task.userChars <= 7500)
+  assert.equal(a.commit, 'accepted')
+  assert.deepEqual(a.result, { ok: true, value: { draft: '好的，我今天處理。' } })
+  assert.deepEqual(a.badKind, { ok: false, code: 'invalid_args' })
+  assert.deepEqual(a.stats, { pending: 0, leased: 0, consumerActive: true })
+})
+
 test('unsupported paths answer in-band; unknown paths and methods are refused', async () => {
   const { run } = await getSetup()
   const x = run.result.refusals

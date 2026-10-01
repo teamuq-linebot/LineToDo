@@ -287,6 +287,22 @@ try {
   })
   step('eventsAfterExtract', { types: [...new Set(seen.map((e) => e.type))].sort(), pipelineRun: seen.filter((e) => e.type === 'pipeline-run').length, extractPending: seen.filter((e) => e.type === 'extract-pending').length })
 
+  // 4b. AI relay (Phase 4), under the real permission model: core's draftReply -> UI-relay provider (AiTaskQueue, AsyncLocalStorage) -> ai.pull / ai.commit.
+  // The backend never calls an LLM: the "model" here is this host stand-in playing the UI orchestrator.
+  const relayTodo = todos[0]
+  const relayCall = invoke('ai.run', { kind: 'draftReply', args: [relayTodo.id] })
+  const relayPulled = await waitFor('an ai task for the UI', async () => { const p = await must('ai.pull', { max: 1 }); return p.tasks.length > 0 ? p : 0 })
+  const relayTask = relayPulled.value.tasks[0]
+  const relayCommit = await must('ai.commit', { results: [{ taskId: relayTask.taskId, ok: true, text: '好的，我今天處理。', model: 'gpt-5-codex' }] })
+  const relayResult = await relayCall
+  const relayBad = await invoke('ai.run', { kind: 'extract', args: [] })
+  step('aiRelay', {
+    systemFormat: { isString: typeof system.format === 'string', mentionsSchema: String(system.format).includes('JSON Schema'), chars: String(system.format).length },
+    task: { kind: relayTask.kind, expectJson: relayTask.expectJson, draftPrompt: relayTask.system.includes('草擬'), userChars: relayTask.userChars, userMentionsTodo: relayTask.user.includes(relayTodo.title) },
+    commit: relayCommit.results[0].status, result: relayResult, badKind: { ok: relayBad.ok, code: relayBad.code },
+    stats: (await must('backend.info')).aiTasks
+  })
+
   // 5. refusals
   step('refusals', {
     driver: await invoke('driver.postDraft', {}), draft: await invoke('db.todos.draftReply', 'x'), proto: await invoke('__proto__'),

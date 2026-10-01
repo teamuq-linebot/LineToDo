@@ -10,7 +10,7 @@
  *   | LINE fs / 引擎  | Node fs + better-sqlite3-mc         | koffi Win32LineFsPort + WASM SQLite3MC（Phase 1）      |
  *   | LINE 輪詢       | LineWatcher（fs.watch + interval）  | LineWatcher（只用 interval + drainBacklog，路徑在 dataDir）|
  *   | app DB          | better-sqlite3 11.10.0              | better-sqlite3 13.0.2（nativeBinding 固定在 installDir）|
- *   | AI              | provider（http／CLI）+ extractFn    | 無 provider；ExtractQueue 供料/收料（UI 經 ai:chat 抽取）|
+ *   | AI              | provider（http／CLI）+ extractFn    | 無真 provider；ExtractQueue 供料/收料 + AiTaskQueue 中轉（UI 經 ai:chat）|
  *   | secrets         | Electron safeStorage                | 無（backend 不持有任何 AI 金鑰）                        |
  *   | media           | linemedia:// + shell／dialog        | media.prepare：解密寫進 dataDir/media-cache，UI 用 assets.url |
  *   | app/driver      | Electron shell／dialog／UIA         | unsupported_in_plugin                                 |
@@ -45,6 +45,8 @@ import type { ReconcileDeps } from '../../main/pipeline/reconcileRunner'
 import { LineWatcher } from '../../main/line/watcher'
 import { PipelineScheduler } from '../../main/pipeline/scheduler'
 import type { LineTodoApi } from '../../shared/api'
+import { AiTaskQueue, createUiAiProvider } from './aiTaskQueue'
+import type { AiTaskQueueOptions } from './aiTaskQueue'
 import { Dispatcher } from './dispatcher'
 import type { DispatcherOptions } from './dispatcher'
 import { EventHub } from './eventHub'
@@ -95,6 +97,8 @@ export interface PluginBackendOptions {
    */
   reconcile?: false | Partial<ReconcileDeps>
   extract?: Partial<Omit<ExtractQueueOptions, 'db' | 'getConfig'>>
+  /** UI 中轉的單次 AI 呼叫（草擬回覆／誤判分析／群組議題分析）。 */
+  aiTasks?: Omit<AiTaskQueueOptions, 'onPending'>
   hub?: EventHubOptions
   dispatcher?: Partial<Pick<DispatcherOptions, 'softDeadlineMs' | 'responseBudgetBytes' | 'resultTtlMs' | 'maxResults' | 'maxResultBytes' | 'jobTtlMs' | 'maxJobs' | 'maxJobWaitMs'>>
   /** 啟動後不自動 `runtime.start()`（單元測試要自己控制時序時用）。 */
@@ -182,6 +186,9 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
 
   // ── AI 供料/收料 + scheduler ──
   let queue!: ExtractQueue
+  // 草擬回覆／誤判分析／群組議題分析：core 照 standalone 的邏輯跑，只有 provider.complete() 變成「排隊等 UI 用 ai:chat 完成」。
+  const aiTasks = new AiTaskQueue({ ...options.aiTasks, onPending: (info) => hub.publish('extract-pending', info) })
+  const uiProvider = createUiAiProvider(aiTasks)
   let scheduler: PipelineScheduler | null = null
   let appDb: { prepare(sql: string): { get(): unknown } } | null = null
   const unsupported = async (): Promise<{ ok: false; error: string }> => ({ ok: false, error: 'unsupported_in_plugin' })
@@ -196,7 +203,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       participantIdentity: UNKNOWN_IDENTITY,
       settings,
       pipelineConfig: { getDefaults, getQwenConfig, isProviderConfigured: () => true },
-      providers: { resolveProvider: () => null },
+      providers: { resolveProvider: () => uiProvider },
       onSettingsChanged: () => { scheduler?.notifySettingsChanged() },
       line,
       // 同步呼叫端（reviewLastDays 回顧）也走 ExtractQueue：同一個 pull/commit 通道，結果直接 resolve 給呼叫端。
@@ -278,6 +285,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     },
     hub,
     queue,
+    aiTasks,
     media,
     info: (): Record<string, JsonValue> => ({
       plugin: options.pluginId,
@@ -291,6 +299,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       watcher: watcher !== null,
       appDb: appDbInfo(appDb),
       extract: queue.stats(),
+      aiTasks: aiTasks.stats(),
       media: media.stats() as unknown as JsonValue,
       events: hub.stats(),
       dispatcher: dispatcher.stats(),
@@ -306,6 +315,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     dispatcher.dispose()
     hub.dispose()
     queue.dispose()
+    aiTasks.dispose()
     await runtime.dispose().catch(() => undefined)
     throw error
   }
@@ -323,6 +333,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       for (const off of unsubscribers) { try { off() } catch { /* 已解除 */ } }
       hub.dispose()
       queue.dispose()
+      aiTasks.dispose()
       await runtime.dispose()
     },
     diagnostics: (): BackendDiagnostics => ({

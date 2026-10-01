@@ -10,7 +10,9 @@
  *     saveAs／open／openDataFolder／openOriginal → 同上
  *   `PLUGIN_CAPABILITIES`（capabilities.ts）告訴 UI 隱藏這些入口；`api.plugin.invoke()` 是原始通道，遇到 unsupported 會 throw `PluginUnsupportedError`。
  * - AI（草擬回覆、誤判分析、群組議題分析）：backend 不打 LLM（`route:'ui_ai_chat'`），由 UI 端經 `window.tuqPlugin.ai` 完成。
- *   Phase 4 的 orchestrator 以 `options.ai`（`PluginAiPort`）接上；沒接時回「尚未接上」的明確失敗，不會假裝成功。
+ *   Phase 4：UI orchestrator（`src/plugin/ui/aiOrchestrator.ts`）接上時，`options.aiConnection.connected()` 為 true，這三項改走 backend 的 `ai.run`
+ *   （core 照 standalone 的邏輯跑，只有「模型輸出」那一步由 orchestrator 經 ai:chat 完成）；沒接時回「尚未接上」的明確失敗，不會假裝成功。
+ *   `options.ai`（`PluginAiPort`）仍可逐項覆寫。
  * - 媒體：`media.assetUrl(msgId)` → `media.prepare`（backend 解密寫進 dataDir）→ `window.tuqPlugin.assets.url(path)`。
  *
  * 不依賴 React／DOM（node:test 以 mock `window.tuqPlugin` 驗證）。
@@ -20,7 +22,7 @@ import type {
 } from '../../shared/api'
 import { PLUGIN_CAPABILITIES, type HostCapabilities } from './capabilities'
 import { PluginEventPump, type PluginEventPumpOptions, type PluginEventType } from './pluginEvents'
-import { PluginTransport, PluginUnsupportedError, type TuqPluginHost } from './pluginTransport'
+import { PluginApiError, PluginTransport, PluginUnsupportedError, type TuqPluginHost } from './pluginTransport'
 
 export { PluginApiError, PluginBackendError, PluginUnsupportedError } from './pluginTransport'
 export type { TuqPluginHost } from './pluginTransport'
@@ -35,6 +37,13 @@ export interface PluginAiPort {
   analyzeGroupTopics?(chatId: string): ReturnType<GroupTopicsApi['analyze']>
 }
 
+/** UI orchestrator 的連線狀態（Phase 4）；每次呼叫前才問，所以會隨 ai:chat 授權／provider 狀態變化。 */
+export interface PluginAiConnection {
+  connected(): boolean
+  /** 沒連上時給使用者看的原因（例如「Codex 尚未登入」）。 */
+  note?(): string | undefined
+}
+
 export interface PluginApiOptions {
   /** `window.tuqPlugin`（或測試用的 mock）。 */
   host: TuqPluginHost
@@ -44,6 +53,8 @@ export interface PluginApiOptions {
    * 沒有 orchestrator 時它會一直等（backend 15 分鐘逾時），所以沒接上就立刻回「尚未接上」的失敗結果，不呼叫 backend。預設 false。
    */
   extractionConnected?: boolean
+  /** 動態版的 `extractionConnected`（orchestrator 的即時狀態）。給了就以它為準。 */
+  aiConnection?: PluginAiConnection
   /** 同時進行中的一般請求上限（host 上限 8）。預設 6。 */
   maxConcurrentCalls?: number
   jobPollWaitMs?: number
@@ -53,12 +64,21 @@ export interface PluginApiOptions {
 /** Phase 4 orchestrator 用的 AI 抽取通道（backend `ExtractQueue` 的供料／收料）。 */
 export interface PluginExtractApi {
   /** system prompt（不隨每個項目重送）與 sha256、單項 user payload 的字數上限。 */
-  system(): Promise<{ system: string; sha256: string; chars: number; maxUserChars: number }>
+  system(): Promise<{ system: string; sha256: string; chars: number; maxUserChars: number; format?: string }>
   pull(options?: { max?: number; leaseMs?: number }): Promise<{ items: Array<Record<string, unknown>>; [key: string]: unknown }>
   commit(results: Array<{ itemId: string; ok: boolean; result?: unknown; failCode?: string; retryAfterMs?: number }>): Promise<{ results: Array<Record<string, unknown>> }>
+  /** 暫時做不了（看板被隱藏、被限流…）：把租約還回去，不算失敗、不退避。 */
+  release(itemIds: string[]): Promise<{ released: number; unknown: string[] }>
   stats(): Promise<Record<string, unknown>>
   /** 有新的待抽取項目時通知（事件 `extract-pending`）。 */
   onPending(cb: (info: { pending: number }) => void): () => void
+}
+
+/** 單次 AI 工作（草擬回覆／誤判分析／群組議題分析）的供料／收料通道（backend `AiTaskQueue`）。 */
+export interface PluginAiTasksApi {
+  pull(options?: { max?: number; leaseMs?: number }): Promise<{ tasks: Array<Record<string, unknown>>; [key: string]: unknown }>
+  commit(results: Array<{ taskId: string; ok: boolean; text?: string; model?: string; failCode?: string; retryAfterMs?: number }>): Promise<{ results: Array<Record<string, unknown>> }>
+  release(taskIds: string[]): Promise<{ released: number }>
 }
 
 export interface PluginExtras {
@@ -67,6 +87,8 @@ export interface PluginExtras {
   /** 原始通道：unsupported 時 throw `PluginUnsupportedError`；成功回 backend 的 `value`。 */
   invoke(path: string, args?: readonly unknown[]): Promise<unknown>
   extract: PluginExtractApi
+  /** orchestrator 用的單次 AI 工作通道。 */
+  aiTasks: PluginAiTasksApi
   /** backend 診斷資訊（`backend.info`）。 */
   info(): Promise<Record<string, unknown>>
   /** 事件輪詢的狀態（測試／診斷）。 */
@@ -82,13 +104,13 @@ export interface PluginLineTodoApi extends LineTodoApi {
 }
 
 /** 沒接 ai:chat 時的明確失敗訊息（UI 直接顯示）。 */
-export const PLUGIN_AI_NOT_CONNECTED = 'unsupported_in_plugin: 這項 AI 功能由 TeamUQ 的 ai:chat 提供，外掛尚未接上（Phase 4）'
+export const PLUGIN_AI_NOT_CONNECTED = 'unsupported_in_plugin: 這項 AI 功能由 TeamUQ 的 ai:chat 提供，目前尚未連上（請在 TeamUQ 內開啟 LINE 待辦看板，並確認 Codex 已安裝、已登入）'
 
-function reviewNotConnected(days: number | undefined): ReviewLastDaysResult {
+function reviewNotConnected(days: number | undefined, note: string): ReviewLastDaysResult {
   const window = typeof days === 'number' && days > 0 ? Math.floor(days) : 7
   return {
     ok: false, hasApiKey: true, days: window, sinceMs: Date.now() - window * 86_400_000, newMsgs: 0, chatsSeen: 0, chatsProcessed: 0, chatsSkippedNoise: 0,
-    chatsFailed: 0, todosCreated: 0, todosMerged: 0, todosResolvedDone: 0, todosSuggestedDone: 0, createdIds: [], resolvedIds: [], updatedIds: [], note: PLUGIN_AI_NOT_CONNECTED
+    chatsFailed: 0, todosCreated: 0, todosMerged: 0, todosResolvedDone: 0, todosSuggestedDone: 0, createdIds: [], resolvedIds: [], updatedIds: [], note
   }
 }
 
@@ -109,6 +131,18 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
   if (!host || !host.backend || typeof host.backend.call !== 'function') throw new TypeError('createPluginLineTodoApi needs window.tuqPlugin.backend.call')
   const transport = new PluginTransport({ host, maxConcurrentCalls: options.maxConcurrentCalls, jobPollWaitMs: options.jobPollWaitMs })
   const ai = options.ai ?? {}
+  const connected = (): boolean => (options.aiConnection ? options.aiConnection.connected() : options.extractionConnected === true)
+  const notConnectedText = (): string => options.aiConnection?.note?.() || PLUGIN_AI_NOT_CONNECTED
+  /** 經 backend 的 `ai.run` 完成 AI 功能；失敗（沒連上、逾時、被拒）轉成該方法型別允許的失敗結果。 */
+  const runAi = async <T>(kind: 'draftReply' | 'analyzeNotMine' | 'groupTopics', args: unknown[], failed: (message: string) => T): Promise<T> => {
+    if (!connected()) return failed(notConnectedText())
+    try {
+      return (await transport.invoke('ai.run', [{ kind, args }])) as T
+    } catch (error) {
+      if (error instanceof PluginApiError) return failed(error.message)
+      throw error
+    }
+  }
 
   const call = <T>(path: string, ...args: unknown[]): Promise<T> => transport.invoke(path, args) as Promise<T>
 
@@ -147,8 +181,15 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
     system: () => call('extract.system'),
     pull: (opts) => call('extract.pull', opts ?? {}),
     commit: (results) => call('extract.commit', { results }),
+    release: (itemIds) => call('extract.release', { itemIds }),
     stats: () => call('extract.stats'),
     onPending: on<{ pending: number }>('extract-pending')
+  }
+
+  const aiTasks: PluginAiTasksApi = {
+    pull: (opts) => call('ai.pull', opts ?? {}),
+    commit: (results) => call('ai.commit', { results }),
+    release: (taskIds) => call('ai.release', { taskIds })
   }
 
   const api: PluginLineTodoApi = {
@@ -182,13 +223,13 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
         openByChat: (chatId) => call('db.todos.openByChat', chatId),
         updateStatus: (id, status) => call('db.todos.updateStatus', id, status),
         update: (id, patch) => call('db.todos.update', id, patch),
-        draftReply: (id) => (ai.draftReply ? ai.draftReply(id) : Promise.resolve({ error: PLUGIN_AI_NOT_CONNECTED })),
+        draftReply: (id) => (ai.draftReply ? ai.draftReply(id) : runAi<DraftReplyResult>('draftReply', [id], (message) => ({ error: message }))),
         moveColumn: (id, toColumn) => call('db.todos.moveColumn', id, toColumn),
         markNotMine: (id, reasonCode, note) => call('db.todos.markNotMine', id, reasonCode, note),
         listNotMine: () => call('db.todos.listNotMine'),
         listNotMineCorrections: () => call('db.todos.listNotMineCorrections'),
         getNotMineReview: (feedbackId) => call('db.todos.getNotMineReview', feedbackId),
-        analyzeNotMine: (feedbackId) => (ai.analyzeNotMine ? ai.analyzeNotMine(feedbackId) : Promise.resolve({ ok: false, reason: PLUGIN_AI_NOT_CONNECTED })),
+        analyzeNotMine: (feedbackId) => (ai.analyzeNotMine ? ai.analyzeNotMine(feedbackId) : runAi<NotMineAnalysisResult>('analyzeNotMine', [feedbackId], (message) => ({ ok: false, reason: message }))),
         reopenNotMine: (feedbackId) => call('db.todos.reopenNotMine', feedbackId),
         applyNotMineCorrection: (feedbackId, condition, effect) => call('db.todos.applyNotMineCorrection', feedbackId, condition, effect),
         setNotMineCorrectionEnabled: (correctionId, enabled) => call('db.todos.setNotMineCorrectionEnabled', correctionId, enabled)
@@ -199,7 +240,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       status: () => call('pipeline.status'),
       loadStats: () => call('pipeline.loadStats'),
       runOnce: () => call('pipeline.runOnce'),
-      reviewLastDays: (days) => (options.extractionConnected ? call('pipeline.reviewLastDays', days) : Promise.resolve(reviewNotConnected(days))),
+      reviewLastDays: (days) => (connected() ? call('pipeline.reviewLastDays', days) : Promise.resolve(reviewNotConnected(days, notConnectedText()))),
       backfillMediaKeys: (days) => call('pipeline.backfillMediaKeys', days),
       setRunning: (running) => call('pipeline.setRunning', running),
       testQwen: () => orUnsupported<QwenTestResult>(() => call('pipeline.testQwen'), (e) => ({ ok: false, error: unsupportedText(e) })),
@@ -230,7 +271,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       pendingCount: (chatId) => call('groupTopics.pendingCount', chatId),
       list: (chatId) => call('groupTopics.list', chatId),
       linkCandidates: (chatId) => call('groupTopics.linkCandidates', chatId),
-      analyze: (chatId) => (ai.analyzeGroupTopics ? ai.analyzeGroupTopics(chatId) : Promise.resolve({ ok: false, reason: 'unsupported_in_plugin' })),
+      analyze: (chatId) => (ai.analyzeGroupTopics ? ai.analyzeGroupTopics(chatId) : runAi<Awaited<ReturnType<GroupTopicsApi['analyze']>>>('groupTopics', [chatId], () => ({ ok: false, reason: connected() ? 'analysis_failed' : 'unsupported_in_plugin' }))),
       todoRefs: (topicId) => call('groupTopics.todoRefs', topicId)
     },
     driver: undefined,
@@ -239,6 +280,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       capabilities: PLUGIN_CAPABILITIES,
       invoke: (path, args = []) => transport.invoke(path, args),
       extract,
+      aiTasks,
       info: () => call('backend.info'),
       eventsStats: () => pump.stats()
     },

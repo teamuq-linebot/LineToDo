@@ -10,13 +10,14 @@ import { PLUGIN_CAPABILITIES, bootPluginApi, renderNotInHost } from './host'
 const container = document.getElementById('root')
 if (!container) throw new Error('#root not found in settings.html')
 
-const api = bootPluginApi()
-if (!api) {
+// 設定 view 不啟動 AI orchestrator（1.6.8 每個外掛只有 1 個 ai:chat session，由看板 view 使用；這個檔案也不 import orchestrator，bundle 不含它）。
+const boot = bootPluginApi()
+if (!boot) {
   renderNotInHost(container)
 } else {
   createRoot(container).render(
     <StrictMode>
-      <LineTodoApiProvider api={api} capabilities={PLUGIN_CAPABILITIES}>
+      <LineTodoApiProvider api={boot.api} capabilities={PLUGIN_CAPABILITIES}>
         <div className="app-shell">
           <main className="app-main">
             <SettingsPanel />
