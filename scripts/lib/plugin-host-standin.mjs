@@ -235,7 +235,9 @@ try {
 
   // 3. LINE writes: the -wal / -shm of the fixture appear next to the main file (like a live LINE DB growing)
   // ("LINE writes its WAL": the harness is outside the sandbox of the plugin's Node fs, so it uses koffi CopyFileW like the plugin does)
-  const koffi = createRequire(join(init.installDir, 'package.json'))('koffi')
+  // (test stage: the staged node_modules/koffi package; the SIGNED PACKAGE has no node_modules, only backend/native/win32-x64/koffi.node, which the backend's own shim loads too)
+  const packagedKoffi = join(init.installDir, 'backend', 'native', 'win32-x64', 'koffi.node')
+  const koffi = fs.existsSync(packagedKoffi) ? createRequire(import.meta.url)(packagedKoffi) : createRequire(join(init.installDir, 'package.json'))('koffi')
   const CopyFileW = koffi.load('kernel32.dll').func('bool __stdcall CopyFileW(str16 lpExistingFileName, str16 lpNewFileName, bool bFailIfExists)')
   for (const ext of ['-wal', '-shm']) if (!CopyFileW(join(cfg.walSourceDir, 'm.edb' + ext), join(cfg.linedir, 'qw0f0f.edb' + ext), false)) throw new Error('CopyFileW failed for ' + ext)
   const grown = await waitFor('wal import', async () => { await drainEvents(300); const n = await must('db.messages.count'); return n >= cfg.expected.fullCount ? n : 0 })

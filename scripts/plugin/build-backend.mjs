@@ -9,7 +9,10 @@
 //   * no openai / provider / CLI modules -> the backend never calls an LLM (UI does, through ai:chat)
 //   * no network modules                 -> node:http(s)/net/tls/dns/dgram are not imported
 //   * the app DB driver is better-sqlite3 13.0.2 (alias `better-sqlite3-plugin`), never the standalone 11.x build
-// koffi is the only external package (a native addon: Phase 5 swaps the bare import for the addon shim).
+// koffi is the only native-addon package. Two modes (`buildBackendBundle({ koffi })`):
+//   'external' (default, the Phase 2/3/4 test stages): the bare `import 'koffi'` stays external and is loaded from a staged node_modules.
+//   'inline'   (Phase 5, the .tuqplugin): koffi's own JS is bundled and its loader is replaced by an addon shim: it requires exactly
+//              `<installDir>/backend/native/win32-x64/koffi.node` (an integrity-listed native file) and never probes node_modules / PATH / cwd / resourcesPath.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -72,11 +75,62 @@ const REQUIRED_INPUTS = [
   [/src\/plugin\/backend\/stubs\/llmProvider\.ts$/, 'provider stub'],
 ]
 
-/** Allowed external imports of the bundle: koffi + node built-ins that cannot spawn or open sockets (async_hooks: AsyncLocalStorage, used by the Phase 4 AI relay to tag which core method is asking the model). */
+/**
+ * Addon shim for koffi 3.1.0 (inline mode). koffi's own entry (`src/koffi/index.js` for `import`, `index.cjs` for `require`) picks its native
+ * module with `loadStatic(pkg) ?? loadDynamic(dirname, ...)`, which probes `@koromix/koffi-*`, `build/koffi/*` and `process.resourcesPath`.
+ * Inside a plugin the only legitimate location is the fixed, integrity-listed `backend/native/win32-x64/koffi.node`, so both calls are replaced
+ * by one `require` of that path. The patch asserts its needles: a different koffi version fails the build instead of silently shipping a probing loader.
+ */
+const KOFFI_NODE_EXPR = '__ltKoffiNode'
+const KOFFI_PATCHES = [
+  {
+    filter: /node_modules[\\/]koffi[\\/]src[\\/]koffi[\\/]index\.js$/,
+    needles: [['import { loadStatic } from "./src/static.js";', ''], ['var native = loadStatic(pkg) ?? loadDynamic(import.meta.dirname, pkg, triplets);', `var native = require2(${KOFFI_NODE_EXPR});`]],
+  },
+  {
+    filter: /node_modules[\\/]koffi[\\/]src[\\/]koffi[\\/]index\.cjs$/,
+    needles: [['var { loadStatic } = require("./src/static.cjs");', ''], ['var native = loadStatic(pkg) ?? loadDynamic2(__dirname, pkg, triplets);', `var native = require2(${KOFFI_NODE_EXPR});`]],
+  },
+]
+
+export function patchKoffiLoader(source, needles) {
+  let out = source
+  for (const [from, to] of needles) {
+    if (!out.includes(from)) throw new Error(`koffi loader patch: expected text not found (koffi ${KOFFI_EXPECTED_VERSION} expected): ${from}`)
+    out = out.replace(from, () => to)
+  }
+  return out
+}
+export const KOFFI_EXPECTED_VERSION = '3.1.0'
+
+function koffiShimPlugin() {
+  return {
+    name: 'line-todo-koffi-addon-shim',
+    setup(b) {
+      for (const { filter, needles } of KOFFI_PATCHES) {
+        b.onLoad({ filter }, (args) => {
+          const pkg = JSON.parse(readFileSync(join(dirname(args.path), '..', '..', 'package.json'), 'utf8'))
+          if (pkg.version !== KOFFI_EXPECTED_VERSION) throw new Error(`koffi ${pkg.version} found, the addon shim is written for ${KOFFI_EXPECTED_VERSION}`)
+          return { contents: patchKoffiLoader(readFileSync(args.path, 'utf8'), needles), loader: 'js', resolveDir: dirname(args.path) }
+        })
+      }
+    },
+  }
+}
+
+const INLINE_KOFFI_BANNER = [
+  "import { fileURLToPath as __ltFileURLToPath } from 'node:url';",
+  "import { dirname as __ltDirname, join as __ltJoin } from 'node:path';",
+  'const __ltFile = __ltFileURLToPath(import.meta.url);',
+  'const __ltDir = __ltDirname(__ltFile);',
+  `const ${KOFFI_NODE_EXPR} = __ltJoin(__ltDir, 'native', 'win32-x64', 'koffi.node');`,
+].join('\n')
+
+/** Allowed external imports of the bundle: koffi (external mode only) + node built-ins that cannot spawn or open sockets (async_hooks: AsyncLocalStorage, used by the Phase 4 AI relay to tag which core method is asking the model). */
 const ALLOWED_NODE_BUILTINS = new Set(['fs', 'path', 'os', 'util', 'url', 'crypto', 'events', 'module', 'perf_hooks', 'buffer', 'assert', 'stream', 'string_decoder', 'timers', 'v8', 'zlib', 'tty', 'async_hooks'])
 
 /** Pure analysis (also used by the test with synthetic input). Returns { ok, problems, summary }. */
-export function analyzeBundle({ text, metafile, outfile }) {
+export function analyzeBundle({ text, metafile, outfile, koffi = 'external' }) {
   const problems = []
   for (const [re, label] of FORBIDDEN_TEXT) if (re.test(text)) problems.push(`bundle text contains ${label}`)
   const inputs = Object.keys(metafile.inputs).map(norm)
@@ -87,9 +141,18 @@ export function analyzeBundle({ text, metafile, outfile }) {
   for (const [re, label] of REQUIRED_INPUTS) if (!inputs.some((i) => re.test(i))) problems.push(`required input missing: ${label}`)
   const out = metafile.outputs[Object.keys(metafile.outputs).find((o) => norm(o).endsWith(norm(outfile).split('/').pop())) ?? '']
   const externals = out ? out.imports.filter((i) => i.external).map((i) => i.path) : []
-  const bad = externals.filter((p) => p !== 'koffi' && !(ALLOWED_NODE_BUILTINS.has(p.replace(/^node:/, ''))))
+  const bad = externals.filter((p) => !(koffi === 'external' && p === 'koffi') && !(ALLOWED_NODE_BUILTINS.has(p.replace(/^node:/, ''))))
   if (bad.length) problems.push(`unexpected external imports: ${[...new Set(bad)].join(', ')}`)
-  if (!externals.includes('koffi')) problems.push('koffi is not imported (procmem / win32fs need it)')
+  if (koffi === 'external') {
+    if (!externals.includes('koffi')) problems.push('koffi is not imported (procmem / win32fs need it)')
+  } else {
+    // inline: koffi's JS is in the bundle and loads ONLY backend/native/win32-x64/koffi.node (the addon shim); no @koromix/* package, no probing loader
+    if (!inputs.some((i) => /node_modules\/koffi\/src\/koffi\/index\.js$/.test(i))) problems.push('koffi is not bundled (procmem / win32fs need it)')
+    if (!text.includes(KOFFI_NODE_EXPR)) problems.push('the koffi addon shim is not in the bundle')
+    for (const [re, label] of [[/@koromix\/koffi-/, 'a @koromix/koffi-* platform package'], [/resourcesPath/, 'process.resourcesPath probing'], [/loadStatic|loadDynamic/, "koffi's probing loaders"]]) if (re.test(text)) problems.push(`inline koffi bundle references ${label}`)
+    const stray = inputs.filter((i) => /node_modules\/@koromix\//.test(i) || /node_modules\/koffi\/src\/koffi\/src\/static/.test(i))
+    for (const i of stray) problems.push(`bundle input ${i} (koffi platform package / static loader)`)
+  }
   return {
     ok: problems.length === 0,
     problems,
@@ -109,7 +172,8 @@ export function analyzeBundle({ text, metafile, outfile }) {
   }
 }
 
-export async function buildBackendBundle({ outfile }) {
+export async function buildBackendBundle({ outfile, koffi = 'external' }) {
+  if (koffi !== 'external' && koffi !== 'inline') throw new Error(`koffi must be 'external' or 'inline', not ${koffi}`)
   const version = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
   mkdirSync(dirname(outfile), { recursive: true })
   const result = await build({
@@ -119,12 +183,12 @@ export async function buildBackendBundle({ outfile }) {
     platform: 'node',
     format: 'esm',
     target: 'node24',
-    external: ['koffi'],
+    external: koffi === 'external' ? ['koffi'] : [],
     // The standalone build keeps better-sqlite3 11.x (Electron 31); the plugin backend must load 13.0.2 (N-API, Electron 44).
     alias: { 'better-sqlite3': 'better-sqlite3-plugin' },
-    plugins: [stubPlugin()],
+    plugins: koffi === 'inline' ? [stubPlugin(), koffiShimPlugin()] : [stubPlugin()],
     // CJS code inside the bundle (better-sqlite3's loader requires the .node addon by an absolute path) needs a real `require`.
-    banner: { js: "import { createRequire as __lineTodoCreateRequire } from 'node:module';\nconst require = __lineTodoCreateRequire(import.meta.url);" },
+    banner: { js: "import { createRequire as __lineTodoCreateRequire } from 'node:module';\nconst require = __lineTodoCreateRequire(import.meta.url);" + (koffi === 'inline' ? '\n' + INLINE_KOFFI_BANNER : '') },
     define: { __LINE_TODO_PLUGIN_VERSION__: JSON.stringify(version) },
     metafile: true,
     legalComments: 'none',
@@ -132,14 +196,14 @@ export async function buildBackendBundle({ outfile }) {
     absWorkingDir: ROOT,
   })
   const text = readFileSync(outfile, 'utf8')
-  const analysis = analyzeBundle({ text, metafile: result.metafile, outfile })
-  return { outfile, text, metafile: result.metafile, analysis, version }
+  const analysis = analyzeBundle({ text, metafile: result.metafile, outfile, koffi })
+  return { outfile, text, metafile: result.metafile, analysis, version, koffi }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const at = process.argv.indexOf('--out')
   const outDir = resolve(ROOT, at >= 0 ? process.argv[at + 1] : join('dist', 'plugin-backend'))
-  const { outfile, metafile, analysis } = await buildBackendBundle({ outfile: join(outDir, 'index.mjs') })
+  const { outfile, metafile, analysis } = await buildBackendBundle({ outfile: join(outDir, 'index.mjs'), koffi: process.argv.includes('--inline-koffi') ? 'inline' : 'external' })
   writeFileSync(join(outDir, 'metafile.json'), JSON.stringify(metafile))
   writeFileSync(join(outDir, 'analysis.json'), JSON.stringify(analysis, null, 2))
   console.log(JSON.stringify({ outfile, ...analysis }, null, 2))

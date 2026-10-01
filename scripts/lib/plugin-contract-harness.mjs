@@ -33,9 +33,13 @@ export async function stagePlugin(stageDir) {
   return { installDir, built }
 }
 
-export async function runPluginContract({ workRoot, settings, preseed, scenario, timeoutMs = 240_000 }) {
+/**
+ * `stage(workRoot)` -> { installDir, built } lays out the install directory. The default is the test stage above (bundle + staged koffi package);
+ * Phase 5's test-plugin-package.mjs passes a stage that UNPACKS THE SIGNED .tuqplugin instead, so the shipped bytes themselves run under the 1.6.8 contract.
+ */
+export async function runPluginContract({ workRoot, settings, preseed, scenario, timeoutMs = 240_000, stage = stagePlugin }) {
   const exe = findElectron44()
-  const { installDir, built } = await stagePlugin(workRoot)
+  const { installDir, built } = await stage(workRoot)
   const dataDir = join(workRoot, 'data')
   const hostDir = join(workRoot, 'host')
   mkdirSync(dataDir, { recursive: true })
