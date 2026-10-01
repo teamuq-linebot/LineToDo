@@ -9,6 +9,7 @@ import {
   isOverdue
 } from './buckets'
 import type { CardDnd } from './KanbanBoard'
+import { useHostCapabilities } from '../../platform/LineTodoApi'
 
 /**
  * TodoCard — 單張代辦卡（IMPLEMENTATION_PLAN.md M3）。
@@ -168,6 +169,7 @@ export function TodoCard({
   dnd
 }: Props): JSX.Element {
   const [showSources, setShowSources] = useState(false)
+  const caps = useHostCapabilities()
   const subscribeCompletion = useCallback(
     (listener: () => void) => actions.completion.subscribe(todo.id, listener),
     [actions.completion, todo.id]
@@ -616,9 +618,11 @@ export function TodoCard({
                 {completeUi?.phase === 'writing' ? '儲存中…' : '✓ 完成'}
               </button>
               <OverflowMenu>
-                <button className="menu-item" onClick={() => void runCardAction('開原聊天', () => actions.onOpenChat(todo.chatId))}>
-                  💬 開原聊天
-                </button>
+                {caps.openOriginalChat && (
+                  <button className="menu-item" onClick={() => void runCardAction('開原聊天', () => actions.onOpenChat(todo.chatId))}>
+                    💬 開原聊天
+                  </button>
+                )}
                 <button className="menu-item" onClick={() => actions.onDraftReply(todo)}>
                   ✍️ 草擬回覆
                 </button>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ChatDTO, GroupTopicDTO, GroupTopicLinkCandidateDTO } from '../../../shared/api'
-import { useLineTodoApi } from '../../platform/LineTodoApi'
+import { useHostCapabilities, useLineTodoApi } from '../../platform/LineTodoApi'
 
 const relevanceText: Record<GroupTopicDTO['relevance'], string> = {
   action: '行動相關', awareness: '知會相關', unrelated: '無關', unknown: '不確定'
@@ -34,6 +34,7 @@ function safeFailureNotice(failure:{stage:string;path:string|null;code:string}):
 
 export function GroupTopicsPanel(): JSX.Element {
   const lineTodoApi = useLineTodoApi()
+  const caps = useHostCapabilities()
   const api = lineTodoApi.groupTopics
   const [chats, setChats] = useState<ChatDTO[]>([])
   const [chatId, setChatId] = useState('')
@@ -87,7 +88,7 @@ export function GroupTopicsPanel(): JSX.Element {
     setBusy(true); setNotice('正在分析此群最近訊息…')
     try {
       const result = await api.analyze(chatId)
-      setNotice(result.ok ? (result.analyzedCount === 0 ? '沒有新增訊息待處理；既有議題結果已保留' : `已整理 ${result.analyzedCount ?? 0} 則新訊息，議題共 ${result.count ?? 0} 項`) : result.failure ? safeFailureNotice(result.failure) : result.reason === 'provider_unavailable' ? 'AI provider 不可用；訊息仍待處理，可稍後重試' : '分析失敗；訊息仍待處理，可稍後重試')
+      setNotice(result.ok ? (result.analyzedCount === 0 ? '沒有新增訊息待處理；既有議題結果已保留' : `已整理 ${result.analyzedCount ?? 0} 則新訊息，議題共 ${result.count ?? 0} 項`) : result.failure ? safeFailureNotice(result.failure) : result.reason?.startsWith('unsupported_in_plugin') ? '群組議題的 AI 分析由 TeamUQ 的 ai:chat 提供，外掛尚未接上；既有議題與訊息不受影響' : result.reason === 'provider_unavailable' ? 'AI provider 不可用；訊息仍待處理，可稍後重試' : '分析失敗；訊息仍待處理，可稍後重試')
       await refresh()
     } catch { setNotice('分析失敗；可稍後重試') }
     finally { setBusy(false) }
@@ -119,7 +120,7 @@ export function GroupTopicsPanel(): JSX.Element {
           <strong>{topic.title}</strong><p>{topic.summary}</p>
           <small>本人參與：{topic.userParticipation === 'i_participated' ? '來源含本人送出的訊息' : '不確定'}。模型相關性描述（未驗證）：{topic.relevanceEvidence.length ? topic.relevanceEvidence.map((item) => `${relevanceText[item.relevance]}（參照 ${item.evidenceMsgIds.length} 則）`).join('、') : relevanceText[topic.relevance]}。已連結訊息 {topic.evidenceCount} 則（可能含重貼）；已知參與者下界 {topic.participantLowerBound ?? '不明'}。熱度：未校準；趨勢：不確定。</small>
           {topic.evidenceMsgIds.length > 0 && <details><summary>來源訊息參照（{topic.evidenceMsgIds.length}）</summary><ul>{topic.evidenceMsgIds.map((id) => <li key={id}><code>{id}</code></li>)}</ul></details>}
-          <button type="button" onClick={() => void lineTodoApi.db.chats.openOriginal(chatId)}>開啟來源群組</button>
+          {caps.openOriginalChat && <button type="button" onClick={() => void lineTodoApi.db.chats.openOriginal(chatId)}>開啟來源群組</button>}
           <button type="button" onClick={() => void api?.todoRefs(topic.topicId).then((refs) => setNotice(refs.length ? `對應既有待辦 ${refs.length} 項；待辦仍由原管線管理` : '此議題沒有精確來源重疊的既有待辦'))}>檢查既有待辦關聯</button>
         </article>)}
         {crossEnabled && <><h3>跨群候選</h3>{links.length === 0 ? <p>目前沒有足夠語意候選。</p> : links.map((link) => <p key={link.linkId}>{link.otherChatName ?? '其他群組'}：{link.topicTitle} — 關係不確定、人物一致性不確定（候選證據 {link.eventEvidenceCount} 則：{link.eventEvidenceMsgIds.join('、')}）</p>)}</>}

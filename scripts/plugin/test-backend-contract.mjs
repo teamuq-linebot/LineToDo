@@ -9,6 +9,8 @@
 //   * the event session receives new-message events (long poll + capability session)
 //   * dispose leaves no DB connection, watcher, timer or other handle behind
 //   * the bundle contains no child_process / worker_threads / better-sqlite3-multiple-ciphers
+//   * Phase 3 media (second run, scenario mode 'media'): an E2EE image in the fake LINE cache (outside dataDir, only koffi can read it) is decrypted by the
+//     backend into dataDir/media-cache and is servable through the host's /data/<path> rules (what `assets.url()` points at); failures are in-band codes
 import assert from 'node:assert/strict'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -16,7 +18,7 @@ import test from 'node:test'
 
 import { analyzeBundle } from './build-backend.mjs'
 import { runPluginContract } from '../lib/plugin-contract-harness.mjs'
-import { generateFixtures, makeTempRoot, rmQuiet } from '../lib/runtimes.mjs'
+import { ROOT, electronRunAsNode, findBsqliteMcDir, findElectron31, generateFixtures, makeTempRoot, rmQuiet } from '../lib/runtimes.mjs'
 
 let setup = null
 function getSetup() {
@@ -34,7 +36,11 @@ function getSetup() {
         workRoot: join(root, 'run'),
         settings: { lineDbDir: linedir, linePollSec: 1, lineBatchLimit: 300 },
         // the key a real backend would recover from LINE's memory; here it is the synthetic fixture key, cached the way the backend caches it
-        preseed: ({ dataDir }) => writeFileSync(join(dataDir, '.linekey'), expected.key),
+        // the boot self-reconcile (settings reconcile.enabled) has its own scenario below; here it would race the first import and add duplicate line-message events
+        preseed: ({ dataDir }) => {
+          writeFileSync(join(dataDir, '.linekey'), expected.key)
+          writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ version: 1, reconcile: { enabled: false, scopeMonths: 0 } }))
+        },
         scenario,
       })
       return { root, fixtureDir, linedir, expected, scenario, run }
@@ -42,8 +48,57 @@ function getSetup() {
   }
   return setup
 }
+let reconcileSetup = null
+function getReconcileSetup() {
+  if (!reconcileSetup) {
+    reconcileSetup = (async () => {
+      const root = makeTempRoot('plugin-contract-reconcile-')
+      const fixtureDir = join(root, 'fixtures')
+      const expected = generateFixtures(fixtureDir, { baseN: 900, walN: 120 })
+      const linedir = join(root, 'linedir')
+      mkdirSync(linedir, { recursive: true })
+      copyFileSync(join(fixtureDir, 'wal', 'm.edb'), join(linedir, 'qw0f0f.edb'))
+      // an empty app DB against a LINE DB with months of history: the default settings (reconcile.enabled=true) must fill the gaps by themselves
+      const run = await runPluginContract({
+        workRoot: join(root, 'run'),
+        settings: { lineDbDir: linedir, linePollSec: 1, lineBatchLimit: 300 },
+        preseed: ({ dataDir }) => writeFileSync(join(dataDir, '.linekey'), expected.key),
+        scenario: { mode: 'reconcile', expected: { baseCount: expected.wal.baseOnly.messageCount } },
+      })
+      return { root, expected, run }
+    })()
+  }
+  return reconcileSetup
+}
+
+let mediaSetup = null
+function getMediaSetup() {
+  if (!mediaSetup) {
+    mediaSetup = (async () => {
+      const root = makeTempRoot('plugin-contract-media-')
+      const fixtureDir = join(root, 'fixtures')
+      mkdirSync(fixtureDir, { recursive: true })
+      const gen = electronRunAsNode(findElectron31(), [join(ROOT, 'scripts', 'lib', 'gen-line-media-fixture.cjs'), fixtureDir], { env: { BSQLITE3MC_DIR: findBsqliteMcDir() } })
+      if (gen.status !== 0) throw new Error(`media fixture generator failed (exit ${gen.status}):
+${gen.stderr}
+${gen.stdout}`)
+      const expected = JSON.parse(readFileSync(join(fixtureDir, 'expected.json'), 'utf8'))
+      const cacheDir = join(fixtureDir, 'cache')
+      const run = await runPluginContract({
+        workRoot: join(root, 'run'),
+        settings: { lineDbDir: join(fixtureDir, 'linedir'), lineCacheDir: cacheDir, linePollSec: 1, lineBatchLimit: 300 },
+        preseed: ({ dataDir }) => writeFileSync(join(dataDir, '.linekey'), expected.key),
+        scenario: { mode: 'media', cacheDir, expected },
+      })
+      return { root, expected, run, cacheDir }
+    })()
+  }
+  return mediaSetup
+}
 test.after(async () => {
   if (setup) rmQuiet((await setup).root)
+  if (mediaSetup) rmQuiet((await mediaSetup).root)
+  if (reconcileSetup) rmQuiet((await reconcileSetup).root)
 })
 
 function assertSelfCheckPassed(label, report) {
@@ -221,4 +276,93 @@ test('the bundle analysis really flags forbidden content (guard is not vacuous)'
   assert.equal(verdict.ok, false)
   const joined = verdict.problems.join('\n')
   for (const needle of ['child_process', 'worker_threads', 'better-sqlite3-multiple-ciphers', 'LLM CLI runner', 'unexpected external imports']) assert.ok(joined.includes(needle), needle)
+})
+
+// ───────────── Phase 3: media under the real 1.6.8 permission model ─────────────
+
+test('media: under Electron 44 + 1.6.8 flags the backend decrypts a LINE-cache image that Node fs cannot see (koffi only) into dataDir/media-cache; the host /data/<path> rules serve it; self-check stays green', async () => {
+  const { run, expected, cacheDir } = await getMediaSetup()
+  assert.equal(run.exitCode, 0, `exit code (stderr: ${run.stderr.slice(0, 800)})`)
+  const r = run.result
+  assert.ok(r, `RESULT present (stdout: ${run.stdout.slice(0, 800)})`)
+  assert.equal(r.fatal, undefined, r.fatal)
+  assert.equal(r.runtime.electron, '44.2.0')
+  assertSelfCheckPassed('boot', r.selfCheckBoot)
+  assertSelfCheckPassed('afterActivate', r.selfCheckAfterActivate)
+  assertSelfCheckPassed('end', r.selfCheckEnd)
+  const m = r.media
+  assert.equal(m.importedCount, expected.messageCount, 'the fake LINE DB (with media rows) was imported')
+  assert.equal(m.nodeFsOnLineCache, 'ERR_ACCESS_DENIED', 'the 1.6.8 permission model hides the LINE Cache from Node fs: the backend can only reach it through koffi')
+  assert.ok(cacheDir && !cacheDir.startsWith(run.dataDir), 'the LINE cache is outside dataDir')
+
+  const served = []
+  for (const [name, ext, mime] of [['png', 'png', 'image/png'], ['jpeg', 'jpg', 'image/jpeg'], ['gif', 'gif', 'image/gif']]) {
+    const entry = m.results[name]
+    const want = expected.messages[name]
+    assert.equal(entry.first.ok, true, `${name}: ${JSON.stringify(entry.first)}`)
+    assert.equal(entry.first.value.cached, false)
+    assert.equal(entry.first.value.mime, mime)
+    assert.equal(entry.first.value.size, want.size)
+    assert.match(entry.first.value.path, new RegExp(`^media-cache/[0-9a-f]{32}\.${ext}$`))
+    assert.equal(entry.second.value.cached, true, 'second request is served from the cache')
+    assert.equal(entry.second.value.path, entry.first.value.path)
+    // what the host's /data/<path> file service would answer for assets.url(path): 200 with the right type and exactly the plaintext
+    assert.deepEqual(entry.served, { status: 200, type: mime, size: want.size, sha256: want.sha256 }, `${name}: served bytes are the decrypted plaintext`)
+    assert.equal(entry.servedUrl, `tuqplugin://tuqdev.line-todo/data/${entry.first.value.path}`)
+    served.push(entry.first.value.path.split('/').pop())
+  }
+  assert.deepEqual(m.cacheDirListing, [...served].sort(), 'only the three decryptable images are in dataDir/media-cache (no temp files)')
+  assert.equal(m.info.written, 3)
+  assert.equal(m.info.cacheFiles, 3)
+})
+
+test('media: undownloaded, wrong-key and non-image files are in-band failures; open/saveAs stay unsupported; the data service refuses hidden, dotted and directory paths', async () => {
+  const { run } = await getMediaSetup()
+  const m = run.result.media
+  assert.equal(m.results.notcached.first.code, 'not_cached')
+  assert.equal(m.results.wrongkey.first.code, 'hmac_miss', 'a same-size candidate that fails the HMAC is never used')
+  assert.equal(m.results.text.first.code, 'unsupported_format')
+  assert.equal(m.unsupported.open.code, 'unsupported_in_plugin')
+  assert.equal(m.unsupported.saveAs.code, 'unsupported_in_plugin')
+  for (const t of m.traversal) assert.ok(t.status === 403, `${t.path} is refused by the host data service rules (${JSON.stringify(t)})`)
+})
+
+test('media: dispose after the media run leaves no handle, no snapshot directory and no lock (the media path adds no timers or watchers)', async () => {
+  const { run } = await getMediaSetup()
+  const r = run.result
+  assert.equal(r.afterDispose.diagnostics.disposed, true)
+  assert.equal(r.afterDispose.diagnostics.appDbOpen, false)
+  assert.deepEqual(r.afterDispose.diagnostics.lineEngine, { openConnections: 0, vfsOpenFiles: 0, vfsShmNodes: 0 })
+  assert.equal(r.afterDispose.ownerLock, false)
+  assert.deepEqual(r.afterDispose.lineEngineDir, [])
+  const leaked = Object.entries(r.resourcesEnd).filter(([kind, n]) => n > (r.resourcesBaseline[kind] ?? 0))
+  assert.deepEqual(leaked, [], `leaked handles (baseline ${JSON.stringify(r.resourcesBaseline)}, end ${JSON.stringify(r.resourcesEnd)})`)
+})
+
+// ───────────── Phase 3: boot self-reconcile under the real permission model ─────────────
+
+test('reconcile: with the default settings the backend fills the months its first import missed through the real WASM engine + koffi fs without duplicating rows, advances its checkpoint in dataDir, and releases its lock', async () => {
+  const { run, expected } = await getReconcileSetup()
+  assert.equal(run.exitCode, 0, `exit code (stderr: ${run.stderr.slice(0, 800)})`)
+  const r = run.result
+  assert.ok(r, `RESULT present (stdout: ${run.stdout.slice(0, 800)})`)
+  assert.equal(r.fatal, undefined, r.fatal)
+  assertSelfCheckPassed('boot', r.selfCheckBoot)
+  assertSelfCheckPassed('afterActivate', r.selfCheckAfterActivate)
+  assertSelfCheckPassed('end', r.selfCheckEnd)
+  const c = r.reconcile
+  // progress events are best effort in this scenario: the first import emits 904 line-message events (> the 512-event ring), so early progress events
+  // may have rolled out (the hub says gap:true and the UI resyncs). Whatever is still in the ring must be a healthy run; the exact phase order is a unit test.
+  assert.ok(c.phases.every((p) => ['scanning', 'backfilling', 'done'].includes(p.phase)), `progress phases: ${JSON.stringify(c.phases)}`)
+  if (c.phases.some((p) => p.phase === 'done')) assert.equal(c.phases.at(-1).done, c.phases.at(-1).total)
+  assert.ok(c.log.some((l) => /gaps=[1-9]\d* backfilling=\d+ remainder=false/.test(l)), `a gap was found and backfilled: ${c.log.join(' | ')}`)
+  assert.equal(c.finalCount, expected.wal.baseOnly.messageCount)
+  assert.equal(c.listed, c.distinctMsgIds, 'the watcher import and the reconcile backfill overlapped without creating a duplicate row')
+  assert.ok(c.log.some((l) => /checkpoint advanced/.test(l)), `log: ${c.log.join(' | ')}`)
+  assert.ok(c.log.some((l) => /backfilled inserted=\d+/.test(l)))
+  assert.ok(c.dataDir.includes('reconcile-state.json') && c.state && c.state.last_ts > 0, 'the checkpoint file lives in dataDir')
+  assert.equal(c.lockPresent, false, 'single-flight lock released')
+  assert.equal(c.status.lastError, null)
+  const leaked = Object.entries(r.resourcesEnd).filter(([kind, n]) => n > (r.resourcesBaseline[kind] ?? 0))
+  assert.deepEqual(leaked, [], 'no handle left after dispose')
 })

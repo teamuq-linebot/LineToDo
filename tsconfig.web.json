@@ -20,6 +20,8 @@
     "src/renderer/**/*.ts",
     "src/renderer/**/*.tsx",
     "src/shared/**/*.ts",
+    "src/plugin/ui/**/*.ts",
+    "src/plugin/ui/**/*.tsx",
     "src/preload/**/*.d.ts"
   ]
 }

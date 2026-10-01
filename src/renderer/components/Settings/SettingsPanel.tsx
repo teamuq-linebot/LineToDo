@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useLineTodoApi } from '../../platform/LineTodoApi'
+import { useHostCapabilities, useLineTodoApi } from '../../platform/LineTodoApi'
 import type {
   AiProviderId,
   CliProviderSettings,
   SettingsView,
   ChatDTO
 } from '../../types/api'
+import { AI_ENDPOINT_PLACEHOLDER } from '../../lib/defaultEndpoint'
 import { ApiKeyField } from './ApiKeyField'
 import { BlocklistEditor } from './BlocklistEditor'
 import { ProviderHealthCheck } from './ProviderHealthCheck'
@@ -27,11 +28,16 @@ import {
  *   - 資料夾 / 維運
  *
  * 所有變更立即透過 api.settings.update 落檔；輪詢頻率改動會讓 main 重排排程器。
+ *
+ * 宿主能力（useHostCapabilities）：TeamUQ 外掛版沒有 CLI／自訂端點／API 金鑰／driver_post／開機啟動／開資料夾，
+ * 對應區塊整個不渲染；AI 判斷引擎區改成一段說明（AI 由 TeamUQ 的 ai:chat 提供）。standalone 全部照舊。
+ * `initialView`：測試用（server render 時 effect 不會跑，需要先給設定才渲染得出內容）。
  */
 
-export function SettingsPanel(): JSX.Element {
+export function SettingsPanel({ initialView }: { initialView?: SettingsView } = {}): JSX.Element {
   const api = useLineTodoApi()
-  const [view, setView] = useState<SettingsView | null>(null)
+  const caps = useHostCapabilities()
+  const [view, setView] = useState<SettingsView | null>(initialView ?? null)
   const [chats, setChats] = useState<ChatDTO[]>([])
   const [saved, setSaved] = useState(false)
   /** 模型下拉是否切到「自訂模型名稱…」。 */
@@ -153,7 +159,7 @@ export function SettingsPanel(): JSX.Element {
           </div>
         </div>
 
-        <div className="set-field">
+        {caps.extractConcurrency && <div className="set-field">
           <label className="set-label">抽取並發數</label>
           <div className="set-inline">
             <input
@@ -174,15 +180,15 @@ export function SettingsPanel(): JSX.Element {
                 : '同時送幾個聊天室給 AI 判斷引擎（保守 1–2，最多 4）。'}
             </span>
           </div>
-        </div>
+        </div>}
       </div>
 
       {/* 開機與自我對帳 */}
       <div className="set-section">
-        <div className="set-section-title">開機與自我對帳</div>
+        <div className="set-section-title">{caps.openAtLogin ? '開機與自我對帳' : '自我對帳'}</div>
 
         {/* 開機時自動啟動 */}
-        <div className="set-row">
+        {caps.openAtLogin && <div className="set-row">
           <div className="set-row-main">
             <span className="set-label">開機時自動啟動</span>
             <span className="set-hint muted">
@@ -199,7 +205,7 @@ export function SettingsPanel(): JSX.Element {
               <span className="slider"></span>
             </label>
           </div>
-        </div>
+        </div>}
 
         {/* 自動補齊歷史訊息（自我對帳） */}
         <div className="set-row">
@@ -249,8 +255,17 @@ export function SettingsPanel(): JSX.Element {
         </div>
       </div>
 
-      {/* AI 判斷引擎 */}
-      <div className="set-section">
+      {/* AI 判斷引擎（外掛版：由 TeamUQ 的 ai:chat 提供，沒有 provider／端點／金鑰可選） */}
+      {!caps.aiProviderSelection && (
+        <div className="set-section">
+          <div className="set-section-title">AI 判斷引擎</div>
+          <div className="set-msg muted" data-testid="ai-by-host">
+            新訊息的代辦抽取與「草擬回覆」由 TeamUQ 內建的 AI 對話（Codex）提供：不需要在這裡填金鑰或選引擎，也不使用自訂端點或 CLI。
+            AI 只在 line-todo 看板顯示在前景時整理新訊息；其他時候訊息會先存起來，回到看板後再補整理。
+          </div>
+        </div>
+      )}
+      {caps.aiProviderSelection && <div className="set-section">
         <div className="set-section-title">AI 判斷引擎</div>
 
         {/* provider 卡片選擇器：三個選項全部攤開，速度標籤在選之前就看得到 */}
@@ -278,14 +293,14 @@ export function SettingsPanel(): JSX.Element {
         {/* HTTP 專屬欄位 */}
         {!isCli && (
           <>
-            <div className="set-field">
+            {caps.customAiEndpoint && <div className="set-field">
               <label className="set-label">AI 端點（Base URL）</label>
               <div className="set-inline">
                 <input
                   type="text"
                   className="set-input"
                   value={view.aiBaseUrl}
-                  placeholder="https://qwen.tuq.tw/v1"
+                  placeholder={AI_ENDPOINT_PLACEHOLDER}
                   autoComplete="off"
                   spellCheck={false}
                   onChange={(e) => setView({ ...view, aiBaseUrl: e.target.value })}
@@ -302,9 +317,9 @@ export function SettingsPanel(): JSX.Element {
                 </button>
               </div>
 
-            </div>
+            </div>}
 
-            <ApiKeyField view={view} onChanged={() => void loadView()} />
+            {caps.apiKey && <ApiKeyField view={view} onChanged={() => void loadView()} />}
           </>
         )}
 
@@ -422,8 +437,8 @@ export function SettingsPanel(): JSX.Element {
               : '目前沒有可用的 API 金鑰，抽取不會執行。請填入金鑰後再按「測試連線」。'}
           </div>
         )}
-      </div>
-      <DriverPostSettings view={view} onPatch={(p) => void patch({ driverPost: p })} />
+      </div>}
+      {caps.driverPost && <DriverPostSettings view={view} onPatch={(p) => void patch({ driverPost: p })} />}
 
       {/* 黑名單 */}
       <div className="set-section">
@@ -469,12 +484,12 @@ export function SettingsPanel(): JSX.Element {
       </div>
 
       {/* 維運 */}
-      <div className="set-section">
+      {caps.openDataFolder && <div className="set-section">
         <div className="set-section-title">維運</div>
         <button className="ghost" onClick={() => void api.app.openDataFolder()}>
           開啟資料夾
         </button>
-      </div>
+      </div>}
     </div>
   )
 }

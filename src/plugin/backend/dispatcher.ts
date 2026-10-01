@@ -11,7 +11,8 @@
  *     整個 backend，所以：
  *       * 回傳超過預算 → 切成字串分段存起來，回 `{chunked, resultId, chunks}`，view 用 `result.chunk` 逐段取回再 JSON.parse。
  *       * 執行超過 soft deadline（預設 20 s）→ 回 `{pending, jobId}`，view 用 `job.poll` 取結果（長時間的 reviewLastDays 等）。
- *   - 另外有五組內部路徑：`backend.info`、`events.*`（事件長輪詢）、`extract.*`（AI 抽取供料／收料）、`result.chunk`、`job.poll`。
+ *   - 另外有六組內部路徑：`backend.info`、`events.*`（事件長輪詢）、`extract.*`（AI 抽取供料／收料）、`media.prepare`
+ *     （解密圖片寫進 dataDir，回相對路徑給 view 的 `assets.url()`）、`result.chunk`、`job.poll`。
  */
 import { randomBytes } from 'node:crypto'
 import type { LineTodoApi } from '../../shared/api'
@@ -19,6 +20,7 @@ import { EXTRACT_SYSTEM_PROMPT } from '../../main/llm/extractPrompt'
 import type { ExtractQueue } from './extractQueue'
 import { DEFAULT_MAX_USER_CHARS, EXTRACT_SYSTEM_SHA256 } from './extractQueue'
 import type { EventHub } from './eventHub'
+import type { PluginMedia } from './media'
 import type { Envelope, JsonValue } from './types'
 import { BACKEND_LIMITS } from './types'
 
@@ -62,6 +64,8 @@ export interface DispatcherOptions {
   getApi(): LineTodoApi
   hub: EventHub
   queue: ExtractQueue
+  /** 媒體服務（`media.prepare`）；省略＝回 media_unavailable。 */
+  media?: PluginMedia
   /** `backend.info` 的內容。 */
   info(): Record<string, JsonValue>
   /** 超過這個時間就把執行中的呼叫轉成 job（必須 < host 的 30 s）。 */
@@ -134,6 +138,7 @@ export class Dispatcher {
         return this.finalize(lift(this.opts.queue.commit({ results: body.results as never })))
       }
       case 'extract.stats': return this.finalize(this.opts.queue.stats())
+      case 'media.prepare': return this.mediaPrepare(args[0])
       case 'result.chunk': return this.chunk(args[0])
       case 'job.poll': return this.pollJob(args[0])
       default: break
@@ -148,6 +153,12 @@ export class Dispatcher {
     if (!target) return fail('unavailable', `${path} is not available in this build`)
 
     return this.settle(Promise.resolve().then(() => (target as (...a: unknown[]) => unknown)(...args)))
+  }
+
+  private mediaPrepare(raw: unknown): Envelope {
+    if (!this.opts.media) return fail('media_unavailable', 'media is not available in this build')
+    const result = this.opts.media.prepare(plain(raw) ? raw.msgId : raw)
+    return result.ok ? this.finalize(result) : fail(result.code, result.message)
   }
 
   // ── 回應整理 ──

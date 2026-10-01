@@ -1,8 +1,8 @@
-import { useLineTodoApi } from '../platform/LineTodoApi'
 import { useEffect, useState } from 'react'
 import type { RawLineMessage, LineBridgeStatus } from '../types/api'
 import { useLineStream } from '../hooks/useLineStream'
 import { formatCallRecord } from '../lib/callRecord'
+import { MediaFileActions, MediaImage } from './MediaView'
 
 /**
  * MessageStream — 「即時訊息流」清單。
@@ -51,24 +51,11 @@ function MessageContent({
   m: RawLineMessage
   onOpenLightbox: (url: string) => void
 }): JSX.Element {
-  const api = useLineTodoApi()
-  const [imgFailed, setImgFailed] = useState(false)
   const [fileErr, setFileErr] = useState('')
 
   if (m.contentType === 1 && m.msgId) {
-    if (imgFailed) return <span className="sm-media-missing">尚未下載</span>
-    const url = `linemedia://media/${encodeURIComponent(m.msgId)}`
-    return (
-      <span className="sm-media">
-        <img
-          className="sm-thumb"
-          src={url}
-          alt="圖片"
-          onClick={() => onOpenLightbox(url)}
-          onError={() => setImgFailed(true)}
-        />
-      </span>
-    )
+    // 圖片網址由宿主決定（standalone：linemedia://；外掛：assets.url，見 MediaView）。
+    return <MediaImage msgId={m.msgId} onOpenLightbox={onOpenLightbox} />
   }
 
   if (m.contentType === 14 && m.msgId) {
@@ -79,26 +66,7 @@ function MessageContent({
           <span className="sm-file-icon">📎</span>
           <span className="sm-file-name">{m.origFilename ?? '檔案'}</span>
           <span className="sm-file-size">{formatSize(m.fileSize)}</span>
-          <span className="sm-file-actions">
-            <button
-              type="button"
-              onClick={() =>
-                void api.media.open(id).then((r) => setFileErr(r.ok ? '' : '無法開啟檔案'))
-              }
-            >
-              開啟
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                void api.media
-                  .saveAs(id)
-                  .then((r) => setFileErr(r.ok || r.canceled ? '' : '無法另存檔案'))
-              }
-            >
-              另存
-            </button>
-          </span>
+          <MediaFileActions msgId={id} onError={setFileErr} />
         </span>
         {fileErr && (
           <span

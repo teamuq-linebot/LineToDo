@@ -11,6 +11,7 @@
  *   - WASM SQLite3MC：`<installDir>/vendor/sqlite3mc-wasm/{sqlite3.mjs,sqlite3.wasm}`（kind:'code'，不進 bundle）。
  *   - app DB：better-sqlite3 13.0.2（build 把 `better-sqlite3` 指到它），`.node` 固定在 `<installDir>/backend/native/win32-x64/`。
  *   - LINE DB 目錄：`context.settings` 的 `lineDbDir` 覆寫，否則用 koffi 問 Windows 的 LocalAppData（backend 沒有 LOCALAPPDATA 環境變數）。
+ *   - LINE Cache 目錄（媒體 .eimg）：`lineCacheDir` 覆寫，否則由 DB 目錄 `...LINEDatadb` 推得 `...LINECache`（assemble.ts）。
  *
  * 不 import electron、不 import child_process／worker_threads、不做網路 I/O、不呼叫 LLM。
  */
@@ -52,6 +53,7 @@ export async function activate(context: PluginBackendContext): Promise<PluginBac
     version: PLUGIN_VERSION,
     dataDir: context.dataDir,
     linePorts: { fs, sqlite, dbDir: lineDbDir },
+    media: { cacheDir: text(settings.get('lineCacheDir')) },
     watcher: { intervalSec: positive(settings.get('linePollSec')) ?? 15, limit: positive(settings.get('lineBatchLimit')) ?? 500, drainBacklog: true },
     appDbEngine
   })

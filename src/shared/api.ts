@@ -582,6 +582,12 @@ export interface LineTodoApi {
   media: {
     open(msgId: string): Promise<{ ok: boolean; error?: string }>
     saveAs(msgId: string): Promise<{ ok: boolean; canceled?: boolean; error?: string }>
+    /**
+     * Optional (host-provided): resolve a displayable URL for an image message. Hosts without it (standalone) show images through
+     * `linemedia://media/<msgId>`; the TeamUQ plugin host decrypts into its data directory and returns an `assets.url()` URL
+     * (its CSP has no `linemedia:`). Resolves null when the image is not available (not downloaded in LINE yet, key mismatch, ...).
+     */
+    assetUrl?(msgId: string): Promise<string | null>
   }
   /** Optional main-owned group discussion projection. Never carries LINE participant keys or raw source identities. */
   groupTopics?: {

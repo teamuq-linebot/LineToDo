@@ -3,6 +3,7 @@ import { MessageStream } from './components/MessageStream'
 import { KanbanBoard } from './components/Board/KanbanBoard'
 import { SettingsPanel } from './components/Settings/SettingsPanel'
 import { GroupTopicsPanel } from './features/groupTopics/GroupTopicsPanel'
+import { useHostCapabilities } from './platform/LineTodoApi'
 
 /**
  * App（M3：代辦看板）。
@@ -16,6 +17,7 @@ type Tab = 'board' | 'stream' | 'topics' | 'settings'
 type Theme = 'dark' | 'light'
 
 function App(): JSX.Element {
+  const caps = useHostCapabilities()
   const [tab, setTab] = useState<Tab>('board')
   // 初始主題：優先讀 index.html 防閃爍 script 已設定的 data-theme；
   // 若該 script 被擋（例如 CSP），退回 localStorage；再退回深色預設。
@@ -69,12 +71,14 @@ function App(): JSX.Element {
           >
             群組議題
           </button>
-          <button
-            className={`tab ${tab === 'settings' ? 'active' : ''}`}
-            onClick={() => setTab('settings')}
-          >
-            設定
-          </button>
+          {caps.settingsTab && (
+            <button
+              className={`tab ${tab === 'settings' ? 'active' : ''}`}
+              onClick={() => setTab('settings')}
+            >
+              設定
+            </button>
+          )}
         </nav>
         <button
           className="theme-toggle"
@@ -90,7 +94,7 @@ function App(): JSX.Element {
         {tab === 'board' && <KanbanBoard />}
         {tab === 'stream' && <MessageStream />}
         {tab === 'topics' && <GroupTopicsPanel />}
-        {tab === 'settings' && <SettingsPanel />}
+        {tab === 'settings' && caps.settingsTab && <SettingsPanel />}
       </main>
     </div>
   )

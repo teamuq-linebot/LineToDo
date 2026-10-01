@@ -22,5 +22,6 @@
     "src/preload/**/*.ts",
     "src/plugin/**/*.ts",
     "electron.vite.config.ts"
-  ]
+  ],
+  "exclude": ["src/plugin/ui/**"]
 }

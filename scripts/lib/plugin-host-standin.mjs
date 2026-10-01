@@ -11,6 +11,7 @@
 // It prints observations as `RESULT:<json>`; the parent test asserts on them.
 //
 // argv[2] = base64url JSON ExternalHostInit, argv[3] = base64url JSON scenario config.
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
@@ -123,9 +124,78 @@ try {
     }
   }
 
+  // ── media scenario (cfg.mode === 'media'): the Phase 3 media path under the real permission model ──
+  // The LINE Cache lives OUTSIDE dataDir, so Node fs cannot see it; only the backend's koffi fs port can. The view asks `media.prepare`, the backend
+  // writes the plaintext into dataDir/media-cache, and the host's `/data/<path>` file service (pluginDataFiles.ts rules, re-implemented here) serves it.
+  const DATA_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }
+  function serveData(relative) {
+    // pluginDataFiles.ts segmentsOf() + entryNames.ts auditEntryName()
+    if (relative === '' || relative.endsWith('/') || /[\\:<>"|?*\u0000-\u001f]/.test(relative) || relative.startsWith('/') || relative.length > 200) return { status: 403, code: 'storage_path_invalid' }
+    const segments = relative.split('/')
+    if (segments.some((s) => s === '' || s === '.' || s === '..' || s.startsWith('.') || s.length > 100 || s.endsWith('.') || s.endsWith(' '))) return { status: 403, code: 'storage_path_invalid' }
+    const absolute = join(init.dataDir, ...segments)
+    let stat
+    try { stat = fs.lstatSync(absolute) } catch { return { status: 404, code: 'storage_not_found' } }
+    if (stat.isSymbolicLink() || !stat.isFile()) return { status: 403, code: 'storage_path_escapes' }
+    const bytes = fs.readFileSync(absolute)
+    const ext = absolute.slice(absolute.lastIndexOf('.')).toLowerCase()
+    return { status: 200, type: DATA_MIME[ext] ?? 'application/octet-stream', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }
+  }
+  async function mediaScenario() {
+    const base = await waitFor('media base import', async () => ((await must('db.messages.count')) >= cfg.expected.messageCount ? await must('db.messages.count') : 0))
+    const denied = (() => { try { fs.readdirSync(cfg.cacheDir); return null } catch (error) { return error.code ?? String(error) } })()
+    const results = {}
+    for (const [name, entry] of Object.entries(cfg.expected.messages)) {
+      const first = await invoke('media.prepare', entry.msgId)
+      const second = first.ok ? await invoke('media.prepare', { msgId: entry.msgId }) : null
+      results[name] = {
+        kind: entry.kind, first, second,
+        served: first.ok ? serveData(first.value.path) : null,
+        servedUrl: first.ok ? `tuqplugin://${init.pluginId}/data/${first.value.path.split('/').map(encodeURIComponent).join('/')}` : null,
+      }
+    }
+    step('media', {
+      importedCount: base.value, nodeFsOnLineCache: denied, results,
+      cacheDirListing: fs.existsSync(join(init.dataDir, 'media-cache')) ? fs.readdirSync(join(init.dataDir, 'media-cache')).sort() : null,
+      info: (await must('backend.info')).media,
+      unsupported: { open: await invoke('media.open', 'x'), saveAs: await invoke('media.saveAs', 'x') },
+      traversal: ['../line-todo.db', '.linekey', 'media-cache/../line-todo.db', 'media-cache/.hidden.png', 'media-cache/', 'a\\b.png', 'C:/x.png', 'media-cache/i:m1.png'].map((p) => ({ path: p, ...serveData(p) })),
+    })
+  }
+
+  // ── reconcile scenario (cfg.mode === 'reconcile'): the boot self-reconcile under the real permission model, real WASM engine, real koffi fs ──
+  async function reconcileScenario() {
+    // the run is complete when its log line says so and the single-flight lock is gone
+    const finished = await waitFor('reconcile finished', async () => (logs.some((l) => /\[reconcile\] (?:checkpoint advanced|checkpoint NOT advanced|no gaps|source unavailable|DB unhealthy)/.test(l)) && !fs.existsSync(join(init.dataDir, '.reconcile_lock')) ? true : 0))
+    // progress events are best effort here: the first import emits one line-message event per row (904 > the 512-event ring), so the early
+    // reconcile-progress events may already have rolled out (the ring reports gap:true; the unit test asserts the exact phase sequence)
+    const probe = await must('events.open', { sinceSeq: 0 })
+    const phases = []
+    const pulled = await must('events.pull', { sessionId: probe.sessionId, afterSeq: 0, waitMs: 0 })
+    for (const event of pulled.events) if (event.type === 'reconcile-progress') phases.push(event.payload)
+    const done = finished
+    const finalCount = await waitFor('full import', async () => ((await must('db.messages.count')) >= cfg.expected.baseCount ? await must('db.messages.count') : 0))
+    const all = await must('db.messages.list', { limit: 5000 })
+    step('reconcile', {
+      phases, ringGap: pulled.gap, waitedMs: done.waitedMs, finalCount: finalCount.value, listed: all.length, distinctMsgIds: new Set(all.map((m) => m.msgId)).size,
+      dataDir: fs.readdirSync(init.dataDir).sort(), lockPresent: fs.existsSync(join(init.dataDir, '.reconcile_lock')),
+      state: fs.existsSync(join(init.dataDir, 'reconcile-state.json')) ? JSON.parse(fs.readFileSync(join(init.dataDir, 'reconcile-state.json'), 'utf8')) : null,
+      log: logs.filter((l) => /\[reconcile\]/.test(l)), status: await must('line.status'),
+    })
+    await must('events.close', { sessionId: probe.sessionId })
+  }
+
   // ── scenario ──
   out.info = await must('backend.info')
+  let session = null
+  let after = 0
+  let capHandler = null
 
+  if (cfg.mode === 'media') {
+    await mediaScenario()
+  } else if (cfg.mode === 'reconcile') {
+    await reconcileScenario()
+  } else {
   // 1. fake LINE (fixture DB outside dataDir, read through koffi copy + WASM) -> app DB
   const base = await waitFor('base import', async () => ((await must('db.messages.count')) >= cfg.expected.baseCount ? await must('db.messages.count') : 0))
   step('baseImport', { count: base.value, waitedMs: base.waitedMs, status: await must('line.status'), pipelineStatus: await must('pipeline.status') })
@@ -141,9 +211,9 @@ try {
   })
 
   // 2. event session (long poll) + capability session, opened before new data arrives
-  const session = await must('events.open', {})
+  session = await must('events.open', {})
   const seen = []
-  let after = session.seq
+  after = session.seq
   async function drainEvents(waitMs = 500) {
     const pulled = await must('events.pull', { sessionId: session.sessionId, afterSeq: after, waitMs })
     for (const event of pulled.events) seen.push(event)
@@ -152,7 +222,7 @@ try {
   }
   const capSent = []
   const capClosed = []
-  const capHandler = await handler.openSession(
+  capHandler = await handler.openSession(
     { sessionId: 'cap-1', capability: 'linetodo.events', callerPluginId: init.pluginId, options: { sinceSeq: session.seq } },
     {
       send: (message) => {
@@ -223,16 +293,18 @@ try {
     ctor: await invoke('constructor'), unknown: await invoke('db.nope.list'), badMethod: await hostCall('shell.exec', { cmd: 'whoami' }),
   })
 
+  } // end of the main (non-media) scenario
+
   // 6. info + diagnostics before dispose, then dispose and prove nothing is left
   out.infoLate = await must('backend.info')
   out.diagnosticsBeforeDispose = handler.diagnostics()
   await sleep(50)
-  const closingPoll = hostCall('api.invoke', { path: 'events.pull', args: [{ sessionId: session.sessionId, afterSeq: after, waitMs: 4000 }] })
+  const closingPoll = session ? hostCall('api.invoke', { path: 'events.pull', args: [{ sessionId: session.sessionId, afterSeq: after, waitMs: 4000 }] }) : Promise.resolve(null)
   const tDispose = performance.now()
   await handler.dispose()
   out.disposeMs = Math.round(performance.now() - tDispose)
   out.closingPoll = await closingPoll
-  capHandler.close?.('provider_gone')
+  capHandler?.close?.('provider_gone')
   out.afterDispose = {
     call: await hostCall('api.invoke', { path: 'ping', args: [] }),
     diagnostics: handler.diagnostics(),

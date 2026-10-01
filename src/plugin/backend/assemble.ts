@@ -12,12 +12,15 @@
  *   | app DB          | better-sqlite3 11.10.0              | better-sqlite3 13.0.2（nativeBinding 固定在 installDir）|
  *   | AI              | provider（http／CLI）+ extractFn    | 無 provider；ExtractQueue 供料/收料（UI 經 ai:chat 抽取）|
  *   | secrets         | Electron safeStorage                | 無（backend 不持有任何 AI 金鑰）                        |
- *   | media/app/driver| Electron shell／dialog／UIA         | unsupported_in_plugin                                 |
+ *   | media           | linemedia:// + shell／dialog        | media.prepare：解密寫進 dataDir/media-cache，UI 用 assets.url |
+ *   | app/driver      | Electron shell／dialog／UIA         | unsupported_in_plugin                                 |
+ *   | 開機對帳／收回掃描| runReconcile／scanRecentUnsent（hook）| 同一份程式，進度改進 EventHub；snapshot 在 dataDir      |
+ *   | participantIdentity | safeStorage 加密的 install secret | unknownIdentity（設計 v2 §5.2 首版降級）              |
  *   | 事件            | webContents.send                    | EventHub（長輪詢 + capability session）                |
  *
  * 本檔不 import electron、不 import child_process／worker_threads、不做網路 I/O。
  */
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { createLineTodoApplication } from '../../core/application'
 import type { LineTodoApplicationPorts } from '../../core/application'
 import { createLineTodoRuntime } from '../../core/runtime'
@@ -28,10 +31,17 @@ import type { SettingsSecretStorage } from '../../main/config/settings'
 import type { AppDbEngine } from '../../main/db/appDbEngine'
 import { createBetterSqlite3AppEngine } from '../../main/db/appDbEngine'
 import { getLastRun } from '../../main/db/pipeline.repo'
+import { commitLineImportBatch, isLineImportSchemaReady } from '../../main/db/lineImport.repo'
 import { configureLineEnginePorts } from '../../main/line/engine/enginePorts'
 import type { LineEnginePorts } from '../../main/line/engine/enginePorts'
 import { getLineImportBatch, getMessagesSince } from '../../main/line/engine/watchEngine'
 import type { LineImportBatch } from '../../main/line/importTypes'
+import type { ParticipantIdentityProvider } from '../../main/line/identity'
+import type { LineFsPort } from '../../main/line/engine/fsPort'
+import { createMediaDecryptor } from '../../main/media/decrypt'
+import { scanRecentUnsent } from '../../main/pipeline/backfill'
+import { runReconcile } from '../../main/pipeline/reconcileRunner'
+import type { ReconcileDeps } from '../../main/pipeline/reconcileRunner'
 import { LineWatcher } from '../../main/line/watcher'
 import { PipelineScheduler } from '../../main/pipeline/scheduler'
 import type { LineTodoApi } from '../../shared/api'
@@ -41,6 +51,8 @@ import { EventHub } from './eventHub'
 import type { EventHubOptions } from './eventHub'
 import { ExtractQueue } from './extractQueue'
 import type { ExtractQueueOptions } from './extractQueue'
+import { createPluginMedia } from './media'
+import type { MediaDb } from './media'
 import type { BackendDiagnostics, JsonValue, PluginBackendHandler, SessionChannel, SessionInfo } from './types'
 
 /** backend 不持有任何 AI 金鑰；settings store 只需要這個「不可用」的 secrets。 */
@@ -49,6 +61,15 @@ const NO_SECRETS: SettingsSecretStorage = {
   encryptString: () => { throw new Error('secrets are not available in the plugin backend') },
   decryptString: () => { throw new Error('secrets are not available in the plugin backend') }
 }
+
+/** 首版降級（設計 v2 §5.2）：沒有 safeStorage 的 install secret，participant 一律 unknown（與 application 內建的 fallback 相同）。 */
+const UNKNOWN_IDENTITY: ParticipantIdentityProvider = {
+  resolve: () => ({ participantKey: null, scope: 'unknown', keyVersion: null, status: 'unknown', reason: 'safe_storage_unavailable' }),
+  epoch: () => null
+}
+
+/** 近期收回掃描的最短間隔（對齊 standalone 的 5 分鐘）。 */
+const UNSENT_SCAN_MIN_INTERVAL_MS = 5 * 60 * 1000
 
 export interface PluginBackendOptions {
   pluginId: string
@@ -62,6 +83,17 @@ export interface PluginBackendOptions {
   watcher?: { intervalSec?: number; limit?: number; drainBacklog?: boolean }
   /** app DB 引擎；預設 standalone 的 better-sqlite3（外掛 build 會把它指到 13.0.2）。 */
   appDbEngine?: AppDbEngine
+  /**
+   * 媒體：LINE Cache 目錄與檔案存取。省略 `cacheDir` 時，若 `linePorts.dbDir` 形如 `...\LINE\Data\db` 就推得 `...\LINE\Cache`；
+   * 兩者都沒有＝`media.prepare` 回 media_unavailable（不猜路徑）。`fs` 省略時用 `linePorts.fs`。
+   */
+  media?: { cacheDir?: string; fs?: LineFsPort; maxCacheBytes?: number; reindexMinIntervalMs?: number; now?(): number }
+  /**
+   * 開機自我對帳（`runReconcile`，設定頁的 reconcile.enabled 決定要不要跑）與近期收回掃描。
+   * 預設：有 `linePorts`（真引擎）才接；只給 fake `line` 的測試不接（對帳預設會開真 LINE 目錄）。
+   * 傳物件＝強制接上並以物件覆寫 `ReconcileDeps`（測試注入假來源）；傳 false＝不接。
+   */
+  reconcile?: false | Partial<ReconcileDeps>
   extract?: Partial<Omit<ExtractQueueOptions, 'db' | 'getConfig'>>
   hub?: EventHubOptions
   dispatcher?: Partial<Pick<DispatcherOptions, 'softDeadlineMs' | 'responseBudgetBytes' | 'resultTtlMs' | 'maxResults' | 'maxResultBytes' | 'jobTtlMs' | 'maxJobs' | 'maxJobWaitMs'>>
@@ -101,6 +133,24 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   if (options.linePorts) configureLineEnginePorts(options.linePorts)
 
   const hub = new EventHub(options.hub)
+  const mediaFs = options.media?.fs ?? options.linePorts?.fs
+  const dbDir = options.linePorts?.dbDir
+  const cacheDir = options.media?.cacheDir
+    ?? (dbDir && basename(dirname(dbDir)).toLowerCase() === 'data' ? join(dirname(dirname(dbDir)), 'Cache') : undefined)
+  const decryptor = cacheDir ? createMediaDecryptor({ ...(mediaFs ? { fs: mediaFs } : {}), cacheDir }) : null
+  let appDbForMedia: MediaDb | null = null
+  const media = createPluginMedia({
+    dataDir,
+    getDb: () => appDbForMedia,
+    decryptor,
+    maxCacheBytes: options.media?.maxCacheBytes,
+    reindexMinIntervalMs: options.media?.reindexMinIntervalMs,
+    now: options.media?.now
+  })
+  const reconcileWired = options.reconcile !== false && (options.reconcile !== undefined || options.linePorts !== undefined)
+  const reconcileOverrides: Partial<ReconcileDeps> = options.reconcile && typeof options.reconcile === 'object' ? options.reconcile : {}
+  let reconcileStarted = false
+  let lastUnsentScan = 0
   const recentLog: string[] = []
   const log = (line: string): void => { recentLog.push(line.slice(0, 300)); if (recentLog.length > 40) recentLog.shift() }
 
@@ -142,7 +192,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       dataDir,
       dbPath: join(dataDir, 'line-todo.db'),
       appDbEngine: options.appDbEngine ?? createBetterSqlite3AppEngine(),
-      onDatabase: (db) => { appDb = db },
+      onDatabase: (db) => { appDb = db; appDbForMedia = db },
+      participantIdentity: UNKNOWN_IDENTITY,
       settings,
       pipelineConfig: { getDefaults, getQwenConfig, isProviderConfigured: () => true },
       providers: { resolveProvider: () => null },
@@ -171,6 +222,42 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
         return scheduler
       },
       media: { open: unsupported, saveAs: unsupported },
+      // 設計 v2 §7 Phase 3：開機自我對帳與近期收回掃描（standalone 的 index.ts 同名 hook，逐字對應；進度改進 EventHub）。
+      afterStart: (db, schedule) => {
+        if (!reconcileWired || reconcileStarted) return
+        reconcileStarted = true
+        const reconcile = settings.get().reconcile
+        if (!reconcile.enabled) return
+        schedule(async (signal) => {
+          const importReady = isLineImportSchemaReady(db)
+          await runReconcile({ scopeMonths: reconcile.scopeMonths }, {
+            db,
+            checkHealth: () => ({ ok: db.pragma('quick_check', { simple: true }) === 'ok' }),
+            stateFile: join(dataDir, 'reconcile-state.json'),
+            lockFile: join(dataDir, '.reconcile_lock'),
+            signal,
+            getMessagesSince: async (sinceMs, opts) => line!.getMessagesSince(sinceMs, opts),
+            getImportBatch: importReady ? line!.getLineImportBatch : undefined,
+            commitImportBatch: importReady ? (batch, opts) => commitLineImportBatch(db, batch, UNKNOWN_IDENTITY, opts) : undefined,
+            onProgress: (progress) => { if (!signal.aborted) hub.publish('reconcile-progress', progress) },
+            ...reconcileOverrides
+          }).catch((error) => log(`[reconcile] failed: ${error instanceof Error ? error.name : 'unknown'}`))
+        })
+      },
+      afterPipelineRun: (_result, db, schedule) => {
+        if (!reconcileWired) return
+        schedule(async (signal) => {
+          if (signal.aborted || Date.now() - lastUnsentScan < UNSENT_SCAN_MIN_INTERVAL_MS) return
+          lastUnsentScan = Date.now()
+          const importReady = isLineImportSchemaReady(db)
+          await scanRecentUnsent(3, {
+            db, signal,
+            fetchWindow: async (sinceMs) => ({ messages: await line!.getMessagesSince(sinceMs, { limit: 5000 }) }),
+            fetchImportBatch: importReady ? line!.getLineImportBatch : undefined,
+            commitImportBatch: importReady ? (batch) => commitLineImportBatch(db, batch, UNKNOWN_IDENTITY) : undefined
+          }).catch((error) => log(`[unsent-scan] failed: ${error instanceof Error ? error.name : 'unknown'}`))
+        })
+      },
       app: {
         ping: () => ({ ok: true, ts: Date.now(), version: options.version }),
         openDataFolder: async () => ({ ok: false }),
@@ -191,6 +278,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     },
     hub,
     queue,
+    media,
     info: (): Record<string, JsonValue> => ({
       plugin: options.pluginId,
       version: options.version,
@@ -203,6 +291,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       watcher: watcher !== null,
       appDb: appDbInfo(appDb),
       extract: queue.stats(),
+      media: media.stats() as unknown as JsonValue,
       events: hub.stats(),
       dispatcher: dispatcher.stats(),
       recentLog: [...recentLog]

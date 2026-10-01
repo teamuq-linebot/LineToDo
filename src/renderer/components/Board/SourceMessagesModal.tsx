@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom'
 import type { MessageDTO } from '../../types/api'
 import { formatCallRecord } from '../../lib/callRecord'
+import { MediaFileActions, MediaImage } from '../MediaView'
 
 /**
  * SourceMessagesModal — 來源訊息彈窗。
@@ -75,7 +76,6 @@ export function SourceMessagesModal({
   const autoBatches = useRef(0)
   const [srcTooEarly, setSrcTooEarly] = useState(false)
   // 媒體：圖片載入失敗的 msgId（onError → 改渲染「尚未下載」）。
-  const [failedImgIds, setFailedImgIds] = useState<Set<string>>(new Set())
   // 媒體：lightbox 放大檢視中的圖片 URL（null = 未開）。
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   // 媒體：檔案開啟/另存失敗的輕量提示（msgId → 訊息）。
@@ -214,41 +214,11 @@ export function SourceMessagesModal({
     if (el && el.scrollTop < 40) void loadEarlier()
   }
 
-  async function openFile(msgId: string): Promise<void> {
-    const res = await api.media.open(msgId)
-    setFileErrors((e) => ({ ...e, [msgId]: res.ok ? '' : '無法開啟檔案' }))
-  }
-
-  async function saveFile(msgId: string): Promise<void> {
-    const res = await api.media.saveAs(msgId)
-    // canceled 不視為錯誤。
-    setFileErrors((e) => ({ ...e, [msgId]: res.ok || res.canceled ? '' : '無法另存檔案' }))
-  }
-
   // 依 contentType 渲染訊息內容：1=圖片縮圖（點開 lightbox）、14=檔案卡、其餘=純文字。
   function renderContent(m: MessageDTO): JSX.Element {
-    const url = `linemedia://media/${encodeURIComponent(m.msgId)}`
     if (m.contentType === 1) {
-      if (failedImgIds.has(m.msgId)) {
-        return <div className="sm-media-missing">尚未下載</div>
-      }
-      return (
-        <div className="sm-media">
-          <img
-            className="sm-thumb"
-            src={url}
-            alt="圖片"
-            onClick={() => setLightboxSrc(url)}
-            onError={() =>
-              setFailedImgIds((prev) => {
-                const next = new Set(prev)
-                next.add(m.msgId)
-                return next
-              })
-            }
-          />
-        </div>
-      )
+      // 圖片網址由宿主決定（standalone：linemedia://；外掛：assets.url，見 MediaView）。
+      return <MediaImage msgId={m.msgId} as="div" onOpenLightbox={setLightboxSrc} />
     }
     if (m.contentType === 14) {
       const err = fileErrors[m.msgId]
@@ -258,10 +228,7 @@ export function SourceMessagesModal({
             <span className="sm-file-icon">📎</span>
             <span className="sm-file-name">{m.origFilename ?? '檔案'}</span>
             <span className="sm-file-size">{formatSize(m.fileSize)}</span>
-            <span className="sm-file-actions">
-              <button onClick={() => void openFile(m.msgId)}>開啟</button>
-              <button onClick={() => void saveFile(m.msgId)}>另存</button>
-            </span>
+            <MediaFileActions msgId={m.msgId} onError={(message) => setFileErrors((e) => ({ ...e, [m.msgId]: message }))} />
           </div>
           {err && (
             <div style={{ marginTop: 4, fontSize: 11, color: 'var(--red, #f26d6d)' }}>{err}</div>
