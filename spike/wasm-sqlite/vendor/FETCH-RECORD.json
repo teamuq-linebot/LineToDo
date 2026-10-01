@@ -1,0 +1,8 @@
+{
+  "tag": "v2.5.1",
+  "zipName": "sqlite3mc-2.5.1-sqlite-3.53.4-wasm.zip",
+  "expected": "761a41b8dc996cfa21f193fc044739fbb0c4a31a1fd657a4df49cc59085577ce",
+  "actual": "761a41b8dc996cfa21f193fc044739fbb0c4a31a1fd657a4df49cc59085577ce",
+  "ok": true,
+  "bytes": 802290
+}

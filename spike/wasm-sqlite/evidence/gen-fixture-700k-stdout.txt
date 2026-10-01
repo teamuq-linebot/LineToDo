@@ -1,0 +1,76 @@
+{
+  "key": "0123456789abcdef0123456789abcdef",
+  "cipher": "aes128cbc",
+  "kdfIter": 1,
+  "generator": {
+    "electron": "31.7.7",
+    "node": "20.18.0",
+    "abi": "125"
+  },
+  "tz": "Etc/GMT-8",
+  "tzOffsetMin": -480,
+  "sqlite3mcVersion": "SQLite3 Multiple Ciphers 2.1.1",
+  "sqliteVersion": "3.49.2",
+  "rollback": {
+    "messageCount": 700004,
+    "maxRow": {
+      "rowId": 700000,
+      "createdTime": 1872948596902,
+      "id": "500000000000699999",
+      "text": null
+    },
+    "chatCount": 300,
+    "messageDigest": "18d9a5c51a2809a80365d831bbf1df1269295c38a87b0e5c381da795a6339654",
+    "journalMode": "delete",
+    "pageSize": 4096,
+    "files": [
+      {
+        "f": "m.edb",
+        "bytes": 196333568
+      }
+    ]
+  },
+  "wal": {
+    "messageCount": 702004,
+    "maxRow": {
+      "rowId": 702004,
+      "createdTime": 1872953405488,
+      "id": "500000000000701999",
+      "text": "🙏 deadline 😀 確認 專案 發票 deadline 進度 發票 專案 確認 提醒我 提醒我 週五前"
+    },
+    "chatCount": 301,
+    "messageDigest": "e6b86a951d7ff4f7169dd8b55d7f6b2f4d64bc10b5cfb8d9142fae51e5e59b78",
+    "journalMode": "wal",
+    "baseOnly": {
+      "messageCount": 700004,
+      "messageDigest": "18d9a5c51a2809a80365d831bbf1df1269295c38a87b0e5c381da795a6339654"
+    },
+    "walFirstRowId": 700005,
+    "walRows": 2000,
+    "walOnlyContact": "ueeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "walTouchedGroup": "c8cd0ba1228f13403d095cdda008cbfd0",
+    "cursorAtWalBoundary": {
+      "createdTime": 1872948596902,
+      "rowId": 700000
+    },
+    "files": [
+      {
+        "f": "m.edb",
+        "bytes": 196333568
+      },
+      {
+        "f": "m.edb-shm",
+        "bytes": 393216
+      },
+      {
+        "f": "m.edb-wal",
+        "bytes": 3996432
+      }
+    ]
+  },
+  "encryptedHeaderCheck": {
+    "first16": "e7071b5928fd3442351cdfbf0a6279b9",
+    "isPlainSqliteHeader": false
+  },
+  "walPlaintextLeak": false
+}

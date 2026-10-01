@@ -1,0 +1,110 @@
+{
+  "sqlite3mc-wasm 2.5.1 (needed: sqlite3.mjs + sqlite3.wasm)": {
+    "files": [
+      {
+        "file": "vendor/sqlite3mc-2.5.1-sqlite-3.53.4-wasm/sqlite3mc-wasm-3530400/jswasm/sqlite3.mjs",
+        "bytes": 438638,
+        "deflate9": 93876,
+        "sha256": "058b526608afdd81c244540f525286275d7bcc6a11676d19fdda7be50502f10e"
+      },
+      {
+        "file": "vendor/sqlite3mc-2.5.1-sqlite-3.53.4-wasm/sqlite3mc-wasm-3530400/jswasm/sqlite3.wasm",
+        "bytes": 1068015,
+        "deflate9": 477304,
+        "sha256": "b6aedab9eee5cd5de0f13498e0bf64bb5ee9cc786d1d0303cc365578b64d18ab"
+      }
+    ],
+    "totalBytes": 1506653,
+    "totalDeflate9": 571180
+  },
+  "better-sqlite3-multiple-ciphers 11.10.0 (native .node + JS lib)": {
+    "files": [
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/build/Release/better_sqlite3.node",
+        "bytes": 2083840,
+        "deflate9": 1108730,
+        "sha256": "cbbc455df1b3d40fd37ad50a13232503cc932bdd42fd8a49a2a96f5f1c2be059"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/index.js",
+        "bytes": 113,
+        "deflate9": 80,
+        "sha256": "78422ff88886c8c8e99904b49add7b3899e1c42a6c9f93960c8a93f701ff85bd"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/database.js",
+        "bytes": 4290,
+        "deflate9": 1437,
+        "sha256": "1dafd567787429eb09ca0fb2817b406e52e56ee22d141ca8172bc3c9cd4dfb42"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/util.js",
+        "bytes": 343,
+        "deflate9": 229,
+        "sha256": "88a00df844ac38f1635c237e1c2f336e1162b013b0c5c4d76fe6d834fcad1607"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/sqlite-error.js",
+        "bytes": 737,
+        "deflate9": 340,
+        "sha256": "2ea095f10d7ba7ff4e4bf3ba7fd626ce4f844b471c2ebbeb311c0cd4ab0d5526"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/methods/aggregate.js",
+        "bytes": 1975,
+        "deflate9": 745,
+        "sha256": "b6116526a47835052f90215f53ea77919d2d48b61085cc9f669881321d9a08e7"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/methods/backup.js",
+        "bytes": 2447,
+        "deflate9": 904,
+        "sha256": "62c530f4002a85d8bd46927465ed84df5705d159736ae21e451324c25c4a2b16"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/methods/function.js",
+        "bytes": 1427,
+        "deflate9": 555,
+        "sha256": "108b3924ebffce49e2bdbdfeaafc2ddd3e809349fc24751257ddc3535c45642d"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/methods/inspect.js",
+        "bytes": 181,
+        "deflate9": 130,
+        "sha256": "7667e8b170102709c58c4b79c76fa4bdf101e65798e67537ebc88ed4c908ef18"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/methods/pragma.js",
+        "bytes": 548,
+        "deflate9": 303,
+        "sha256": "02f396f892aa6fbcbc338e8895af775b277def17922544ddaf6cff38399ad59e"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/methods/serialize.js",
+        "bytes": 641,
+        "deflate9": 312,
+        "sha256": "e6a8bfbde7ad276bae7b35f18e4a688704ffde2787e1ad43d08d2880102e93a0"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/methods/table.js",
+        "bytes": 7333,
+        "deflate9": 2057,
+        "sha256": "aa8443817126e67a7b169c6ef4d604961bb04bcbc20dc1f9b0da83fe25f5dc16"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/methods/transaction.js",
+        "bytes": 2870,
+        "deflate9": 961,
+        "sha256": "abe6068ede27a9353aea5d48d988acaac229b7cbf333ed89a866971c08cb6cc0"
+      },
+      {
+        "file": "node_modules/better-sqlite3-multiple-ciphers/lib/methods/wrappers.js",
+        "bytes": 1559,
+        "deflate9": 418,
+        "sha256": "c8bdddc2ebd8f5da28b1890d05ed5737db58be4f66a71cc274a94611394c1c46"
+      }
+    ],
+    "totalBytes": 2108304,
+    "totalDeflate9": 1117201
+  }
+}

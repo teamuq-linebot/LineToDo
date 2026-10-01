@@ -1,0 +1,46 @@
+{
+  "label": "e31-bsqlite-addons-700k",
+  "exitCode": 0,
+  "abi": "125",
+  "selfCheckBoot": true,
+  "selfCheckAfterEngine": true,
+  "selfCheckEnd": true,
+  "engine": true,
+  "engineInfo": "SQLite3 Multiple Ciphers 2.1.1",
+  "controlDenied": true,
+  "wal": {
+    "ok": true,
+    "count": true,
+    "digest": true,
+    "maxRow": true
+  },
+  "rollback": {
+    "ok": true,
+    "count": true,
+    "digest": true
+  },
+  "wrongKey": true,
+  "bench": {
+    "copyMs": 68.21,
+    "openTotalMs": 133.88,
+    "loadBytesMs": 0,
+    "openVerifyMs": 24.03,
+    "checkpointMs": 109.29,
+    "watchBatchMs": 86.4,
+    "rawIncrementalMs": 34.55,
+    "listChats50Ms": 1.49,
+    "tailMs": 0.04,
+    "openPlusWatchBatchMs": 215.02
+  },
+  "keyScan": {
+    "candidates": 501,
+    "totalMs": 332.36,
+    "perCandidateMs": 0.66,
+    "hits": 1,
+    "rightKeyHit": true
+  }
+}
+STDERR(head): (node:16632) ExperimentalWarning: Permission is an experimental feature and might change at any time
+(Use `electron --trace-warnings ...` to show where the warning was created)
+(node:16632) SecurityWarning: The flag --allow-addons must be used with extreme caution. It could invalidate the permission model.
+

@@ -1,0 +1,79 @@
+{
+  "runtime": "44.2.0",
+  "fixture": {
+    "files": [
+      {
+        "f": "m.edb",
+        "bytes": 196333568
+      },
+      {
+        "f": "m.edb-shm",
+        "bytes": 393216
+      },
+      {
+        "f": "m.edb-wal",
+        "bytes": 3996432
+      }
+    ],
+    "messageCount": 702004
+  },
+  "openMs": 672,
+  "timings": {
+    "loadBytesMs": 366.96590000000003,
+    "openVerifyMs": 36.10389999999995,
+    "checkpointMs": 255.289
+  },
+  "watchBatchMs": 462,
+  "rows": 500,
+  "steps": [
+    {
+      "step": "start",
+      "rssMB": 96,
+      "externalMB": 2,
+      "heapUsedMB": 3,
+      "wasmMemMB": null
+    },
+    {
+      "step": "engineLoaded",
+      "rssMB": 103,
+      "externalMB": 3,
+      "heapUsedMB": 4,
+      "wasmMemMB": 8
+    },
+    {
+      "step": "opened+checkpointed",
+      "rssMB": 480,
+      "externalMB": 214,
+      "heapUsedMB": 4,
+      "wasmMemMB": 188
+    },
+    {
+      "step": "watchBatch",
+      "rssMB": 485,
+      "externalMB": 214,
+      "heapUsedMB": 5,
+      "wasmMemMB": 188
+    },
+    {
+      "step": "closed+unlinked",
+      "rssMB": 296,
+      "externalMB": 3,
+      "heapUsedMB": 5,
+      "wasmMemMB": 188
+    },
+    {
+      "step": "reopened(2nd)",
+      "rssMB": 485,
+      "externalMB": 214,
+      "heapUsedMB": 5,
+      "wasmMemMB": 188
+    },
+    {
+      "step": "closed(2nd)",
+      "rssMB": 297,
+      "externalMB": 3,
+      "heapUsedMB": 5,
+      "wasmMemMB": 188
+    }
+  ]
+}

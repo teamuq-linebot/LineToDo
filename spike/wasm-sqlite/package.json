@@ -1,0 +1,17 @@
+{
+  "name": "wasm-sqlite-spike",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Spike: SQLite3MultipleCiphers WASM vs better-sqlite3-multiple-ciphers under the TeamUQ 1.6.8 full-trust backend permission contract",
+  "type": "module",
+  "dependencies": {
+    "better-sqlite3-multiple-ciphers": "11.10.0",
+    "koffi": "3.1.0"
+  },
+  "sqlite3mcWasm": {
+    "source": "https://github.com/utelle/SQLite3MultipleCiphers/releases/tag/v2.5.1",
+    "asset": "sqlite3mc-2.5.1-sqlite-3.53.4-wasm.zip",
+    "sha256": "761a41b8dc996cfa21f193fc044739fbb0c4a31a1fd657a4df49cc59085577ce",
+    "fetch": "node scripts/fetch-sqlite3mc-wasm.mjs v2.5.1"
+  }
+}

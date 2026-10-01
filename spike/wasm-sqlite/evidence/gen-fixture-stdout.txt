@@ -1,0 +1,76 @@
+{
+  "key": "0123456789abcdef0123456789abcdef",
+  "cipher": "aes128cbc",
+  "kdfIter": 1,
+  "generator": {
+    "electron": "31.7.7",
+    "node": "20.18.0",
+    "abi": "125"
+  },
+  "tz": "Etc/GMT-8",
+  "tzOffsetMin": -480,
+  "sqlite3mcVersion": "SQLite3 Multiple Ciphers 2.1.1",
+  "sqliteVersion": "3.49.2",
+  "rollback": {
+    "messageCount": 100004,
+    "maxRow": {
+      "rowId": 100000,
+      "createdTime": 1755263796833,
+      "id": "500000000000099999",
+      "text": null
+    },
+    "chatCount": 300,
+    "messageDigest": "0e106bd728301ead4cf2319c800fbd400d5ae1848f1d4aa4b1b8e888e6a7179c",
+    "journalMode": "delete",
+    "pageSize": 4096,
+    "files": [
+      {
+        "f": "m.edb",
+        "bytes": 28233728
+      }
+    ]
+  },
+  "wal": {
+    "messageCount": 102004,
+    "maxRow": {
+      "rowId": 102004,
+      "createdTime": 1755268805248,
+      "id": "500000000000101999",
+      "text": "專案 提醒我 檔案 專案 開會 週五前 deadline 開會 記得 客戶 收到 發票 開會"
+    },
+    "chatCount": 301,
+    "messageDigest": "411c77f1303937b9c5a995cf47730173d49c3be3c4bf82c4c8acc9755a3e7b78",
+    "journalMode": "wal",
+    "baseOnly": {
+      "messageCount": 100004,
+      "messageDigest": "0e106bd728301ead4cf2319c800fbd400d5ae1848f1d4aa4b1b8e888e6a7179c"
+    },
+    "walFirstRowId": 100005,
+    "walRows": 2000,
+    "walOnlyContact": "ueeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "walTouchedGroup": "c8cd0ba1228f13403d095cdda008cbfd0",
+    "cursorAtWalBoundary": {
+      "createdTime": 1755263796833,
+      "rowId": 100000
+    },
+    "files": [
+      {
+        "f": "m.edb",
+        "bytes": 28233728
+      },
+      {
+        "f": "m.edb-shm",
+        "bytes": 65536
+      },
+      {
+        "f": "m.edb-wal",
+        "bytes": 3662712
+      }
+    ]
+  },
+  "encryptedHeaderCheck": {
+    "first16": "e7071b5928fd3442070938927b3c43c1",
+    "isPlainSqliteHeader": false
+  },
+  "walPlaintextLeak": false
+}

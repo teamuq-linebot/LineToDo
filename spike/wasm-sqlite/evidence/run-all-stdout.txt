@@ -1,0 +1,214 @@
+=== e44-wasm-addons exit=0
+{
+  "label": "e44-wasm-addons",
+  "exitCode": 0,
+  "abi": "149",
+  "selfCheckBoot": true,
+  "selfCheckAfterEngine": true,
+  "selfCheckEnd": true,
+  "engine": true,
+  "engineInfo": "SQLite3 Multiple Ciphers 2.5.1",
+  "controlDenied": true,
+  "walDefaultLocking": {
+    "ok": false,
+    "error": "null function"
+  },
+  "wal": {
+    "ok": true,
+    "count": true,
+    "digest": true,
+    "maxRow": true
+  },
+  "rollback": {
+    "ok": true,
+    "count": true,
+    "digest": true
+  },
+  "wrongKey": true,
+  "bench": {
+    "copyMs": 15.73,
+    "openTotalMs": 96.08,
+    "loadBytesMs": 46.46,
+    "openVerifyMs": 1.53,
+    "checkpointMs": 48.63,
+    "watchBatchMs": 47.53,
+    "rawIncrementalMs": 11.18,
+    "listChats50Ms": 2.38,
+    "tailMs": 0.08,
+    "openPlusWatchBatchMs": 147.6
+  },
+  "keyScan": {
+    "candidates": 501,
+    "totalMs": 124.34,
+    "perCandidateMs": 0.25,
+    "hits": 1,
+    "rightKeyHit": true
+  }
+}
+STDERR(head): (node:24624) [PERM0001] SecurityWarning: The flag --allow-addons must be used with extreme caution. It could invalidate the permission model.
+(Use `electron --trace-warnings ...` to show where the warning was created)
+
+
+=== e44-wasm-noaddons exit=0
+{
+  "label": "e44-wasm-noaddons",
+  "exitCode": 0,
+  "abi": "149",
+  "selfCheckBoot": true,
+  "selfCheckAfterEngine": true,
+  "selfCheckEnd": true,
+  "engine": true,
+  "engineInfo": "SQLite3 Multiple Ciphers 2.5.1",
+  "controlDenied": true,
+  "walDefaultLocking": {
+    "ok": false,
+    "error": "null function"
+  },
+  "wal": {
+    "ok": true,
+    "count": true,
+    "digest": true,
+    "maxRow": true
+  },
+  "rollback": {
+    "ok": true,
+    "count": true,
+    "digest": true
+  },
+  "wrongKey": true,
+  "bench": {
+    "copyMs": 0,
+    "openTotalMs": 91.9,
+    "loadBytesMs": 31.57,
+    "openVerifyMs": 1.79,
+    "checkpointMs": 56.51,
+    "watchBatchMs": 65.89,
+    "rawIncrementalMs": 13.39,
+    "listChats50Ms": 2.78,
+    "tailMs": 0.11,
+    "openPlusWatchBatchMs": 153.28
+  },
+  "keyScan": {
+    "candidates": 501,
+    "totalMs": 181.35,
+    "perCandidateMs": 0.36,
+    "hits": 1,
+    "rightKeyHit": true
+  }
+}
+
+=== e31-wasm-addons exit=0
+{
+  "label": "e31-wasm-addons",
+  "exitCode": 0,
+  "abi": "125",
+  "selfCheckBoot": true,
+  "selfCheckAfterEngine": true,
+  "selfCheckEnd": true,
+  "engine": true,
+  "engineInfo": "SQLite3 Multiple Ciphers 2.5.1",
+  "controlDenied": true,
+  "walDefaultLocking": {
+    "ok": false,
+    "error": "null function or function signature mismatch"
+  },
+  "wal": {
+    "ok": true,
+    "count": true,
+    "digest": true,
+    "maxRow": true
+  },
+  "rollback": {
+    "ok": true,
+    "count": true,
+    "digest": true
+  },
+  "wrongKey": true,
+  "bench": {
+    "copyMs": 16.68,
+    "openTotalMs": 108.1,
+    "loadBytesMs": 59.93,
+    "openVerifyMs": 1.54,
+    "checkpointMs": 49.42,
+    "watchBatchMs": 61.76,
+    "rawIncrementalMs": 14.97,
+    "listChats50Ms": 4.39,
+    "tailMs": 0.11,
+    "openPlusWatchBatchMs": 172.39
+  },
+  "keyScan": {
+    "candidates": 501,
+    "totalMs": 140.65,
+    "perCandidateMs": 0.28,
+    "hits": 1,
+    "rightKeyHit": true
+  }
+}
+STDERR(head): (node:8168) ExperimentalWarning: Permission is an experimental feature and might change at any time
+(Use `electron --trace-warnings ...` to show where the warning was created)
+(node:8168) SecurityWarning: The flag --allow-addons must be used with extreme caution. It could invalidate the permission model.
+
+
+=== e31-bsqlite-addons exit=0
+{
+  "label": "e31-bsqlite-addons",
+  "exitCode": 0,
+  "abi": "125",
+  "selfCheckBoot": true,
+  "selfCheckAfterEngine": true,
+  "selfCheckEnd": true,
+  "engine": true,
+  "engineInfo": "SQLite3 Multiple Ciphers 2.1.1",
+  "controlDenied": true,
+  "wal": {
+    "ok": true,
+    "count": true,
+    "digest": true,
+    "maxRow": true
+  },
+  "rollback": {
+    "ok": true,
+    "count": true,
+    "digest": true
+  },
+  "wrongKey": true,
+  "bench": {
+    "copyMs": 14.26,
+    "openTotalMs": 57.31,
+    "loadBytesMs": 0,
+    "openVerifyMs": 24.64,
+    "checkpointMs": 30.31,
+    "watchBatchMs": 36.09,
+    "rawIncrementalMs": 7.83,
+    "listChats50Ms": 1.86,
+    "tailMs": 0.05,
+    "openPlusWatchBatchMs": 94.72
+  },
+  "keyScan": {
+    "candidates": 501,
+    "totalMs": 377.12,
+    "perCandidateMs": 0.75,
+    "hits": 1,
+    "rightKeyHit": true
+  }
+}
+STDERR(head): (node:6744) ExperimentalWarning: Permission is an experimental feature and might change at any time
+(Use `electron --trace-warnings ...` to show where the warning was created)
+(node:6744) SecurityWarning: The flag --allow-addons must be used with extreme caution. It could invalidate the permission model.
+
+
+=== e44-bsqlite-addons exit=0
+{
+  "label": "e44-bsqlite-addons",
+  "exitCode": 0,
+  "abi": "149",
+  "selfCheckBoot": true,
+  "selfCheckAfterEngine": true,
+  "selfCheckEnd": true,
+  "engine": false,
+  "controlDenied": true
+}
+STDERR(head): (node:2384) [PERM0001] SecurityWarning: The flag --allow-addons must be used with extreme caution. It could invalidate the permission model.
+(Use `electron --trace-warnings ...` to show where the warning was created)
+
+

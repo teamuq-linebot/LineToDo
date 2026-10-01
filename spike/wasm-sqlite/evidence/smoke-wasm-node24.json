@@ -1,0 +1,44 @@
+{
+  "node": "24.2.0",
+  "electron": null,
+  "sqliteVersion": {
+    "libVersion": "3.53.4",
+    "libVersionNumber": 3053004,
+    "sourceId": "2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc",
+    "downloadVersion": 3530400,
+    "scm": {
+      "sha3-256": "bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc",
+      "branch": "branch-3.53",
+      "tags": "release version-3.53.4",
+      "datetime": "2026-07-24T19:02:57.525Z"
+    }
+  },
+  "mcVersion": "SQLite3 Multiple Ciphers 2.5.1",
+  "compileOptions": [
+    "DEFAULT_MMAP_SIZE=0",
+    "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+    "DEFAULT_WAL_SYNCHRONOUS=2",
+    "DEFAULT_WORKER_THREADS=0",
+    "MAX_MMAP_SIZE=0",
+    "MAX_WORKER_THREADS=0",
+    "MUTEX_OMIT",
+    "OMIT_DEPRECATED",
+    "OMIT_LOAD_EXTENSION",
+    "OMIT_SHARED_CACHE",
+    "OMIT_UTF16",
+    "THREADSAFE=0"
+  ],
+  "vfsList": [
+    "multipleciphers-unix-none",
+    "unix-none",
+    "memdb",
+    "kvvfs",
+    "unix-excl",
+    "unix-dotfile",
+    "unix"
+  ],
+  "hasFS": true,
+  "roundTrip": 42,
+  "wrongKeyRejected": true,
+  "wrongKeyError": "SQLITE_NOTADB: sqlite3 result code 26: file is not a database"
+}

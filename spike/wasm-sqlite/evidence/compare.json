@@ -1,0 +1,1538 @@
+{
+  "reference": "e31-bsqlite-addons",
+  "perCheck": {
+    "wal.myMid": {
+      "reference": {
+        "ok": true,
+        "hash": "be3ef932cd6cf870"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.listChats50": {
+      "reference": {
+        "ok": true,
+        "hash": "1231e6f54c17a5db"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.listChats5000_digest": {
+      "reference": {
+        "ok": true,
+        "hash": "09c5c0aae42948fd"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.chatName_override": {
+      "reference": {
+        "ok": true,
+        "hash": "7c89073bdb5bea47"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.chatName_badJsonContactIsNull": {
+      "reference": {
+        "ok": true,
+        "hash": "791ec7607ea9dd48"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.resolveChat_direct": {
+      "reference": {
+        "ok": true,
+        "hash": "b47b547510274031"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.resolveChat_exactGroup": {
+      "reference": {
+        "ok": true,
+        "hash": "e2fcb9e70ae9d95e"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.resolveChat_ambiguousExact": {
+      "reference": {
+        "ok": true,
+        "hash": "b497bdd64e301cc1"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.resolveChat_fuzzyUnique": {
+      "reference": {
+        "ok": true,
+        "hash": "085af404777c9c20"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.resolveChat_walOnlyContact": {
+      "reference": {
+        "ok": true,
+        "hash": "c2763429411ad7cd"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.newMessages_tail": {
+      "reference": {
+        "ok": true,
+        "hash": "99d343c430055e80"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.newMessages_byName": {
+      "reference": {
+        "ok": true,
+        "hash": "19f75b4fd1450f70"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.newMessagesAfter_walBoundary": {
+      "reference": {
+        "ok": true,
+        "hash": "e7bbba4c4a9d1989"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.newMessagesAfter_exclusiveBound": {
+      "reference": {
+        "ok": true,
+        "hash": "a7eafed7025b0102"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.pagingFullScan_tieBreak": {
+      "reference": {
+        "ok": true,
+        "hash": "1779a02a2ecb6e33"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.watchBatch_walBoundary": {
+      "reference": {
+        "ok": true,
+        "hash": "304dd1b5ad892873"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.tail": {
+      "reference": {
+        "ok": true,
+        "hash": "20c4290f09cd2d66"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.sourceMonthly": {
+      "reference": {
+        "ok": true,
+        "hash": "3a7efd76d0888bee"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.messageCount": {
+      "reference": {
+        "ok": true,
+        "hash": "c87795fc8fcfb510"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.messageDigest": {
+      "reference": {
+        "ok": true,
+        "hash": "7668afbad8d39a03"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "wal.int64probe": {
+      "reference": {
+        "ok": true,
+        "hash": "69701cdae448c791"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": false,
+        "diff": {
+          "engine": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "bigint",
+                "v": "534567890123456789n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "bigint",
+                "v": "9223372036854775807n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          },
+          "reference": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "number",
+                "v": 534567890123456800,
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "number",
+                "v": 9223372036854776000,
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": false,
+        "diff": {
+          "engine": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "bigint",
+                "v": "534567890123456789n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "bigint",
+                "v": "9223372036854775807n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          },
+          "reference": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "number",
+                "v": 534567890123456800,
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "number",
+                "v": 9223372036854776000,
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": false,
+        "diff": {
+          "engine": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "bigint",
+                "v": "534567890123456789n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "bigint",
+                "v": "9223372036854775807n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          },
+          "reference": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "number",
+                "v": 534567890123456800,
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "number",
+                "v": 9223372036854776000,
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.myMid": {
+      "reference": {
+        "ok": true,
+        "hash": "be3ef932cd6cf870"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.listChats50": {
+      "reference": {
+        "ok": true,
+        "hash": "aff599f824359b87"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.listChats5000_digest": {
+      "reference": {
+        "ok": true,
+        "hash": "ee396bb516d79cf9"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.chatName_override": {
+      "reference": {
+        "ok": true,
+        "hash": "7c89073bdb5bea47"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.chatName_badJsonContactIsNull": {
+      "reference": {
+        "ok": true,
+        "hash": "791ec7607ea9dd48"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.resolveChat_direct": {
+      "reference": {
+        "ok": true,
+        "hash": "b47b547510274031"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.resolveChat_exactGroup": {
+      "reference": {
+        "ok": true,
+        "hash": "e2fcb9e70ae9d95e"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.resolveChat_ambiguousExact": {
+      "reference": {
+        "ok": true,
+        "hash": "b497bdd64e301cc1"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.resolveChat_fuzzyUnique": {
+      "reference": {
+        "ok": true,
+        "hash": "085af404777c9c20"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.resolveChat_walOnlyContact": {
+      "reference": {
+        "ok": false,
+        "hash": "aa275bf1c80e1f7f"
+      },
+      "e44-wasm-addons": {
+        "ok": false,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": false,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": false,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.newMessages_tail": {
+      "reference": {
+        "ok": true,
+        "hash": "c983aa0b9c90498b"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.newMessages_byName": {
+      "reference": {
+        "ok": true,
+        "hash": "be908f6b9366c166"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.newMessagesAfter_walBoundary": {
+      "reference": {
+        "ok": true,
+        "hash": "6059346eadc5f543"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.newMessagesAfter_exclusiveBound": {
+      "reference": {
+        "ok": true,
+        "hash": "a7eafed7025b0102"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.pagingFullScan_tieBreak": {
+      "reference": {
+        "ok": true,
+        "hash": "c57230c98ed3f364"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.watchBatch_walBoundary": {
+      "reference": {
+        "ok": true,
+        "hash": "b63c2dd0be11c529"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.tail": {
+      "reference": {
+        "ok": true,
+        "hash": "4a807470e1e395aa"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.sourceMonthly": {
+      "reference": {
+        "ok": true,
+        "hash": "ea2ba9fa8d154145"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.messageCount": {
+      "reference": {
+        "ok": true,
+        "hash": "1493736d03e0ee37"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.messageDigest": {
+      "reference": {
+        "ok": true,
+        "hash": "2bde97f4e79774c1"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": true
+      },
+      "e44-bsqlite-addons": "n/a"
+    },
+    "rollback.int64probe": {
+      "reference": {
+        "ok": true,
+        "hash": "69701cdae448c791"
+      },
+      "e44-wasm-addons": {
+        "ok": true,
+        "sameAsReference": false,
+        "diff": {
+          "engine": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "bigint",
+                "v": "534567890123456789n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "bigint",
+                "v": "9223372036854775807n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          },
+          "reference": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "number",
+                "v": 534567890123456800,
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "number",
+                "v": 9223372036854776000,
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "e44-wasm-noaddons": {
+        "ok": true,
+        "sameAsReference": false,
+        "diff": {
+          "engine": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "bigint",
+                "v": "534567890123456789n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "bigint",
+                "v": "9223372036854775807n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          },
+          "reference": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "number",
+                "v": 534567890123456800,
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "number",
+                "v": 9223372036854776000,
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "e31-wasm-addons": {
+        "ok": true,
+        "sameAsReference": false,
+        "diff": {
+          "engine": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "bigint",
+                "v": "534567890123456789n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "bigint",
+                "v": "9223372036854775807n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          },
+          "reference": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "number",
+                "v": 534567890123456800,
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "number",
+                "v": 9223372036854776000,
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "e44-bsqlite-addons": "n/a"
+    }
+  },
+  "summary": {
+    "e44-wasm-addons": {
+      "exitCode": 0,
+      "abi": "149",
+      "electron": "44.2.0",
+      "allowAddons": true,
+      "copyVia": "koffi",
+      "selfCheck": [
+        true,
+        true,
+        true
+      ],
+      "selfCheckAddonProbe": "ERR_DLOPEN_FAILED",
+      "engineLoaded": true,
+      "engineLoadMs": 54.2,
+      "engineInfo": {
+        "sqlite": "3.53.4",
+        "mc": "SQLite3 Multiple Ciphers 2.5.1",
+        "vfs": "multipleciphers-unix-none"
+      },
+      "controlNodeFsOutside": {
+        "denied": true,
+        "code": "ERR_ACCESS_DENIED"
+      },
+      "koffi": {
+        "loaded": true,
+        "version": "3.1.0"
+      },
+      "walDefaultLocking": {
+        "ok": false,
+        "error": "null function"
+      },
+      "wal": {
+        "ok": true,
+        "journalMode": "wal",
+        "checkpoint": [
+          0,
+          0,
+          0
+        ],
+        "count": true,
+        "digest": true,
+        "maxRow": true
+      },
+      "rollback": {
+        "ok": true,
+        "journalMode": "delete",
+        "count": true,
+        "digest": true
+      },
+      "wrongKey": {
+        "rejected": true,
+        "error": "SQLITE_NOTADB: sqlite3 result code 26: file is not a database"
+      },
+      "benchMedian": {
+        "copyMs": 15.73,
+        "openTotalMs": 96.08,
+        "loadBytesMs": 46.46,
+        "openVerifyMs": 1.53,
+        "checkpointMs": 48.63,
+        "watchBatchMs": 47.53,
+        "rawIncrementalMs": 11.18,
+        "listChats50Ms": 2.38,
+        "tailMs": 0.08,
+        "openPlusWatchBatchMs": 147.6
+      },
+      "benchFirst": {
+        "openTotalMs": 96.44,
+        "watchBatchMs": 46.44
+      },
+      "keyScan": {
+        "candidates": 501,
+        "totalMs": 124.34,
+        "perCandidateMs": 0.25,
+        "hits": 1,
+        "rightKeyHit": true
+      },
+      "mem": {
+        "before": {
+          "rssMB": 104,
+          "heapUsedMB": 4,
+          "externalMB": 2,
+          "arrayBuffersMB": 0
+        },
+        "afterEngineLoad": {
+          "rssMB": 112,
+          "heapUsedMB": 5,
+          "externalMB": 4,
+          "arrayBuffersMB": 0
+        },
+        "afterOpenFirstIter": {
+          "rssMB": 523,
+          "heapUsedMB": 6,
+          "externalMB": 159,
+          "arrayBuffersMB": 0
+        },
+        "end": {
+          "rssMB": 465,
+          "heapUsedMB": 16,
+          "externalMB": 99,
+          "arrayBuffersMB": 0
+        }
+      }
+    },
+    "e44-wasm-noaddons": {
+      "exitCode": 0,
+      "abi": "149",
+      "electron": "44.2.0",
+      "allowAddons": false,
+      "copyVia": "preplaced",
+      "selfCheck": [
+        true,
+        true,
+        true
+      ],
+      "selfCheckAddonProbe": "ERR_DLOPEN_DISABLED",
+      "engineLoaded": true,
+      "engineLoadMs": 57.61,
+      "engineInfo": {
+        "sqlite": "3.53.4",
+        "mc": "SQLite3 Multiple Ciphers 2.5.1",
+        "vfs": "multipleciphers-unix-none"
+      },
+      "controlNodeFsOutside": {
+        "denied": true,
+        "code": "ERR_ACCESS_DENIED"
+      },
+      "walDefaultLocking": {
+        "ok": false,
+        "error": "null function"
+      },
+      "wal": {
+        "ok": true,
+        "journalMode": "wal",
+        "checkpoint": [
+          0,
+          0,
+          0
+        ],
+        "count": true,
+        "digest": true,
+        "maxRow": true
+      },
+      "rollback": {
+        "ok": true,
+        "journalMode": "delete",
+        "count": true,
+        "digest": true
+      },
+      "wrongKey": {
+        "rejected": true,
+        "error": "SQLITE_NOTADB: sqlite3 result code 26: file is not a database"
+      },
+      "benchMedian": {
+        "copyMs": 0,
+        "openTotalMs": 91.9,
+        "loadBytesMs": 31.57,
+        "openVerifyMs": 1.79,
+        "checkpointMs": 56.51,
+        "watchBatchMs": 65.89,
+        "rawIncrementalMs": 13.39,
+        "listChats50Ms": 2.78,
+        "tailMs": 0.11,
+        "openPlusWatchBatchMs": 153.28
+      },
+      "benchFirst": {
+        "openTotalMs": 82.37,
+        "watchBatchMs": 62.92
+      },
+      "keyScan": {
+        "candidates": 501,
+        "totalMs": 181.35,
+        "perCandidateMs": 0.36,
+        "hits": 1,
+        "rightKeyHit": true
+      },
+      "mem": {
+        "before": {
+          "rssMB": 102,
+          "heapUsedMB": 3,
+          "externalMB": 2,
+          "arrayBuffersMB": 0
+        },
+        "afterEngineLoad": {
+          "rssMB": 111,
+          "heapUsedMB": 5,
+          "externalMB": 4,
+          "arrayBuffersMB": 0
+        },
+        "afterOpenFirstIter": {
+          "rssMB": 521,
+          "heapUsedMB": 6,
+          "externalMB": 159,
+          "arrayBuffersMB": 0
+        },
+        "end": {
+          "rssMB": 522,
+          "heapUsedMB": 16,
+          "externalMB": 159,
+          "arrayBuffersMB": 0
+        }
+      }
+    },
+    "e31-wasm-addons": {
+      "exitCode": 0,
+      "abi": "125",
+      "electron": "31.7.7",
+      "allowAddons": true,
+      "copyVia": "koffi",
+      "selfCheck": [
+        true,
+        true,
+        true
+      ],
+      "selfCheckAddonProbe": "ERR_DLOPEN_FAILED",
+      "engineLoaded": true,
+      "engineLoadMs": 103.89,
+      "engineInfo": {
+        "sqlite": "3.53.4",
+        "mc": "SQLite3 Multiple Ciphers 2.5.1",
+        "vfs": "multipleciphers-unix-none"
+      },
+      "controlNodeFsOutside": {
+        "denied": true,
+        "code": "ERR_ACCESS_DENIED"
+      },
+      "koffi": {
+        "loaded": true,
+        "version": "3.1.0"
+      },
+      "walDefaultLocking": {
+        "ok": false,
+        "error": "null function or function signature mismatch"
+      },
+      "wal": {
+        "ok": true,
+        "journalMode": "wal",
+        "checkpoint": [
+          0,
+          0,
+          0
+        ],
+        "count": true,
+        "digest": true,
+        "maxRow": true
+      },
+      "rollback": {
+        "ok": true,
+        "journalMode": "delete",
+        "count": true,
+        "digest": true
+      },
+      "wrongKey": {
+        "rejected": true,
+        "error": "SQLITE_NOTADB: sqlite3 result code 26: file is not a database"
+      },
+      "benchMedian": {
+        "copyMs": 16.68,
+        "openTotalMs": 108.1,
+        "loadBytesMs": 59.93,
+        "openVerifyMs": 1.54,
+        "checkpointMs": 49.42,
+        "watchBatchMs": 61.76,
+        "rawIncrementalMs": 14.97,
+        "listChats50Ms": 4.39,
+        "tailMs": 0.11,
+        "openPlusWatchBatchMs": 172.39
+      },
+      "benchFirst": {
+        "openTotalMs": 104.94,
+        "watchBatchMs": 67.98
+      },
+      "keyScan": {
+        "candidates": 501,
+        "totalMs": 140.65,
+        "perCandidateMs": 0.28,
+        "hits": 1,
+        "rightKeyHit": true
+      },
+      "mem": {
+        "before": {
+          "rssMB": 41,
+          "heapUsedMB": 4,
+          "externalMB": 2,
+          "arrayBuffersMB": 0
+        },
+        "afterEngineLoad": {
+          "rssMB": 49,
+          "heapUsedMB": 4,
+          "externalMB": 11,
+          "arrayBuffersMB": 0
+        },
+        "afterOpenFirstIter": {
+          "rssMB": 315,
+          "heapUsedMB": 5,
+          "externalMB": 158,
+          "arrayBuffersMB": 0
+        },
+        "end": {
+          "rssMB": 316,
+          "heapUsedMB": 6,
+          "externalMB": 154,
+          "arrayBuffersMB": 0
+        }
+      }
+    },
+    "e31-bsqlite-addons": {
+      "exitCode": 0,
+      "abi": "125",
+      "electron": "31.7.7",
+      "allowAddons": true,
+      "copyVia": "koffi",
+      "selfCheck": [
+        true,
+        true,
+        true
+      ],
+      "selfCheckAddonProbe": "ERR_DLOPEN_FAILED",
+      "engineLoaded": true,
+      "engineLoadMs": 27.64,
+      "engineInfo": {
+        "sqlite": "3.49.2",
+        "mc": "SQLite3 Multiple Ciphers 2.1.1"
+      },
+      "controlNodeFsOutside": {
+        "denied": true,
+        "code": "ERR_ACCESS_DENIED"
+      },
+      "koffi": {
+        "loaded": true,
+        "version": "3.1.0"
+      },
+      "wal": {
+        "ok": true,
+        "journalMode": "wal",
+        "checkpoint": [
+          0,
+          0,
+          0
+        ],
+        "count": true,
+        "digest": true,
+        "maxRow": true
+      },
+      "rollback": {
+        "ok": true,
+        "journalMode": "delete",
+        "count": true,
+        "digest": true
+      },
+      "wrongKey": {
+        "rejected": true,
+        "error": "file is not a database"
+      },
+      "benchMedian": {
+        "copyMs": 14.26,
+        "openTotalMs": 57.31,
+        "loadBytesMs": 0,
+        "openVerifyMs": 24.64,
+        "checkpointMs": 30.31,
+        "watchBatchMs": 36.09,
+        "rawIncrementalMs": 7.83,
+        "listChats50Ms": 1.86,
+        "tailMs": 0.05,
+        "openPlusWatchBatchMs": 94.72
+      },
+      "benchFirst": {
+        "openTotalMs": 53.7,
+        "watchBatchMs": 40.28
+      },
+      "keyScan": {
+        "candidates": 501,
+        "totalMs": 377.12,
+        "perCandidateMs": 0.75,
+        "hits": 1,
+        "rightKeyHit": true
+      },
+      "mem": {
+        "before": {
+          "rssMB": 41,
+          "heapUsedMB": 4,
+          "externalMB": 2,
+          "arrayBuffersMB": 0
+        },
+        "afterEngineLoad": {
+          "rssMB": 43,
+          "heapUsedMB": 4,
+          "externalMB": 2,
+          "arrayBuffersMB": 0
+        },
+        "afterOpenFirstIter": {
+          "rssMB": 127,
+          "heapUsedMB": 73,
+          "externalMB": 2,
+          "arrayBuffersMB": 0
+        },
+        "end": {
+          "rssMB": 130,
+          "heapUsedMB": 72,
+          "externalMB": 2,
+          "arrayBuffersMB": 0
+        }
+      }
+    },
+    "e44-bsqlite-addons": {
+      "exitCode": 0,
+      "abi": "149",
+      "electron": "44.2.0",
+      "allowAddons": true,
+      "copyVia": "koffi",
+      "selfCheck": [
+        true,
+        true,
+        true
+      ],
+      "selfCheckAddonProbe": "ERR_DLOPEN_FAILED",
+      "engineLoaded": false,
+      "engineErr": "ERR_DLOPEN_FAILED",
+      "controlNodeFsOutside": {
+        "denied": true,
+        "code": "ERR_ACCESS_DENIED"
+      },
+      "koffi": {
+        "loaded": true,
+        "version": "3.1.0"
+      },
+      "mem": {
+        "before": {
+          "rssMB": 104,
+          "heapUsedMB": 4,
+          "externalMB": 2,
+          "arrayBuffersMB": 0
+        },
+        "afterEngineLoad": {
+          "rssMB": 105,
+          "heapUsedMB": 4,
+          "externalMB": 2,
+          "arrayBuffersMB": 0
+        }
+      }
+    }
+  },
+  "allChecksIdenticalAcrossEngines": false,
+  "differingChecks": [
+    "wal.int64probe",
+    "rollback.int64probe"
+  ]
+}

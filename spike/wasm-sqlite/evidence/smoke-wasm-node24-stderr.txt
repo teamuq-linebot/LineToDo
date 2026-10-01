@@ -1,0 +1,11 @@
+Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')
+    at Object.callee [as initOptions] (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite/vendor/sqlite3mc-2.5.1-sqlite-3.53.4-wasm/sqlite3mc-wasm-3530400/jswasm/sqlite3.mjs:12618:51)
+    at installOpfsVfs (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite/vendor/sqlite3mc-2.5.1-sqlite-3.53.4-wasm/sqlite3mc-wasm-3530400/jswasm/sqlite3.mjs:13347:22)
+    at file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite/vendor/sqlite3mc-2.5.1-sqlite-3.53.4-wasm/sqlite3mc-wasm-3530400/jswasm/sqlite3.mjs:13416:10
+    at file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite/vendor/sqlite3mc-2.5.1-sqlite-3.53.4-wasm/sqlite3mc-wasm-3530400/jswasm/sqlite3.mjs:5769:51
+Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')
+    at Object.callee [as initOptions] (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite/vendor/sqlite3mc-2.5.1-sqlite-3.53.4-wasm/sqlite3mc-wasm-3530400/jswasm/sqlite3.mjs:12618:51)
+    at installOpfsWlVfs (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite/vendor/sqlite3mc-2.5.1-sqlite-3.53.4-wasm/sqlite3mc-wasm-3530400/jswasm/sqlite3.mjs:14346:22)
+    at file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite/vendor/sqlite3mc-2.5.1-sqlite-3.53.4-wasm/sqlite3mc-wasm-3530400/jswasm/sqlite3.mjs:14395:10
+    at file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite/vendor/sqlite3mc-2.5.1-sqlite-3.53.4-wasm/sqlite3mc-wasm-3530400/jswasm/sqlite3.mjs:5769:51
+    at async file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite/scripts/smoke-wasm.mjs:12:17

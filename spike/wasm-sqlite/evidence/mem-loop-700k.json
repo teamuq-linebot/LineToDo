@@ -1,0 +1,96 @@
+{
+  "engine": "wasm",
+  "runtime": "44.2.0",
+  "dbBytes": [
+    {
+      "f": "m.edb",
+      "bytes": 196333568
+    },
+    {
+      "f": "m.edb-shm",
+      "bytes": 393216
+    },
+    {
+      "f": "m.edb-wal",
+      "bytes": 3996432
+    }
+  ],
+  "N": 12,
+  "idleMs": 2000,
+  "peakRssMB": 822,
+  "final": 255,
+  "samples": [
+    {
+      "i": 0,
+      "ms": 590,
+      "rssAfterOpen": 623,
+      "rssAfterIdle": 433
+    },
+    {
+      "i": 1,
+      "ms": 633,
+      "rssAfterOpen": 816,
+      "rssAfterIdle": 246
+    },
+    {
+      "i": 2,
+      "ms": 573,
+      "rssAfterOpen": 629,
+      "rssAfterIdle": 249
+    },
+    {
+      "i": 3,
+      "ms": 620,
+      "rssAfterOpen": 632,
+      "rssAfterIdle": 251
+    },
+    {
+      "i": 4,
+      "ms": 617,
+      "rssAfterOpen": 634,
+      "rssAfterIdle": 251
+    },
+    {
+      "i": 5,
+      "ms": 512,
+      "rssAfterOpen": 634,
+      "rssAfterIdle": 634
+    },
+    {
+      "i": 6,
+      "ms": 466,
+      "rssAfterOpen": 822,
+      "rssAfterIdle": 252
+    },
+    {
+      "i": 7,
+      "ms": 390,
+      "rssAfterOpen": 635,
+      "rssAfterIdle": 252
+    },
+    {
+      "i": 8,
+      "ms": 396,
+      "rssAfterOpen": 635,
+      "rssAfterIdle": 253
+    },
+    {
+      "i": 9,
+      "ms": 392,
+      "rssAfterOpen": 635,
+      "rssAfterIdle": 255
+    },
+    {
+      "i": 10,
+      "ms": 471,
+      "rssAfterOpen": 637,
+      "rssAfterIdle": 255
+    },
+    {
+      "i": 11,
+      "ms": 387,
+      "rssAfterOpen": 638,
+      "rssAfterIdle": 255
+    }
+  ]
+}
