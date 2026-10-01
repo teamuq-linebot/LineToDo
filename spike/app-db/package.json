@@ -1,0 +1,21 @@
+{
+  "name": "app-db-spike",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Spike: which SQLite engine can host line-todo's own persistent line-todo.db inside a TeamUQ 1.6.8 full-trust backend (Electron 44.2.0 run-as-node + 1.6.8 permission flags, DB in plugin dataDir)",
+  "type": "module",
+  "candidates": {
+    "node-sqlite": "built-in node:sqlite DatabaseSync of the Electron runtime (no package)",
+    "bs3-13.0.2-teamuq": "copy of C:/teamuq/teamuq-electron/node_modules/better-sqlite3 (read-only source)",
+    "bs3-13.0.2-npm": "npm pack better-sqlite3@13.0.2 (official registry tarball)",
+    "bs3-13.0.3-npm": "npm pack better-sqlite3@13.0.3 (official registry tarball, latest)",
+    "bs3-11.10.0-linetodo": "copy of line-todo main tree node_modules/better-sqlite3 (ABI 125 build, negative control)",
+    "wasm-nodefs": "SQLite3MultipleCiphers WASM 2.5.1 (../wasm-sqlite/vendor) + spike-local synchronous node:fs VFS"
+  },
+  "scripts": {
+    "setup": "node setup.mjs",
+    "build": "node build.mjs",
+    "run-all": "node scripts/run-all.mjs",
+    "compare": "node scripts/compare.mjs"
+  }
+}

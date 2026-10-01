@@ -1,0 +1,16 @@
+{
+ "label": "e44-bs3-13.0.3-npm-noaddons",
+ "engineLoaded": false,
+ "engineError": {
+  "loaded": false,
+  "code": "ERR_DLOPEN_DISABLED",
+  "name": "Error",
+  "message": "Cannot load native addon because loading addons is disabled."
+ },
+ "selfChecks": {
+  "create": "true/true/true"
+ },
+ "exits": {
+  "create": "0x0"
+ }
+}

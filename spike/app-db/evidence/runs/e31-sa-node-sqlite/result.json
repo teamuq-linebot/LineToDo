@@ -1,0 +1,72 @@
+{
+  "label": "e31-sa-node-sqlite",
+  "electronExe": "C:/teamuq/line-todo/node_modules/electron/dist/electron.exe",
+  "engine": "node-sqlite",
+  "vendor": null,
+  "wasmExclusive": false,
+  "wasmSyncSkip": false,
+  "allowAddons": true,
+  "permission": false,
+  "flags": [],
+  "dirs": {
+    "runRoot": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-node-sqlite-StQLh7",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-node-sqlite-StQLh7\\data",
+    "bootstrapFile": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-node-sqlite-StQLh7\\host\\host-bootstrap.mjs"
+  },
+  "phases": [
+    {
+      "phase": "create",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 272,
+      "resultWritten": true,
+      "filesAfter": [],
+      "result": {
+        "phase": "create",
+        "label": "e31-sa-node-sqlite",
+        "runtime": {
+          "node": "20.18.0",
+          "electron": "31.7.7",
+          "modules_abi": "125",
+          "napi": "9",
+          "sqliteBuiltin": null
+        },
+        "permissionActive": false,
+        "selfCheckBoot": {
+          "ok": false,
+          "code": "permission_model_inactive",
+          "allowAddons": true,
+          "probes": {
+            "permission": "absent"
+          }
+        },
+        "engine": {
+          "loaded": false,
+          "code": "ERR_UNKNOWN_BUILTIN_MODULE",
+          "name": "Error",
+          "message": "No such built-in module: node:sqlite"
+        },
+        "selfCheckAfterEngine": {
+          "ok": false,
+          "code": "permission_model_inactive",
+          "allowAddons": true,
+          "probes": {
+            "permission": "absent"
+          }
+        },
+        "memoryRssMB": 36,
+        "selfCheckEnd": {
+          "ok": false,
+          "code": "permission_model_inactive",
+          "allowAddons": true,
+          "probes": {
+            "permission": "absent"
+          }
+        }
+      }
+    }
+  ]
+}

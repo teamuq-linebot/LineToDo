@@ -1,0 +1,2 @@
+(node:9588) [PERM0001] SecurityWarning: The flag --allow-addons must be used with extreme caution. It could invalidate the permission model.
+(Use `electron --trace-warnings ...` to show where the warning was created)

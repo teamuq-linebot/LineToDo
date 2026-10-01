@@ -1,0 +1,120 @@
+{
+  "label": "e44-bs3-13.0.3-npm-noaddons",
+  "electronExe": "C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe",
+  "engine": "bsqlite",
+  "vendor": "bs3-13.0.3-npm",
+  "wasmExclusive": false,
+  "wasmSyncSkip": false,
+  "allowAddons": false,
+  "permission": true,
+  "flags": [
+    "--permission",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-bs3-13.0.3-npm-noaddons-zxj58e/host/host-bootstrap.mjs",
+    "--allow-fs-read=C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-bs3-13.0.3-npm-noaddons-zxj58e/data",
+    "--allow-fs-write=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-bs3-13.0.3-npm-noaddons-zxj58e/data"
+  ],
+  "dirs": {
+    "runRoot": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.3-npm-noaddons-zxj58e",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.3-npm-noaddons-zxj58e\\data",
+    "bootstrapFile": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.3-npm-noaddons-zxj58e\\host\\host-bootstrap.mjs"
+  },
+  "phases": [
+    {
+      "phase": "create",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 138,
+      "resultWritten": true,
+      "filesAfter": [],
+      "result": {
+        "phase": "create",
+        "label": "e44-bs3-13.0.3-npm-noaddons",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": false,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "false",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_DISABLED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": false,
+          "code": "ERR_DLOPEN_DISABLED",
+          "name": "Error",
+          "message": "Cannot load native addon because loading addons is disabled."
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": false,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "false",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_DISABLED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "memoryRssMB": 105,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": false,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "false",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_DISABLED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    }
+  ]
+}

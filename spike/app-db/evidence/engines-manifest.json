@@ -1,0 +1,233 @@
+{
+  "generatedAt": "2026-10-01T11:19:36.045Z",
+  "engines": {
+    "bs3-13.0.2-teamuq": {
+      "dir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db\\vendor\\bs3-13.0.2-teamuq\\node_modules\\better-sqlite3",
+      "version": "13.0.2",
+      "enginesField": {
+        "node": ">=22"
+      },
+      "dependencies": {
+        "node-addon-api": "^8.0.0"
+      },
+      "bindingGypNapiVersion": 10,
+      "nativeFiles": [
+        {
+          "file": "prebuilds/darwin-arm64.node",
+          "sha256": "98e0e8acd01c632fe5615243e1296af0372826f8783b18fc31c506f73c47459c"
+        },
+        {
+          "file": "prebuilds/darwin-x64.node",
+          "sha256": "e6db154afe9d250e242e2ea3d45d273718ab80a0751d08873637553031752d21"
+        },
+        {
+          "file": "prebuilds/linux-arm64.node",
+          "sha256": "0ca5eac99a723270608f5233fbbb2093dbc5579dfdb99756ad967deb68bdebec"
+        },
+        {
+          "file": "prebuilds/linux-x64.node",
+          "sha256": "6fd4292c6c5f352436cd85c9e1cb286978efa43c20ae350973f83414ced9991d"
+        },
+        {
+          "file": "prebuilds/linuxmusl-arm64.node",
+          "sha256": "09d5927246024b6d93c079ae1079554cbdd85790792342bf24636987dce7a786"
+        },
+        {
+          "file": "prebuilds/linuxmusl-x64.node",
+          "sha256": "d661495d2dd4a026ccda893dd8ea1e2c245c3a681bd28224064953c8a9cc0a72"
+        },
+        {
+          "file": "prebuilds/win32-arm64.node",
+          "sha256": "4fae0e15e26ab8747379bff2f40008107e5ba6e0217280fdbbbda6d23fe021e8"
+        },
+        {
+          "file": "prebuilds/win32-x64.node",
+          "sha256": "ecfb86221a674a6cdba63b1ac162b99386a61d0e38934b6c3dfcd9da11b6ee26"
+        }
+      ],
+      "source": "C:/teamuq/teamuq-electron/node_modules/better-sqlite3"
+    },
+    "bs3-13.0.2-npm": {
+      "dir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db\\vendor\\bs3-13.0.2-npm\\node_modules\\better-sqlite3",
+      "version": "13.0.2",
+      "enginesField": {
+        "node": ">=22"
+      },
+      "dependencies": {
+        "node-addon-api": "^8.0.0"
+      },
+      "bindingGypNapiVersion": 10,
+      "nativeFiles": [
+        {
+          "file": "prebuilds/darwin-arm64.node",
+          "sha256": "98e0e8acd01c632fe5615243e1296af0372826f8783b18fc31c506f73c47459c"
+        },
+        {
+          "file": "prebuilds/darwin-x64.node",
+          "sha256": "e6db154afe9d250e242e2ea3d45d273718ab80a0751d08873637553031752d21"
+        },
+        {
+          "file": "prebuilds/linux-arm64.node",
+          "sha256": "0ca5eac99a723270608f5233fbbb2093dbc5579dfdb99756ad967deb68bdebec"
+        },
+        {
+          "file": "prebuilds/linux-x64.node",
+          "sha256": "6fd4292c6c5f352436cd85c9e1cb286978efa43c20ae350973f83414ced9991d"
+        },
+        {
+          "file": "prebuilds/linuxmusl-arm64.node",
+          "sha256": "09d5927246024b6d93c079ae1079554cbdd85790792342bf24636987dce7a786"
+        },
+        {
+          "file": "prebuilds/linuxmusl-x64.node",
+          "sha256": "d661495d2dd4a026ccda893dd8ea1e2c245c3a681bd28224064953c8a9cc0a72"
+        },
+        {
+          "file": "prebuilds/win32-arm64.node",
+          "sha256": "4fae0e15e26ab8747379bff2f40008107e5ba6e0217280fdbbbda6d23fe021e8"
+        },
+        {
+          "file": "prebuilds/win32-x64.node",
+          "sha256": "ecfb86221a674a6cdba63b1ac162b99386a61d0e38934b6c3dfcd9da11b6ee26"
+        }
+      ],
+      "source": "npm registry better-sqlite3@13.0.2",
+      "tarball": "better-sqlite3-13.0.2.tgz",
+      "tarballSha256": "785493c44913bd6415eb4ef244f97b4774a8ba1ee7c45137f05c3ad09282bc75",
+      "npmIntegrity": "sha512-jW6oufeDhXZaiX9Lw5A+oerVClx4iFrI6uDj1zu7SqUAjak9vbJvA0NEcKLNxHiQHb6kYCoFzzXYV0YOauhV3g==",
+      "npmShasum": "c57fca130a596c2f627089c597becc44d4e2f077"
+    },
+    "bs3-13.0.3-npm": {
+      "dir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db\\vendor\\bs3-13.0.3-npm\\node_modules\\better-sqlite3",
+      "version": "13.0.3",
+      "enginesField": {
+        "node": ">=22"
+      },
+      "dependencies": {
+        "node-addon-api": "^8.0.0"
+      },
+      "bindingGypNapiVersion": 10,
+      "nativeFiles": [
+        {
+          "file": "prebuilds/darwin-arm64.node",
+          "sha256": "98e0e8acd01c632fe5615243e1296af0372826f8783b18fc31c506f73c47459c"
+        },
+        {
+          "file": "prebuilds/darwin-x64.node",
+          "sha256": "e6db154afe9d250e242e2ea3d45d273718ab80a0751d08873637553031752d21"
+        },
+        {
+          "file": "prebuilds/linux-arm64.node",
+          "sha256": "8ba771f284dfd9430e3ef8e2ffc373ed7cc5a92fc7c4c0c7baf39dd672863485"
+        },
+        {
+          "file": "prebuilds/linux-x64.node",
+          "sha256": "6fd4292c6c5f352436cd85c9e1cb286978efa43c20ae350973f83414ced9991d"
+        },
+        {
+          "file": "prebuilds/linuxmusl-arm64.node",
+          "sha256": "09d5927246024b6d93c079ae1079554cbdd85790792342bf24636987dce7a786"
+        },
+        {
+          "file": "prebuilds/linuxmusl-x64.node",
+          "sha256": "d661495d2dd4a026ccda893dd8ea1e2c245c3a681bd28224064953c8a9cc0a72"
+        },
+        {
+          "file": "prebuilds/win32-arm64.node",
+          "sha256": "a47870d114b98baecaff0baa51cfb93d6280d43f064280adaadefafb6949f1bf"
+        },
+        {
+          "file": "prebuilds/win32-x64.node",
+          "sha256": "e21e5efd71fba66578e95b62554d9028064a80dafd7221bf8a8ef155de8d240a"
+        }
+      ],
+      "source": "npm registry better-sqlite3@13.0.3",
+      "tarball": "better-sqlite3-13.0.3.tgz",
+      "tarballSha256": "77e0513dc1a469fb3bceec4c7fb5ad3f403109787eda05be047ec17fd56868cb",
+      "npmIntegrity": "sha512-RbOBxmLBG8uvFUc15X9+9SFemKcQ0WBuISBVkpuiaUB2qblC8UWlHEjdWVoZ8AdhSwmoEgsiXKfopX0CQxaACQ==",
+      "npmShasum": "b6ea0dc7fff7e28d04d9093e81051d38f7beabe2"
+    },
+    "bs3-11.10.0-linetodo": {
+      "dir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db\\vendor\\bs3-11.10.0-linetodo\\node_modules\\better-sqlite3",
+      "version": "11.10.0",
+      "enginesField": null,
+      "dependencies": {
+        "bindings": "^1.5.0",
+        "prebuild-install": "^7.1.1"
+      },
+      "bindingGypNapiVersion": null,
+      "nativeFiles": [
+        {
+          "file": "build/Release/better_sqlite3.node",
+          "sha256": "cd436f5af1781f2c234a1259ed4ae30a9e7022a51eb29b74c8093a29a06e0ae3"
+        }
+      ],
+      "source": "C:\\teamuq\\line-todo\\node_modules\\better-sqlite3"
+    },
+    "wasm": {
+      "dir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db\\vendor\\wasm",
+      "copiedFrom": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\wasm-sqlite\\vendor\\sqlite3mc-2.5.1-sqlite-3.53.4-wasm\\sqlite3mc-wasm-3530400\\jswasm",
+      "source": "https://github.com/utelle/SQLite3MultipleCiphers/releases/tag/v2.5.1 (sqlite3mc-2.5.1-sqlite-3.53.4-wasm.zip, verified by ../wasm-sqlite/scripts/fetch-sqlite3mc-wasm.mjs)",
+      "files": [
+        {
+          "file": "sqlite3.mjs",
+          "sha256": "058b526608afdd81c244540f525286275d7bcc6a11676d19fdda7be50502f10e"
+        },
+        {
+          "file": "sqlite3.wasm",
+          "sha256": "b6aedab9eee5cd5de0f13498e0bf64bb5ee9cc786d1d0303cc365578b64d18ab"
+        }
+      ]
+    }
+  },
+  "teamuqVsOfficial_13_0_2": [
+    {
+      "file": "prebuilds/darwin-arm64.node",
+      "teamuq": "98e0e8acd01c632fe5615243e1296af0372826f8783b18fc31c506f73c47459c",
+      "official": "98e0e8acd01c632fe5615243e1296af0372826f8783b18fc31c506f73c47459c",
+      "identical": true
+    },
+    {
+      "file": "prebuilds/darwin-x64.node",
+      "teamuq": "e6db154afe9d250e242e2ea3d45d273718ab80a0751d08873637553031752d21",
+      "official": "e6db154afe9d250e242e2ea3d45d273718ab80a0751d08873637553031752d21",
+      "identical": true
+    },
+    {
+      "file": "prebuilds/linux-arm64.node",
+      "teamuq": "0ca5eac99a723270608f5233fbbb2093dbc5579dfdb99756ad967deb68bdebec",
+      "official": "0ca5eac99a723270608f5233fbbb2093dbc5579dfdb99756ad967deb68bdebec",
+      "identical": true
+    },
+    {
+      "file": "prebuilds/linux-x64.node",
+      "teamuq": "6fd4292c6c5f352436cd85c9e1cb286978efa43c20ae350973f83414ced9991d",
+      "official": "6fd4292c6c5f352436cd85c9e1cb286978efa43c20ae350973f83414ced9991d",
+      "identical": true
+    },
+    {
+      "file": "prebuilds/linuxmusl-arm64.node",
+      "teamuq": "09d5927246024b6d93c079ae1079554cbdd85790792342bf24636987dce7a786",
+      "official": "09d5927246024b6d93c079ae1079554cbdd85790792342bf24636987dce7a786",
+      "identical": true
+    },
+    {
+      "file": "prebuilds/linuxmusl-x64.node",
+      "teamuq": "d661495d2dd4a026ccda893dd8ea1e2c245c3a681bd28224064953c8a9cc0a72",
+      "official": "d661495d2dd4a026ccda893dd8ea1e2c245c3a681bd28224064953c8a9cc0a72",
+      "identical": true
+    },
+    {
+      "file": "prebuilds/win32-arm64.node",
+      "teamuq": "4fae0e15e26ab8747379bff2f40008107e5ba6e0217280fdbbbda6d23fe021e8",
+      "official": "4fae0e15e26ab8747379bff2f40008107e5ba6e0217280fdbbbda6d23fe021e8",
+      "identical": true
+    },
+    {
+      "file": "prebuilds/win32-x64.node",
+      "teamuq": "ecfb86221a674a6cdba63b1ac162b99386a61d0e38934b6c3dfcd9da11b6ee26",
+      "official": "ecfb86221a674a6cdba63b1ac162b99386a61d0e38934b6c3dfcd9da11b6ee26",
+      "identical": true
+    }
+  ]
+}

@@ -1,0 +1,3532 @@
+{
+  "references": {
+    "prod": "e31-sa-bs3-11.10.0",
+    "e44": "e44-bs3-13.0.3-npm"
+  },
+  "matrix": {
+    "e31-sa-bs3-11.10.0": {
+      "runtime": {
+        "node": "20.18.0",
+        "electron": "31.7.7",
+        "modules_abi": "125",
+        "napi": "9",
+        "sqliteBuiltin": null
+      },
+      "permission": false,
+      "allowAddons": true,
+      "engine": "bsqlite",
+      "vendor": "bs3-11.10.0-linetodo",
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "no --import-from",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "better-sqlite3",
+          "package": "11.10.0",
+          "sqlite": "3.49.2",
+          "compileOptionsSample": [
+            "DEFAULT_FOREIGN_KEYS",
+            "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+            "DEFAULT_WAL_SYNCHRONOUS=1",
+            "DQS=0",
+            "OMIT_DEPRECATED",
+            "OMIT_PROGRESS_CALLBACK",
+            "OMIT_SHARED_CACHE",
+            "OMIT_TCL_VARIABLE",
+            "THREADSAFE=2"
+          ]
+        },
+        "selfChecksAllOk": false,
+        "selfChecks": [
+          [
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseOk": true,
+        "phaseError": null,
+        "journalMode": "wal",
+        "lockingMode": "normal",
+        "quickCheck": "ok",
+        "foreignKeys": 1,
+        "filesAfterAppendKill": [
+          {
+            "name": "line-todo.db",
+            "size": 577536
+          },
+          {
+            "name": "line-todo.db-shm",
+            "size": 32768
+          },
+          {
+            "name": "line-todo.db-wal",
+            "size": 210152
+          }
+        ]
+      },
+      "schemaMigration": {
+        "freshUserVersion": 6,
+        "openLogs": [
+          "log [db] quick_check=ok (2ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-bs3-11.10.0-4JV1Jc\\data\\line-todo.db",
+          "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-bs3-11.10.0-4JV1Jc\\data\\line-todo.db (schema 0 -> 6)"
+        ],
+        "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf",
+        "schemaDigestEqualsProd": true,
+        "legacyV1toV6": {
+          "ok": true,
+          "logs": [
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-bs3-11.10.0-4JV1Jc\\data\\legacy-v1.db (schema 1 -> 6)"
+          ],
+          "userVersion": 6,
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "badMigrationThrew": true,
+          "badMigrationIsDbIntegrityError": true,
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          }
+        },
+        "importCurrentWriterDb": "no --import-from"
+      },
+      "restart": {
+        "ok": true,
+        "killExit": "0x1",
+        "digestEqualsBeforeKill": true,
+        "markerPresent": true,
+        "legacyStillV6": true,
+        "quickCheck": "ok",
+        "userVersion": 6
+      },
+      "apiShape": {
+        "adapterFiles": [],
+        "adapterNonCommentLines": 0,
+        "apiDiffVsE44Bs3": [],
+        "apiDiffVsProdBs3_11": [],
+        "repoOpsDiffVsE44Bs3": [],
+        "repoOpsDiffVsProdBs3_11": [],
+        "opsSha": "ef7194e4a96d3e0567949721013ddc7fdb3d55e1c6535b4a93fa002e9785b1f4"
+      },
+      "outsideDataDirOpen": {
+        "opened": true,
+        "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-29520.db"
+      },
+      "interopSystemNodeSqlite": {
+        "node": "24.2.0",
+        "quickCheck": "ok",
+        "userVersion": 6,
+        "journalModeOnDisk": "wal",
+        "messages": 2359,
+        "todos": 9
+      },
+      "perf": {
+        "openDatabaseMs": 9.41,
+        "insertBatch2000": 24.52,
+        "listMessages50": 0.65,
+        "listTodos": 0.32,
+        "commitLineImportBatch40": 4.5,
+        "engineLoadMs": 40.43,
+        "rssMB": 52
+      },
+      "wasmVfs": null
+    },
+    "e31-sa-bs3-13.0.3-npm": {
+      "runtime": null,
+      "permission": false,
+      "allowAddons": true,
+      "engine": "bsqlite",
+      "vendor": "bs3-13.0.3-npm",
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0xffff7003"
+      },
+      "load": {
+        "engineLoaded": false,
+        "engineError": {
+          "processExit": "0xffff7003"
+        },
+        "info": null,
+        "selfChecksAllOk": false,
+        "selfChecks": [
+          null
+        ]
+      },
+      "walPersist": {
+        "phaseError": null
+      },
+      "schemaMigration": {
+        "schemaDigestEqualsProd": false,
+        "legacyV1toV6": null,
+        "importCurrentWriterDb": null
+      },
+      "restart": null,
+      "apiShape": null,
+      "outsideDataDirOpen": null,
+      "interopSystemNodeSqlite": null,
+      "perf": null,
+      "wasmVfs": null
+    },
+    "e31-sa-node-sqlite": {
+      "runtime": {
+        "node": "20.18.0",
+        "electron": "31.7.7",
+        "modules_abi": "125",
+        "napi": "9",
+        "sqliteBuiltin": null
+      },
+      "permission": false,
+      "allowAddons": true,
+      "engine": "node-sqlite",
+      "vendor": null,
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0"
+      },
+      "load": {
+        "engineLoaded": false,
+        "engineError": {
+          "loaded": false,
+          "code": "ERR_UNKNOWN_BUILTIN_MODULE",
+          "name": "Error",
+          "message": "No such built-in module: node:sqlite"
+        },
+        "info": null,
+        "selfChecksAllOk": false,
+        "selfChecks": [
+          [
+            false,
+            false,
+            false
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseError": null
+      },
+      "schemaMigration": {
+        "schemaDigestEqualsProd": false,
+        "legacyV1toV6": null,
+        "importCurrentWriterDb": null
+      },
+      "restart": null,
+      "apiShape": null,
+      "outsideDataDirOpen": null,
+      "interopSystemNodeSqlite": null,
+      "perf": null,
+      "wasmVfs": null
+    },
+    "e31-sa-wasm-excl": {
+      "runtime": {
+        "node": "20.18.0",
+        "electron": "31.7.7",
+        "modules_abi": "125",
+        "napi": "9",
+        "sqliteBuiltin": null
+      },
+      "permission": false,
+      "allowAddons": true,
+      "engine": "wasm",
+      "vendor": null,
+      "wasmExclusive": true,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "sqlite3mc-wasm+nodefs-vfs",
+          "sqlite": "3.53.4",
+          "mc": "SQLite3 Multiple Ciphers 2.5.1",
+          "vfsList": [
+            "multipleciphers-unix-none",
+            "nodefs",
+            "unix-none",
+            "memdb",
+            "kvvfs",
+            "unix-excl",
+            "unix-dotfile",
+            "unix"
+          ],
+          "exclusiveLocking": true,
+          "syncMode": "strict",
+          "initWarnings": [
+            "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "sqlite3_step() rc= 787 SQLITE_CONSTRAINT_FOREIGNKEY SQL = INSERT INTO message_participants"
+          ]
+        },
+        "selfChecksAllOk": false,
+        "selfChecks": [
+          [
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseOk": true,
+        "phaseError": null,
+        "journalMode": "wal",
+        "lockingMode": "exclusive",
+        "quickCheck": "ok",
+        "foreignKeys": 1,
+        "filesAfterAppendKill": [
+          {
+            "name": "line-todo.db",
+            "size": 8192
+          },
+          {
+            "name": "line-todo.db-wal",
+            "size": 3245352
+          }
+        ]
+      },
+      "schemaMigration": {
+        "freshUserVersion": 6,
+        "openLogs": [
+          "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-wasm-excl-g9EowM\\data\\line-todo.db",
+          "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-wasm-excl-g9EowM\\data\\line-todo.db (schema 0 -> 6)"
+        ],
+        "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf",
+        "schemaDigestEqualsProd": true,
+        "legacyV1toV6": {
+          "ok": true,
+          "logs": [
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-wasm-excl-g9EowM\\data\\legacy-v1.db (schema 1 -> 6)"
+          ],
+          "userVersion": 6,
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "badMigrationThrew": true,
+          "badMigrationIsDbIntegrityError": true,
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          }
+        },
+        "importCurrentWriterDb": {
+          "ok": true,
+          "digestEqualsWriter": true,
+          "quickCheck": "ok",
+          "journalMode": "wal"
+        }
+      },
+      "restart": {
+        "ok": true,
+        "killExit": "0x1",
+        "digestEqualsBeforeKill": true,
+        "markerPresent": true,
+        "legacyStillV6": true,
+        "quickCheck": "ok",
+        "userVersion": 6
+      },
+      "apiShape": {
+        "adapterFiles": [
+          "wasm-adapter.mjs",
+          "wasm-nodefs-vfs.mjs"
+        ],
+        "adapterNonCommentLines": 195,
+        "apiDiffVsE44Bs3": [
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": 1
+              }
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": "9007199254740993n"
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": true,
+              "value": "9007199254740993n"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "SQLite3Error: SQLITE_ERROR: sqlite3 result code 1: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": null
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          },
+          {
+            "key": "foreignKeysDefault",
+            "candidate": {
+              "ok": true,
+              "value": 0
+            },
+            "reference": {
+              "ok": true,
+              "value": 1
+            }
+          }
+        ],
+        "apiDiffVsProdBs3_11": [
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": 1
+              }
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": "9007199254740993n"
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": true,
+              "value": "9007199254740993n"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "SQLite3Error: SQLITE_ERROR: sqlite3 result code 1: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": null
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          },
+          {
+            "key": "foreignKeysDefault",
+            "candidate": {
+              "ok": true,
+              "value": 0
+            },
+            "reference": {
+              "ok": true,
+              "value": 1
+            }
+          }
+        ],
+        "repoOpsDiffVsE44Bs3": [
+          "liNestedRollback"
+        ],
+        "repoOpsDiffVsProdBs3_11": [
+          "liNestedRollback"
+        ],
+        "opsSha": "52e895398bbc6889705be60a41e40bbaa1286aa3b8f453bc03f8454c84a34673"
+      },
+      "outsideDataDirOpen": {
+        "opened": true,
+        "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-10644.db"
+      },
+      "interopSystemNodeSqlite": {
+        "node": "24.2.0",
+        "quickCheck": "ok",
+        "userVersion": 6,
+        "journalModeOnDisk": "wal",
+        "messages": 2359,
+        "todos": 9
+      },
+      "perf": {
+        "openDatabaseMs": 14.32,
+        "insertBatch2000": 102.42,
+        "listMessages50": 3.7,
+        "listTodos": 0.63,
+        "commitLineImportBatch40": 7.95,
+        "engineLoadMs": 78.17,
+        "rssMB": 67
+      },
+      "wasmVfs": {
+        "syncMode": "strict",
+        "xSync": 72,
+        "xSyncSkippedDenied": 0,
+        "lastError": null
+      }
+    },
+    "e44-bs3-11.10.0-linetodo": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": true,
+      "engine": "bsqlite",
+      "vendor": "bs3-11.10.0-linetodo",
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0"
+      },
+      "load": {
+        "engineLoaded": false,
+        "engineError": {
+          "loaded": false,
+          "code": "ERR_DLOPEN_FAILED",
+          "name": "Error",
+          "message": "The module '\\\\?\\C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db\\vendor\\bs3-11.10.0-linetodo\\node_modules\\better-sqlite3\\build\\Release\\better_sqlite3.node'"
+        },
+        "info": null,
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseError": null
+      },
+      "schemaMigration": {
+        "schemaDigestEqualsProd": false,
+        "legacyV1toV6": null,
+        "importCurrentWriterDb": null
+      },
+      "restart": null,
+      "apiShape": null,
+      "outsideDataDirOpen": null,
+      "interopSystemNodeSqlite": null,
+      "perf": null,
+      "wasmVfs": null
+    },
+    "e44-bs3-13.0.2-npm": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": true,
+      "engine": "bsqlite",
+      "vendor": "bs3-13.0.2-npm",
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "better-sqlite3",
+          "package": "13.0.2",
+          "sqlite": "3.53.4",
+          "compileOptionsSample": [
+            "DEFAULT_FOREIGN_KEYS",
+            "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+            "DEFAULT_WAL_SYNCHRONOUS=1",
+            "DQS=0",
+            "OMIT_DEPRECATED",
+            "OMIT_PROGRESS_CALLBACK",
+            "OMIT_SHARED_CACHE",
+            "OMIT_TCL_VARIABLE",
+            "THREADSAFE=2"
+          ]
+        },
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseOk": true,
+        "phaseError": null,
+        "journalMode": "wal",
+        "lockingMode": "normal",
+        "quickCheck": "ok",
+        "foreignKeys": 1,
+        "filesAfterAppendKill": [
+          {
+            "name": "line-todo.db",
+            "size": 577536
+          },
+          {
+            "name": "line-todo.db-shm",
+            "size": 32768
+          },
+          {
+            "name": "line-todo.db-wal",
+            "size": 210152
+          }
+        ]
+      },
+      "schemaMigration": {
+        "freshUserVersion": 6,
+        "openLogs": [
+          "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-npm-rHGAsS\\data\\line-todo.db",
+          "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-npm-rHGAsS\\data\\line-todo.db (schema 0 -> 6)"
+        ],
+        "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf",
+        "schemaDigestEqualsProd": true,
+        "legacyV1toV6": {
+          "ok": true,
+          "logs": [
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-npm-rHGAsS\\data\\legacy-v1.db (schema 1 -> 6)"
+          ],
+          "userVersion": 6,
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "badMigrationThrew": true,
+          "badMigrationIsDbIntegrityError": true,
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          }
+        },
+        "importCurrentWriterDb": {
+          "ok": true,
+          "digestEqualsWriter": true,
+          "quickCheck": "ok",
+          "journalMode": "wal"
+        }
+      },
+      "restart": {
+        "ok": true,
+        "killExit": "0x1",
+        "digestEqualsBeforeKill": true,
+        "markerPresent": true,
+        "legacyStillV6": true,
+        "quickCheck": "ok",
+        "userVersion": 6
+      },
+      "apiShape": {
+        "adapterFiles": [],
+        "adapterNonCommentLines": 0,
+        "apiDiffVsE44Bs3": [],
+        "apiDiffVsProdBs3_11": [],
+        "repoOpsDiffVsE44Bs3": [],
+        "repoOpsDiffVsProdBs3_11": [],
+        "opsSha": "ef7194e4a96d3e0567949721013ddc7fdb3d55e1c6535b4a93fa002e9785b1f4"
+      },
+      "outsideDataDirOpen": {
+        "opened": false,
+        "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-24688.db",
+        "code": "ERR_ACCESS_DENIED",
+        "name": "Error",
+        "message": "Access to this API has been restricted. Use --allow-fs-read to manage permissions."
+      },
+      "interopSystemNodeSqlite": {
+        "node": "24.2.0",
+        "quickCheck": "ok",
+        "userVersion": 6,
+        "journalModeOnDisk": "wal",
+        "messages": 2359,
+        "todos": 9
+      },
+      "perf": {
+        "openDatabaseMs": 9.46,
+        "insertBatch2000": 27.29,
+        "listMessages50": 0.63,
+        "listTodos": 0.34,
+        "commitLineImportBatch40": 6.1,
+        "engineLoadMs": 15.94,
+        "rssMB": 118
+      },
+      "wasmVfs": null
+    },
+    "e44-bs3-13.0.2-teamuq": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": true,
+      "engine": "bsqlite",
+      "vendor": "bs3-13.0.2-teamuq",
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "better-sqlite3",
+          "package": "13.0.2",
+          "sqlite": "3.53.4",
+          "compileOptionsSample": [
+            "DEFAULT_FOREIGN_KEYS",
+            "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+            "DEFAULT_WAL_SYNCHRONOUS=1",
+            "DQS=0",
+            "OMIT_DEPRECATED",
+            "OMIT_PROGRESS_CALLBACK",
+            "OMIT_SHARED_CACHE",
+            "OMIT_TCL_VARIABLE",
+            "THREADSAFE=2"
+          ]
+        },
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseOk": true,
+        "phaseError": null,
+        "journalMode": "wal",
+        "lockingMode": "normal",
+        "quickCheck": "ok",
+        "foreignKeys": 1,
+        "filesAfterAppendKill": [
+          {
+            "name": "line-todo.db",
+            "size": 577536
+          },
+          {
+            "name": "line-todo.db-shm",
+            "size": 32768
+          },
+          {
+            "name": "line-todo.db-wal",
+            "size": 210152
+          }
+        ]
+      },
+      "schemaMigration": {
+        "freshUserVersion": 6,
+        "openLogs": [
+          "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\line-todo.db",
+          "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\line-todo.db (schema 0 -> 6)"
+        ],
+        "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf",
+        "schemaDigestEqualsProd": true,
+        "legacyV1toV6": {
+          "ok": true,
+          "logs": [
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\legacy-v1.db (schema 1 -> 6)"
+          ],
+          "userVersion": 6,
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "badMigrationThrew": true,
+          "badMigrationIsDbIntegrityError": true,
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          }
+        },
+        "importCurrentWriterDb": {
+          "ok": true,
+          "digestEqualsWriter": true,
+          "quickCheck": "ok",
+          "journalMode": "wal"
+        }
+      },
+      "restart": {
+        "ok": true,
+        "killExit": "0x1",
+        "digestEqualsBeforeKill": true,
+        "markerPresent": true,
+        "legacyStillV6": true,
+        "quickCheck": "ok",
+        "userVersion": 6
+      },
+      "apiShape": {
+        "adapterFiles": [],
+        "adapterNonCommentLines": 0,
+        "apiDiffVsE44Bs3": [],
+        "apiDiffVsProdBs3_11": [],
+        "repoOpsDiffVsE44Bs3": [],
+        "repoOpsDiffVsProdBs3_11": [],
+        "opsSha": "ef7194e4a96d3e0567949721013ddc7fdb3d55e1c6535b4a93fa002e9785b1f4"
+      },
+      "outsideDataDirOpen": {
+        "opened": false,
+        "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-13004.db",
+        "code": "ERR_ACCESS_DENIED",
+        "name": "Error",
+        "message": "Access to this API has been restricted. Use --allow-fs-read to manage permissions."
+      },
+      "interopSystemNodeSqlite": {
+        "node": "24.2.0",
+        "quickCheck": "ok",
+        "userVersion": 6,
+        "journalModeOnDisk": "wal",
+        "messages": 2359,
+        "todos": 9
+      },
+      "perf": {
+        "openDatabaseMs": 8.78,
+        "insertBatch2000": 22.88,
+        "listMessages50": 0.36,
+        "listTodos": 0.3,
+        "commitLineImportBatch40": 5.37,
+        "engineLoadMs": 15.71,
+        "rssMB": 118
+      },
+      "wasmVfs": null
+    },
+    "e44-bs3-13.0.3-npm": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": true,
+      "engine": "bsqlite",
+      "vendor": "bs3-13.0.3-npm",
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "better-sqlite3",
+          "package": "13.0.3",
+          "sqlite": "3.53.4",
+          "compileOptionsSample": [
+            "DEFAULT_FOREIGN_KEYS",
+            "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+            "DEFAULT_WAL_SYNCHRONOUS=1",
+            "DQS=0",
+            "OMIT_DEPRECATED",
+            "OMIT_PROGRESS_CALLBACK",
+            "OMIT_SHARED_CACHE",
+            "OMIT_TCL_VARIABLE",
+            "THREADSAFE=2"
+          ]
+        },
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseOk": true,
+        "phaseError": null,
+        "journalMode": "wal",
+        "lockingMode": "normal",
+        "quickCheck": "ok",
+        "foreignKeys": 1,
+        "filesAfterAppendKill": [
+          {
+            "name": "line-todo.db",
+            "size": 577536
+          },
+          {
+            "name": "line-todo.db-shm",
+            "size": 32768
+          },
+          {
+            "name": "line-todo.db-wal",
+            "size": 210152
+          }
+        ]
+      },
+      "schemaMigration": {
+        "freshUserVersion": 6,
+        "openLogs": [
+          "log [db] quick_check=ok (2ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.3-npm-xVYnhs\\data\\line-todo.db",
+          "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.3-npm-xVYnhs\\data\\line-todo.db (schema 0 -> 6)"
+        ],
+        "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf",
+        "schemaDigestEqualsProd": true,
+        "legacyV1toV6": {
+          "ok": true,
+          "logs": [
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.3-npm-xVYnhs\\data\\legacy-v1.db (schema 1 -> 6)"
+          ],
+          "userVersion": 6,
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "badMigrationThrew": true,
+          "badMigrationIsDbIntegrityError": true,
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          }
+        },
+        "importCurrentWriterDb": {
+          "ok": true,
+          "digestEqualsWriter": true,
+          "quickCheck": "ok",
+          "journalMode": "wal"
+        }
+      },
+      "restart": {
+        "ok": true,
+        "killExit": "0x1",
+        "digestEqualsBeforeKill": true,
+        "markerPresent": true,
+        "legacyStillV6": true,
+        "quickCheck": "ok",
+        "userVersion": 6
+      },
+      "apiShape": {
+        "adapterFiles": [],
+        "adapterNonCommentLines": 0,
+        "apiDiffVsE44Bs3": [],
+        "apiDiffVsProdBs3_11": [],
+        "repoOpsDiffVsE44Bs3": [],
+        "repoOpsDiffVsProdBs3_11": [],
+        "opsSha": "ef7194e4a96d3e0567949721013ddc7fdb3d55e1c6535b4a93fa002e9785b1f4"
+      },
+      "outsideDataDirOpen": {
+        "opened": false,
+        "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-20664.db",
+        "code": "ERR_ACCESS_DENIED",
+        "name": "Error",
+        "message": "Access to this API has been restricted. Use --allow-fs-read to manage permissions."
+      },
+      "interopSystemNodeSqlite": {
+        "node": "24.2.0",
+        "quickCheck": "ok",
+        "userVersion": 6,
+        "journalModeOnDisk": "wal",
+        "messages": 2359,
+        "todos": 9
+      },
+      "perf": {
+        "openDatabaseMs": 9.66,
+        "insertBatch2000": 25.49,
+        "listMessages50": 0.42,
+        "listTodos": 0.31,
+        "commitLineImportBatch40": 5.19,
+        "engineLoadMs": 19.77,
+        "rssMB": 120
+      },
+      "wasmVfs": null
+    },
+    "e44-bs3-13.0.3-npm-noaddons": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": false,
+      "engine": "bsqlite",
+      "vendor": "bs3-13.0.3-npm",
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0"
+      },
+      "load": {
+        "engineLoaded": false,
+        "engineError": {
+          "loaded": false,
+          "code": "ERR_DLOPEN_DISABLED",
+          "name": "Error",
+          "message": "Cannot load native addon because loading addons is disabled."
+        },
+        "info": null,
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseError": null
+      },
+      "schemaMigration": {
+        "schemaDigestEqualsProd": false,
+        "legacyV1toV6": null,
+        "importCurrentWriterDb": null
+      },
+      "restart": null,
+      "apiShape": null,
+      "outsideDataDirOpen": null,
+      "interopSystemNodeSqlite": null,
+      "perf": null,
+      "wasmVfs": null
+    },
+    "e44-node-sqlite": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": true,
+      "engine": "node-sqlite",
+      "vendor": null,
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "node:sqlite",
+          "sqlite": "3.53.4",
+          "processVersionsSqlite": "3.53.4",
+          "hasSetAllowUnknownNamedParameters": true,
+          "compileOptionsSample": [
+            "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+            "DEFAULT_WAL_SYNCHRONOUS=2",
+            "THREADSAFE=1"
+          ]
+        },
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseOk": true,
+        "phaseError": null,
+        "journalMode": "wal",
+        "lockingMode": "normal",
+        "quickCheck": "ok",
+        "foreignKeys": 1,
+        "filesAfterAppendKill": [
+          {
+            "name": "line-todo.db",
+            "size": 577536
+          },
+          {
+            "name": "line-todo.db-shm",
+            "size": 32768
+          },
+          {
+            "name": "line-todo.db-wal",
+            "size": 210152
+          }
+        ]
+      },
+      "schemaMigration": {
+        "freshUserVersion": 6,
+        "openLogs": [
+          "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-node-sqlite-pV22yj\\data\\line-todo.db",
+          "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-node-sqlite-pV22yj\\data\\line-todo.db (schema 0 -> 6)"
+        ],
+        "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf",
+        "schemaDigestEqualsProd": true,
+        "legacyV1toV6": {
+          "ok": true,
+          "logs": [
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-node-sqlite-pV22yj\\data\\legacy-v1.db (schema 1 -> 6)"
+          ],
+          "userVersion": 6,
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "badMigrationThrew": true,
+          "badMigrationIsDbIntegrityError": true,
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          }
+        },
+        "importCurrentWriterDb": {
+          "ok": true,
+          "digestEqualsWriter": true,
+          "quickCheck": "ok",
+          "journalMode": "wal"
+        }
+      },
+      "restart": {
+        "ok": true,
+        "killExit": "0x1",
+        "digestEqualsBeforeKill": true,
+        "markerPresent": true,
+        "legacyStillV6": true,
+        "quickCheck": "ok",
+        "userVersion": 6
+      },
+      "apiShape": {
+        "adapterFiles": [
+          "node-sqlite-adapter.mjs"
+        ],
+        "adapterNonCommentLines": 44,
+        "apiDiffVsE44Bs3": [
+          {
+            "key": "namedMissingKey",
+            "candidate": {
+              "ok": true,
+              "value": 1
+            },
+            "reference": {
+              "ok": false,
+              "error": "RangeError: Missing named parameter \"b\"",
+              "code": null
+            }
+          },
+          {
+            "key": "rowPrototype",
+            "candidate": {
+              "ok": true,
+              "value": "null"
+            },
+            "reference": {
+              "ok": true,
+              "value": "Object.prototype"
+            }
+          },
+          {
+            "key": "bindUndefined",
+            "candidate": {
+              "ok": false,
+              "error": "TypeError: Provided value cannot be bound to SQLite parameter 1.",
+              "code": "ERR_INVALID_ARG_TYPE"
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": null
+              }
+            }
+          },
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": false,
+              "error": "TypeError: Provided value cannot be bound to SQLite parameter 1.",
+              "code": "ERR_INVALID_ARG_TYPE"
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": false,
+              "error": "RangeError: Value is too large to be represented as a JavaScript number: 9007199254740993",
+              "code": "ERR_OUT_OF_RANGE"
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": false,
+              "error": "RangeError: Value is too large to be represented as a JavaScript number: 9007199254740993",
+              "code": "ERR_OUT_OF_RANGE"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "Error: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "ERR_SQLITE_ERROR"
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          }
+        ],
+        "apiDiffVsProdBs3_11": [
+          {
+            "key": "namedMissingKey",
+            "candidate": {
+              "ok": true,
+              "value": 1
+            },
+            "reference": {
+              "ok": false,
+              "error": "RangeError: Missing named parameter \"b\"",
+              "code": null
+            }
+          },
+          {
+            "key": "rowPrototype",
+            "candidate": {
+              "ok": true,
+              "value": "null"
+            },
+            "reference": {
+              "ok": true,
+              "value": "Object.prototype"
+            }
+          },
+          {
+            "key": "bindUndefined",
+            "candidate": {
+              "ok": false,
+              "error": "TypeError: Provided value cannot be bound to SQLite parameter 1.",
+              "code": "ERR_INVALID_ARG_TYPE"
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": null
+              }
+            }
+          },
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": false,
+              "error": "TypeError: Provided value cannot be bound to SQLite parameter 1.",
+              "code": "ERR_INVALID_ARG_TYPE"
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": false,
+              "error": "RangeError: Value is too large to be represented as a JavaScript number: 9007199254740993",
+              "code": "ERR_OUT_OF_RANGE"
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": false,
+              "error": "RangeError: Value is too large to be represented as a JavaScript number: 9007199254740993",
+              "code": "ERR_OUT_OF_RANGE"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "Error: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "ERR_SQLITE_ERROR"
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          }
+        ],
+        "repoOpsDiffVsE44Bs3": [],
+        "repoOpsDiffVsProdBs3_11": [],
+        "opsSha": "ef7194e4a96d3e0567949721013ddc7fdb3d55e1c6535b4a93fa002e9785b1f4"
+      },
+      "outsideDataDirOpen": {
+        "opened": true,
+        "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-19600.db"
+      },
+      "interopSystemNodeSqlite": {
+        "node": "24.2.0",
+        "quickCheck": "ok",
+        "userVersion": 6,
+        "journalModeOnDisk": "wal",
+        "messages": 2359,
+        "todos": 9
+      },
+      "perf": {
+        "openDatabaseMs": 9.77,
+        "insertBatch2000": 33.62,
+        "listMessages50": 0.64,
+        "listTodos": 0.29,
+        "commitLineImportBatch40": 6.99,
+        "engineLoadMs": 2.15,
+        "rssMB": 116
+      },
+      "wasmVfs": null
+    },
+    "e44-node-sqlite-noaddons": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": false,
+      "engine": "node-sqlite",
+      "vendor": null,
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "node:sqlite",
+          "sqlite": "3.53.4",
+          "processVersionsSqlite": "3.53.4",
+          "hasSetAllowUnknownNamedParameters": true,
+          "compileOptionsSample": [
+            "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+            "DEFAULT_WAL_SYNCHRONOUS=2",
+            "THREADSAFE=1"
+          ]
+        },
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseOk": true,
+        "phaseError": null,
+        "journalMode": "wal",
+        "lockingMode": "normal",
+        "quickCheck": "ok",
+        "foreignKeys": 1,
+        "filesAfterAppendKill": [
+          {
+            "name": "line-todo.db",
+            "size": 577536
+          },
+          {
+            "name": "line-todo.db-shm",
+            "size": 32768
+          },
+          {
+            "name": "line-todo.db-wal",
+            "size": 210152
+          }
+        ]
+      },
+      "schemaMigration": {
+        "freshUserVersion": 6,
+        "openLogs": [
+          "log [db] quick_check=ok (2ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-node-sqlite-noaddons-MNq99p\\data\\line-todo.db",
+          "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-node-sqlite-noaddons-MNq99p\\data\\line-todo.db (schema 0 -> 6)"
+        ],
+        "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf",
+        "schemaDigestEqualsProd": true,
+        "legacyV1toV6": {
+          "ok": true,
+          "logs": [
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-node-sqlite-noaddons-MNq99p\\data\\legacy-v1.db (schema 1 -> 6)"
+          ],
+          "userVersion": 6,
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "badMigrationThrew": true,
+          "badMigrationIsDbIntegrityError": true,
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          }
+        },
+        "importCurrentWriterDb": {
+          "ok": true,
+          "digestEqualsWriter": true,
+          "quickCheck": "ok",
+          "journalMode": "wal"
+        }
+      },
+      "restart": {
+        "ok": true,
+        "killExit": "0x1",
+        "digestEqualsBeforeKill": true,
+        "markerPresent": true,
+        "legacyStillV6": true,
+        "quickCheck": "ok",
+        "userVersion": 6
+      },
+      "apiShape": {
+        "adapterFiles": [
+          "node-sqlite-adapter.mjs"
+        ],
+        "adapterNonCommentLines": 44,
+        "apiDiffVsE44Bs3": [
+          {
+            "key": "namedMissingKey",
+            "candidate": {
+              "ok": true,
+              "value": 1
+            },
+            "reference": {
+              "ok": false,
+              "error": "RangeError: Missing named parameter \"b\"",
+              "code": null
+            }
+          },
+          {
+            "key": "rowPrototype",
+            "candidate": {
+              "ok": true,
+              "value": "null"
+            },
+            "reference": {
+              "ok": true,
+              "value": "Object.prototype"
+            }
+          },
+          {
+            "key": "bindUndefined",
+            "candidate": {
+              "ok": false,
+              "error": "TypeError: Provided value cannot be bound to SQLite parameter 1.",
+              "code": "ERR_INVALID_ARG_TYPE"
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": null
+              }
+            }
+          },
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": false,
+              "error": "TypeError: Provided value cannot be bound to SQLite parameter 1.",
+              "code": "ERR_INVALID_ARG_TYPE"
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": false,
+              "error": "RangeError: Value is too large to be represented as a JavaScript number: 9007199254740993",
+              "code": "ERR_OUT_OF_RANGE"
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": false,
+              "error": "RangeError: Value is too large to be represented as a JavaScript number: 9007199254740993",
+              "code": "ERR_OUT_OF_RANGE"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "Error: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "ERR_SQLITE_ERROR"
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          }
+        ],
+        "apiDiffVsProdBs3_11": [
+          {
+            "key": "namedMissingKey",
+            "candidate": {
+              "ok": true,
+              "value": 1
+            },
+            "reference": {
+              "ok": false,
+              "error": "RangeError: Missing named parameter \"b\"",
+              "code": null
+            }
+          },
+          {
+            "key": "rowPrototype",
+            "candidate": {
+              "ok": true,
+              "value": "null"
+            },
+            "reference": {
+              "ok": true,
+              "value": "Object.prototype"
+            }
+          },
+          {
+            "key": "bindUndefined",
+            "candidate": {
+              "ok": false,
+              "error": "TypeError: Provided value cannot be bound to SQLite parameter 1.",
+              "code": "ERR_INVALID_ARG_TYPE"
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": null
+              }
+            }
+          },
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": false,
+              "error": "TypeError: Provided value cannot be bound to SQLite parameter 1.",
+              "code": "ERR_INVALID_ARG_TYPE"
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": false,
+              "error": "RangeError: Value is too large to be represented as a JavaScript number: 9007199254740993",
+              "code": "ERR_OUT_OF_RANGE"
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": false,
+              "error": "RangeError: Value is too large to be represented as a JavaScript number: 9007199254740993",
+              "code": "ERR_OUT_OF_RANGE"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "Error: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "ERR_SQLITE_ERROR"
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          }
+        ],
+        "repoOpsDiffVsE44Bs3": [],
+        "repoOpsDiffVsProdBs3_11": [],
+        "opsSha": "ef7194e4a96d3e0567949721013ddc7fdb3d55e1c6535b4a93fa002e9785b1f4"
+      },
+      "outsideDataDirOpen": {
+        "opened": true,
+        "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-3840.db"
+      },
+      "interopSystemNodeSqlite": {
+        "node": "24.2.0",
+        "quickCheck": "ok",
+        "userVersion": 6,
+        "journalModeOnDisk": "wal",
+        "messages": 2359,
+        "todos": 9
+      },
+      "perf": {
+        "openDatabaseMs": 11.38,
+        "insertBatch2000": 33.05,
+        "listMessages50": 0.56,
+        "listTodos": 0.32,
+        "commitLineImportBatch40": 6.71,
+        "engineLoadMs": 2.64,
+        "rssMB": 116
+      },
+      "wasmVfs": null
+    },
+    "e44-wasm-excl-nosync": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": true,
+      "engine": "wasm",
+      "vendor": null,
+      "wasmExclusive": true,
+      "wasmSyncSkip": true,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "sqlite3mc-wasm+nodefs-vfs",
+          "sqlite": "3.53.4",
+          "mc": "SQLite3 Multiple Ciphers 2.5.1",
+          "vfsList": [
+            "multipleciphers-unix-none",
+            "nodefs",
+            "unix-none",
+            "memdb",
+            "kvvfs",
+            "unix-excl",
+            "unix-dotfile",
+            "unix"
+          ],
+          "exclusiveLocking": true,
+          "syncMode": "skip-if-denied",
+          "initWarnings": [
+            "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "sqlite3_step() rc= 787 SQLITE_CONSTRAINT_FOREIGNKEY SQL = INSERT INTO message_participants"
+          ]
+        },
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseOk": true,
+        "phaseError": null,
+        "journalMode": "wal",
+        "lockingMode": "exclusive",
+        "quickCheck": "ok",
+        "foreignKeys": 1,
+        "filesAfterAppendKill": [
+          {
+            "name": "line-todo.db",
+            "size": 8192
+          },
+          {
+            "name": "line-todo.db-wal",
+            "size": 3245352
+          }
+        ]
+      },
+      "schemaMigration": {
+        "freshUserVersion": 6,
+        "openLogs": [
+          "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-excl-nosync-gY4kN8\\data\\line-todo.db",
+          "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-excl-nosync-gY4kN8\\data\\line-todo.db (schema 0 -> 6)"
+        ],
+        "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf",
+        "schemaDigestEqualsProd": true,
+        "legacyV1toV6": {
+          "ok": true,
+          "logs": [
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-excl-nosync-gY4kN8\\data\\legacy-v1.db (schema 1 -> 6)"
+          ],
+          "userVersion": 6,
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "badMigrationThrew": true,
+          "badMigrationIsDbIntegrityError": true,
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          }
+        },
+        "importCurrentWriterDb": {
+          "ok": true,
+          "digestEqualsWriter": true,
+          "quickCheck": "ok",
+          "journalMode": "wal"
+        }
+      },
+      "restart": {
+        "ok": true,
+        "killExit": "0x1",
+        "digestEqualsBeforeKill": true,
+        "markerPresent": true,
+        "legacyStillV6": true,
+        "quickCheck": "ok",
+        "userVersion": 6
+      },
+      "apiShape": {
+        "adapterFiles": [
+          "wasm-adapter.mjs",
+          "wasm-nodefs-vfs.mjs"
+        ],
+        "adapterNonCommentLines": 195,
+        "apiDiffVsE44Bs3": [
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": 1
+              }
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": "9007199254740993n"
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": true,
+              "value": "9007199254740993n"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "SQLite3Error: SQLITE_ERROR: sqlite3 result code 1: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": null
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          },
+          {
+            "key": "foreignKeysDefault",
+            "candidate": {
+              "ok": true,
+              "value": 0
+            },
+            "reference": {
+              "ok": true,
+              "value": 1
+            }
+          }
+        ],
+        "apiDiffVsProdBs3_11": [
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": 1
+              }
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": "9007199254740993n"
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": true,
+              "value": "9007199254740993n"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "SQLite3Error: SQLITE_ERROR: sqlite3 result code 1: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": null
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          },
+          {
+            "key": "foreignKeysDefault",
+            "candidate": {
+              "ok": true,
+              "value": 0
+            },
+            "reference": {
+              "ok": true,
+              "value": 1
+            }
+          }
+        ],
+        "repoOpsDiffVsE44Bs3": [
+          "liNestedRollback"
+        ],
+        "repoOpsDiffVsProdBs3_11": [
+          "liNestedRollback"
+        ],
+        "opsSha": "52e895398bbc6889705be60a41e40bbaa1286aa3b8f453bc03f8454c84a34673"
+      },
+      "outsideDataDirOpen": {
+        "opened": false,
+        "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-12320.db",
+        "code": null,
+        "name": "SQLite3Error",
+        "message": "SQLITE_CANTOPEN: sqlite3 result code 14: unable to open database file"
+      },
+      "interopSystemNodeSqlite": {
+        "node": "24.2.0",
+        "quickCheck": "ok",
+        "userVersion": 6,
+        "journalModeOnDisk": "wal",
+        "messages": 2359,
+        "todos": 9
+      },
+      "perf": {
+        "openDatabaseMs": 12.26,
+        "insertBatch2000": 100.19,
+        "listMessages50": 3.59,
+        "listTodos": 0.6,
+        "commitLineImportBatch40": 6.71,
+        "engineLoadMs": 66.94,
+        "rssMB": 130
+      },
+      "wasmVfs": {
+        "syncMode": "skip-if-denied",
+        "xSync": 67,
+        "xSyncSkippedDenied": 67,
+        "lastError": "ERR_ACCESS_DENIED"
+      }
+    },
+    "e44-wasm-excl-nosync-noaddons": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": false,
+      "engine": "wasm",
+      "vendor": null,
+      "wasmExclusive": true,
+      "wasmSyncSkip": true,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "sqlite3mc-wasm+nodefs-vfs",
+          "sqlite": "3.53.4",
+          "mc": "SQLite3 Multiple Ciphers 2.5.1",
+          "vfsList": [
+            "multipleciphers-unix-none",
+            "nodefs",
+            "unix-none",
+            "memdb",
+            "kvvfs",
+            "unix-excl",
+            "unix-dotfile",
+            "unix"
+          ],
+          "exclusiveLocking": true,
+          "syncMode": "skip-if-denied",
+          "initWarnings": [
+            "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "sqlite3_step() rc= 787 SQLITE_CONSTRAINT_FOREIGNKEY SQL = INSERT INTO message_participants"
+          ]
+        },
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseOk": true,
+        "phaseError": null,
+        "journalMode": "wal",
+        "lockingMode": "exclusive",
+        "quickCheck": "ok",
+        "foreignKeys": 1,
+        "filesAfterAppendKill": [
+          {
+            "name": "line-todo.db",
+            "size": 8192
+          },
+          {
+            "name": "line-todo.db-wal",
+            "size": 3245352
+          }
+        ]
+      },
+      "schemaMigration": {
+        "freshUserVersion": 6,
+        "openLogs": [
+          "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-excl-nosync-noaddons-ycj1dG\\data\\line-todo.db",
+          "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-excl-nosync-noaddons-ycj1dG\\data\\line-todo.db (schema 0 -> 6)"
+        ],
+        "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf",
+        "schemaDigestEqualsProd": true,
+        "legacyV1toV6": {
+          "ok": true,
+          "logs": [
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-excl-nosync-noaddons-ycj1dG\\data\\legacy-v1.db (schema 1 -> 6)"
+          ],
+          "userVersion": 6,
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "badMigrationThrew": true,
+          "badMigrationIsDbIntegrityError": true,
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          }
+        },
+        "importCurrentWriterDb": {
+          "ok": true,
+          "digestEqualsWriter": true,
+          "quickCheck": "ok",
+          "journalMode": "wal"
+        }
+      },
+      "restart": {
+        "ok": true,
+        "killExit": "0x1",
+        "digestEqualsBeforeKill": true,
+        "markerPresent": true,
+        "legacyStillV6": true,
+        "quickCheck": "ok",
+        "userVersion": 6
+      },
+      "apiShape": {
+        "adapterFiles": [
+          "wasm-adapter.mjs",
+          "wasm-nodefs-vfs.mjs"
+        ],
+        "adapterNonCommentLines": 195,
+        "apiDiffVsE44Bs3": [
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": 1
+              }
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": "9007199254740993n"
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": true,
+              "value": "9007199254740993n"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "SQLite3Error: SQLITE_ERROR: sqlite3 result code 1: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": null
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          },
+          {
+            "key": "foreignKeysDefault",
+            "candidate": {
+              "ok": true,
+              "value": 0
+            },
+            "reference": {
+              "ok": true,
+              "value": 1
+            }
+          }
+        ],
+        "apiDiffVsProdBs3_11": [
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": 1
+              }
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": "9007199254740993n"
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": true,
+              "value": "9007199254740993n"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "SQLite3Error: SQLITE_ERROR: sqlite3 result code 1: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": null
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          },
+          {
+            "key": "foreignKeysDefault",
+            "candidate": {
+              "ok": true,
+              "value": 0
+            },
+            "reference": {
+              "ok": true,
+              "value": 1
+            }
+          }
+        ],
+        "repoOpsDiffVsE44Bs3": [
+          "liNestedRollback"
+        ],
+        "repoOpsDiffVsProdBs3_11": [
+          "liNestedRollback"
+        ],
+        "opsSha": "52e895398bbc6889705be60a41e40bbaa1286aa3b8f453bc03f8454c84a34673"
+      },
+      "outsideDataDirOpen": {
+        "opened": false,
+        "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-28264.db",
+        "code": null,
+        "name": "SQLite3Error",
+        "message": "SQLITE_CANTOPEN: sqlite3 result code 14: unable to open database file"
+      },
+      "interopSystemNodeSqlite": {
+        "node": "24.2.0",
+        "quickCheck": "ok",
+        "userVersion": 6,
+        "journalModeOnDisk": "wal",
+        "messages": 2359,
+        "todos": 9
+      },
+      "perf": {
+        "openDatabaseMs": 11.93,
+        "insertBatch2000": 100.53,
+        "listMessages50": 3.46,
+        "listTodos": 0.42,
+        "commitLineImportBatch40": 6.72,
+        "engineLoadMs": 58.81,
+        "rssMB": 130
+      },
+      "wasmVfs": {
+        "syncMode": "skip-if-denied",
+        "xSync": 67,
+        "xSyncSkippedDenied": 67,
+        "lastError": "ERR_ACCESS_DENIED"
+      }
+    },
+    "e44-wasm-excl-strict": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": true,
+      "engine": "wasm",
+      "vendor": null,
+      "wasmExclusive": true,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "sqlite3mc-wasm+nodefs-vfs",
+          "sqlite": "3.53.4",
+          "mc": "SQLite3 Multiple Ciphers 2.5.1",
+          "vfsList": [
+            "multipleciphers-unix-none",
+            "nodefs",
+            "unix-none",
+            "memdb",
+            "kvvfs",
+            "unix-excl",
+            "unix-dotfile",
+            "unix"
+          ],
+          "exclusiveLocking": true,
+          "syncMode": "strict",
+          "initWarnings": [
+            "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "sqlite3_step() rc= 1034 SQLITE_IOERR_FSYNC SQL = CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b INTEGER, r REAL, z BLOB)"
+          ]
+        },
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseError": {
+          "code": null,
+          "name": "SQLite3Error",
+          "message": "SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+          "stack": [
+            "SQLite3Error: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+            "    at toss3 (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9427:35)",
+            "    at checkSqlite3Rc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9463:7)",
+            "    at DB.checkRc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9819:33)",
+            "    at Stmt.step (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:10426:14)",
+            "    at DB.exec (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9985:18)"
+          ]
+        }
+      },
+      "schemaMigration": {
+        "schemaDigestEqualsProd": false,
+        "legacyV1toV6": {
+          "code": null,
+          "name": "SQLite3Error",
+          "message": "SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+          "stack": [
+            "SQLite3Error: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+            "    at toss3 (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9427:35)",
+            "    at checkSqlite3Rc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9463:7)",
+            "    at DB.checkRc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9819:33)",
+            "    at Stmt.step (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:10426:14)",
+            "    at DB.exec (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9985:18)"
+          ]
+        },
+        "importCurrentWriterDb": {
+          "code": null,
+          "name": "SQLite3Error",
+          "message": "SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+          "stack": [
+            "SQLite3Error: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+            "    at toss3 (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9427:35)",
+            "    at checkSqlite3Rc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9463:7)",
+            "    at Stmt.reset (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:10347:7)",
+            "    at WasmStatement.run (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/harness/engines/wasm-adapter.mjs:39:26)",
+            "    at createTodo (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/build/appdb.bundle.mjs:523:5)"
+          ]
+        }
+      },
+      "restart": {
+        "ok": false,
+        "killExit": "0x1",
+        "legacyStillV6": false
+      },
+      "apiShape": null,
+      "outsideDataDirOpen": null,
+      "interopSystemNodeSqlite": {
+        "error": "no such table: messages"
+      },
+      "perf": null,
+      "wasmVfs": {
+        "syncMode": "strict",
+        "xSync": 2,
+        "xSyncSkippedDenied": 0,
+        "lastError": "ERR_ACCESS_DENIED"
+      }
+    },
+    "e44-wasm-nosync": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": true,
+      "engine": "wasm",
+      "vendor": null,
+      "wasmExclusive": false,
+      "wasmSyncSkip": true,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "sqlite3mc-wasm+nodefs-vfs",
+          "sqlite": "3.53.4",
+          "mc": "SQLite3 Multiple Ciphers 2.5.1",
+          "vfsList": [
+            "multipleciphers-unix-none",
+            "nodefs",
+            "unix-none",
+            "memdb",
+            "kvvfs",
+            "unix-excl",
+            "unix-dotfile",
+            "unix"
+          ],
+          "exclusiveLocking": false,
+          "syncMode": "skip-if-denied",
+          "initWarnings": [
+            "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "sqlite3_step() rc= 787 SQLITE_CONSTRAINT_FOREIGNKEY SQL = INSERT INTO message_participants"
+          ]
+        },
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseOk": true,
+        "phaseError": null,
+        "journalMode": "delete",
+        "lockingMode": "normal",
+        "quickCheck": "ok",
+        "foreignKeys": 1,
+        "filesAfterAppendKill": [
+          {
+            "name": "line-todo.db",
+            "size": 786432
+          }
+        ]
+      },
+      "schemaMigration": {
+        "freshUserVersion": 6,
+        "openLogs": [
+          "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-nosync-TLK6Yz\\data\\line-todo.db",
+          "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-nosync-TLK6Yz\\data\\line-todo.db (schema 0 -> 6)"
+        ],
+        "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf",
+        "schemaDigestEqualsProd": true,
+        "legacyV1toV6": {
+          "ok": true,
+          "logs": [
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-nosync-TLK6Yz\\data\\legacy-v1.db (schema 1 -> 6)"
+          ],
+          "userVersion": 6,
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "badMigrationThrew": true,
+          "badMigrationIsDbIntegrityError": true,
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          }
+        },
+        "importCurrentWriterDb": {
+          "ok": false
+        }
+      },
+      "restart": {
+        "ok": true,
+        "killExit": "0x1",
+        "digestEqualsBeforeKill": true,
+        "markerPresent": true,
+        "legacyStillV6": true,
+        "quickCheck": "ok",
+        "userVersion": 6
+      },
+      "apiShape": {
+        "adapterFiles": [
+          "wasm-adapter.mjs",
+          "wasm-nodefs-vfs.mjs"
+        ],
+        "adapterNonCommentLines": 195,
+        "apiDiffVsE44Bs3": [
+          {
+            "key": "pragmaJournalWal",
+            "candidate": {
+              "ok": true,
+              "value": [
+                {
+                  "journal_mode": "delete"
+                }
+              ]
+            },
+            "reference": {
+              "ok": true,
+              "value": [
+                {
+                  "journal_mode": "wal"
+                }
+              ]
+            }
+          },
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": 1
+              }
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": "9007199254740993n"
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": true,
+              "value": "9007199254740993n"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "SQLite3Error: SQLITE_ERROR: sqlite3 result code 1: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": null
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          },
+          {
+            "key": "foreignKeysDefault",
+            "candidate": {
+              "ok": true,
+              "value": 0
+            },
+            "reference": {
+              "ok": true,
+              "value": 1
+            }
+          }
+        ],
+        "apiDiffVsProdBs3_11": [
+          {
+            "key": "pragmaJournalWal",
+            "candidate": {
+              "ok": true,
+              "value": [
+                {
+                  "journal_mode": "delete"
+                }
+              ]
+            },
+            "reference": {
+              "ok": true,
+              "value": [
+                {
+                  "journal_mode": "wal"
+                }
+              ]
+            }
+          },
+          {
+            "key": "bindBoolean",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": 1
+              }
+            },
+            "reference": {
+              "ok": false,
+              "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+              "code": null
+            }
+          },
+          {
+            "key": "bindBigInt",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "v": "9007199254740993n"
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "v": 9007199254740992
+              }
+            }
+          },
+          {
+            "key": "readInt64Large",
+            "candidate": {
+              "ok": true,
+              "value": "9007199254740993n"
+            },
+            "reference": {
+              "ok": true,
+              "value": 9007199254740992
+            }
+          },
+          {
+            "key": "bindBuffer",
+            "candidate": {
+              "ok": true,
+              "value": {
+                "ctor": "Uint8Array",
+                "len": 3
+              }
+            },
+            "reference": {
+              "ok": true,
+              "value": {
+                "ctor": "Buffer",
+                "len": 3
+              }
+            }
+          },
+          {
+            "key": "doubleQuotedStringLiteral",
+            "candidate": {
+              "ok": false,
+              "error": "SQLite3Error: SQLITE_ERROR: sqlite3 result code 1: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": null
+            },
+            "reference": {
+              "ok": false,
+              "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+              "code": "SQLITE_ERROR"
+            }
+          },
+          {
+            "key": "foreignKeysDefault",
+            "candidate": {
+              "ok": true,
+              "value": 0
+            },
+            "reference": {
+              "ok": true,
+              "value": 1
+            }
+          }
+        ],
+        "repoOpsDiffVsE44Bs3": [
+          "liNestedRollback"
+        ],
+        "repoOpsDiffVsProdBs3_11": [
+          "liNestedRollback"
+        ],
+        "opsSha": "52e895398bbc6889705be60a41e40bbaa1286aa3b8f453bc03f8454c84a34673"
+      },
+      "outsideDataDirOpen": {
+        "opened": false,
+        "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-17940.db",
+        "code": null,
+        "name": "SQLite3Error",
+        "message": "SQLITE_CANTOPEN: sqlite3 result code 14: unable to open database file"
+      },
+      "interopSystemNodeSqlite": {
+        "node": "24.2.0",
+        "quickCheck": "ok",
+        "userVersion": 6,
+        "journalModeOnDisk": "delete",
+        "messages": 2359,
+        "todos": 9
+      },
+      "perf": {
+        "openDatabaseMs": 19.58,
+        "insertBatch2000": 100.29,
+        "listMessages50": 4.44,
+        "listTodos": 1.16,
+        "commitLineImportBatch40": 9.53,
+        "engineLoadMs": 70.33,
+        "rssMB": 130
+      },
+      "wasmVfs": {
+        "syncMode": "skip-if-denied",
+        "xSync": 159,
+        "xSyncSkippedDenied": 159,
+        "lastError": "ERR_ACCESS_DENIED"
+      }
+    },
+    "e44-wasm-strict": {
+      "runtime": {
+        "node": "24.20.0",
+        "electron": "44.2.0",
+        "modules_abi": "149",
+        "napi": "10",
+        "sqliteBuiltin": "3.53.4"
+      },
+      "permission": true,
+      "allowAddons": true,
+      "engine": "wasm",
+      "vendor": null,
+      "wasmExclusive": false,
+      "wasmSyncSkip": false,
+      "exitCodes": {
+        "create": "0x0",
+        "legacy": "0x0",
+        "import": "0x0",
+        "append-noclose": "0x1",
+        "reopen": "0x0"
+      },
+      "load": {
+        "engineLoaded": true,
+        "engineError": null,
+        "info": {
+          "engine": "sqlite3mc-wasm+nodefs-vfs",
+          "sqlite": "3.53.4",
+          "mc": "SQLite3 Multiple Ciphers 2.5.1",
+          "vfsList": [
+            "multipleciphers-unix-none",
+            "nodefs",
+            "unix-none",
+            "memdb",
+            "kvvfs",
+            "unix-excl",
+            "unix-dotfile",
+            "unix"
+          ],
+          "exclusiveLocking": false,
+          "syncMode": "strict",
+          "initWarnings": [
+            "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+            "sqlite3_step() rc= 1034 SQLITE_IOERR_FSYNC SQL = CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b INTEGER, r REAL, z BLOB)"
+          ]
+        },
+        "selfChecksAllOk": true,
+        "selfChecks": [
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ],
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "walPersist": {
+        "phaseError": {
+          "code": null,
+          "name": "SQLite3Error",
+          "message": "SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+          "stack": [
+            "SQLite3Error: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+            "    at toss3 (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9427:35)",
+            "    at checkSqlite3Rc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9463:7)",
+            "    at DB.checkRc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9819:33)",
+            "    at Stmt.step (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:10426:14)",
+            "    at DB.exec (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9985:18)"
+          ]
+        }
+      },
+      "schemaMigration": {
+        "schemaDigestEqualsProd": false,
+        "legacyV1toV6": {
+          "code": null,
+          "name": "SQLite3Error",
+          "message": "SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+          "stack": [
+            "SQLite3Error: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+            "    at toss3 (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9427:35)",
+            "    at checkSqlite3Rc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9463:7)",
+            "    at DB.checkRc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9819:33)",
+            "    at Stmt.step (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:10426:14)",
+            "    at DB.exec (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9985:18)"
+          ]
+        },
+        "importCurrentWriterDb": {
+          "ok": false
+        }
+      },
+      "restart": {
+        "ok": false,
+        "killExit": "0x1",
+        "legacyStillV6": false
+      },
+      "apiShape": null,
+      "outsideDataDirOpen": null,
+      "interopSystemNodeSqlite": {
+        "error": "no such table: messages"
+      },
+      "perf": null,
+      "wasmVfs": {
+        "syncMode": "strict",
+        "xSync": 1,
+        "xSyncSkippedDenied": 0,
+        "lastError": "ERR_ACCESS_DENIED"
+      }
+    }
+  }
+}

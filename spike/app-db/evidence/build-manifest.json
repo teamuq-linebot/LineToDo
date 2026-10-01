@@ -1,0 +1,57 @@
+{
+  "esbuild": "0.21.5",
+  "bundle": "build/appdb.bundle.mjs",
+  "bundleSha256": "fdd1850baa72d71044fef3f7307f84c986cc56733ee7078255ab9aefdaa7fa0f",
+  "lineTodoDbSources": [
+    {
+      "file": "src/main/db/chats.repo.ts",
+      "sha256": "aa964b1cfe262b244d2857316822a775eddc84ea5c8cc9b00cbae0b441a9a3f6"
+    },
+    {
+      "file": "src/main/db/database.ts",
+      "sha256": "ae1fcd94c1103da94b0c6d8031302eb6911a0a19021c4d0cbe541f73d78710b2"
+    },
+    {
+      "file": "src/main/db/lineImport.repo.ts",
+      "sha256": "fba9cd866c1a99ea876f1fe417755be04e8c9292d89d26feeeff26dca0b92efd"
+    },
+    {
+      "file": "src/main/db/messages.repo.ts",
+      "sha256": "fe7225461599c834220e13700b5c2d18643ae7c09645821353918b1534e89f73"
+    },
+    {
+      "file": "src/main/db/migrate.ts",
+      "sha256": "225aa47db8bf880863ee5eae63b8a2d5ad7bdce05a9ef6c0cb798160429ebab0"
+    },
+    {
+      "file": "src/main/db/notMine.repo.ts",
+      "sha256": "3d2fdb2564f3233cc3ccfddbe7c08ce7614ca3b2b42c205eb8a29a225f230c7d"
+    },
+    {
+      "file": "src/main/db/pipeline.repo.ts",
+      "sha256": "5dc39e494a1544a5a76cefb1e6f5426abc2030edc4a7bd2080e235c02ab61da6"
+    },
+    {
+      "file": "src/main/db/repositories.ts",
+      "sha256": "c0bad037abd78916c2e015eebad12fb2e5d2c2f91a9d9e5d9286d5281566182b"
+    },
+    {
+      "file": "src/main/db/schema.ts",
+      "sha256": "8e6f4e762dabbda19fceffb69a7f1868411406132c34f1881277dda7a2d36cc0"
+    },
+    {
+      "file": "src/main/db/todos.repo.ts",
+      "sha256": "f5b0185a3038a8660ec10c9a83bde78d57ace11c65bd12434e037019e2a9dc45"
+    }
+  ],
+  "harnessSources": [
+    {
+      "file": "spike/app-db/harness/appdb-entry.ts",
+      "sha256": "77386950741584ec855fe3cc2cd32eea3ef161c47f4b0e3ee075ab90ffc6de25"
+    },
+    {
+      "file": "spike/app-db/harness/shim-better-sqlite3.mjs",
+      "sha256": "c11017f3866f5b823e8f73d306fff1dc5bdb7f575ac6d250163d9db389436061"
+    }
+  ]
+}

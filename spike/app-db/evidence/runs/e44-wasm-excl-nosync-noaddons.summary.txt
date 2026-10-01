@@ -1,0 +1,56 @@
+{
+ "label": "e44-wasm-excl-nosync-noaddons",
+ "engineLoaded": true,
+ "selfChecks": {
+  "create": "true/true/true",
+  "legacy": "true/true/true",
+  "import": "true/true/true",
+  "append-noclose": "true/true/true",
+  "reopen": "true/true/true"
+ },
+ "exits": {
+  "create": "0x0",
+  "legacy": "0x0",
+  "import": "0x0",
+  "append-noclose": "0x1",
+  "reopen": "0x0"
+ },
+ "create": {
+  "ok": true,
+  "journal": "wal",
+  "uv": 6,
+  "qc": "ok",
+  "opsSha": "52e895398bbc6889705be60a41e40bbaa1286aa3b8f453bc03f8454c84a34673"
+ },
+ "legacy": true,
+ "import": true,
+ "append": {
+  "exit": "0x1",
+  "files": [
+   {
+    "name": "line-todo.db",
+    "size": 8192
+   },
+   {
+    "name": "line-todo.db-wal",
+    "size": 3245352
+   }
+  ]
+ },
+ "reopen": true,
+ "outside": {
+  "opened": false,
+  "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-28264.db",
+  "code": null,
+  "name": "SQLite3Error",
+  "message": "SQLITE_CANTOPEN: sqlite3 result code 14: unable to open database file"
+ },
+ "interop": {
+  "node": "24.2.0",
+  "quickCheck": "ok",
+  "userVersion": 6,
+  "journalModeOnDisk": "wal",
+  "messages": 2359,
+  "todos": 9
+ }
+}

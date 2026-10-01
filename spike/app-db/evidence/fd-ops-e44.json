@@ -1,0 +1,61 @@
+{
+  "electron": "C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe",
+  "flags": [
+    "--permission",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-appdb-fdops-gAQDWz/host/fd-ops-child.mjs",
+    "--allow-fs-read=C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-appdb-fdops-gAQDWz/data",
+    "--allow-fs-write=C:/Users/david/AppData/Local/Temp/teamuq-appdb-fdops-gAQDWz/data",
+    "--allow-addons"
+  ],
+  "exitCode": 0,
+  "result": {
+    "permission": true,
+    "openSync_w+": {
+      "ok": true,
+      "v": "fd"
+    },
+    "writeSync": {
+      "ok": true,
+      "v": 11
+    },
+    "readSync": {
+      "ok": true,
+      "v": 5
+    },
+    "fstatSync": {
+      "ok": true,
+      "v": 11
+    },
+    "ftruncateSync": {
+      "ok": true
+    },
+    "fsyncSync": {
+      "ok": false,
+      "code": "ERR_ACCESS_DENIED",
+      "msg": "fsync API is disabled when Permission Model is enabled."
+    },
+    "fdatasyncSync": {
+      "ok": false,
+      "code": "ERR_ACCESS_DENIED",
+      "msg": "fdatasync API is disabled when Permission Model is enabled."
+    },
+    "closeSync": {
+      "ok": true
+    },
+    "statSync_path": {
+      "ok": true,
+      "v": 5
+    },
+    "truncateSync_path": {
+      "ok": true
+    },
+    "accessSync": {
+      "ok": true
+    },
+    "unlinkSync": {
+      "ok": true
+    }
+  },
+  "stderr": []
+}

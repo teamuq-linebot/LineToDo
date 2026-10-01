@@ -1,0 +1,822 @@
+{
+  "label": "e44-wasm-strict",
+  "electronExe": "C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe",
+  "engine": "wasm",
+  "vendor": null,
+  "wasmExclusive": false,
+  "wasmSyncSkip": false,
+  "allowAddons": true,
+  "permission": true,
+  "flags": [
+    "--permission",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-wasm-strict-eKmnFZ/host/host-bootstrap.mjs",
+    "--allow-fs-read=C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-wasm-strict-eKmnFZ/data",
+    "--allow-fs-write=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-wasm-strict-eKmnFZ/data",
+    "--allow-addons"
+  ],
+  "dirs": {
+    "runRoot": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-strict-eKmnFZ",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-strict-eKmnFZ\\data",
+    "bootstrapFile": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-strict-eKmnFZ\\host\\host-bootstrap.mjs"
+  },
+  "phases": [
+    {
+      "phase": "create",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 202,
+      "resultWritten": true,
+      "filesAfter": [
+        {
+          "name": "probe.db",
+          "size": 0
+        }
+      ],
+      "result": {
+        "phase": "create",
+        "label": "e44-wasm-strict",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": true,
+          "loadMs": 78.07,
+          "info": {
+            "engine": "sqlite3mc-wasm+nodefs-vfs",
+            "sqlite": "3.53.4",
+            "mc": "SQLite3 Multiple Ciphers 2.5.1",
+            "vfsList": [
+              "multipleciphers-unix-none",
+              "nodefs",
+              "unix-none",
+              "memdb",
+              "kvvfs",
+              "unix-excl",
+              "unix-dotfile",
+              "unix"
+            ],
+            "exclusiveLocking": false,
+            "syncMode": "strict",
+            "initWarnings": [
+              "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+              "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+              "sqlite3_step() rc= 1034 SQLITE_IOERR_FSYNC SQL = CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b INTEGER, r REAL, z BLOB)"
+            ]
+          },
+          "adapterFiles": [
+            "wasm-adapter.mjs",
+            "wasm-nodefs-vfs.mjs"
+          ]
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "phaseError": {
+          "code": null,
+          "name": "SQLite3Error",
+          "message": "SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+          "stack": [
+            "SQLite3Error: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+            "    at toss3 (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9427:35)",
+            "    at checkSqlite3Rc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9463:7)",
+            "    at DB.checkRc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9819:33)",
+            "    at Stmt.step (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:10426:14)",
+            "    at DB.exec (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9985:18)"
+          ]
+        },
+        "wasmVfs": {
+          "stats": {
+            "xRead": 9,
+            "xWrite": 1,
+            "xSync": 1,
+            "xSyncSkippedDenied": 0,
+            "xTruncate": 0,
+            "opened": [
+              "probe.db",
+              "probe.db-journal"
+            ],
+            "syncMode": "strict"
+          },
+          "lastError": "ERR_ACCESS_DENIED",
+          "openFiles": 1
+        },
+        "memoryRssMB": 116,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    },
+    {
+      "phase": "legacy",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 214,
+      "resultWritten": true,
+      "filesAfter": [
+        {
+          "name": "legacy-v1.db",
+          "size": 0
+        },
+        {
+          "name": "probe.db",
+          "size": 0
+        }
+      ],
+      "result": {
+        "phase": "legacy",
+        "label": "e44-wasm-strict",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": true,
+          "loadMs": 74.72,
+          "info": {
+            "engine": "sqlite3mc-wasm+nodefs-vfs",
+            "sqlite": "3.53.4",
+            "mc": "SQLite3 Multiple Ciphers 2.5.1",
+            "vfsList": [
+              "multipleciphers-unix-none",
+              "nodefs",
+              "unix-none",
+              "memdb",
+              "kvvfs",
+              "unix-excl",
+              "unix-dotfile",
+              "unix"
+            ],
+            "exclusiveLocking": false,
+            "syncMode": "strict",
+            "initWarnings": [
+              "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+              "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+              "sqlite3_step() rc= 1034 SQLITE_IOERR_FSYNC SQL = "
+            ]
+          },
+          "adapterFiles": [
+            "wasm-adapter.mjs",
+            "wasm-nodefs-vfs.mjs"
+          ]
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "phaseError": {
+          "code": null,
+          "name": "SQLite3Error",
+          "message": "SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+          "stack": [
+            "SQLite3Error: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+            "    at toss3 (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9427:35)",
+            "    at checkSqlite3Rc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9463:7)",
+            "    at DB.checkRc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9819:33)",
+            "    at Stmt.step (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:10426:14)",
+            "    at DB.exec (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9985:18)"
+          ]
+        },
+        "wasmVfs": {
+          "stats": {
+            "xRead": 9,
+            "xWrite": 1,
+            "xSync": 1,
+            "xSyncSkippedDenied": 0,
+            "xTruncate": 0,
+            "opened": [
+              "legacy-v1.db",
+              "legacy-v1.db-journal"
+            ],
+            "syncMode": "strict"
+          },
+          "lastError": "ERR_ACCESS_DENIED",
+          "openFiles": 1
+        },
+        "memoryRssMB": 115,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    },
+    {
+      "phase": "import",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 229,
+      "resultWritten": true,
+      "filesAfter": [
+        {
+          "name": "legacy-v1.db",
+          "size": 0
+        },
+        {
+          "name": "probe.db",
+          "size": 0
+        }
+      ],
+      "result": {
+        "phase": "import",
+        "label": "e44-wasm-strict",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": true,
+          "loadMs": 73.07,
+          "info": {
+            "engine": "sqlite3mc-wasm+nodefs-vfs",
+            "sqlite": "3.53.4",
+            "mc": "SQLite3 Multiple Ciphers 2.5.1",
+            "vfsList": [
+              "multipleciphers-unix-none",
+              "nodefs",
+              "unix-none",
+              "memdb",
+              "kvvfs",
+              "unix-excl",
+              "unix-dotfile",
+              "unix"
+            ],
+            "exclusiveLocking": false,
+            "syncMode": "strict",
+            "initWarnings": [
+              "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+              "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')"
+            ]
+          },
+          "adapterFiles": [
+            "wasm-adapter.mjs",
+            "wasm-nodefs-vfs.mjs"
+          ]
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "phaseResult": {
+          "ok": false,
+          "open": {
+            "openMs": 7.91,
+            "logs": [],
+            "error": {
+              "name": "SQLite3Error",
+              "code": null,
+              "message": "SQLITE_CANTOPEN: sqlite3 result code 14: unable to open database file",
+              "isDbIntegrityError": false
+            }
+          }
+        },
+        "wasmVfs": {
+          "stats": {
+            "xRead": 2,
+            "xWrite": 0,
+            "xSync": 0,
+            "xSyncSkippedDenied": 0,
+            "xTruncate": 0,
+            "opened": [
+              "line-todo.db"
+            ],
+            "syncMode": "strict"
+          },
+          "lastError": null,
+          "openFiles": 1
+        },
+        "memoryRssMB": 116,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    },
+    {
+      "phase": "append-noclose",
+      "exitCode": 1,
+      "exitCodeHex": "0x1",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 215,
+      "resultWritten": true,
+      "filesAfter": [
+        {
+          "name": "legacy-v1.db",
+          "size": 0
+        },
+        {
+          "name": "line-todo.db",
+          "size": 0
+        },
+        {
+          "name": "probe.db",
+          "size": 0
+        }
+      ],
+      "result": {
+        "phase": "append-noclose",
+        "label": "e44-wasm-strict",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": true,
+          "loadMs": 68.84,
+          "info": {
+            "engine": "sqlite3mc-wasm+nodefs-vfs",
+            "sqlite": "3.53.4",
+            "mc": "SQLite3 Multiple Ciphers 2.5.1",
+            "vfsList": [
+              "multipleciphers-unix-none",
+              "nodefs",
+              "unix-none",
+              "memdb",
+              "kvvfs",
+              "unix-excl",
+              "unix-dotfile",
+              "unix"
+            ],
+            "exclusiveLocking": false,
+            "syncMode": "strict",
+            "initWarnings": [
+              "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+              "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+              "sqlite3_step() rc= 1034 SQLITE_IOERR_FSYNC SQL = COMMIT"
+            ]
+          },
+          "adapterFiles": [
+            "wasm-adapter.mjs",
+            "wasm-nodefs-vfs.mjs"
+          ]
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "phaseResult": {
+          "ok": false,
+          "open": {
+            "openMs": 24.66,
+            "logs": [
+              "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-strict-eKmnFZ\\data\\line-todo.db",
+              "error [db] migrate failed for C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-strict-eKmnFZ\\data\\line-todo.db: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error"
+            ],
+            "error": {
+              "name": "DbIntegrityError",
+              "code": null,
+              "message": "DB migration failed for C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-strict-eKmnFZ\\data\\line-todo.db: migrate failed: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+              "isDbIntegrityError": true
+            }
+          }
+        },
+        "wasmVfs": {
+          "stats": {
+            "xRead": 11,
+            "xWrite": 1,
+            "xSync": 1,
+            "xSyncSkippedDenied": 0,
+            "xTruncate": 0,
+            "opened": [
+              "line-todo.db",
+              "line-todo.db-journal"
+            ],
+            "syncMode": "strict"
+          },
+          "lastError": "ERR_ACCESS_DENIED",
+          "openFiles": 1
+        },
+        "memoryRssMB": 123,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    },
+    {
+      "phase": "reopen",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 256,
+      "resultWritten": true,
+      "filesAfter": [
+        {
+          "name": "legacy-v1.db",
+          "size": 0
+        },
+        {
+          "name": "line-todo.db",
+          "size": 0
+        },
+        {
+          "name": "probe.db",
+          "size": 0
+        }
+      ],
+      "result": {
+        "phase": "reopen",
+        "label": "e44-wasm-strict",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": true,
+          "loadMs": 66.55,
+          "info": {
+            "engine": "sqlite3mc-wasm+nodefs-vfs",
+            "sqlite": "3.53.4",
+            "mc": "SQLite3 Multiple Ciphers 2.5.1",
+            "vfsList": [
+              "multipleciphers-unix-none",
+              "nodefs",
+              "unix-none",
+              "memdb",
+              "kvvfs",
+              "unix-excl",
+              "unix-dotfile",
+              "unix"
+            ],
+            "exclusiveLocking": false,
+            "syncMode": "strict",
+            "initWarnings": [
+              "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+              "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+              "sqlite3_step() rc= 1034 SQLITE_IOERR_FSYNC SQL = COMMIT"
+            ]
+          },
+          "adapterFiles": [
+            "wasm-adapter.mjs",
+            "wasm-nodefs-vfs.mjs"
+          ]
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "phaseResult": {
+          "ok": false,
+          "open": {
+            "openMs": 23.62,
+            "logs": [
+              "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-strict-eKmnFZ\\data\\line-todo.db",
+              "error [db] migrate failed for C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-strict-eKmnFZ\\data\\line-todo.db: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error"
+            ],
+            "error": {
+              "name": "DbIntegrityError",
+              "code": null,
+              "message": "DB migration failed for C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-wasm-strict-eKmnFZ\\data\\line-todo.db: migrate failed: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+              "isDbIntegrityError": true
+            }
+          }
+        },
+        "wasmVfs": {
+          "stats": {
+            "xRead": 11,
+            "xWrite": 1,
+            "xSync": 1,
+            "xSyncSkippedDenied": 0,
+            "xTruncate": 0,
+            "opened": [
+              "line-todo.db",
+              "line-todo.db-journal"
+            ],
+            "syncMode": "strict"
+          },
+          "lastError": "ERR_ACCESS_DENIED",
+          "openFiles": 1
+        },
+        "memoryRssMB": 125,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    }
+  ],
+  "interopSystemNodeSqlite": {
+    "error": "no such table: messages"
+  }
+}
