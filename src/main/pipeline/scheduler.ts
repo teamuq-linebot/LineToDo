@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { runOnce } from './runOnce'
-import type { RunOnceResult, ChatExtractInput } from './runOnce'
+import type { RunOnceResult, ChatExtractInput, ExtractSink } from './runOnce'
 import type { ExtractResult } from '../llm/schema'
 import { ProviderBreaker, ChatBackoff } from './breaker'
 import type { BreakerSnapshot, ChatBackoffEntry } from './breaker'
@@ -58,6 +58,12 @@ export interface SchedulerOptions {
   breaker?: ProviderBreaker
   /** 注入自訂 per-chat 退避表（同上）。 */
   backoff?: ChatBackoff
+  /**
+   * 供料/收料模式（外掛 backend）：給了，每一輪只做落庫/黑名單/噪音過濾並把待抽取輸入交給 sink，
+   * 不組 provider、不呼叫 extractFn、不碰熔斷器。抽取結果之後由 sink 的 inbox 落庫，
+   * 並以 recordExternalRun() 回報給 scheduler（沿用 'run' / 'status' 事件）。
+   */
+  extractSink?: ExtractSink
 }
 
 export class PipelineScheduler extends EventEmitter {
@@ -135,6 +141,18 @@ export class PipelineScheduler extends EventEmitter {
 
   private emitStatus(): void {
     this.emit('status', this.getStatus())
+  }
+
+  /**
+   * 外部（外掛 ExtractQueue 的 commit）完成了一批抽取：記成最近一輪並送出 'run'／'status'，
+   * 讓 application 照常推 pipeline-run / todos-changed。不影響定時排程與 busy 狀態。
+   */
+  recordExternalRun(result: RunOnceResult): void {
+    this.lastResult = result
+    this.lastRunAt = new Date().toISOString()
+    this.lastError = result.note
+    this.emit('run', result)
+    this.emitStatus()
   }
 
   /** 啟動定時輪詢（idempotent）。 */
@@ -255,11 +273,12 @@ export class PipelineScheduler extends EventEmitter {
     try {
       // 熔斷冷卻中 → 這一輪的每個 chat 都被 shouldSkipChat 擋下（連 provider 都不建構）。
       // 落庫 / 黑名單 / 噪音判定照常，只是完全不進 LLM 階段。
-      const cooling = this.breaker.isOpen()
+      const sink = this.options.extractSink
+      const cooling = sink ? false : this.breaker.isOpen()
 
       // 每輪即時組 extractFn（金鑰即用即丟、每輪依設定重新解析 provider）。
       // provider 不可用（http 無金鑰）→ noopExtract（不產 todo）。
-      const providerExtract = cooling ? null : this.makeExtract()
+      const providerExtract = cooling || sink ? null : this.makeExtract()
       const noopExtract = async (): Promise<ExtractResult> => ({
         importance: 'fyi',
         newTodos: [],
@@ -268,7 +287,11 @@ export class PipelineScheduler extends EventEmitter {
       })
       // 冷卻中刻意給「會拋錯」而非 noop：若 shouldSkipChat 哪天有 bug 漏掉某個 chat，
       // 結果會是該 chat 失敗（看得見），而不是靜默把訊息標成已處理（代辦永久遺失）。
-      const extractFn = cooling
+      const extractFn = sink
+        ? async (): Promise<ExtractResult> => {
+            throw new Error('extractSink 模式不應呼叫 extractFn')
+          }
+        : cooling
         ? async (): Promise<ExtractResult> => {
             throw new Error('AI 引擎冷卻中，本輪不應呼叫 extract')
           }
@@ -280,6 +303,7 @@ export class PipelineScheduler extends EventEmitter {
         config: this.getDefaults(),
         watchSource: this.watchSource,
         extractFn,
+        extractSink: sink,
         correctionsForChat: this.options.correctionsForChat,
         onCorrectionsPayloadBuilt: this.options.onCorrectionsPayloadBuilt,
         shouldSkipChat: (chatId) => cooling || this.backoff.shouldSkip(chatId),
@@ -291,7 +315,7 @@ export class PipelineScheduler extends EventEmitter {
       })
 
       // 熔斷判定（冷卻中的那一輪不計，否則永遠續命）。
-      if (!cooling) {
+      if (!cooling && !sink) {
         const opened = this.breaker.recordRound({
           chatsProcessed: result.chatsProcessed,
           chatsFailed: result.chatsFailed,

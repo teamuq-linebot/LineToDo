@@ -68,6 +68,23 @@ export interface RunOnceDeps {
   config?: PipelineDefaults
   correctionsForChat?: (chatId: string) => ChatExtractInput['classificationCorrections']
   onCorrectionsPayloadBuilt?: (chatId: string, messageIds: string[], rules: NonNullable<ChatExtractInput['classificationCorrections']>) => void
+  /**
+   * 供料/收料模式（外掛 backend 用）：給了就**不呼叫 extractFn**。每個 chat 的抽取輸入交給 sink（outbox），
+   * 該 chat 的訊息維持未處理（計入 chatsSkipped），等 sink 的 inbox 收到已驗證的 ExtractResult 後
+   * 以 `applyChatExtract()` 落庫並標 processed。不給＝維持現行行為（standalone 完全不受影響）。
+   */
+  extractSink?: ExtractSink
+}
+
+/**
+ * 抽取輸入的接收端（外掛 backend 的 ExtractQueue）。runOnce 每輪呼叫：
+ * `beginCycle()` → 對每個要抽取的 chat 呼叫 `offer()` → `endCycle()`。
+ * sink 以此判斷「本輪沒再被提供的 chat」（訊息已被處理、chat 被封鎖…）並丟棄過期的待抽取項。
+ */
+export interface ExtractSink {
+  beginCycle(): void
+  offer(input: ChatExtractInput, msgIds: string[]): void
+  endCycle(): void
 }
 
 export interface ChatExtractInput {
@@ -126,6 +143,95 @@ function isFuture(dueAt: string | null, nowIso: string): boolean {
   const now = Date.parse(nowIso)
   if (Number.isNaN(due) || Number.isNaN(now)) return false
   return due > now
+}
+
+/** applyChatExtract 累計的結果欄位（RunOnceResult 的子集；runOnce 與外掛 ExtractQueue 的 commit 共用）。 */
+export type ApplyTally = Pick<RunOnceResult, 'todosCreated' | 'todosMerged' | 'todosResolvedDone' | 'todosSuggestedDone' | 'createdIds' | 'resolvedIds' | 'updatedIds'>
+
+/**
+ * 套用一個 chat 的已驗證 ExtractResult（runOnce 步驟 6 的落庫段，逐字從 runOnce 抽出）：
+ * newTodos（逐對話忽略 + 近似去重）→ resolved（完成偵測門檻）→ updates（重新分類）→ 該 chat 訊息標 processed。
+ * standalone 的 runOnce 與外掛的 ExtractQueue.commit 走同一份邏輯，行為不分叉。
+ */
+export function applyChatExtract(
+  ctx: { db: Database; cfg: PipelineDefaults; now: string },
+  chatId: string,
+  msgIds: string[],
+  extract: ExtractResult,
+  result: ApplyTally
+): void {
+  const { db, cfg, now } = ctx
+  const openTodos = getOpenTodosByChat(chatId, db)
+
+  // importance==='noise' → 不產 todo（第二道降噪，§7.1）。
+  if (extract.importance !== 'noise') {
+    const ignoreKw = cfg.chatIgnoreKeywords[chatId] ?? []
+    for (const nt of extract.newTodos) {
+      // 逐對話關鍵字忽略（第二層 per-chat 忽略）：命中就不建立此代辦。
+      if (matchesChatIgnoreKeyword(nt, ignoreKw)) continue
+      const dup = findDuplicateOpenTodo(nt.title, openTodos)
+      if (dup) {
+        // 近似去重命中 → 更新既有 todo 的來源，不新增。
+        const merged = mergeSources(dup.id, nt.sourceMsgIds, db)
+        if (merged) {
+          result.todosMerged += 1
+          result.updatedIds.push(dup.id)
+        }
+        continue
+      }
+      const created = createTodo(
+        {
+          chatId,
+          bucket: nt.bucket,
+          status: bucketToActiveStatus(nt.bucket),
+          title: nt.title,
+          detail: nt.detail,
+          priority: nt.priority,
+          dueAt: nt.dueAt,
+          confidence: nt.confidence,
+          sourceMsgIds: nt.sourceMsgIds
+        },
+        db
+      )
+      result.todosCreated += 1
+      result.createdIds.push(created.id)
+    }
+  }
+
+  // resolved → 完成偵測門檻（§6.6）。
+  const resolvedIdsThisChat = new Set<string>()
+  for (const r of extract.resolved) {
+    const target = openTodos.find((t) => t.id === r.todoId)
+    if (!target) continue // 模型給了不存在 / 不屬此 chat 的 id → 忽略
+    // idempotent guard（H1 抖動修正，§6.6「只降不升、避免抖動」）：
+    // suggested_done 仍被 getOpenTodosByChat 當 open 餵 LLM，若模型每輪重列入 resolved，
+    // 而 target 已是 suggested_done/done，就會每輪重呼 resolveTodo（重寫 updated_at/evidence）、
+    // 重 push resolvedIds → 上游每輪 emit todos-changed → 無限重觸發。
+    // 已結案/建議完成者直接跳過：只有狀態真的轉變才落庫 + push（避免抖動）。
+    if (target.status === 'suggested_done' || target.status === 'done') continue
+    // schedule 且 due_at 仍在未來 → 不自動 done，改 suggested_done（避免把未發生行程判完成）。
+    const toDone = !(target.bucket === 'schedule' && isFuture(target.dueAt, now))
+    const updated = resolveTodo(target.id, r.evidence, toDone, db)
+    if (updated) {
+      result.resolvedIds.push(target.id)
+      resolvedIdsThisChat.add(target.id)
+      if (toDone) result.todosResolvedDone += 1
+      else result.todosSuggestedDone += 1
+    }
+  }
+
+  // updates → 既有 todo 重新分類（時間確定後 todo/waiting → schedule 升級）。
+  for (const u of extract.updates ?? []) {
+    // 比照 resolved：確認目標屬本 chat（找不到 → 忽略跨 chat / 不存在 id）。
+    const target = openTodos.find((t) => t.id === u.todoId)
+    if (!target) continue
+    if (resolvedIdsThisChat.has(u.todoId)) continue // 跳過本輪已 resolve 的 id，避免覆寫 resolve
+    const changed = reclassifyTodo(u.todoId, { bucket: u.bucket, dueAt: u.dueAt }, db)
+    if (changed > 0) result.updatedIds.push(u.todoId)
+  }
+
+  // 該 chat 訊息標 processed=1。
+  markProcessed(msgIds, db)
 }
 
 /**
@@ -200,6 +306,8 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
   result.chatsSeen = byChat.size
 
   if (byChat.size === 0) {
+    deps.extractSink?.beginCycle()
+    deps.extractSink?.endCycle() // 沒有任何待抽取的 chat：讓 sink 丟掉先前提供、現在已不需要的項目
     finishRun(
       runId,
       { newMsgs: result.newMsgs, chatsSeen: 0, lineBridge: result.lineBridge, llmStatus: 'ok' },
@@ -214,11 +322,13 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
 
   const now = nowFn()
   const chatIds = [...byChat.keys()]
+  deps.extractSink?.beginCycle()
 
   // ── 5–6. 每 chat 抽取 + 落庫（並發節流）────────────────
   type ChatOutcome =
     | { kind: 'noise'; chatId: string; msgIds: string[] }
     | { kind: 'skipped'; chatId: string }
+    | { kind: 'deferred'; chatId: string }
     | { kind: 'ok'; chatId: string; msgIds: string[]; extract: ExtractResult }
     | { kind: 'fail'; chatId: string; msgIds: string[]; error: string }
 
@@ -250,7 +360,7 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
 
       try {
         const classificationCorrections = deps.correctionsForChat?.(chatId) ?? []
-        const extract = await deps.extractFn({
+        const input: ChatExtractInput = {
           now,
           chat: {
             chatId,
@@ -264,7 +374,13 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
           ...(classificationCorrections.length && deps.onCorrectionsPayloadBuilt
             ? { onCorrectionsPayloadBuilt: () => deps.onCorrectionsPayloadBuilt!(chatId, msgIds, classificationCorrections) }
             : {})
-        })
+        }
+        if (deps.extractSink) {
+          // 供料模式：把輸入放進 outbox 就停，不呼叫 extractFn、不標 processed。
+          deps.extractSink.offer(input, msgIds)
+          return { kind: 'deferred', chatId }
+        }
+        const extract = await deps.extractFn(input)
         deps.onChatSucceeded?.(chatId)
         return { kind: 'ok', chatId, msgIds, extract }
       } catch (err) {
@@ -280,6 +396,8 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
     }
   )
 
+  deps.extractSink?.endCycle()
+
   // ── 落庫：DB 寫入在主執行緒序列化（better-sqlite3 同步），避免交錯 ──
   for (const s of settled) {
     if (s.status === 'rejected') {
@@ -291,6 +409,12 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
     if (outcome.kind === 'skipped') {
       result.chatsSkipped += 1
       // 訊息**不**標 processed → 退避到期 / 熔斷解除後的下一輪會重新抽（不遺失代辦）。
+      continue
+    }
+
+    if (outcome.kind === 'deferred') {
+      // 已交給 extractSink：訊息維持未處理，等 inbox 回寫（沿用 chatsSkipped 的「本輪未處理」語意，不新增欄位）。
+      result.chatsSkipped += 1
       continue
     }
 
@@ -308,78 +432,7 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
 
     // kind === 'ok'
     result.chatsProcessed += 1
-    const { chatId, msgIds, extract } = outcome
-    const openTodos = getOpenTodosByChat(chatId, db)
-
-    // importance==='noise' → 不產 todo（第二道降噪，§7.1）。
-    if (extract.importance !== 'noise') {
-      const ignoreKw = cfg.chatIgnoreKeywords[chatId] ?? []
-      for (const nt of extract.newTodos) {
-        // 逐對話關鍵字忽略（第二層 per-chat 忽略）：命中就不建立此代辦。
-        if (matchesChatIgnoreKeyword(nt, ignoreKw)) continue
-        const dup = findDuplicateOpenTodo(nt.title, openTodos)
-        if (dup) {
-          // 近似去重命中 → 更新既有 todo 的來源，不新增。
-          const merged = mergeSources(dup.id, nt.sourceMsgIds, db)
-          if (merged) {
-            result.todosMerged += 1
-            result.updatedIds.push(dup.id)
-          }
-          continue
-        }
-        const created = createTodo(
-          {
-            chatId,
-            bucket: nt.bucket,
-            status: bucketToActiveStatus(nt.bucket),
-            title: nt.title,
-            detail: nt.detail,
-            priority: nt.priority,
-            dueAt: nt.dueAt,
-            confidence: nt.confidence,
-            sourceMsgIds: nt.sourceMsgIds
-          },
-          db
-        )
-        result.todosCreated += 1
-        result.createdIds.push(created.id)
-      }
-    }
-
-    // resolved → 完成偵測門檻（§6.6）。
-    const resolvedIdsThisChat = new Set<string>()
-    for (const r of extract.resolved) {
-      const target = openTodos.find((t) => t.id === r.todoId)
-      if (!target) continue // 模型給了不存在 / 不屬此 chat 的 id → 忽略
-      // idempotent guard（H1 抖動修正，§6.6「只降不升、避免抖動」）：
-      // suggested_done 仍被 getOpenTodosByChat 當 open 餵 LLM，若模型每輪重列入 resolved，
-      // 而 target 已是 suggested_done/done，就會每輪重呼 resolveTodo（重寫 updated_at/evidence）、
-      // 重 push resolvedIds → 上游每輪 emit todos-changed → 無限重觸發。
-      // 已結案/建議完成者直接跳過：只有狀態真的轉變才落庫 + push（避免抖動）。
-      if (target.status === 'suggested_done' || target.status === 'done') continue
-      // schedule 且 due_at 仍在未來 → 不自動 done，改 suggested_done（避免把未發生行程判完成）。
-      const toDone = !(target.bucket === 'schedule' && isFuture(target.dueAt, now))
-      const updated = resolveTodo(target.id, r.evidence, toDone, db)
-      if (updated) {
-        result.resolvedIds.push(target.id)
-        resolvedIdsThisChat.add(target.id)
-        if (toDone) result.todosResolvedDone += 1
-        else result.todosSuggestedDone += 1
-      }
-    }
-
-    // updates → 既有 todo 重新分類（時間確定後 todo/waiting → schedule 升級）。
-    for (const u of extract.updates ?? []) {
-      // 比照 resolved：確認目標屬本 chat（找不到 → 忽略跨 chat / 不存在 id）。
-      const target = openTodos.find((t) => t.id === u.todoId)
-      if (!target) continue
-      if (resolvedIdsThisChat.has(u.todoId)) continue // 跳過本輪已 resolve 的 id，避免覆寫 resolve
-      const changed = reclassifyTodo(u.todoId, { bucket: u.bucket, dueAt: u.dueAt }, db)
-      if (changed > 0) result.updatedIds.push(u.todoId)
-    }
-
-    // 該 chat 訊息標 processed=1。
-    markProcessed(msgIds, db)
+    applyChatExtract({ db, cfg, now }, outcome.chatId, outcome.msgIds, outcome.extract, result)
   }
 
   // ── llm_status 判定 ──────────────────────────────────────

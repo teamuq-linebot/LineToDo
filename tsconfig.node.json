@@ -20,6 +20,7 @@
     "src/core/**/*.ts",
     "src/shared/**/*.ts",
     "src/preload/**/*.ts",
+    "src/plugin/**/*.ts",
     "electron.vite.config.ts"
   ]
 }

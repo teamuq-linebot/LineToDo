@@ -3,7 +3,7 @@ import { watchFile as fsWatchFile, type StatWatcher } from 'node:fs'
 import { EventEmitter } from 'node:events'
 import type { RawLineMessage, LineBridgeStatus, LineBridgeState } from './types'
 import type { LineImportBatch } from './importTypes'
-import { commitAndAcknowledgeLineImportBatch, getLineImportBatch } from './engine/watchEngine'
+import { commitAndAcknowledgeLineImportBatch, getLineImportBatch, type WatchEngineOptions } from './engine/watchEngine'
 
 /**
  * LineWatcher — 在 main 進程以 in-process TS 引擎（engine/watchEngine）取增量新訊息。
@@ -39,6 +39,16 @@ export interface LineWatcherOptions {
   dbWatchEnabled?: boolean
   /** LINE DB 目錄（含 qwd*.edb 和 -wal 的目錄） */
   dbDir?: string
+  /**
+   * 引擎選項（checkpoint 檔、DB 路徑、key 快取檔）。standalone 不給＝沿用 userData 推導的預設；
+   * 外掛 backend 必須給（路徑都在 dataDir，且 backend 沒有 electron）。
+   */
+  engine?: Pick<WatchEngineOptions, 'stateFile' | 'dbPath' | 'keyOpts'>
+  /**
+   * 一批讀滿（hasMore）就立刻接著讀下一批，直到追上。預設 false＝每個 interval 只讀一批（standalone 現行行為）。
+   * 外掛首次匯入大量歷史訊息時開啟。
+   */
+  drainBacklog?: boolean
 }
 
 const DB_WATCH_DEBOUNCE_MS = 800
@@ -54,6 +64,7 @@ export class LineWatcher extends EventEmitter {
   // 事件驅動觸發
   private intervalTimer: NodeJS.Timeout | null = null
   private debounceTimer: NodeJS.Timeout | null = null
+  private drainHandle: NodeJS.Immediate | null = null
   private fsWatcher: FSWatcher | null = null
   private statWatcher: StatWatcher | null = null
 
@@ -114,6 +125,10 @@ export class LineWatcher extends EventEmitter {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer)
       this.debounceTimer = null
+    }
+    if (this.drainHandle) {
+      clearImmediate(this.drainHandle)
+      this.drainHandle = null
     }
     if (this.intervalTimer) {
       clearInterval(this.intervalTimer)
@@ -251,11 +266,19 @@ export class LineWatcher extends EventEmitter {
     this.emit('log', `[watcher] engine=ts getLineImportBatch(${trigger}) limit=${limit}`)
     try {
       if (!this.batchCommitter) throw new Error('durable LINE import sink is not configured')
-      const batch = await getLineImportBatch({ limit })
+      const engine = this.opts.engine
+      const batch = await getLineImportBatch({ limit, ...engine })
       if (this.stopped) return // stop() 在 await 期間發生：本輪結果整批丟棄，不 emit、不改狀態
-      await commitAndAcknowledgeLineImportBatch(batch, this.batchCommitter)
+      if (engine) await commitAndAcknowledgeLineImportBatch(batch, this.batchCommitter, { stateFile: engine.stateFile, dbPath: engine.dbPath ?? undefined, openGateWhenMore: this.opts.drainBacklog })
+      else await commitAndAcknowledgeLineImportBatch(batch, this.batchCommitter)
       if (this.stopped) return
       for (const item of batch.items) this.emitMessage(item.message)
+      if (batch.hasMore && this.opts.drainBacklog && !this.drainHandle) {
+        this.drainHandle = setImmediate(() => {
+          this.drainHandle = null
+          void this.poll('drain')
+        })
+      }
       // 正常完成：若還沒切到 running（e.g. 沒有新訊息），至少設 running 消除 starting 狀態。
       if (this.status.state === 'starting') this.setState('running', null)
     } catch (err) {

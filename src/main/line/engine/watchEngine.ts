@@ -268,8 +268,13 @@ export async function getLineImportBatch(
   }
 }
 
+export type AcknowledgeOptions = Pick<WatchEngineOptions, 'stateFile' | 'dbPath'> & {
+  /** batch.hasMore 時不寫 stat-gate 簽章（讓下一輪 poll 繼續讀 backlog）。預設 false＝standalone 現行行為。 */
+  openGateWhenMore?: boolean
+}
+
 /** Advance checkpoint only after the main-process DB commit has returned success. */
-export function acknowledgeLineImportBatch(batch: LineImportBatch, opts: Pick<WatchEngineOptions, 'stateFile' | 'dbPath'> = {}): void {
+export function acknowledgeLineImportBatch(batch: LineImportBatch, opts: AcknowledgeOptions = {}): void {
   const stateFile = opts.stateFile ?? defaultStateFile()
   const state = loadState(stateFile)
   const current = state.cursor ?? { createdTime: 0, rowId: 0 }
@@ -278,7 +283,9 @@ export function acknowledgeLineImportBatch(batch: LineImportBatch, opts: Pick<Wa
   }
   state.cursor = batch.cursorTo
   state.last_ts = batch.cursorTo.createdTime
-  state.sig = walSig(opts.dbPath ?? findDb())
+  // 預設（standalone）：記下 stat-gate 簽章。backlog 還沒讀完（hasMore）又要求不卡 gate 時留 null，下一輪 poll 才會接著讀，
+  // 不會被「檔案沒變」的 gate 擋成空批（外掛首次匯入大量歷史訊息用）。
+  state.sig = opts.openGateWhenMore && batch.hasMore ? null : walSig(opts.dbPath ?? findDb())
   saveStateStrict(stateFile, state)
 }
 
@@ -286,7 +293,7 @@ export function acknowledgeLineImportBatch(batch: LineImportBatch, opts: Pick<Wa
 export async function commitAndAcknowledgeLineImportBatch(
   batch: LineImportBatch,
   commit: (batch: LineImportBatch) => void | Promise<void>,
-  opts: Pick<WatchEngineOptions, 'stateFile' | 'dbPath'> = {},
+  opts: AcknowledgeOptions = {},
 ): Promise<void> {
   // Empty terminal pages are durable observations too; commit their receipt before acknowledging.
   await commit(batch)
