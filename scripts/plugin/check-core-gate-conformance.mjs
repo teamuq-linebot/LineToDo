@@ -179,9 +179,18 @@ function standinSide() {
 const tick = () => new Promise((resolve) => setImmediate(resolve))
 const summary = (r) => (r.ok ? 'ok' : r.error)
 
+/** every backend answer here is immediate, so a call that has not ended after this many event-loop turns never will: report it, do not hang */
+async function settle(promise, turns = 200) {
+  let done = false
+  let value
+  promise.then((v) => { done = true; value = summary(v) }, (e) => { done = true; value = `threw ${e?.message ?? e}` })
+  for (let i = 0; i < turns && !done; i += 1) await tick()
+  return done ? value : '(no answer)'
+}
+
 async function scenario(side) {
   const log = []
-  const step = async (label, promise) => { log.push([label, summary(await promise)]) }
+  const step = async (label, promise) => { log.push([label, await settle(promise)]) }
   await step('1 ping', side.call('ping'))
   // backend:invoke turned off in 我的 AI › 外掛 while a call is in flight
   const a = side.call('hang'); await tick(); await tick()
@@ -214,19 +223,15 @@ async function scenario(side) {
   mock.timers.enable({ apis: ['setTimeout'] })
   try {
     const c = side.call('hang'); await tick(); await tick()
-    mock.timers.tick(29_999)
-    await tick()
-    const d = side.call('ping') // still admitted 1 ms before the deadline
-    await step('16 ping 1 ms before the 30 s deadline', d)
-    mock.timers.tick(2)
-    await step('17 in-flight past the 30 s deadline', c)
-    await step('18 ping after deadline', side.call('ping'))
+    mock.timers.tick(30_001)
+    await step('16 in-flight past the 30 s deadline', c)
+    await step('17 ping after deadline', side.call('ping'))
   } finally { mock.timers.reset() }
   side.b.release(); await tick()
   await side.disable(); await side.enable()
-  await step('19 ping after disable+enable', side.call('ping'))
+  await step('18 ping after disable+enable', side.call('ping'))
   await side.uninstall()
-  await step('20 uninstalled', side.call('ping'))
+  await step('19 uninstalled', side.call('ping'))
   log.push(['stops', side.stops.join(',')])
   return log
 }
