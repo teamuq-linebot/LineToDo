@@ -37,7 +37,7 @@ export async function stagePlugin(stageDir) {
  * `stage(workRoot)` -> { installDir, built } lays out the install directory. The default is the test stage above (bundle + staged koffi package);
  * Phase 5's test-plugin-package.mjs passes a stage that UNPACKS THE SIGNED .tuqplugin instead, so the shipped bytes themselves run under the 1.6.8 contract.
  */
-export async function runPluginContract({ workRoot, settings, preseed, scenario, timeoutMs = 240_000, stage = stagePlugin }) {
+export async function runPluginContract({ workRoot, lineLocation, preseed, scenario, timeoutMs = 240_000, stage = stagePlugin }) {
   const exe = findElectron44()
   const { installDir, built } = await stage(workRoot)
   const dataDir = join(workRoot, 'data')
@@ -49,7 +49,8 @@ export async function runPluginContract({ workRoot, settings, preseed, scenario,
   await bundle({ entry: join(ROOT, 'scripts', 'lib', 'plugin-host-standin.mjs'), outfile: bootstrapFile, format: 'esm', target: 'node24' })
   const init = {
     version: 1, pluginId: 'tuqdev.line-todo', installDir, dataDir, entry: join(installDir, 'backend', 'index.mjs'),
-    assetPacks: {}, allowAddons: true, corePackaged: true, settings,
+    // lineLocation: the fake LINE folder for the bundle's test entry activateAt (G-06: nothing goes through context.settings any more)
+    assetPacks: {}, allowAddons: true, corePackaged: true, ...(lineLocation ? { lineLocation } : {}),
   }
   const flags = buildBackendPermissionFlags({ bootstrapFile, installDir, dataDir, assetDirs: [], allowAddons: true })
   const args = [bootstrapFile, Buffer.from(JSON.stringify(init)).toString('base64url'), Buffer.from(JSON.stringify(scenario)).toString('base64url')]

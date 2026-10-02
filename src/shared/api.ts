@@ -185,6 +185,15 @@ export interface ReviewLastDaysResult {
 }
 
 /**
+ * 外掛版長任務（回顧、補媒體金鑰）的狀態（G-05）。由 backend 管理並寫進 dataDir，畫面重新載入或 backend 重新啟動後仍查得到；
+ * `state:'interrupted'`＝上次執行到一半 backend 就重新啟動了。standalone 沒有這個查詢（`pipeline.longTaskStatus` 為 undefined）。
+ */
+export interface LongTaskStatusView {
+  review: { running: boolean; state: string; summary: string; chatsDone: number; chatsTotal: number; resumableMessages: number } | null
+  mediaBackfill: { running: boolean; state: string; summary: string } | null
+}
+
+/**
  * evt:reconcile-progress push payload（開機自我對帳進度，與
  * main/pipeline/reconcileRunner.ts ReconcileProgress 對齊；Batch 4 emit）。
  */
@@ -567,6 +576,8 @@ export interface LineTodoApi {
     status(): Promise<PipelineStatus>; loadStats(): Promise<PipelineLoadStats>
     runOnce(): Promise<PipelineRunResult>; reviewLastDays(days?: number): Promise<ReviewLastDaysResult>
     backfillMediaKeys(days?: number): Promise<{ ok: boolean; scanned?: number; mediaBackfilled?: number; error?: string }>
+    /** 外掛版：長任務的狀態（G-05）；standalone 不提供。 */
+    longTaskStatus?(): Promise<LongTaskStatusView>
     setRunning(running: boolean): Promise<PipelineStatus>; testQwen(): Promise<QwenTestResult>; testAiProvider(): Promise<ProviderHealth>
     onRun(cb: (r: PipelineRunResult) => void): () => void; onStatus(cb: (s: PipelineStatus) => void): () => void
     onTodosChanged(cb: (e: TodosChangedEvent) => void): () => void

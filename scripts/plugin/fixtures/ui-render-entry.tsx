@@ -8,6 +8,8 @@ import type { HostCapabilities } from '../../../src/renderer/platform/capabiliti
 import { SettingsPanel } from '../../../src/renderer/components/Settings/SettingsPanel'
 import { MediaFileActions, MediaImage } from '../../../src/renderer/components/MediaView'
 import App from '../../../src/renderer/App'
+import { NO_UI_STATE, UiStateProvider, createLocalUiState } from '../../../src/renderer/lib/uiState'
+import { BackendStatusBar } from '../../../src/plugin/ui/BackendStatusBar'
 
 const never = (): Promise<never> => new Promise(() => undefined)
 
@@ -63,4 +65,33 @@ export function renderImage(withAssetUrl: boolean, caps: HostCapabilities): stri
       <MediaImage msgId="i:m1" onOpenLightbox={() => undefined} />
     </LineTodoApiProvider>
   )
+}
+
+// ───────────── plugin developer guide conformance (G-02 / G-03 / G-04) ─────────────
+
+/** G-02: SettingsPanel with a load error (no settings could be read) or an action error (a write failed). */
+export function renderSettingsWith(caps: HostCapabilities, view: SettingsView | undefined, extra: { initialLoadError?: string; initialActionError?: string }): string {
+  return renderToStaticMarkup(
+    <LineTodoApiProvider api={stubApi()} capabilities={caps}>
+      <SettingsPanel initialView={view} {...extra} />
+    </LineTodoApiProvider>
+  )
+}
+
+/** G-04: the whole App with a UI state store that already holds saved values (what a re-created view finds in its localStorage). */
+export function renderAppWithState(caps: HostCapabilities, saved: Record<string, unknown> | null): string {
+  const data = new Map(Object.entries(saved ?? {}).map(([key, value]) => [`lt-ui:${key}`, JSON.stringify({ v: value, at: Date.now() })]))
+  const storage = { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => { data.set(k, v) }, removeItem: (k: string) => { data.delete(k) } }
+  return renderToStaticMarkup(
+    <LineTodoApiProvider api={stubApi()} capabilities={caps}>
+      <UiStateProvider value={saved === null ? NO_UI_STATE : createLocalUiState(storage)}>
+        <App />
+      </UiStateProvider>
+    </LineTodoApiProvider>
+  )
+}
+
+/** G-03: the backend status line for a given link state. */
+export function renderBackendBar(link: { state: 'unknown' | 'ok' | 'revoked' | 'unavailable'; code: string | null }): string {
+  return renderToStaticMarkup(<BackendStatusBar source={{ backendLink: () => link, onBackendLink: () => () => undefined }} />)
 }

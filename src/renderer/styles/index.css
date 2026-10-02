@@ -1,6 +1,8 @@
 :root {
   /* ── 主題色（深色為預設；淺色見 [data-theme="light"]）───────
-     深色數值為既有配色，抽成變數後外觀維持與先前完全一致。 */
+     深色數值為既有配色，抽成變數後外觀維持與先前完全一致。
+     color-scheme：原生下拉選單、捲軸、表單控制項跟著主題（G-01）。 */
+  color-scheme: dark;
   --bg: #0f1419;
   --panel: #1a2029;
   --border: #2a323d;
@@ -63,6 +65,7 @@
    視覺以已核可原型 [data-theme="light"] 為準：淺灰底、深字、
    白卡＋淡陰影。切換由頂部導覽列 🌙/☀️ 鈕設定 data-theme。 */
 [data-theme="light"] {
+  color-scheme: light;
   --bg: #eef1f6;
   --panel: #f7f9fc;
   --border: #e5e9f0;

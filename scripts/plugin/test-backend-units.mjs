@@ -18,10 +18,11 @@ import { listTodos } from '../../src/main/db/todos.repo.ts'
 import { EXTRACT_SYSTEM_PROMPT, buildUserPayload } from '../../src/main/llm/extractPrompt.ts'
 import { runOnce } from '../../src/main/pipeline/runOnce.ts'
 import { fixedWatchSource } from '../../src/main/pipeline/scheduler.ts'
-import { Dispatcher } from '../../src/plugin/backend/dispatcher.ts'
+import { Dispatcher, SUPPORTED_API_PATHS, UNSUPPORTED_API_PATHS } from '../../src/plugin/backend/dispatcher.ts'
 import { EVENTS_CAPABILITY, EventHub, compactPayload } from '../../src/plugin/backend/eventHub.ts'
 import { EXTRACT_SYSTEM_SHA256, ExtractQueue, partitionExtractInput } from '../../src/plugin/backend/extractQueue.ts'
 import { createPluginBackend } from '../../src/plugin/backend/assemble.ts'
+import { BACKEND_METHOD_GROUPS, backendMethodFor } from '../../src/shared/pluginWire.ts'
 
 // ───────────── helpers ─────────────
 
@@ -504,13 +505,13 @@ function makeDispatcher(api, extra = {}) {
   const d = new Dispatcher({ getApi: () => api, hub, queue, info: () => ({ ok: true }), ...extra })
   return { d, hub, queue, dispose: () => { d.dispose(); hub.dispose(); queue.dispose() } }
 }
-const inv = (d, path, ...args) => d.call('api.invoke', { path, args })
+const inv = (d, path, ...args) => d.call(backendMethodFor(path), { path, args })
 
 test('dispatcher: routes allow-listed paths, passes args, and returns in-band envelopes', async () => {
   const { d, dispose } = makeDispatcher(fakeApi())
   assert.deepEqual(await inv(d, 'ping'), { ok: true, value: { ok: true, ts: 1, version: 'test' } })
   assert.deepEqual(await inv(d, 'db.todos.list', { chatId: 'c' }), { ok: true, value: [{ id: 't1', q: { chatId: 'c' } }] })
-  assert.deepEqual(await d.call('api.invoke', { path: 'db.todos.get', args: ['x'] }), { ok: true, value: null })
+  assert.deepEqual(await d.call('db.todos', { path: 'db.todos.get', args: ['x'] }), { ok: true, value: null })
   assert.deepEqual(await inv(d, 'db.todos.update'), { ok: false, code: 'api_error', message: 'boom: update failed' })
   assert.equal((await d.call('nope', {})).code, 'method_unknown')
   dispose()
@@ -519,22 +520,45 @@ test('dispatcher: routes allow-listed paths, passes args, and returns in-band en
 test('dispatcher: only allow-listed paths run; prototype tricks, malformed paths, subscriptions and unavailable features are refused', async () => {
   const { d, dispose } = makeDispatcher(fakeApi())
   for (const path of ['__proto__', 'constructor', 'db.todos.constructor', 'db.__proto__.x', 'toString', 'line.onMessage', 'db.todos', 'a..b', '', 'db/todos/list', 'x'.repeat(200)]) {
-    const r = await inv(d, path)
+    // a path with no method group is sent under some valid group: the backend still answers path_unknown
+    const r = await d.call(backendMethodFor(path) ?? 'db.todos', { path, args: [] })
     assert.equal(r.ok, false, path)
     assert.equal(r.code, 'path_unknown', path)
   }
   assert.equal((await inv(d, 'groupTopics.list', 'c')).code, 'unavailable', 'allowed path whose feature is disabled in this build')
-  assert.equal((await d.call('api.invoke', { path: 'ping', args: 'nope' })).code, 'invalid_args')
-  assert.equal((await d.call('api.invoke', { path: 'ping', args: new Array(9).fill(0) })).code, 'invalid_args')
-  assert.equal((await d.call('api.invoke', null)).code, 'invalid_args')
-  assert.equal((await d.call('api.invoke', { path: 5 })).code, 'invalid_args')
+  assert.equal((await d.call('ping', { path: 'ping', args: 'nope' })).code, 'invalid_args')
+  assert.equal((await d.call('ping', { path: 'ping', args: new Array(9).fill(0) })).code, 'invalid_args')
+  assert.equal((await d.call('ping', null)).code, 'invalid_args')
+  assert.equal((await d.call('ping', { path: 5 })).code, 'invalid_args')
   dispose()
 })
 
-test('dispatcher: driver, CLI/AI provider and Electron-only paths answer unsupported_in_plugin (with the UI route where ai:chat takes over)', async () => {
+test('dispatcher (G-07): the method must be the method group of the path; driver is no group at all; the old single api.invoke is gone', async () => {
+  const { d, dispose } = makeDispatcher(fakeApi({ driver: { postDraft: async () => { throw new Error('must not run') } } }))
+  // the method groups are the manifest's backendMethods: <= 32, each a valid method name, no duplicates
+  assert.ok(BACKEND_METHOD_GROUPS.length <= 32)
+  assert.equal(new Set(BACKEND_METHOD_GROUPS).size, BACKEND_METHOD_GROUPS.length)
+  for (const group of BACKEND_METHOD_GROUPS) assert.match(group, /^[A-Za-z0-9._@-]{1,64}$/)
+  // every path the backend serves (and every path it refuses in-band) belongs to exactly one declared group
+  for (const path of [...SUPPORTED_API_PATHS, ...Object.keys(UNSUPPORTED_API_PATHS), 'backend.info', 'review.status', 'tasks.status', 'events.open', 'events.pull', 'events.close', 'extract.system', 'extract.pull', 'extract.commit', 'extract.release', 'extract.stats', 'ai.pull', 'ai.commit', 'ai.release', 'ai.run', 'media.prepare', 'result.chunk', 'job.poll']) {
+    assert.ok(BACKEND_METHOD_GROUPS.includes(backendMethodFor(path)), `${path} has a declared method group`)
+  }
+  assert.equal(backendMethodFor('db.todos.list'), 'db.todos')
+  assert.equal(backendMethodFor('db.messages.count'), 'db.messages')
+  assert.equal(backendMethodFor('ping'), 'ping')
+  assert.equal(backendMethodFor('pingx'), null, 'a prefix must end at a dot')
+  assert.equal(backendMethodFor('driver.postDraft'), null, 'driver is not a group: Core refuses it before the backend (backend_method_not_allowed)')
+  for (const method of ['driver', 'api.invoke', 'shell.exec']) assert.equal((await d.call(method, { path: 'driver.postDraft', args: [] })).code, 'method_unknown', method)
+  assert.equal((await d.call('db.todos', { path: 'settings.update', args: [{}] })).code, 'method_mismatch', 'settings.update cannot ride on the db.todos permission')
+  assert.equal((await d.call('db', { path: 'db.todos.list', args: [] })).code, 'method_unknown', 'db alone is not a group')
+  assert.equal((await d.call('pipeline', { path: 'ping', args: [] })).code, 'method_mismatch')
+  assert.deepEqual(await d.call('ping', { path: 'ping', args: [] }), { ok: true, value: { ok: true, ts: 1, version: 'test' } })
+  dispose()
+})
+
+test('dispatcher: CLI/AI provider and Electron-only paths answer unsupported_in_plugin (with the UI route where ai:chat takes over)', async () => {
   const { d, dispose } = makeDispatcher(fakeApi({ driver: { postDraft: async () => { throw new Error('must not run') } } }))
   for (const [path, route] of [
-    ['driver.postDraft', 'none'], ['driver.status', 'none'], ['driver.focusLine', 'none'],
     ['media.open', 'none'], ['media.saveAs', 'none'], ['app.openDataFolder', 'none'], ['db.chats.openOriginal', 'none'],
     ['pipeline.testQwen', 'none'], ['pipeline.testAiProvider', 'none'], ['settings.setApiKey', 'none'], ['settings.clearApiKey', 'none'],
     ['db.todos.draftReply', 'ui_ai_chat'], ['db.todos.analyzeNotMine', 'ui_ai_chat'], ['groupTopics.analyze', 'ui_ai_chat']
@@ -556,7 +580,7 @@ test('dispatcher: a result above the 64 KiB budget is chunked, every response st
   assert.ok(Buffer.byteLength(JSON.stringify(head)) < 64 * 1024)
   let text = ''
   for (let i = 0; i < head.chunks; i += 1) {
-    const res = await d.call('api.invoke', { path: 'result.chunk', args: [{ resultId: head.resultId, index: i }] })
+    const res = await d.call('result', { path: 'result.chunk', args: [{ resultId: head.resultId, index: i }] })
     assert.equal(res.ok, true)
     assert.ok(Buffer.byteLength(JSON.stringify(res)) < 64 * 1024, `chunk ${i} response size`)
     assert.equal(res.value.last, i === head.chunks - 1)
@@ -564,8 +588,8 @@ test('dispatcher: a result above the 64 KiB budget is chunked, every response st
   }
   assert.deepEqual(JSON.parse(text), big)
   assert.equal(Buffer.byteLength(text), head.bytes)
-  assert.equal((await d.call('api.invoke', { path: 'result.chunk', args: [{ resultId: head.resultId, index: 999 }] })).code, 'invalid_args')
-  assert.equal((await d.call('api.invoke', { path: 'result.chunk', args: [{ resultId: 'gone', index: 0 }] })).code, 'result_expired')
+  assert.equal((await d.call('result', { path: 'result.chunk', args: [{ resultId: head.resultId, index: 999 }] })).code, 'invalid_args')
+  assert.equal((await d.call('result', { path: 'result.chunk', args: [{ resultId: 'gone', index: 0 }] })).code, 'result_expired')
   dispose()
 })
 
@@ -577,10 +601,10 @@ test('dispatcher: chunked results expire, are capped in number, and absurdly lar
   const a = await inv(d, 'db.todos.list', { n: 400 })
   const b = await inv(d, 'db.todos.list', { n: 400 })
   const c = await inv(d, 'db.todos.list', { n: 400 })
-  assert.equal((await d.call('api.invoke', { path: 'result.chunk', args: [{ resultId: a.resultId, index: 0 }] })).code, 'result_expired', 'oldest evicted at the cap')
-  assert.equal((await d.call('api.invoke', { path: 'result.chunk', args: [{ resultId: c.resultId, index: 0 }] })).ok, true)
+  assert.equal((await d.call('result', { path: 'result.chunk', args: [{ resultId: a.resultId, index: 0 }] })).code, 'result_expired', 'oldest evicted at the cap')
+  assert.equal((await d.call('result', { path: 'result.chunk', args: [{ resultId: c.resultId, index: 0 }] })).ok, true)
   clock += 2000
-  assert.equal((await d.call('api.invoke', { path: 'result.chunk', args: [{ resultId: b.resultId, index: 0 }] })).code, 'result_expired')
+  assert.equal((await d.call('result', { path: 'result.chunk', args: [{ resultId: b.resultId, index: 0 }] })).code, 'result_expired')
   assert.equal((await inv(d, 'db.todos.list', { n: 5000 })).code, 'result_too_large')
   dispose()
 })
@@ -601,16 +625,16 @@ test('dispatcher: a call slower than the soft deadline becomes a job that job.po
   const failing = await inv(d, 'pipeline.reviewLastDays')
   const big = await inv(d, 'pipeline.setRunning', true)
   assert.equal(d.stats().jobs, 3)
-  const still = await d.call('api.invoke', { path: 'job.poll', args: [{ jobId: pending.jobId, waitMs: 30 }] })
+  const still = await d.call('job', { path: 'job.poll', args: [{ jobId: pending.jobId, waitMs: 30 }] })
   assert.equal(still.pending, true, 'not finished yet')
   release()
-  const done = await d.call('api.invoke', { path: 'job.poll', args: [{ jobId: pending.jobId, waitMs: 200 }] })
+  const done = await d.call('job', { path: 'job.poll', args: [{ jobId: pending.jobId, waitMs: 200 }] })
   assert.deepEqual(done, { ok: true, value: { done: true } })
-  const err = await d.call('api.invoke', { path: 'job.poll', args: [{ jobId: failing.jobId, waitMs: 200 }] })
+  const err = await d.call('job', { path: 'job.poll', args: [{ jobId: failing.jobId, waitMs: 200 }] })
   assert.deepEqual(err, { ok: false, code: 'api_error', message: 'review exploded' })
-  const bigDone = await d.call('api.invoke', { path: 'job.poll', args: [{ jobId: big.jobId, waitMs: 200 }] })
+  const bigDone = await d.call('job', { path: 'job.poll', args: [{ jobId: big.jobId, waitMs: 200 }] })
   assert.equal(bigDone.chunked, true, 'a long job with a big result is also chunked')
-  assert.equal((await d.call('api.invoke', { path: 'job.poll', args: [{ jobId: 'missing' }] })).code, 'job_not_found')
+  assert.equal((await d.call('job', { path: 'job.poll', args: [{ jobId: 'missing' }] })).code, 'job_not_found')
   dispose()
 })
 
@@ -622,7 +646,7 @@ test('dispatcher: jobs are capped, expire after their ttl, and dispose releases 
   const first = await inv(d, 'pipeline.runOnce')
   assert.equal(first.pending, true)
   assert.equal((await inv(d, 'pipeline.runOnce')).code, 'too_many_jobs')
-  const poller = d.call('api.invoke', { path: 'job.poll', args: [{ jobId: first.jobId, waitMs: 5000 }] })
+  const poller = d.call('job', { path: 'job.poll', args: [{ jobId: first.jobId, waitMs: 5000 }] })
   setTimeout(() => d.dispose(), 20)
   assert.equal((await poller).code, 'backend_stopped')
   assert.equal((await inv(d, 'ping')).code, 'backend_stopped')
@@ -630,7 +654,7 @@ test('dispatcher: jobs are capped, expire after their ttl, and dispose releases 
   dispose()
 })
 
-test('dispatcher: backend.info, extract.* and events.* are reachable through api.invoke and lift component errors into the envelope', async () => {
+test('dispatcher: backend.info, extract.* and events.* are reachable through their method groups and lift component errors into the envelope', async () => {
   const { db } = freshDb()
   const { d, hub, queue, dispose } = (() => { const x = makeDispatcher(fakeApi()); return x })()
   assert.equal((await inv(d, 'backend.info')).value.ok, true)
@@ -676,12 +700,12 @@ function resourcesNow() {
   return counts
 }
 
-test('assembly: activate-like start, fake LINE message -> events + db, supply/receive through api.invoke, dispose leaves nothing behind', async () => {
+test('assembly: activate-like start, fake LINE message -> events + db, supply/receive through the method groups, dispose leaves nothing behind', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'plugin-backend-unit-'))
   const baseline = resourcesNow()
   const line = fakeLine()
   const backend = await createPluginBackend({ pluginId: 'tuqdev.line-todo', version: '9.9.9', dataDir, line: line.port, extract: { retryBaseMs: 50 } })
-  const call = async (path, ...args) => backend.call('api.invoke', { path, args })
+  const call = async (path, ...args) => backend.call(backendMethodFor(path), { path, args })
   try {
     assert.equal((await call('ping')).value.version, '9.9.9')
     const status = await call('line.status')
@@ -730,7 +754,7 @@ test('assembly: activate-like start, fake LINE message -> events + db, supply/re
     assert.ok(after.events.some((e) => e.type === 'extract-pending'))
 
     // unsupported + AI paths
-    assert.equal((await call('driver.postDraft')).code, 'unsupported_in_plugin')
+    assert.equal((await call('driver.postDraft')).code, 'method_unknown', 'driver is not a method group (G-07)')
     assert.equal((await call('db.todos.draftReply', todos[0].id)).route, 'ui_ai_chat')
     // settings never expose a key and the backend has no provider
     const settings = (await call('settings.get')).value
@@ -749,7 +773,7 @@ test('assembly: activate-like start, fake LINE message -> events + db, supply/re
   assert.equal(diag.eventSessions, 0)
   assert.deepEqual(diag.extract, { pending: 0, leased: 0, awaiting: 0 })
   assert.equal(line.listeners(), 0, 'LINE listeners removed')
-  assert.equal((await backend.call('api.invoke', { path: 'ping' })).code, 'backend_stopped')
+  assert.equal((await backend.call('ping', { path: 'ping' })).code, 'backend_stopped')
   await backend.dispose() // idempotent
   assert.ok(!readdirSync(dataDir).includes('.line-todo-owner.lock'), 'owner lock released')
   await new Promise((r) => setImmediate(r))
@@ -766,7 +790,7 @@ test('assembly: reviewLastDays-style synchronous extraction rides the same queue
   const sinceWindow = [raw(1, { text: '提醒我週五前交付報告', ts: Date.now() - 1000 }), raw(2, { text: '另外發票也要開', ts: Date.now() - 500 })]
   line.port.getMessagesSince = async () => sinceWindow
   const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir, line: line.port, dispatcher: { softDeadlineMs: 30, maxJobWaitMs: 300 } })
-  const call = (path, ...args) => backend.call('api.invoke', { path, args })
+  const call = (path, ...args) => backend.call(backendMethodFor(path), { path, args })
   try {
     const started = await call('pipeline.reviewLastDays', 7)
     assert.equal(started.pending, true, 'the review waits for the UI, so it is a job (not a blocked invoke)')
@@ -793,7 +817,7 @@ test('assembly: dispose while a synchronous extraction and a long poll are outst
   const line = fakeLine()
   line.port.getMessagesSince = async () => [raw(1, { ts: Date.now() - 1000 })]
   const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir, line: line.port, dispatcher: { softDeadlineMs: 20 } })
-  const call = (path, ...args) => backend.call('api.invoke', { path, args })
+  const call = (path, ...args) => backend.call(backendMethodFor(path), { path, args })
   const review = await call('pipeline.reviewLastDays', 1)
   const session = (await call('events.open', {})).value
   const poll = call('events.pull', { sessionId: session.sessionId, afterSeq: session.seq, waitMs: 4000 })

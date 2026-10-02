@@ -9,6 +9,7 @@ import type {
 } from '../types/api'
 import { BOARD_STATUSES, type ColumnId } from '../components/Board/buckets'
 import { createCompleteTodoRegistry, runCompleteTodo, type CompleteTodoRegistry, type CompleteTodoResult } from './completeTodo'
+import { backendErrorText } from '../lib/backendError'
 
 /**
  * useTodos — 看板資料來源。
@@ -20,6 +21,9 @@ import { createCompleteTodoRegistry, runCompleteTodo, type CompleteTodoRegistry,
  *   - 提供動作：完成 / 確認建議完成 / 退回 / 延後 / 忽略 / 改 bucket。
  *
  * 所有 I/O 走 api（preload contextBridge），renderer 不直接碰 ipcRenderer。
+ *
+ * 錯誤（G-02）：讀取待辦或對話清單失敗時 `error` 帶原因（外掛版含 TeamUQ 撤銷 backend:invoke、backend 沒起來等，見 lib/backendError.ts），
+ * 看板顯示它與「重試」，而不是安靜地變成空白欄位；下一次讀取成功就清掉。拖曳搬移失敗會丟出錯誤，由呼叫端顯示。
  */
 
 export interface ChatNameMap {
@@ -45,8 +49,12 @@ export interface UseTodos {
   todos: TodoDTO[]
   chatMap: ChatNameMap
   loading: boolean
+  /** 最近一次讀取失敗的原因（給使用者看）；沒有失敗＝null。 */
+  error: string | null
   /** 重新拉一次（手動刷新）。 */
   refresh: () => Promise<boolean>
+  /** 錯誤列的「重試」：對話清單與待辦都重拉。 */
+  retry: () => Promise<void>
   /** 標完成（done）。 */
   complete: (id: string, onWriteConfirmed?: () => void) => Promise<CompleteTodoResult>
   completion: CompleteTodoRegistry
@@ -100,6 +108,8 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
   const [todos, setTodos] = useState<TodoDTO[]>([])
   const [chatMap, setChatMap] = useState<ChatNameMap>({})
   const [loading, setLoading] = useState(true)
+  const [todosError, setTodosError] = useState<string | null>(null)
+  const [chatsError, setChatsError] = useState<string | null>(null)
   const sortBy = options.sortBy
   const sortDirection = options.sortDirection
   const chatId = options.chatId
@@ -110,8 +120,10 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
       const chats: ChatDTO[] = await api.db.chats.list(true)
       if (!isActive()) return
       setChatMap(buildChatNameMap(chats))
+      setChatsError(null)
     } catch (err) {
       console.error('[useTodos] loadChats 失敗：', err)
+      if (isActive()) setChatsError(backendErrorText(err, '讀取對話清單失敗'))
     }
   }, [])
 
@@ -128,9 +140,11 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
     try {
       setTodos(await readTodos())
       completion.reconcileAfterRefresh()
+      setTodosError(null)
       return true
     } catch (err) {
       console.error('[useTodos] refresh 失敗：', err)
+      setTodosError(backendErrorText(err, '讀取待辦失敗'))
       return false
     } finally {
       setLoading(false)
@@ -157,6 +171,10 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
       offPersisted()
       chatRefresh.dispose()
     }
+  }, [loadChats, refresh])
+
+  const retry = useCallback(async (): Promise<void> => {
+    await Promise.all([loadChats(), refresh()])
   }, [loadChats, refresh])
 
   const complete = useCallback(
@@ -262,7 +280,9 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
     todos,
     chatMap,
     loading,
+    error: todosError ?? chatsError,
     refresh,
+    retry,
     complete,
     completion,
     confirmDone,

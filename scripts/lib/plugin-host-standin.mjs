@@ -3,11 +3,15 @@
 // It is the *bootstrap file* of the backend process (the single file outside installDir that the 1.6.8 permission flags let the process
 // read). Bundled by esbuild into one file, it behaves like apps/plugin-host/src/external/index.ts @ b8b96cb3:
 //   1. runs runPermissionSelfCheck (verbatim copy, ./teamuq-contract.mjs) at boot;
-//   2. import()s the plugin's backend entry (<installDir>/backend/index.mjs, the production bundle) and calls activate(context) with
-//      the same frozen context the host builds ({pluginId, dataDir, assetPacks, allowAddons, settings:{all,get,onChange}});
+//   2. import()s the plugin's backend entry (<installDir>/backend/index.mjs, the production bundle) and calls activate with
+//      the same frozen context the host builds ({pluginId, dataDir, assetPacks, allowAddons, settings:{all,get,onChange}}). The settings are
+//      always EMPTY, as the host gives a plugin without settingsSchema / settings:plugin (G-06): nothing is injected through them.
+//      The fake LINE folder is passed to the bundle's test entry `activateAt(context, lineLocation)` (init.lineLocation) — the one difference
+//      from the host, which calls `activate(context)` and lets the backend find LINE by itself; without init.lineLocation `activate` is called;
 //   3. serves handler.call(method, params) with the host's wire semantics (params/result are JSON, <= 64 KiB each way, 30 s limit),
 //      handler.openSession(info, channel), handler.dispose().
-// On top of that it plays the plugin's view: a scripted scenario that talks to the backend ONLY through backend.call('api.invoke').
+// On top of that it plays the plugin's view: a scripted scenario that talks to the backend ONLY through backend.call(<method group>, { path, args })
+// (the method group of each path, src/shared/pluginWire.ts — the manifest's backendMethods).
 // It prints observations as `RESULT:<json>`; the parent test asserts on them.
 //
 // argv[2] = base64url JSON ExternalHostInit, argv[3] = base64url JSON scenario config.
@@ -18,6 +22,10 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { runPermissionSelfCheck } from './teamuq-contract.mjs'
+import { backendMethodFor } from '../../src/shared/pluginWire.ts'
+
+/** the view's wire (pluginTransport.ts): backend.call(<method group of the path>, { path, args }) */
+const viewCall = (call, path, args) => call(backendMethodFor(path), { path, args })
 
 const init = JSON.parse(Buffer.from(process.argv[2], 'base64url').toString('utf8'))
 const cfg = JSON.parse(Buffer.from(process.argv[3], 'base64url').toString('utf8'))
@@ -45,24 +53,36 @@ try {
   out.resourcesBaseline = baseline
 
   // ── activate exactly like the host ──
-  const settingsValues = Object.freeze({ ...(init.settings ?? {}) })
+  // the host's context for a plugin without settingsSchema / settings:plugin: the settings are empty (backendRuntime.ts effectiveBackendSettings)
+  const settingsValues = Object.freeze({})
+  const settingsReads = []
   const context = Object.freeze({
     pluginId: init.pluginId,
     dataDir: init.dataDir,
     assetPacks: Object.freeze({ ...init.assetPacks }),
     allowAddons: init.allowAddons,
-    settings: Object.freeze({ all: () => settingsValues, get: (key) => settingsValues[key], onChange: () => () => undefined }),
+    settings: Object.freeze({ all: () => { settingsReads.push('*'); return settingsValues }, get: (key) => { settingsReads.push(String(key)); return settingsValues[key] }, onChange: () => () => undefined }),
   })
   const t0 = performance.now()
   const imported = await import(pathToFileURL(init.entry).href)
   const activate = imported.activate ?? imported.default?.activate
   if (typeof activate !== 'function') throw new Error('no activate export')
-  const handler = await activate(context)
+  out.entryExports = Object.keys(imported).sort()
+  let handler
+  if (init.lineLocation) {
+    if (typeof imported.activateAt !== 'function') throw new Error('no activateAt export (the test entry for a fake LINE folder)')
+    out.activatedWith = 'activateAt'
+    handler = await imported.activateAt(context, init.lineLocation)
+  } else {
+    out.activatedWith = 'activate'
+    handler = await activate(context)
+  }
+  out.settingsReadsDuringActivate = [...settingsReads]
   if (!handler || typeof handler.call !== 'function') throw new Error('activate must return an object with call()')
   out.activateMs = Math.round(performance.now() - t0)
   out.handlerKeys = Object.keys(handler).sort()
   // review F2: activate() must return before the first key extraction / import begin (the host sends boot-ack right after it); the watcher is up but has not polled yet
-  out.lineStatusRightAfterActivate = (await handler.call('api.invoke', { path: 'line.status', args: [] }))?.value?.state ?? null
+  out.lineStatusRightAfterActivate = (await viewCall((m, p) => handler.call(m, p), 'line.status', []))?.value?.state ?? null
   out.selfCheckAfterActivate = runPermissionSelfCheck(init)
 
   // ── the host's call wire (JSON in/out, size + time limits) ──
@@ -86,28 +106,28 @@ try {
     }
   }
 
-  // ── the view side: api.invoke + chunk reassembly + job polling ──
+  // ── the view side: method groups + chunk reassembly + job polling ──
   async function resolveEnvelope(envelope) {
     for (let guard = 0; guard < 100; guard += 1) {
       if (!envelope.ok) return envelope
       if (envelope.chunked) {
         let text = ''
         for (let i = 0; i < envelope.chunks; i += 1) {
-          const part = await hostCall('api.invoke', { path: 'result.chunk', args: [{ resultId: envelope.resultId, index: i }] })
+          const part = await viewCall(hostCall, 'result.chunk', [{ resultId: envelope.resultId, index: i }])
           if (!part.ok) return part
           text += part.value.data
         }
         return { ok: true, value: JSON.parse(text), viaChunks: envelope.chunks, bytes: envelope.bytes }
       }
       if (envelope.pending) {
-        envelope = await hostCall('api.invoke', { path: 'job.poll', args: [{ jobId: envelope.jobId, waitMs: 1000 }] })
+        envelope = await viewCall(hostCall, 'job.poll', [{ jobId: envelope.jobId, waitMs: 1000 }])
         continue
       }
       return envelope
     }
     throw new Error('envelope did not settle')
   }
-  const invoke = async (path, ...args) => resolveEnvelope(await hostCall('api.invoke', { path, args }))
+  const invoke = async (path, ...args) => resolveEnvelope(await viewCall(hostCall, path, args))
   const must = async (path, ...args) => {
     const r = await invoke(path, ...args)
     if (!r.ok) throw new Error(`${path} failed: ${JSON.stringify(r)}`)
@@ -315,8 +335,11 @@ try {
 
   // 5. refusals
   step('refusals', {
-    driver: await invoke('driver.postDraft', {}), draft: await invoke('db.todos.draftReply', 'x'), proto: await invoke('__proto__'),
-    ctor: await invoke('constructor'), unknown: await invoke('db.nope.list'), badMethod: await hostCall('shell.exec', { cmd: 'whoami' }),
+    // G-07: 'driver' is not a method group (Core's allowlist never lets it through; the backend refuses it too); a path sent under another group is refused
+    driver: await hostCall('driver', { path: 'driver.postDraft', args: [{}] }), draft: await invoke('db.todos.draftReply', 'x'),
+    proto: await hostCall('db.todos', { path: '__proto__', args: [] }), ctor: await hostCall('ping', { path: 'constructor', args: [] }),
+    unknown: await hostCall('db.todos', { path: 'db.nope.list', args: [] }), badMethod: await hostCall('shell.exec', { cmd: 'whoami' }),
+    mismatch: await hostCall('db.todos', { path: 'settings.update', args: [{}] }), legacyMethod: await hostCall('api.invoke', { path: 'ping', args: [] }),
   })
 
   } // end of the main (non-media) scenario
@@ -325,14 +348,14 @@ try {
   out.infoLate = await must('backend.info')
   out.diagnosticsBeforeDispose = handler.diagnostics()
   await sleep(50)
-  const closingPoll = session ? hostCall('api.invoke', { path: 'events.pull', args: [{ sessionId: session.sessionId, afterSeq: after, waitMs: 4000 }] }) : Promise.resolve(null)
+  const closingPoll = session ? viewCall(hostCall, 'events.pull', [{ sessionId: session.sessionId, afterSeq: after, waitMs: 4000 }]) : Promise.resolve(null)
   const tDispose = performance.now()
   await handler.dispose()
   out.disposeMs = Math.round(performance.now() - tDispose)
   out.closingPoll = await closingPoll
   capHandler?.close?.('provider_gone')
   out.afterDispose = {
-    call: await hostCall('api.invoke', { path: 'ping', args: [] }),
+    call: await viewCall(hostCall, 'ping', []),
     diagnostics: handler.diagnostics(),
     dataDir: fs.readdirSync(init.dataDir).sort(),
     lineEngineDir: fs.existsSync(join(init.dataDir, 'line-engine')) ? fs.readdirSync(join(init.dataDir, 'line-engine')) : null,
@@ -341,6 +364,7 @@ try {
   await sleep(100)
   await new Promise((resolve) => setImmediate(resolve))
   out.resourcesEnd = resourceCounts()
+  out.settingsReadsTotal = [...settingsReads]
   out.selfCheckEnd = runPermissionSelfCheck(init)
   out.wire = { calls, maxRequestBytes, maxResponseBytes, limit: HOST_LIMITS.bytes }
 } catch (error) {

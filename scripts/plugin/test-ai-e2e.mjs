@@ -1,7 +1,7 @@
 // Phase 4 — end to end: a mock `window.tuqPlugin.ai` (1.6.8 ai:chat semantics, scripts/lib/mock-tuq-ai.mjs) + the REAL Phase 2 backend (createPluginBackend on a fake
 // LINE port, app DB = node:sqlite test adapter) + the REAL Phase 3 adapter (createPluginLineTodoApi) + the REAL orchestrator, wired the way src/plugin/ui/host.ts wires them.
 //
-// From a new LINE message to a todo showing up in `api.invoke` query results — with nothing but the mock standing in for Codex:
+// From a new LINE message to a todo showing up in query results (method groups, G-07) — with nothing but the mock standing in for Codex:
 //   message -> backend pipeline (供料) -> extract-pending event -> orchestrator pulls -> system + format + user payload over ai:chat -> reply with ```json fences
 //   -> parse + zod -> extract.commit -> backend re-validates + persists -> todos.list / todos-changed
 // plus the three user actions (草擬回覆、誤判分析、群組議題分析) bridged through backend `ai.run`, the visibility pause, revocation, review (reviewLastDays), and host.ts wiring.
@@ -137,7 +137,7 @@ const todos = (api) => api.db.todos.list()
 
 // ───────────── the main road ─────────────
 
-test('e2e: a new LINE message becomes a todo — backend 供料 -> orchestrator -> ai:chat (```json reply) -> zod -> commit -> todos.list via api.invoke', async () => {
+test('e2e: a new LINE message becomes a todo — backend 供料 -> orchestrator -> ai:chat (```json reply) -> zod -> commit -> todos.list via the db.todos method', async () => {
   await withStack({}, async ({ api, line, mock, ai, calls, orch }) => {
     const seen = []
     api.pipeline.onTodosChanged((event) => seen.push(event))
@@ -372,7 +372,7 @@ async function seedTodo(api, line) {
   return (await until(async () => { const list = await todos(api); return list.length === 1 ? list : null }, { message: 'a seeded todo' }))[0]
 }
 
-test('e2e draftReply: backend builds the prompt from its own data, the orchestrator asks ai:chat, the draft comes back through api.invoke ; the backend never calls an LLM', async () => {
+test('e2e draftReply: backend builds the prompt from its own data, the orchestrator asks ai:chat, the draft comes back through the ai method group ; the backend never calls an LLM', async () => {
   await withStack({
     reply: (ctx) => (ctx.system.includes('草擬') ? '  好的，報價單我今天下午寄出，再請您確認。\n' : fenced(todoFor(ctx.user)))
   }, async ({ api, line, calls, mock }) => {

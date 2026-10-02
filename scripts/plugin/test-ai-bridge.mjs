@@ -14,6 +14,7 @@ import { EventHub } from '../../src/plugin/backend/eventHub.ts'
 import { AI_COMMIT_TEXT_MAX_BYTES, MAX_REQUEST_BYTES, REPLY_TRUNCATED_MARK, fitReplyText, utf8Bytes } from '../../src/shared/pluginWire.ts'
 import { toWire } from '../../src/renderer/platform/pluginTransport.ts'
 import { CONTRACT } from '../lib/mock-tuq-ai.mjs'
+import { backendMethodFor } from '../../src/shared/pluginWire.ts'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const rejection = (promise) => promise.then(() => { throw new Error('expected a rejection') }, (error) => error)
@@ -151,7 +152,7 @@ test('UI-relay provider: complete() queues the request (kind from the ai.run con
 test('UI-relay provider: every failure arrives as the LlmProviderError core already understands (right class, code, and a message the user can act on)', async () => {
   const cases = [
     ['ui_not_connected', 'invalid_config', /看板不在前景/], ['view_not_visible', 'transport', /看板不在前景/], ['ai_task_timeout', 'timeout', /逾時/], ['turn_timeout', 'timeout', /逾時/],
-    ['rate_limited', 'rate_limited', /每分鐘 20 次/], ['quota_exhausted', 'quota_exceeded', /額度已用完/], ['provider_unavailable', 'invalid_config', /Codex/],
+    ['rate_limited', 'rate_limited', /每分鐘上限/], ['quota_exhausted', 'quota_exceeded', /額度已用完/], ['provider_unavailable', 'invalid_config', /Codex/],
     ['unsupported_version', 'invalid_config', /Codex/], ['access_revoked', 'invalid_config', /ai:chat/], ['not_granted', 'invalid_config', /ai:chat/],
     ['invalid_json', 'bad_output', /格式/], ['invalid_result', 'bad_output', /格式/], ['empty_reply', 'bad_output', /沒有回覆內容/], ['reply_too_long', 'bad_output', /過長/],
     ['input_too_large', 'invalid_config', /8,000 字/], ['ai_queue_full', 'rate_limited', /排隊/], ['provider_error', 'unknown', /無法完成/], ['something_new', 'unknown', /無法完成/]
@@ -226,7 +227,7 @@ function dispatcherWith({ api = {}, aiTasks, queue: q } = {}) {
   })
   return { dispatcher, hub, done: () => { dispatcher.dispose(); hub.dispose() } }
 }
-const invoke = (d, path, ...args) => d.call('api.invoke', { path, args })
+const invoke = (d, path, ...args) => d.call(backendMethodFor(path), { path, args })
 
 test('dispatcher: ai.run runs the core method (draftReply / analyzeNotMine / groupTopics) with the right arguments inside the AI context; bad kinds and arguments are refused', async () => {
   const aiTasks = new AiTaskQueue()

@@ -10,17 +10,16 @@
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
-/** host 在 `activate(context)` 傳入的 context（frozen）。 */
+/**
+ * host 在 `activate(context)` 傳入的 context（frozen）中，本外掛會讀的部分。
+ * host 另外會帶 `settings`，但本外掛沒有 `settingsSchema` 也沒有 `settings:plugin`，那些值一律是空的（G-06），
+ * 所以這裡刻意不宣告它：backend 讀 `context.settings` 會在型別檢查失敗。
+ */
 export interface PluginBackendContext {
   readonly pluginId: string
   readonly dataDir: string
   readonly assetPacks: Readonly<Record<string, string>>
   readonly allowAddons: boolean
-  readonly settings: {
-    all(): Readonly<Record<string, boolean | number | string>>
-    get(key: string): boolean | number | string | undefined
-    onChange(listener: (values: Readonly<Record<string, boolean | number | string>>) => void): () => void
-  }
 }
 
 export interface SessionInfo {

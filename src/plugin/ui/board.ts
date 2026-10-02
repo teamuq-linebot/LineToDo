@@ -16,7 +16,7 @@ export interface BoardBoot extends PluginHostBoot {
   orchestrator: AiOrchestrator | null
 }
 
-const AI_UNSUPPORTED_NOTE = 'unsupported_in_plugin: 這個 TeamUQ 版本沒有提供 ai:chat（需要 1.6.8 以上）'
+const AI_UNSUPPORTED_NOTE = 'unsupported_in_plugin: 這個 TeamUQ 版本沒有提供 ai:chat'
 
 export function bootBoard(): BoardBoot | null {
   let orchestrator: AiOrchestrator | null = null

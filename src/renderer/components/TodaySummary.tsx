@@ -93,8 +93,9 @@ export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element 
   const reconTimers = useRef<ReturnType<typeof setTimeout>[]>([])
 
   useEffect(() => {
-    void api.pipeline.status().then(setStatus)
-    void api.settings.get().then((v) => setProvider(v.aiProvider))
+    // 失敗時只是不顯示引擎狀態：同一個 backend 問題會由看板的錯誤列（useTodos.error）說明原因（G-02），這裡不留未處理的 rejection。
+    void api.pipeline.status().then(setStatus, () => undefined)
+    void api.settings.get().then((v) => setProvider(v.aiProvider), () => undefined)
     const off = api.pipeline.onStatus(setStatus)
     return off
   }, [])

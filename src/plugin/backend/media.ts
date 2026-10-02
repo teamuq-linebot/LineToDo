@@ -4,7 +4,7 @@
  * standalone 用 `linemedia://media/<msgId>` 特權協定把明文 bytes 串給 renderer；1.6.8 外掛 view 的 CSP
  * （`pluginCsp.ts:15-26`）`img-src` 只有 `tuqplugin://<id>`、`data:`、`blob:`，沒有 `linemedia:`，所以改成：
  *
- *   view  ──backend.call('api.invoke', {path:'media.prepare', args:[msgId]})──►  backend
+ *   view  ──backend.call('media', {path:'media.prepare', args:[msgId]})──►  backend
  *   backend：查 DB 列（key_material／file_size）→ `createMediaDecryptor`（共用 `media/decrypt.ts`，LINE Cache 經 koffi 讀）
  *            → 明文寫進 `<dataDir>/media-cache/<sha256(msgId) 前 32 碼>.<ext>`（先寫暫存檔再 rename）→ 回 `{path}`
  *   view  ──window.tuqPlugin.assets.url(path)──►  `tuqplugin://<id>/data/media-cache/<name>`（host 的 data 唯讀服務，支援 Range）

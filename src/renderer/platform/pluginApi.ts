@@ -1,8 +1,9 @@
 /**
- * pluginApi.ts — `createPluginLineTodoApi()`：把 `LineTodoApi` 轉成 TeamUQ 1.6.8 外掛 view 的
- * `window.tuqPlugin.backend.call('api.invoke', { path, args })`（設計 v2 §4.5、§4.6、§7 Phase 3）。
+ * pluginApi.ts — `createPluginLineTodoApi()`：把 `LineTodoApi` 轉成 TeamUQ 外掛 view 的
+ * `window.tuqPlugin.backend.call(<方法組>, { path, args })`（設計 v2 §4.5、§4.6、§7 Phase 3；G-07 依命名空間分組）。
  *
- * - request/response 方法：一律 `api.invoke`（backend dispatcher 的允許清單；`pluginTransport.ts` 處理 64 KiB 分段、長時間 job、併發上限）。
+ * - request/response 方法：方法名稱是路徑所屬的命名空間（`src/shared/pluginWire.ts` 的 `BACKEND_METHOD_GROUPS`，也是 manifest 的
+ *   `backendMethods`），backend dispatcher 再檢查一次路徑允許清單；`pluginTransport.ts` 處理 64 KiB 分段、長時間 job、併發上限與連線狀態。
  * - `on*` 訂閱：`pluginEvents.ts` 的事件長輪詢（Phase 2 的主傳輸；view 對自己的 backend 只有 `backend.call`）。
  * - 外掛版不提供的功能（設計 v2 §7.4 與使用者決策）：
  *     driver_post（填入 LINE）  → `api.driver` 不存在（UI 本來就只在 `api.driver` 存在時提供）
@@ -18,14 +19,14 @@
  * 不依賴 React／DOM（node:test 以 mock `window.tuqPlugin` 驗證）。
  */
 import type {
-  DraftReplyResult, LineTodoApi, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult, ReviewLastDaysResult
+  DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult, ReviewLastDaysResult
 } from '../../shared/api'
 import { PLUGIN_CAPABILITIES, type HostCapabilities } from './capabilities'
 import { PluginEventPump, type PluginEventPumpOptions, type PluginEventType } from './pluginEvents'
-import { PluginApiError, PluginTransport, PluginUnsupportedError, type BusyRetryOptions, type TuqPluginHost } from './pluginTransport'
+import { PluginApiError, PluginTransport, PluginUnsupportedError, type BackendLink, type BusyRetryOptions, type TuqPluginHost } from './pluginTransport'
 
-export { PluginApiError, PluginBackendError, PluginUnsupportedError } from './pluginTransport'
-export type { TuqPluginHost } from './pluginTransport'
+export { ACCESS_HOST_CODES, PluginApiError, PluginBackendError, PluginUnsupportedError } from './pluginTransport'
+export type { BackendLink, BackendLinkState, TuqPluginHost } from './pluginTransport'
 export { PLUGIN_CAPABILITIES } from './capabilities'
 
 type GroupTopicsApi = NonNullable<LineTodoApi['groupTopics']>
@@ -63,7 +64,7 @@ export interface PluginApiOptions {
   jobPollWaitMs?: number
   /** host 回忙碌（`plugin_backend_busy`／`plugin_backend_unavailable`）時的退避重試；預設最多 4 次、100 ms 起。 */
   busyRetry?: BusyRetryOptions
-  events?: Pick<PluginEventPumpOptions, 'waitMs' | 'idleStopMs' | 'backoffBaseMs' | 'backoffMaxMs' | 'minLoopMs' | 'onDiagnostic'> & {
+  events?: Pick<PluginEventPumpOptions, 'waitMs' | 'idleStopMs' | 'backoffBaseMs' | 'backoffMaxMs' | 'accessProbeMs' | 'minLoopMs' | 'onDiagnostic'> & {
     /** false＝不開事件長輪詢（`on*` 訂閱不會收到任何事件）。設定 view 用：它的畫面不依賴即時事件，每次動作後會自己重讀狀態。 */
     enabled?: boolean
   }
@@ -100,7 +101,11 @@ export interface PluginExtras {
   /** backend 診斷資訊（`backend.info`）。 */
   info(): Promise<Record<string, unknown>>
   /** 「回顧最近 N 天」的狀態：進行中／已完成 N/M／可續跑（`review.status`；`summary` 是給使用者看的一句話）。 */
-  reviewStatus(): Promise<{ running: boolean; state: 'idle' | 'running' | 'done' | 'paused' | 'incomplete'; chatsDone: number; chatsTotal: number; resumableMessages: number; summary: string; [key: string]: unknown }>
+  reviewStatus(): Promise<{ running: boolean; state: 'idle' | 'running' | 'done' | 'paused' | 'incomplete' | 'interrupted'; chatsDone: number; chatsTotal: number; resumableMessages: number; summary: string; [key: string]: unknown }>
+  /** 對 backend 的連線狀態（G-03）：`revoked`＝使用者撤銷了 backend:invoke／停用／移除外掛；`unavailable`＝backend 沒起來或當掉。 */
+  backendLink(): BackendLink
+  /** 連線狀態改變時通知（外掛畫面的狀態列用）。 */
+  onBackendLink(listener: (link: BackendLink) => void): () => void
   /** 事件輪詢的狀態（測試／診斷）。 */
   eventsStats(): ReturnType<PluginEventPump['stats']>
   /** 傳輸層的併發統計（測試／診斷）：目前在飛／排隊、歷來最大同時在飛、忙碌重試次數。 */
@@ -255,6 +260,8 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       runOnce: () => call('pipeline.runOnce'),
       reviewLastDays: (days) => (connected() ? call('pipeline.reviewLastDays', days) : Promise.resolve(reviewNotConnected(days, notConnectedText()))),
       backfillMediaKeys: (days) => call('pipeline.backfillMediaKeys', days),
+      // G-05：回顧與補媒體金鑰由 backend 管理；畫面重新載入、Promise 斷掉（job_not_found）或 backend 重啟後用它查目前的狀態。
+      longTaskStatus: () => call<LongTaskStatusView>('tasks.status'),
       setRunning: (running) => call('pipeline.setRunning', running),
       testQwen: () => orUnsupported<QwenTestResult>(() => call('pipeline.testQwen'), (e) => ({ ok: false, error: unsupportedText(e) })),
       testAiProvider: () => orUnsupported<ProviderHealth>(() => call('pipeline.testAiProvider'), (e) => ({ ok: false, summary: unsupportedText(e), code: 'invalid_config', details: {} })),
@@ -296,6 +303,8 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       aiTasks,
       info: () => call('backend.info'),
       reviewStatus: () => call('review.status'),
+      backendLink: () => transport.link(),
+      onBackendLink: (listener) => transport.onLink(listener),
       eventsStats: () => pump.stats(),
       transportStats: () => transport.stats()
     },

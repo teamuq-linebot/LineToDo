@@ -756,10 +756,63 @@ test('describeStatus: every state has a user-facing sentence; the "foreground on
   assert.match(text('paused', 'rate_limited', { resumeAt: 1_030_000 }), /30 秒後/)
   assert.match(text('paused', 'quota_exhausted', { resumeAt: 1_000_000 + 5 * 60_000 }), /5 分鐘後/)
   assert.match(text('unavailable', 'provider_not_installed'), /尚未安裝 Codex/)
-  assert.match(text('unavailable', 'provider_unsupported_version'), /0\.158/)
+  // G-10: no Core / Codex version is hard-coded in what the user reads
+  assert.match(text('unavailable', 'provider_unsupported_version'), /版本不支援/)
+  assert.doesNotMatch(text('unavailable', 'provider_unsupported_version'), /\d+\.\d+/)
+  assert.match(text('paused', 'backend'), /暫時中斷/)
+  assert.match(text('paused', 'backend_revoked'), /後端呼叫/)
   assert.match(text('unavailable', 'no_provider'), /找不到可用/)
   assert.match(text('revoked', 'access_revoked'), /ai:chat/)
   assert.match(text('stopped', null), /尚未啟動/)
+})
+
+test('G-10: the rate-limit sentence uses the limit the host reported (getOptions().limits.turnsPerMinute), not a hard-coded 20', async () => {
+  const base = { busy: false, provider: null, counters: {}, resumeAt: 1_030_000 }
+  assert.match(describeStatus({ ...base, state: 'paused', reason: 'rate_limited', turnsPerMinute: 7 }, 1_000_000), /每分鐘 7 次/)
+  assert.doesNotMatch(describeStatus({ ...base, state: 'paused', reason: 'rate_limited' }, 1_000_000), /每分鐘 \d+ 次/, 'unknown limit: no number at all')
+  // the orchestrator's status carries the live per-minute limit (the window follows getOptions().limits — see the "(a) quota" test above)
+  const ctx = setup({ items: 0 })
+  ctx.orch.start()
+  await ctx.settle()
+  assert.equal(typeof ctx.orch.status().turnsPerMinute, 'number')
+  assert.ok(ctx.orch.status().turnsPerMinute <= AI_CHAT_REFERENCE.turnsPerMinute)
+  await ctx.orch.stop()
+})
+
+test('G-03: backend:invoke revoked (extract.pull rejects plugin_permission_denied) is its own paused reason — not "暫時中斷" — probed every 30 s, and work resumes once the backend answers again', async () => {
+  const ctx = setup({ items: 1 })
+  let revoked = true
+  const realPull = ctx.chans.extract.pull
+  let pulls = 0
+  ctx.chans.extract.pull = async (options) => {
+    pulls += 1
+    if (revoked) throw Object.assign(new Error('plugin_permission_denied'), { code: 'plugin_permission_denied' })
+    return realPull(options)
+  }
+  ctx.orch.start()
+  await ctx.settle()
+  const status = ctx.orch.status()
+  assert.equal(status.state, 'paused')
+  assert.equal(status.reason, 'backend_revoked')
+  assert.match(describeStatus(status, ctx.clock.now()), /TeamUQ 已關閉此外掛的「後端呼叫」權限/)
+  const afterFirst = pulls
+  await ctx.clock.advance(20_000)
+  assert.equal(pulls, afterFirst, 'no hammering: nothing within the 30 s probe interval')
+  revoked = false
+  await ctx.clock.advance(15_000)
+  await ctx.settle()
+  assert.ok(pulls > afterFirst, 'probed again after 30 s')
+  assert.equal(ctx.chans.itemStates()[0], 'done', 'the item is processed once access is back')
+  assert.notEqual(ctx.orch.status().reason, 'backend_revoked')
+  // an ordinary backend failure keeps the short backoff and the old wording
+  const realPull2 = ctx.chans.extract.pull
+  ctx.chans.extract.pull = async () => { throw Object.assign(new Error('plugin_backend_unavailable'), { code: 'plugin_backend_unavailable' }) }
+  ctx.chans.addItem({ chatId: 'c9' })
+  ctx.chans.announce()
+  await ctx.settle()
+  assert.equal(ctx.orch.status().reason, 'backend')
+  ctx.chans.extract.pull = realPull2
+  await ctx.orch.stop()
 })
 
 // ───────────── the status line the board shows ─────────────

@@ -59,6 +59,7 @@ import type { ExtractQueueOptions } from './extractQueue'
 import { createPluginMedia } from './media'
 import type { MediaDb } from './media'
 import { ReviewCoordinator, ReviewLedger } from './reviewRun'
+import { LongTaskTracker } from './taskStatus'
 import type { BackendDiagnostics, JsonValue, PluginBackendHandler, SessionChannel, SessionInfo } from './types'
 
 /** backend 不持有任何 AI 金鑰；settings store 只需要這個「不可用」的 secrets。 */
@@ -228,7 +229,15 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       ttlMs: options.review?.ttlMs,
       now: options.review?.now
     }),
+    // 回顧與補媒體金鑰的狀態檔（G-05）：backend 重新啟動後讀回，UI 用 `tasks.status` 查詢。ledgerFile:null（純記憶體測試）時也不寫狀態檔。
+    ...(options.review?.ledgerFile === null ? {} : { statusFile: join(dataDir, 'review-status.json') }),
     now: options.review?.now
+  })
+  const mediaBackfill = new LongTaskTracker({
+    name: 'mediaBackfill',
+    ...(options.review?.ledgerFile === null ? {} : { file: join(dataDir, 'media-backfill-status.json') }),
+    now: options.review?.now,
+    interruptedSummary: '上次「補媒體金鑰」進行中外掛後端重新啟動，沒有做完；可以再按一次'
   })
 
   // ── AI 供料/收料 + scheduler ──
@@ -342,6 +351,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     aiTasks,
     media,
     review,
+    mediaBackfill,
     info: (): Record<string, JsonValue> => ({
       plugin: options.pluginId,
       version: options.version,
@@ -383,7 +393,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
 
   return {
     call: (method, params) => dispatcher.call(method, params),
-    // 目前未啟用（review F9）：manifest 沒有宣告 provided capability，host 不會呼叫 openSession；事件走 api.invoke 的長輪詢（見 eventHub.ts 檔頭）。
+    // 目前未啟用（review F9）：manifest 沒有宣告 provided capability，host 不會呼叫 openSession；事件走 events.* 方法組的長輪詢（見 eventHub.ts 檔頭）。
     openSession: async (info: SessionInfo, channel: SessionChannel) => hub.attachChannel(info, channel),
     dispose: async () => {
       if (disposed) return

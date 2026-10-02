@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client'
 import '../../renderer/styles/index.css'
 import { RendererRoot } from '../../renderer/RendererRoot'
 import { AiStatusBar } from './AiStatusBar'
+import { BackendStatusBar } from './BackendStatusBar'
+import { browserUiState } from '../../renderer/lib/uiState'
 import { bootBoard } from './board'
 import { PLUGIN_CAPABILITIES, renderNotInHost } from './host'
 
@@ -18,7 +20,8 @@ if (!boot) {
 } else {
   createRoot(container).render(
     <StrictMode>
-      <RendererRoot api={boot.api} capabilities={PLUGIN_CAPABILITIES} />
+      <BackendStatusBar source={boot.api.plugin} />
+      <RendererRoot api={boot.api} capabilities={PLUGIN_CAPABILITIES} uiState={browserUiState()} />
       <AiStatusBar orchestrator={boot.orchestrator} />
     </StrictMode>
   )

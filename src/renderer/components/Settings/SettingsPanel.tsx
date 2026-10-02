@@ -7,6 +7,7 @@ import type {
   ChatDTO
 } from '../../types/api'
 import { AI_ENDPOINT_PLACEHOLDER } from '../../lib/defaultEndpoint'
+import { backendErrorText } from '../../lib/backendError'
 import { ApiKeyField } from './ApiKeyField'
 import { BlocklistEditor } from './BlocklistEditor'
 import { ProviderHealthCheck } from './ProviderHealthCheck'
@@ -32,9 +33,13 @@ import {
  * 宿主能力（useHostCapabilities）：TeamUQ 外掛版沒有 CLI／自訂端點／API 金鑰／driver_post／開機啟動／開資料夾，
  * 對應區塊整個不渲染；AI 判斷引擎區改成一段說明（AI 由 TeamUQ 的 ai:chat 提供）。standalone 全部照舊。
  * `initialView`：測試用（server render 時 effect 不會跑，需要先給設定才渲染得出內容）。
+ *
+ * 錯誤（G-02，外掛開發者指南 §2）：每個 backend 呼叫都有 catch。讀不到設定時顯示原因與「重試」，不會永遠停在「載入設定中…」；
+ * 寫入失敗時在標題下顯示「設定沒有儲存：原因」。外掛版的原因包含 TeamUQ 撤銷 backend:invoke、外掛停用、backend 沒起來或逾時（backendError.ts）。
+ * `initialLoadError`／`initialActionError`：測試用（同 `initialView`）。
  */
 
-export function SettingsPanel({ initialView }: { initialView?: SettingsView } = {}): JSX.Element {
+export function SettingsPanel({ initialView, initialLoadError, initialActionError }: { initialView?: SettingsView; initialLoadError?: string; initialActionError?: string } = {}): JSX.Element {
   const api = useLineTodoApi()
   const caps = useHostCapabilities()
   const [view, setView] = useState<SettingsView | null>(initialView ?? null)
@@ -49,20 +54,37 @@ export function SettingsPanel({ initialView }: { initialView?: SettingsView } = 
    * 目前只看 HTTP 金鑰，CLI 下會恆假，拿它當提示會誤導使用者。
    */
   const [engineReady, setEngineReady] = useState<boolean | null>(null)
+  /** 讀不到設定（畫面無法顯示）的原因；有值時顯示「重試」。 */
+  const [loadError, setLoadError] = useState<string | null>(initialLoadError ?? null)
+  /** 最近一次寫入／讀取清單失敗的原因（設定畫面仍可用）。成功的寫入會清掉它。 */
+  const [actionError, setActionError] = useState<string | null>(initialActionError ?? null)
 
   const loadView = useCallback(async (): Promise<void> => {
-    const v = await api.settings.get()
-    setView(v)
+    try {
+      const v = await api.settings.get()
+      setView(v)
+      setLoadError(null)
+    } catch (error) {
+      setLoadError(backendErrorText(error, '讀取設定失敗'))
+    }
   }, [])
 
   const loadChats = useCallback(async (): Promise<void> => {
-    const list = await api.db.chats.list(true) // 含黑名單
-    setChats(list)
+    try {
+      const list = await api.db.chats.list(true) // 含黑名單
+      setChats(list)
+    } catch (error) {
+      setActionError(backendErrorText(error, '讀取對話清單失敗'))
+    }
   }, [])
 
   const loadReady = useCallback(async (): Promise<void> => {
-    const st = await api.pipeline.status()
-    setEngineReady(st.hasApiKey)
+    try {
+      const st = await api.pipeline.status()
+      setEngineReady(st.hasApiKey)
+    } catch {
+      setEngineReady(null) // 只是提示：讀不到就不顯示（真正的錯誤由上面兩個顯示）
+    }
   }, [])
 
   useEffect(() => {
@@ -81,26 +103,64 @@ export function SettingsPanel({ initialView }: { initialView?: SettingsView } = 
   async function patch(
     p: Parameters<typeof api.settings.update>[0]
   ): Promise<void> {
-    const next = await api.settings.update(p)
-    setView(next)
-    flashSaved()
-    void loadReady()
+    try {
+      const next = await api.settings.update(p)
+      setView(next)
+      setActionError(null)
+      flashSaved()
+      void loadReady()
+    } catch (error) {
+      setActionError(backendErrorText(error, '設定沒有儲存'))
+    }
   }
 
   async function toggleChat(chatId: string, blocked: boolean): Promise<void> {
-    await api.db.chats.setBlocked(chatId, blocked, blocked ? 'manual' : undefined)
+    try {
+      await api.db.chats.setBlocked(chatId, blocked, blocked ? 'manual' : undefined)
+      setActionError(null)
+    } catch (error) {
+      setActionError(backendErrorText(error, blocked ? '封鎖對話失敗' : '解除封鎖失敗'))
+    }
     await loadChats()
   }
 
   async function removeKeyword(chatId: string, kw: string): Promise<void> {
-    await api.db.chats.removeIgnoreKeyword(chatId, kw)
+    try {
+      await api.db.chats.removeIgnoreKeyword(chatId, kw)
+      setActionError(null)
+    } catch (error) {
+      setActionError(backendErrorText(error, '移除關鍵字失敗'))
+    }
     await loadView()
+  }
+
+  async function openDataFolder(): Promise<void> {
+    try {
+      const res = await api.app.openDataFolder()
+      if (!res.ok) setActionError('無法開啟資料夾')
+    } catch (error) {
+      setActionError(backendErrorText(error, '無法開啟資料夾'))
+    }
   }
 
   const chatNameOf = (id: string): string =>
     chats.find((c) => c.chatId === id)?.name ?? id
 
   if (!view) {
+    if (loadError) {
+      return (
+        <div className="settings-wrap" data-testid="settings-load-error">
+          <div className="set-notice err" role="alert">
+            <div className="set-notice-body">
+              <div className="set-notice-title">{loadError}</div>
+              <div className="set-notice-acts">
+                <button type="button" onClick={() => void loadView()}>重試</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )
+    }
     return <div className="settings-wrap muted">載入設定中…</div>
   }
 
@@ -136,6 +196,11 @@ export function SettingsPanel({ initialView }: { initialView?: SettingsView } = 
         <h2>設定</h2>
         {saved && <span className="txt-ok">已儲存 ✓</span>}
       </div>
+      {actionError && (
+        <div className="set-notice err" role="alert" data-testid="settings-action-error">
+          <div className="set-notice-body">{actionError}</div>
+        </div>
+      )}
 
       {/* 抓取行為 */}
       <div className="set-section">
@@ -486,7 +551,7 @@ export function SettingsPanel({ initialView }: { initialView?: SettingsView } = 
       {/* 維運 */}
       {caps.openDataFolder && <div className="set-section">
         <div className="set-section-title">維運</div>
-        <button className="ghost" onClick={() => void api.app.openDataFolder()}>
+        <button className="ghost" onClick={() => void openDataFolder()}>
           開啟資料夾
         </button>
       </div>}

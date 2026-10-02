@@ -115,7 +115,7 @@ function MessageRow({
 }
 
 export function MessageStream(): JSX.Element {
-  const { messages, status } = useLineStream()
+  const { messages, status, error } = useLineStream()
   const st = statusLabel(status)
   // 媒體：lightbox 放大檢視中的圖片 URL（null = 未開）。
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
@@ -142,6 +142,7 @@ export function MessageStream(): JSX.Element {
           {messages.length} 則
         </span>
       </div>
+      {error && <div className="set-notice err" role="alert">{error}</div>}
 
       {messages.length === 0 ? (
         <div className="stream-empty muted">

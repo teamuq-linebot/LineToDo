@@ -1,3 +1,5 @@
 # Vendored third-party WASM build: keep byte-for-byte (core.autocrlf must not rewrite sqlite3.mjs,
 # or its sha256 in PROVENANCE.json — verified by scripts/test-wasm-vfs.mjs — stops matching).
 vendor/sqlite3mc-wasm/* -text
+# Vendored TeamUQ author tool (tuq-plugin-tool.mjs, G-08): keep byte-for-byte so its sha256 in tuq-plugin-tool.json keeps matching.
+scripts/plugin/vendor/tuq-plugin-tool.mjs -text

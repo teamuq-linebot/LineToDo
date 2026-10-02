@@ -10,7 +10,7 @@
 //     "paused, N/M done" is reported; the next review continues and sends only what is left — also across a backend restart (ledger on disk)
 //   * ExtractQueue stall semantics, unit level
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -20,6 +20,8 @@ import { openDatabase } from '../../src/main/db/database.ts'
 import { createPluginBackend } from '../../src/plugin/backend/assemble.ts'
 import { ExtractQueue } from '../../src/plugin/backend/extractQueue.ts'
 import { ReviewCoordinator, ReviewLedger } from '../../src/plugin/backend/reviewRun.ts'
+import { LongTaskTracker } from '../../src/plugin/backend/taskStatus.ts'
+import { backendMethodFor } from '../../src/shared/pluginWire.ts'
 
 const DAY = 24 * 60 * 60 * 1000
 const MIN = 60_000
@@ -93,13 +95,13 @@ async function startBackend({ dir, messages, clock, extract = {}, line }) {
 
 function invoker(backend) {
   return async (path, ...args) => {
-    const env = await backend.call('api.invoke', { path, args })
+    const env = await backend.call(backendMethodFor(path), { path, args })
     assert.equal(env.ok, true, `${path}: ${JSON.stringify(env)}`)
     if (env.chunked === true) {
       // results over 64 KiB come back in pieces (what the UI transport does)
       const parts = []
       for (let index = 0; index < env.chunks; index += 1) {
-        const piece = await backend.call('api.invoke', { path: 'result.chunk', args: [{ resultId: env.resultId, index }] })
+        const piece = await backend.call('result', { path: 'result.chunk', args: [{ resultId: env.resultId, index }] })
         assert.equal(piece.ok, true)
         parts.push(piece.value.data)
       }
@@ -168,7 +170,7 @@ function trackSettled(promise) {
   return box
 }
 
-const reviewCall = (backend, days = 3) => backend.call('api.invoke', { path: 'pipeline.reviewLastDays', args: [days] })
+const reviewCall = (backend, days = 3) => backend.call('pipeline', { path: 'pipeline.reviewLastDays', args: [days] })
 
 async function withBackend(options, body) {
   const dir = mkdtempSync(join(tmpdir(), 'plugin-review-'))
@@ -355,7 +357,17 @@ test('progress survives a backend restart: the ledger file is read again and the
     await backend.dispose()
 
     backend = await startBackend({ dir, messages, clock })
-    assert.equal((await invoker(backend)('review.status')).state, 'idle', 'a fresh process has no run in memory')
+    // G-05: a fresh process has no run in memory, but it reports what the previous backend persisted (paused, N/40, resumable) instead of a blank 'idle'
+    const restarted = await invoker(backend)('review.status')
+    assert.equal(restarted.running, false, 'a fresh process has no run in memory')
+    assert.equal(restarted.state, 'paused', 'the state the previous backend left in review-status.json')
+    assert.equal(restarted.chatsTotal, 40)
+    assert.ok(restarted.chatsDone > 0 && restarted.chatsDone < 40, `N/M kept: ${restarted.chatsDone}/40`)
+    assert.ok(restarted.resumableMessages > 0, 'the ledger is loaded for the status query, so the resumable count survives the restart')
+    assert.match(restarted.summary, /回顧暫停/)
+    const tasks = await invoker(backend)('tasks.status')
+    assert.equal(tasks.review.state, 'paused')
+    assert.equal(tasks.mediaBackfill.state, 'idle')
     const ui2 = makeUi({ backend, clock })
     const second = trackSettled(reviewCall(backend))
     await ui2.drive(() => second.settled)
@@ -368,6 +380,100 @@ test('progress survives a backend restart: the ledger file is read again and the
     assert.ok(resent.length <= 4, `${resent.length} messages were sent again after the restart`)
     assert.equal(new Set([...sentBefore, ...sentAfter]).size, 80)
     assert.equal(existsSync(join(dir, 'review-ledger.json')), false, 'cleared after the completed second pass')
+  } finally {
+    await backend.dispose().catch(() => undefined)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('G-05: a backend that dies in the middle of a review (no dispose, no settle) is reported as interrupted by the next one, with N/M; the next review resumes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'plugin-review-interrupted-'))
+  try {
+    const statusFile = join(dir, 'review-status.json')
+    let now = 1_000_000
+    const clock = () => now
+    const ledger = new ReviewLedger({ file: join(dir, 'review-ledger.json'), now: clock })
+    const first = new ReviewCoordinator({ ledger, statusFile, now: clock })
+    // the review never settles: the process is "killed" while it runs
+    void first.run(2, () => new Promise(() => undefined))
+    first.noteProgress({ processed: 7, total: 20, phase: 'extracting' })
+    now += 10_000
+    first.noteProgress({ processed: 9, total: 20, phase: 'extracting' }) // persisted (>= 5 s since the last write)
+    assert.equal(first.status().state, 'running')
+    assert.equal(JSON.parse(readFileSync(statusFile, 'utf8')).state, 'running', 'the status file says running while the review runs')
+    ledger.add(['m1', 'm2', 'm3'])
+    ledger.flush()
+
+    // the next backend process
+    const second = new ReviewCoordinator({ ledger: new ReviewLedger({ file: join(dir, 'review-ledger.json'), now: clock }), statusFile, now: clock })
+    const status = second.status()
+    assert.equal(status.running, false)
+    assert.equal(status.state, 'interrupted')
+    assert.equal(status.chatsDone, 9)
+    assert.equal(status.chatsTotal, 20)
+    assert.equal(status.resumableMessages, 3)
+    assert.match(status.summary, /重新啟動，沒有做完（已處理 9\/20 個聊天）；再按一次「回顧」即可接續/)
+    assert.equal(JSON.parse(readFileSync(statusFile, 'utf8')).state, 'interrupted', 'rewritten at once, so a third process does not mistake it for a run')
+    // a new review starts normally from the interrupted state
+    const result = await second.run(2, async () => ({ ok: true, chatsSeen: 20, chatsProcessed: 20, chatsSkippedNoise: 0, chatsFailed: 0, todosCreated: 0, todosMerged: 0 }))
+    assert.equal(result.ok, true)
+    assert.equal(second.status().state, 'done')
+    assert.equal(JSON.parse(readFileSync(statusFile, 'utf8')).state, 'done')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('G-05: LongTaskTracker (補媒體金鑰) is single-flight, persists start / end, and a run cut off by a restart reads back as interrupted; tasks.status reports it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'plugin-task-status-'))
+  try {
+    const file = join(dir, 'media-backfill-status.json')
+    const tracker = new LongTaskTracker({ name: 'mediaBackfill', file })
+    assert.equal(tracker.status().state, 'idle')
+    let release
+    const exec = () => new Promise((resolve) => { release = resolve })
+    const describe = (v) => ({ ok: v.ok === true, summary: `補了 ${v.mediaBackfilled}`, result: { mediaBackfilled: v.mediaBackfilled } })
+    const a = tracker.run(exec, describe, '補媒體金鑰進行中…')
+    const b = tracker.run(exec, describe, '補媒體金鑰進行中…')
+    assert.equal(a, b, 'single flight: the second call shares the first')
+    assert.equal(tracker.status().running, true)
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).state, 'running')
+    // restart while it runs
+    const afterCrash = new LongTaskTracker({ name: 'mediaBackfill', file, interruptedSummary: '中斷了' })
+    assert.deepEqual([afterCrash.status().state, afterCrash.status().running, afterCrash.status().summary], ['interrupted', false, '中斷了'])
+    release({ ok: true, mediaBackfilled: 4 })
+    await a
+    assert.equal(tracker.status().state, 'done')
+    assert.equal(tracker.status().summary, '補了 4')
+    assert.deepEqual(new LongTaskTracker({ name: 'mediaBackfill', file }).status().result, { mediaBackfilled: 4 }, 'the finished result is read back by the next process')
+    // failure
+    await assert.rejects(tracker.run(async () => { throw new Error('disk full') }, describe, 'x'), /disk full/)
+    assert.equal(tracker.status().state, 'failed')
+    assert.match(tracker.status().summary, /disk full/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('G-05: through the dispatcher, pipeline.backfillMediaKeys is tracked and tasks.status answers after a restart of the whole backend', async () => {
+  const messages = reviewMessages({ chats: 2, slices: 1 })
+  const dir = mkdtempSync(join(tmpdir(), 'plugin-task-status-backend-'))
+  const clock = makeClock()
+  let backend = await startBackend({ dir, messages, clock })
+  try {
+    const call = invoker(backend)
+    const before = await call('tasks.status')
+    assert.equal(before.mediaBackfill.state, 'idle')
+    assert.equal(before.review.state, 'idle')
+    const done = await call('pipeline.backfillMediaKeys', 1)
+    const after = await call('tasks.status')
+    assert.equal(after.mediaBackfill.running, false)
+    assert.equal(after.mediaBackfill.state, done.ok ? 'done' : 'failed')
+    await backend.dispose()
+    backend = await startBackend({ dir, messages, clock })
+    const restarted = await invoker(backend)('tasks.status')
+    assert.equal(restarted.mediaBackfill.state, after.mediaBackfill.state, 'the last result is still there after the restart')
+    assert.equal(restarted.mediaBackfill.summary, after.mediaBackfill.summary)
   } finally {
     await backend.dispose().catch(() => undefined)
     rmSync(dir, { recursive: true, force: true })

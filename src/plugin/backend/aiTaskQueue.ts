@@ -278,7 +278,7 @@ export function toProviderError(error: unknown): LlmProviderError {
     case 'ai_task_timeout': return make('timeout', 'AI 回覆逾時，請稍後再試')
     case 'turn_timeout':
     case 'stalled': return make('timeout', 'AI 回覆逾時，請稍後再試')
-    case 'rate_limited': return make('rate_limited', `AI 呼叫太頻繁（TeamUQ 限制每分鐘 20 次）${wait}`)
+    case 'rate_limited': return make('rate_limited', `AI 呼叫太頻繁（已達 TeamUQ 的每分鐘上限）${wait}`)
     case 'quota_exhausted': return make('quota_exceeded', `AI 額度已用完${wait}`)
     case 'provider_unavailable':
     case 'provider_not_ready':

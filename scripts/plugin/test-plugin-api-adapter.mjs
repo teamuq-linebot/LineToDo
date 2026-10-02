@@ -24,6 +24,7 @@ import {
 } from '../../src/renderer/platform/pluginApi.ts'
 import { Limiter, toWire } from '../../src/renderer/platform/pluginTransport.ts'
 import { RESOURCES } from './lib/manifest.mjs'
+import { backendMethodFor } from '../../src/shared/pluginWire.ts'
 
 // ───────────── the mock host ─────────────
 
@@ -356,7 +357,7 @@ test('adapter: a result above the 64 KiB response limit comes back in chunks and
     assert.equal(all.length, 40)
     assert.ok(all.every((m) => m.text.includes('很長的內容')))
     assert.ok(mock.count('result.chunk') > 3, 'delivered through result.chunk')
-    assert.ok(mock.state.calls.every((c) => c.method === 'api.invoke'))
+    assert.ok(mock.state.calls.every((c) => c.method === backendMethodFor(c.path)))
   })
   // a call slower than the soft deadline: the real Dispatcher turns it into a job; the adapter polls job.poll until it is done
   const hub = new EventHub()
@@ -567,7 +568,8 @@ test('unsupported: driver is absent; CLI / endpoint / key / saveAs / open / data
     assert.equal((await api.settings.get()).apiKeySource, 'none')
 
     // the raw channel throws a typed error; AI paths say that ui_ai_chat takes over
-    await assert.rejects(api.plugin.invoke('driver.postDraft', [{ todoId: 'x', text: 'y' }]), (e) => e instanceof PluginUnsupportedError && e.code === 'unsupported_in_plugin' && /driver_post|填入 LINE/.test(e.detail))
+    // G-07: driver is not a backend method group: the view refuses the path itself (it never reaches the host; Core would refuse it as backend_method_not_allowed)
+    await assert.rejects(api.plugin.invoke('driver.postDraft', [{ todoId: 'x', text: 'y' }]), (e) => e instanceof PluginApiError && !(e instanceof PluginUnsupportedError) && e.code === 'path_unknown')
     await assert.rejects(api.plugin.invoke('db.todos.draftReply', ['t1']), (e) => e instanceof PluginUnsupportedError && e.route === 'ui_ai_chat')
     await assert.rejects(api.plugin.invoke('groupTopics.analyze', ['c1']), (e) => e instanceof PluginUnsupportedError && e.route === 'ui_ai_chat')
 
@@ -583,7 +585,7 @@ test('unsupported: driver is absent; CLI / endpoint / key / saveAs / open / data
       }
     }
     assert.ok(Object.values(STANDALONE_CAPABILITIES).every((v) => v === true || v === 'standalone'), 'standalone keeps everything on')
-    assert.equal(mock.count('driver.postDraft'), 1)
+    assert.equal(mock.count('driver.postDraft'), 0, 'driver.* never leaves the view')
   })
 })
 

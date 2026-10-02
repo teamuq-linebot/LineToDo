@@ -14,6 +14,7 @@ import { createNodeLineFsPort } from '../../src/main/line/engine/nodeLineFsPort.
 import { Dispatcher } from '../../src/plugin/backend/dispatcher.ts'
 import { EventHub } from '../../src/plugin/backend/eventHub.ts'
 import { createPluginBackend } from '../../src/plugin/backend/assemble.ts'
+import { backendMethodFor } from '../../src/shared/pluginWire.ts'
 
 // ───────────── helpers ─────────────
 
@@ -76,7 +77,7 @@ function mediaFixture() {
 async function withMediaBackend(fx, extra, body) {
   const line = fakeLine()
   const backend = await createPluginBackend({ pluginId: 'tuqdev.line-todo', version: '1', dataDir: fx.dataDir, line: line.port, media: { fs: createNodeLineFsPort(), cacheDir: fx.cacheDir, ...extra } })
-  const call = (path, ...args) => backend.call('api.invoke', { path, args })
+  const call = (path, ...args) => backend.call(backendMethodFor(path), { path, args })
   try { await body({ backend, call, line }) } finally { await backend.dispose() }
 }
 
@@ -156,7 +157,7 @@ test('media: without a known LINE cache directory it says so instead of guessing
     const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir: fx.dataDir, line: line.port })
     try {
       line.emit(imageMessage(1, { fileSize: 10 }))
-      assert.equal((await backend.call('api.invoke', { path: 'media.prepare', args: ['i:m1'] })).code, 'media_unavailable')
+      assert.equal((await backend.call('media', { path: 'media.prepare', args: ['i:m1'] })).code, 'media_unavailable')
     } finally { await backend.dispose() }
 
     let clock = 1_000_000
@@ -197,7 +198,7 @@ test('media: the cache is capped (oldest files go first, the newest stays); a di
       assert.ok(total <= 10_000, `cache bytes ${total}`)
     })
     const d = new Dispatcher({ getApi: () => ({}), hub: new EventHub(), queue: { stats: () => ({}) } })
-    assert.equal((await d.call('api.invoke', { path: 'media.prepare', args: ['x'] })).code, 'media_unavailable')
+    assert.equal((await d.call('media', { path: 'media.prepare', args: ['x'] })).code, 'media_unavailable')
     d.dispose()
   } finally { fx.cleanup() }
 })
@@ -236,7 +237,7 @@ test('reconcile: the boot reconcile runs through the same runReconcile, backfill
   const dataDir = mkdtempSync(join(tmpdir(), 'plugin-reconcile-'))
   const line = fakeLine()
   const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir, line: line.port, reconcile: deps })
-  const call = (path, ...args) => backend.call('api.invoke', { path, args })
+  const call = (path, ...args) => backend.call(backendMethodFor(path), { path, args })
   try {
     const session = (await call('events.open', { sinceSeq: 0 })).value
     const phases = await collectReconcilePhases(call, session, { until: (p) => p.includes('done') })
@@ -259,7 +260,7 @@ test('reconcile: the settings switch (reconcile.enabled=false) keeps it from run
   const line = fakeLine()
   let sourceReads = 0
   const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir, line: line.port, reconcile: { ...deps, getSourceFingerprint: async () => { sourceReads += 1; return deps.getSourceFingerprint() } } })
-  const call = (path, ...args) => backend.call('api.invoke', { path, args })
+  const call = (path, ...args) => backend.call(backendMethodFor(path), { path, args })
   try {
     assert.equal((await call('settings.get')).value.reconcile.enabled, false, 'the settings file was honoured')
     const session = (await call('events.open', { sinceSeq: 0 })).value
@@ -279,8 +280,8 @@ test('reconcile: it is not wired for a bare fake LINE port (it would open the re
   try {
     await new Promise((resolve) => setTimeout(resolve, 100))
     for (const backend of [a, b]) {
-      const calls = (await backend.call('api.invoke', { path: 'events.open', args: [{ sinceSeq: 0 }] })).value
-      const pulled = (await backend.call('api.invoke', { path: 'events.pull', args: [{ sessionId: calls.sessionId, afterSeq: 0 }] })).value
+      const calls = (await backend.call('events', { path: 'events.open', args: [{ sinceSeq: 0 }] })).value
+      const pulled = (await backend.call('events', { path: 'events.pull', args: [{ sessionId: calls.sessionId, afterSeq: 0 }] })).value
       assert.equal(pulled.events.some((e) => e.type === 'reconcile-progress'), false)
     }
     assert.equal(existsSync(join(dataDir, 'a', '.reconcile_lock')) || existsSync(join(dataDir, 'b', '.reconcile_lock')), false)

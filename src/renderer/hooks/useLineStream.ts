@@ -1,6 +1,7 @@
 import { useLineTodoApi } from '../platform/LineTodoApi'
 import { useEffect, useRef, useState } from 'react'
 import type { RawLineMessage, LineBridgeStatus } from '../types/api'
+import { backendErrorText } from '../lib/backendError'
 
 /**
  * useLineStream — 訂閱 main 推來的 LINE 即時訊息與橋接狀態。
@@ -10,18 +11,22 @@ import type { RawLineMessage, LineBridgeStatus } from '../types/api'
  *   2. invoke line.status() 取得目前橋接狀態。
  *   3. 訂閱 line.onMessage / line.onStatus，之後即時更新。
  * 卸載時自動 unsubscribe。
+ * 1、2 失敗時（外掛版：backend 沒起來、權限被撤銷…）`error` 帶原因，畫面顯示它（G-02），不留未處理的 rejection。
  */
 const MAX_RENDER = 500
 
 export interface UseLineStream {
   messages: RawLineMessage[]
   status: LineBridgeStatus | null
+  /** 讀取 backlog／橋接狀態失敗的原因；沒有失敗＝null。 */
+  error: string | null
 }
 
 export function useLineStream(): UseLineStream {
   const api = useLineTodoApi()
   const [messages, setMessages] = useState<RawLineMessage[]>([])
   const [status, setStatus] = useState<LineBridgeStatus | null>(null)
+  const [error, setError] = useState<string | null>(null)
   // 用 key 去重（同一則訊息可能既在 backlog 又在後續 push）
   const seen = useRef<Set<string>>(new Set())
 
@@ -49,9 +54,13 @@ export function useLineStream(): UseLineStream {
 
     void api.messages.recent().then((backlog) => {
       if (active && backlog.length) add(backlog)
+    }, (err: unknown) => {
+      if (active) setError(backendErrorText(err, '讀取最近訊息失敗'))
     })
     void api.line.status().then((s) => {
       if (active) setStatus(s)
+    }, (err: unknown) => {
+      if (active) setError(backendErrorText(err, '讀取 LINE 橋接狀態失敗'))
     })
 
     const offMsg = api.line.onMessage((m) => {
@@ -59,7 +68,7 @@ export function useLineStream(): UseLineStream {
       console.log(`[stream] recv ${m.time} [${m.chat}] ${m.sender}: ${m.text.slice(0, 40)}`)
       add([m])
     })
-    const offStatus = api.line.onStatus((s) => setStatus(s))
+    const offStatus = api.line.onStatus((s) => { setStatus(s); setError(null) })
 
     return () => {
       active = false
@@ -68,5 +77,5 @@ export function useLineStream(): UseLineStream {
     }
   }, [])
 
-  return { messages, status }
+  return { messages, status, error }
 }

@@ -93,9 +93,9 @@ function makeStage() {
   return { root, dbDir, dataDir, fs, sqlite, state, linePorts: { fs, sqlite, dbDir }, cleanup: () => { resetLineEnginePorts(); rmSync(root, { recursive: true, force: true }) } }
 }
 
-const info = async (backend) => (await backend.call('api.invoke', { path: 'backend.info', args: [] })).value
-const lineStatus = async (backend) => (await backend.call('api.invoke', { path: 'line.status', args: [] })).value
-const ping = async (backend) => backend.call('api.invoke', { path: 'ping', args: [] })
+const info = async (backend) => (await backend.call('backend', { path: 'backend.info', args: [] })).value
+const lineStatus = async (backend) => (await backend.call('line', { path: 'line.status', args: [] })).value
+const ping = async (backend) => backend.call('ping', { path: 'ping', args: [] })
 
 let savedKeyEnv
 test.before(() => { savedKeyEnv = process.env.LINE_DB_KEY; delete process.env.LINE_DB_KEY })

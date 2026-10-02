@@ -142,7 +142,10 @@ export function createVisibilitySource(env: VisibilityEnv): VisibilitySource {
 
 // ───────────────────────── 設定 ─────────────────────────
 
-/** 1.6.8 `AI_CHAT_LIMITS`（`aiChatContracts.ts:10-29`）中與 orchestrator 有關的值；test 用 drift guard 對照 contract。 */
+/**
+ * 1.6.8 `AI_CHAT_LIMITS`（`aiChatContracts.ts:10-29`）中與 orchestrator 有關的值；test 用 drift guard 對照 contract。
+ * 只是 `getOptions()` 回來之前的起始值：之後以 host 回報的 `limits` 為準，給使用者看的文字也用 host 的值（G-10），不寫死數字。
+ */
 export const AI_CHAT_REFERENCE = Object.freeze({ systemChars: 16_000, inputChars: 8_000, turnsPerMinute: 20, turnsPerHour: 400, replyChars: 32_000, turnTimeoutMs: 300_000 })
 
 export interface OrchestratorConfig {
@@ -165,6 +168,8 @@ export interface OrchestratorConfig {
   quotaDefaultMs: number
   busyBackoffMs: number
   backendBackoffMs: number
+  /** host 回撤銷／停用／已移除（backend:invoke 不能用）時，多久再探一次（G-03）。 */
+  backendRevokedProbeMs: number
   /** 使用者動作最多願意等多久的配額空檔，超過就直接回 rate_limited。 */
   taskMaxWaitMs: number
   /** 滑動視窗的安全邊際（我們記錄的時間比 host 晚一個往返）。 */
@@ -192,6 +197,7 @@ export const ORCHESTRATOR_DEFAULTS: OrchestratorConfig = Object.freeze({
   quotaDefaultMs: 5 * 60_000,
   busyBackoffMs: 3_000,
   backendBackoffMs: 10_000,
+  backendRevokedProbeMs: 30_000,
   taskMaxWaitMs: 30_000,
   windowMarginMs: 250,
   perMinute: AI_CHAT_REFERENCE.turnsPerMinute,
@@ -283,7 +289,10 @@ const repairPrompt = (reason: string): string =>
 export type OrchestratorState = 'stopped' | 'running' | 'paused' | 'unavailable' | 'revoked'
 export interface OrchestratorStatus {
   state: OrchestratorState
-  /** 暫停／不可用的原因：`view_hidden`、`view_not_visible`、`rate_limited`、`quota_exhausted`、`busy`、`backend`、`provider_<state>`、`no_provider`… */
+  /**
+   * 暫停／不可用的原因：`view_hidden`、`view_not_visible`、`rate_limited`、`quota_exhausted`、`busy`、`backend`、
+   * `backend_revoked`（TeamUQ 撤銷了 backend:invoke、停用或移除外掛；G-03）、`provider_<state>`、`no_provider`…
+   */
   reason: string | null
   /** 預計何時恢復（毫秒 epoch；未知＝null）。 */
   resumeAt: number | null
@@ -291,6 +300,8 @@ export interface OrchestratorStatus {
   busy: boolean
   provider: { providerId: string; modelId: string | null } | null
   counters: Counters
+  /** host 目前的每分鐘輪數上限（`getOptions().limits.turnsPerMinute`；取得之前是起始值）。G-10：文字用它，不寫死。 */
+  turnsPerMinute?: number
 }
 export interface Counters {
   turns: number
@@ -308,7 +319,7 @@ export interface Counters {
 const PROVIDER_STATE_TEXT: Record<string, string> = {
   not_installed: '尚未安裝 Codex（請在 TeamUQ 安裝並登入 Codex CLI）',
   not_logged_in: 'Codex 尚未登入（請在終端機登入 Codex CLI）',
-  unsupported_version: 'Codex 版本不支援（TeamUQ 1.6.8 需要 0.158 或 0.159）',
+  unsupported_version: 'Codex 版本不支援目前的 TeamUQ（請依 TeamUQ 的提示更新 Codex CLI）',
   unavailable: 'Codex 目前無法使用',
   not_supported_yet: '這個 AI 供應者尚未支援'
 }
@@ -324,9 +335,10 @@ export function describeStatus(status: OrchestratorStatus, now = Date.now()): st
       switch (status.reason) {
         case 'view_hidden':
         case 'view_not_visible': return '看板在背景，已暫停整理新訊息；回到前景會自動繼續'
-        case 'rate_limited': return `已達 TeamUQ 的 AI 呼叫上限（每分鐘 20 次），${secs ?? '稍後'}${secs === null ? '' : ' 秒後'}繼續`
+        case 'rate_limited': return `已達 TeamUQ 的 AI 呼叫上限${typeof status.turnsPerMinute === 'number' ? `（每分鐘 ${status.turnsPerMinute} 次）` : ''}，${secs ?? '稍後'}${secs === null ? '' : ' 秒後'}繼續`
         case 'quota_exhausted': return `Codex 額度已用完，${secs === null ? '稍後' : `約 ${Math.ceil(secs / 60)} 分鐘後`}繼續`
         case 'backend': return '與外掛後端的連線暫時中斷，稍後重試'
+        case 'backend_revoked': return 'TeamUQ 已關閉此外掛的「後端呼叫」權限（或停用了外掛），AI 整理暫停；到 TeamUQ「我的 AI › 外掛」重新允許後會自動繼續'
         default: return 'AI 整理暫停中，稍後繼續'
       }
     default: return status.busy ? 'AI 正在整理新訊息…' : 'AI 整理已就緒（看板在前景時才會整理新訊息）'
@@ -394,6 +406,8 @@ const GATE_REASON: Record<string, string> = { hidden: 'view_not_visible', rate: 
 const ACCESS_CODES = new Set(['not_granted', 'plugin_not_active', 'access_revoked'])
 const PROVIDER_CODES = new Set(['provider_unavailable', 'provider_not_ready', 'unsupported_version', 'model_unavailable', 'unavailable', 'provider_not_found', 'not_supported_yet'])
 const BUSY_CODES = new Set(['busy', 'session_limit', 'session_not_found', 'turn_in_progress', 'session_closed'])
+/** host 對 backend:invoke 的「不能用」：撤銷、停用、已移除（與 pluginTransport.ts 的 ACCESS_HOST_CODES 相同）。 */
+const BACKEND_ACCESS_CODES = new Set(['plugin_permission_denied', 'plugin_disabled', 'plugin_not_installed'])
 
 export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
   const clock = deps.clock ?? SYSTEM_CLOCK
@@ -425,6 +439,8 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
   const blockers: { rate: number; quota: number; provider: number; busy: number; hidden: number; backend: number } = { rate: 0, quota: 0, provider: 0, busy: 0, hidden: 0, backend: 0 }
   let rateAttempts = 0
   let lastStatusKey = ''
+  /** 最近一次 backend 失敗是「撤銷／停用／移除」（G-03）。下一次 backend 呼叫成功就清掉。 */
+  let backendRevoked = false
 
   const now = (): number => clock.now()
 
@@ -432,7 +448,7 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
   const gate = (at: number): { until: number; reason: string } | null => {
     let best: { until: number; reason: string } | null = null
     for (const [reason, until] of Object.entries(blockers)) {
-      if (until > at && (best === null || until > best.until)) best = { until, reason: GATE_REASON[reason] ?? reason }
+      if (until > at && (best === null || until > best.until)) best = { until, reason: reason === 'backend' && backendRevoked ? 'backend_revoked' : GATE_REASON[reason] ?? reason }
     }
     return best
   }
@@ -440,7 +456,7 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
   const computeStatus = (): OrchestratorStatus => {
     const at = now()
     const provider = choice ? { providerId: choice.providerId, modelId: choice.modelId } : null
-    const base = { busy, provider, counters: { ...counters } }
+    const base = { busy, provider, counters: { ...counters }, turnsPerMinute: turnWindow.perMinute }
     if (stopped) return { state: 'stopped', reason: null, resumeAt: null, ...base }
     if (revoked) return { state: 'revoked', reason: 'access_revoked', resumeAt: null, ...base }
     if (providerReason !== null) return { state: 'unavailable', reason: providerReason, resumeAt: blockers.provider > at ? blockers.provider : null, ...base }
@@ -681,7 +697,7 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
     try { return { ok: true, value: validateExtractResult(value) } } catch (error) { return { ok: false, reason: zodIssues(error) } }
   }
 
-  const gateFailCode = (reason: string): string => (reason === 'backend' ? 'unavailable' : reason)
+  const gateFailCode = (reason: string): string => (reason === 'backend' || reason === 'backend_revoked' ? 'unavailable' : reason)
 
   /** 沒有可用的 AI（沒有 provider／授權被撤銷）：把已排隊的使用者動作立刻回覆失敗原因，不讓它們空等到逾時。 */
   const failQueuedTasks = async (code: string): Promise<void> => {
@@ -703,9 +719,10 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
       pulled = await deps.tasks.pull({ max: 1, leaseMs: cfg.leaseMs })
     } catch (error) {
       log('tasks.pull failed', { code: codeOf(error) })
-      applyBackendFailure()
+      applyBackendFailure(error)
       return false
     }
+    backendRevoked = false
     const task = pulled.tasks[0] as TaskItem | undefined
     if (!task) return false
     const blocked = gate(now())
@@ -741,7 +758,11 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
     return true
   }
 
-  const applyBackendFailure = (): void => { blockers.backend = now() + cfg.backendBackoffMs }
+  /** backend 呼叫失敗：一般失敗短暫退避；撤銷／停用／移除（G-03）改成較長的探測間隔，狀態列顯示原因（不是「暫時中斷」）。 */
+  const applyBackendFailure = (error?: unknown): void => {
+    backendRevoked = error !== undefined && BACKEND_ACCESS_CODES.has(codeOf(error))
+    blockers.backend = now() + (backendRevoked ? cfg.backendRevokedProbeMs : cfg.backendBackoffMs)
+  }
 
   /** 一個背景抽取項目。回傳 true＝領到並處理了。 */
   const runExtract = async (): Promise<boolean> => {
@@ -750,9 +771,10 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
       pulled = await deps.extract.pull({ max: 1, leaseMs: cfg.leaseMs })
     } catch (error) {
       log('extract.pull failed', { code: codeOf(error) })
-      applyBackendFailure()
+      applyBackendFailure(error)
       return false
     }
+    backendRevoked = false
     const item = pulled.items[0] as ExtractItem | undefined
     if (!item) {
       const hint = pulled.retryAfterMs
@@ -787,7 +809,7 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
       }
     } catch (error) {
       log('extract.commit/release failed', { code: codeOf(error) })
-      applyBackendFailure()
+      applyBackendFailure(error)
     }
     return true
   }
@@ -808,7 +830,7 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
       const at = now()
       const blocked = gate(at)
       // 1) 使用者動作優先；被擋時也要領（才能立刻回覆失敗原因，不讓使用者空等）。
-      if (blocked?.reason === 'backend') { scheduleWake(blocked.until - at); return }
+      if (blocked?.reason === 'backend' || blocked?.reason === 'backend_revoked') { scheduleWake(blocked.until - at); return }
       if (await runTask()) continue
       if (stopped || revoked) return
       // 2) 背景抽取：被全域退避擋住、或沒有配額空檔就先不領（領了租約會白佔）。
@@ -826,7 +848,7 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
     try {
       do {
         again = false
-        try { await cycle() } catch (error) { log('cycle failed', { code: codeOf(error) }); applyBackendFailure(); scheduleWake(cfg.backendBackoffMs) }
+        try { await cycle() } catch (error) { log('cycle failed', { code: codeOf(error) }); applyBackendFailure(error); scheduleWake(backendRevoked ? cfg.backendRevokedProbeMs : cfg.backendBackoffMs) }
       } while (again && !stopped)
     } finally {
       draining = false

@@ -34,7 +34,7 @@ function getSetup() {
       const scenario = { linedir, walSourceDir: join(fixtureDir, 'wal'), expected: { baseCount: expected.wal.baseOnly.messageCount, fullCount: expected.wal.messageCount } }
       const run = await runPluginContract({
         workRoot: join(root, 'run'),
-        settings: { lineDbDir: linedir, linePollSec: 1, lineBatchLimit: 300 },
+        lineLocation: { lineDbDir: linedir, watcher: { intervalSec: 1, limit: 300 } },
         // the key a real backend would recover from LINE's memory; here it is the synthetic fixture key, cached the way the backend caches it
         // the boot self-reconcile (settings reconcile.enabled) has its own scenario below; here it would race the first import and add duplicate line-message events
         preseed: ({ dataDir }) => {
@@ -66,7 +66,7 @@ function getReconcileSetup() {
       // an empty app DB against a LINE DB with months of history: the default settings (reconcile.enabled=true) must fill the gaps by themselves
       const run = await runPluginContract({
         workRoot: join(root, 'run'),
-        settings: { lineDbDir: linedir, linePollSec: 1, lineBatchLimit: 300 },
+        lineLocation: { lineDbDir: linedir, watcher: { intervalSec: 1, limit: 300 } },
         preseed: ({ dataDir }) => writeFileSync(join(dataDir, '.linekey'), expected.key),
         scenario: { mode: 'reconcile', expected: { baseCount: expected.wal.baseOnly.messageCount } },
       })
@@ -91,7 +91,7 @@ ${gen.stdout}`)
       const cacheDir = join(fixtureDir, 'cache')
       const run = await runPluginContract({
         workRoot: join(root, 'run'),
-        settings: { lineDbDir: join(fixtureDir, 'linedir'), lineCacheDir: cacheDir, linePollSec: 1, lineBatchLimit: 300 },
+        lineLocation: { lineDbDir: join(fixtureDir, 'linedir'), lineCacheDir: cacheDir, watcher: { intervalSec: 1, limit: 300 } },
         preseed: ({ dataDir }) => writeFileSync(join(dataDir, '.linekey'), expected.key),
         scenario: { mode: 'media', cacheDir, expected },
       })
@@ -247,15 +247,25 @@ test('review tracking (Phase 4 repair) in the production bundle under the real p
   assert.equal(r.info, 'done')
 })
 
-test('unsupported paths answer in-band; unknown paths and methods are refused', async () => {
+test('unsupported paths answer in-band; unknown paths, unknown methods and a path sent under another method group are refused', async () => {
   const { run } = await getSetup()
   const x = run.result.refusals
-  assert.equal(x.driver.code, 'unsupported_in_plugin')
+  assert.equal(x.driver.code, 'method_unknown', 'driver is not a method group (G-07): not in backendMethods, refused by the backend too')
   assert.equal(x.draft.route, 'ui_ai_chat')
   assert.equal(x.proto.code, 'path_unknown')
   assert.equal(x.ctor.code, 'path_unknown')
   assert.equal(x.unknown.code, 'path_unknown')
   assert.equal(x.badMethod.code, 'method_unknown')
+  assert.equal(x.mismatch.code, 'method_mismatch', 'settings.update sent as db.todos is refused (G-07)')
+  assert.equal(x.legacyMethod.code, 'method_unknown', 'the old single api.invoke method is gone (G-07)')
+})
+
+test('G-06: the backend is activated through the test entry with an explicit LINE location and reads nothing from context.settings', async () => {
+  const { run } = await getSetup()
+  assert.equal(run.result.activatedWith, 'activateAt')
+  assert.deepEqual(run.result.settingsReadsDuringActivate, [], 'activate / activateAt never read context.settings')
+  assert.deepEqual(run.result.settingsReadsTotal, [], 'nothing reads context.settings for the whole run either')
+  assert.ok(run.result.entryExports.includes('activate') && run.result.entryExports.includes('activateAt'))
 })
 
 test('deactivate: no DB connection, watcher, timer or other handle is left; the backend answers backend_stopped; the owner lock is released', async () => {

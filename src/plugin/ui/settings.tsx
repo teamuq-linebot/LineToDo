@@ -4,6 +4,14 @@ import '../../renderer/styles/index.css'
 import { LineTodoApiProvider } from '../../renderer/platform/LineTodoApi'
 import { SettingsPanel } from '../../renderer/components/Settings/SettingsPanel'
 import { PLUGIN_CAPABILITIES, bootPluginApi, renderNotInHost } from './host'
+import { BackendStatusBar } from './BackendStatusBar'
+import { useTheme } from '../../renderer/lib/theme'
+
+/** 設定 view 沒有主題切換鈕：跟著看板的手動選擇（storage 事件）或作業系統外觀（G-01）。 */
+function ThemeFollower(): null {
+  useTheme('system')
+  return null
+}
 
 // 外掛設定 view 的入口（manifest：contributes.views[settings]，presentations:['settings']；TeamUQ 把它嵌在「設定 → 外掛 → line-todo → 設定」）。
 // 與看板 view 是不同的 webContents，所以有自己的 adapter（自己的事件 session，需要時才開）。
@@ -19,6 +27,8 @@ if (!boot) {
   createRoot(container).render(
     <StrictMode>
       <LineTodoApiProvider api={boot.api} capabilities={PLUGIN_CAPABILITIES}>
+        <ThemeFollower />
+        <BackendStatusBar source={boot.api.plugin} />
         <div className="app-shell">
           <main className="app-main">
             <SettingsPanel />

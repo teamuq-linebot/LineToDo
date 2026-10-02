@@ -1,5 +1,12 @@
 /**
- * pluginTransport.ts — 外掛 view 與 backend 之間的請求傳輸（`window.tuqPlugin.backend.call('api.invoke', ...)`）。
+ * pluginTransport.ts — 外掛 view 與 backend 之間的請求傳輸（`window.tuqPlugin.backend.call(<方法組>, { path, args })`）。
+ *
+ * 方法名稱（G-07）：manifest 的 `backendMethods` 是命名空間分組（`src/shared/pluginWire.ts` 的 `BACKEND_METHOD_GROUPS`），
+ * 每次呼叫用 `backendMethodFor(path)` 選出所屬的組；不屬於任何一組的路徑在 view 端就以 `path_unknown` 拒絕，不送給 host。
+ *
+ * 連線狀態（G-03）：每次 host 呼叫的結果決定 `link()`——成功＝`ok`；`plugin_permission_denied`／`plugin_disabled`／`plugin_not_installed`
+ * ＝`revoked`（使用者在 TeamUQ 撤銷了 backend:invoke、停用或移除了外掛；Core 會把 backend 停掉，重試沒有用）；backend 沒起來／當掉／逾時
+ * ＝`unavailable`。畫面用 `onLink()` 顯示明確的原因，而不是空白看板。
  *
  * 只描述 TeamUQ 1.6.8 view bridge 與 backend dispatcher（`src/plugin/backend/dispatcher.ts`）的線上格式，不碰 React／DOM：
  *   - host：`backend.call(method, params)` 把 params 驗成 JSON（陣列 ≤ 4096、數字必須有限、不能有 undefined），請求／回應各 ≤ 64 KiB，
@@ -16,7 +23,7 @@
  * （最多 4 次，名額在等待期間是釋放的），超過才 reject。
  */
 
-import { MAX_REQUEST_BYTES } from '../../shared/pluginWire'
+import { MAX_REQUEST_BYTES, backendMethodFor } from '../../shared/pluginWire'
 
 /** `window.tuqPlugin` 中本外掛用到的部分（其餘能力，例如 ai／presentation，由 Phase 4 的 orchestrator 自己取用）。 */
 export interface TuqPluginHost {
@@ -53,6 +60,20 @@ export class PluginBackendError extends PluginApiError {
     super(hostCode, path)
     this.name = 'PluginBackendError'
   }
+  /** 使用者撤銷了 backend:invoke、停用或移除了外掛（重試不會好，要使用者在 TeamUQ 處理）。 */
+  get accessDenied(): boolean { return ACCESS_HOST_CODES.has(this.code) }
+}
+
+/** host 對「這個外掛不能用 backend」的說法：撤銷 backend:invoke（`backendInvokeGate.ts` 的 revoke）、外掛停用、外掛已移除。 */
+export const ACCESS_HOST_CODES: ReadonlySet<string> = new Set(['plugin_permission_denied', 'plugin_disabled', 'plugin_not_installed'])
+/** host 對「backend 暫時不能用」的說法（沒起來、忙、當掉、逾時被重啟）。 */
+export const UNAVAILABLE_HOST_CODES: ReadonlySet<string> = new Set(['plugin_backend_unavailable', 'plugin_backend_busy', 'plugin_backend_crashed', 'backend_invoke_timeout', 'backend_call_failed'])
+
+export type BackendLinkState = 'unknown' | 'ok' | 'revoked' | 'unavailable'
+export interface BackendLink {
+  state: BackendLinkState
+  /** 最近一次失敗的 host 錯誤碼（`ok`／`unknown` 時為 null）。 */
+  code: string | null
 }
 
 export { MAX_REQUEST_BYTES }
@@ -125,6 +146,8 @@ export class PluginTransport {
   private closed = false
   private busyRetries = 0
   private maxActive = 0
+  private linkState: BackendLink = { state: 'unknown', code: null }
+  private readonly linkListeners = new Set<(link: BackendLink) => void>()
 
   constructor(options: TransportOptions) {
     this.host = options.host
@@ -140,7 +163,21 @@ export class PluginTransport {
     }
   }
 
-  close(): void { this.closed = true }
+  close(): void { this.closed = true; this.linkListeners.clear() }
+
+  /** 目前對 backend 的連線狀態（由最近一次 host 呼叫的結果決定）。 */
+  link(): BackendLink { return { ...this.linkState } }
+  /** 連線狀態改變時通知（同一狀態＋同一錯誤碼不重複通知）。 */
+  onLink(listener: (link: BackendLink) => void): () => void {
+    this.linkListeners.add(listener)
+    return () => { this.linkListeners.delete(listener) }
+  }
+
+  private setLink(state: BackendLinkState, code: string | null): void {
+    if (this.linkState.state === state && this.linkState.code === code) return
+    this.linkState = { state, code }
+    for (const listener of [...this.linkListeners]) { try { listener({ ...this.linkState }) } catch { /* 訂閱者錯誤不影響傳輸 */ } }
+  }
   get isClosed(): boolean { return this.closed }
   /** `active`／`waiting`：目前在飛／排隊的 host 呼叫；`maxActive`：歷來同時在飛的最大值；`busyRetries`：因忙碌而重試的次數。 */
   stats(): { active: number; waiting: number; maxActive: number; busyRetries: number; limit: number } {
@@ -160,16 +197,24 @@ export class PluginTransport {
 
   /** 一次 host 呼叫：佔用名額；host 說忙就釋放名額、退避、再試（超過次數才 reject）。 */
   private async envelope(path: string, args: readonly unknown[]): Promise<unknown> {
+    const method = backendMethodFor(path)
+    if (method === null) throw new PluginApiError('path_unknown', path, 'the path is not in any backend method group')
     const wire = toWire(path, args)
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return await this.limiter.run(() => {
+        const env = await this.limiter.run(() => {
           this.maxActive = Math.max(this.maxActive, this.limiter.stats().active)
-          return this.host.backend.call('api.invoke', wire)
+          return this.host.backend.call(method, wire)
         })
+        this.setLink('ok', null)
+        return env
       } catch (error) {
         const code = error instanceof Error && error.message ? error.message.slice(0, 80) : 'backend_call_failed'
-        if (!BUSY_HOST_CODES.has(code) || attempt >= this.retry.attempts || this.closed) throw new PluginBackendError(path, code)
+        if (ACCESS_HOST_CODES.has(code)) this.setLink('revoked', code)
+        if (!BUSY_HOST_CODES.has(code) || attempt >= this.retry.attempts || this.closed) {
+          if (UNAVAILABLE_HOST_CODES.has(code)) this.setLink('unavailable', code)
+          throw new PluginBackendError(path, code)
+        }
         this.busyRetries += 1
         const delay = Math.min(this.retry.baseMs * 2 ** attempt, this.retry.maxMs) * (0.75 + this.retry.random() * 0.5)
         await this.retry.sleep(delay)

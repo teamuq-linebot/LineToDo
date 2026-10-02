@@ -6,7 +6,7 @@
  * （request/response，≤ 64 KiB，單次 ≤ 30 s；ai-lover 0.3.0 `voice.pull` 同樣的限制）。所以：
  *
  *   - 所有事件進同一個有界 ring（單調遞增 seq）。
- *   - 主傳輸：長輪詢 `events.open` / `events.pull {afterSeq, waitMs}` / `events.close`（走 `api.invoke`）。
+ *   - 主傳輸：長輪詢 `events.open` / `events.pull {afterSeq, waitMs}` / `events.close`（走 `events` 方法組，G-07）。
  *     以 `afterSeq` 取代 server 端游標，所以回應掉了可以原樣重問、不遺失也不重複；ring 已滾掉的部分用 `gap:true` 告知，
  *     view 端應重新拉一次狀態（pipeline.status／todos.list）。
  *   - 副傳輸（**目前未啟用**，review F9）：host 的 capability session `openSession({capability:'linetodo.events'})`，事件經 `channel.send` 推送

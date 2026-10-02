@@ -16,8 +16,13 @@
  *   - `status()`：進行中／已完成 N/M／可續跑的訊息數，給 UI（`review.status`、`backend.info`）。
  *
  * 帳本存 `<dataDir>/review-ledger.json`（只含 msgId，沒有訊息內容），24 小時過期。
+ *
+ * 狀態持久化（G-05）：`status()` 的內容（狀態、N/M、日片段計數、暫停原因）在開始、進度（最多每 5 秒）與結束時寫進
+ * `<dataDir>/review-status.json`。backend 重新啟動後讀回：上次記錄是 `running`＝回顧做到一半 backend 就被結束（閒置卸載／當機／Core 重啟），
+ * 狀態改成 `interrupted` 並保留 N/M；帳本也會在查詢時載入，所以 `resumableMessages` 在重啟後仍正確。UI 不必只靠 Promise 判斷回顧是否還在跑。
  */
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { readStatusFile, writeStatusFile } from './taskStatus'
 import type { MessageDTO } from '../../main/db/dto'
 import type { ExtractResult } from '../../main/llm/schema'
 import type { ChatExtractInput } from '../../main/pipeline/runOnce'
@@ -107,8 +112,11 @@ export class ReviewLedger {
 export interface ReviewStatus {
   /** 現在有沒有回顧在跑。 */
   running: boolean
-  /** `idle`＝從沒跑過；`running`；`done`＝上一次全部完成；`paused`＝UI 不見而暫停；`incomplete`＝有聊天室失敗、可再按一次接續。 */
-  state: 'idle' | 'running' | 'done' | 'paused' | 'incomplete'
+  /**
+   * `idle`＝從沒跑過；`running`；`done`＝上一次全部完成；`paused`＝UI 不見而暫停；`incomplete`＝有聊天室失敗、可再按一次接續；
+   * `interrupted`＝上一次回顧進行中 backend 就重新啟動了（狀態檔讀回），可再按一次接續。
+   */
+  state: 'idle' | 'running' | 'done' | 'paused' | 'incomplete' | 'interrupted'
   days: number | null
   startedAt: number | null
   updatedAt: number | null
@@ -130,8 +138,13 @@ export interface ReviewStatus {
 
 export interface ReviewCoordinatorOptions {
   ledger: ReviewLedger
+  /** 狀態檔（`<dataDir>/review-status.json`）；省略＝只放記憶體（測試）。 */
+  statusFile?: string
   now?(): number
 }
+
+const STATUS_FLUSH_MS = 5_000
+const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
 
 export class ReviewCoordinator {
   private readonly ledger: ReviewLedger
@@ -150,13 +163,50 @@ export class ReviewCoordinator {
   private slicesFailed = 0
   private pausedReason: string | null = null
   private disposed = false
+  private readonly statusFile: string | undefined
+  private lastStatusWrite = 0
 
   constructor(opts: ReviewCoordinatorOptions) {
     this.ledger = opts.ledger
     this.nowFn = opts.now ?? (() => Date.now())
+    this.statusFile = opts.statusFile
+    this.restore()
   }
 
   private now(): number { return this.nowFn() }
+
+  /** 讀回上一個 backend 留下的狀態；上次是 `running`＝被中斷。 */
+  private restore(): void {
+    const saved = readStatusFile(this.statusFile)
+    if (!saved) return
+    const r = saved.result !== null && typeof saved.result === 'object' && !Array.isArray(saved.result) ? (saved.result as Record<string, unknown>) : {}
+    const states: ReadonlyArray<ReviewStatus['state']> = ['idle', 'done', 'paused', 'incomplete', 'interrupted']
+    this.state = saved.state === 'running' ? 'interrupted' : (states as readonly string[]).includes(saved.state) ? (saved.state as ReviewStatus['state']) : 'idle'
+    this.days = typeof r.days === 'number' ? r.days : null
+    this.startedAt = saved.startedAt
+    this.finishedAt = saved.finishedAt
+    this.updatedAt = saved.finishedAt ?? saved.startedAt
+    this.phase = this.state === 'idle' ? null : 'done'
+    this.chatsDone = num(r.chatsDone)
+    this.chatsTotal = num(r.chatsTotal)
+    this.slicesSent = num(r.slicesSent)
+    this.slicesSkipped = num(r.slicesSkipped)
+    this.slicesFailed = num(r.slicesFailed)
+    this.pausedReason = typeof r.pausedReason === 'string' ? r.pausedReason : null
+    if (saved.state === 'running') this.persistStatus(true)
+  }
+
+  private persistStatus(force = false): void {
+    if (!this.statusFile) return
+    const at = this.now()
+    if (!force && at - this.lastStatusWrite < STATUS_FLUSH_MS) return
+    this.lastStatusWrite = at
+    const s = this.status()
+    writeStatusFile(this.statusFile, {
+      state: s.state, startedAt: s.startedAt, finishedAt: s.finishedAt, summary: s.summary,
+      result: { days: s.days, chatsDone: s.chatsDone, chatsTotal: s.chatsTotal, slicesSent: s.slicesSent, slicesSkipped: s.slicesSkipped, slicesFailed: s.slicesFailed, pausedReason: s.pausedReason }
+    })
+  }
 
   /** core 的 `backfill-progress` 事件（processed／total／phase）。 */
   noteProgress(progress: unknown): void {
@@ -166,6 +216,7 @@ export class ReviewCoordinator {
     if (typeof p.total === 'number') this.chatsTotal = p.total
     if (p.phase === 'fetching' || p.phase === 'extracting' || p.phase === 'done') this.phase = p.phase
     this.updatedAt = this.now()
+    this.persistStatus()
   }
 
   /** 包住 core 用的 extractFn：帳本略過、記錄、偵測 UI 不見。 */
@@ -219,9 +270,11 @@ export class ReviewCoordinator {
         this.finishedAt = this.updatedAt = this.now()
         this.phase = 'done'
         this.inflight = null
+        this.persistStatus(true)
       }
     })()
     this.inflight = flight
+    this.persistStatus(true)
     return flight
   }
 
@@ -254,9 +307,12 @@ export class ReviewCoordinator {
   }
 
   status(): ReviewStatus {
+    // 重啟後第一次查詢：帳本還沒因為「開始回顧」而載入，這裡載入才能回報正確的可續跑數（只讀一次檔案）。
+    if (!this.inflight) this.ledger.load()
     const resumable = this.ledger.size
     let summary: string
     switch (this.state) {
+      case 'interrupted': summary = `上次回顧進行中外掛後端重新啟動，沒有做完（已處理 ${this.chatsDone}/${this.chatsTotal} 個聊天）；再按一次「回顧」即可接續`; break
       case 'running':
         summary = this.phase === 'fetching' || this.chatsTotal === 0 ? '回顧進行中：撈取訊息…' : `回顧進行中：已處理 ${this.chatsDone}/${this.chatsTotal} 個聊天`
         break
@@ -276,5 +332,7 @@ export class ReviewCoordinator {
     if (this.disposed) return
     this.disposed = true
     this.ledger.flush()
+    // 寫下最新的 N/M。回顧還在跑時被 dispose，檔案裡的狀態是 running，下一個 backend 讀回會是 interrupted。
+    this.persistStatus(true)
   }
 }

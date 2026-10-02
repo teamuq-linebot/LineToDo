@@ -1,17 +1,20 @@
 /**
- * dispatcher.ts — `api.invoke` 單一入口（設計 v2 §4.5）。
+ * dispatcher.ts — backend 的呼叫入口（設計 v2 §4.5；G-07 改為依命名空間分組的方法）。
  *
- * `LineTodoApi` 的方法數超過 manifest `backendMethods` 的 32 個上限，所以 manifest 只宣告 `api.invoke`，
- * 由這裡依 `{ path, args }` 路由。規則：
+ * `LineTodoApi` 的路徑數超過 manifest `backendMethods` 的 32 個上限，所以 manifest 宣告的是「命名空間」一組一個方法
+ * （`src/shared/pluginWire.ts` 的 `BACKEND_METHOD_GROUPS`：`db.todos`、`pipeline`、`events`…），由這裡依 `{ path, args }` 路由。規則：
  *
+ *   - 方法名稱必須是其中一組，而且必須等於 `backendMethodFor(path)`（`backend.call('db.todos', {path:'settings.update'})` 回 `method_mismatch`），
+ *     所以 TeamUQ 的方法 allowlist 對每個命名空間都真的有效；`driver` 不在清單內，Core 在進到 backend 前就會擋掉。
  *   - 路徑只能是**明確列出**的允許清單（不做動態屬性走訪；`__proto__`／`constructor` 之類一律 `path_unknown`）。
- *   - driver／CLI provider／media 開檔存檔／AI 呼叫等外掛版不提供的路徑，回 `{ok:false, code:'unsupported_in_plugin', route}`，
+ *   - CLI provider／media 開檔存檔／AI 呼叫等外掛版不提供的路徑，回 `{ok:false, code:'unsupported_in_plugin', route}`，
  *     `route:'ui_ai_chat'` 表示「這件事由 UI 端經 ai:chat 完成」。
  *   - 結果一律 in-band envelope（不 throw）。host 對回傳有 64 KiB 上限、單次 call 有 30 s 上限，超過 host 會報錯甚至重啟
  *     整個 backend，所以：
  *       * 回傳超過預算 → 切成字串分段存起來，回 `{chunked, resultId, chunks}`，view 用 `result.chunk` 逐段取回再 JSON.parse。
  *       * 執行超過 soft deadline（預設 20 s）→ 回 `{pending, jobId}`，view 用 `job.poll` 取結果（長時間的 reviewLastDays 等）。
- *   - 另外有八組內部路徑：`backend.info`、`review.status`（回顧的進行中／已完成 N/M／可續跑）、`events.*`（事件長輪詢）、`extract.*`（AI 抽取供料／收料／還租約）、`ai.*`（UI 中轉的單次 AI 呼叫：
+ *   - 另外有九組內部路徑：`backend.info`、`review.status`（回顧的進行中／已完成 N/M／可續跑）、`tasks.status`（回顧與補媒體金鑰兩個長任務的狀態，
+ *     backend 重新啟動後仍查得到，G-05）、`events.*`（事件長輪詢）、`extract.*`（AI 抽取供料／收料／還租約）、`ai.*`（UI 中轉的單次 AI 呼叫：
  *     `ai.run` 由 UI 發起草擬回覆／誤判分析／群組議題分析，`ai.pull`／`ai.commit`／`ai.release` 是 UI orchestrator 領取並交回 ai:chat 的文字）、
  *     `media.prepare`（解密圖片寫進 dataDir，回相對路徑給 view 的 `assets.url()`）、`result.chunk`、`job.poll`。
  */
@@ -26,8 +29,10 @@ import { DEFAULT_MAX_USER_CHARS, EXTRACT_SYSTEM_SHA256 } from './extractQueue'
 import type { EventHub } from './eventHub'
 import type { PluginMedia } from './media'
 import type { ReviewCoordinator } from './reviewRun'
+import type { LongTaskTracker } from './taskStatus'
 import type { Envelope, JsonValue } from './types'
 import { BACKEND_LIMITS } from './types'
+import { BACKEND_METHOD_GROUPS, backendMethodFor } from '../../shared/pluginWire'
 
 /** request/response 型、外掛版支援的 `LineTodoApi` 路徑（`on*` 訂閱走事件通道，不在這裡）。 */
 export const SUPPORTED_API_PATHS: readonly string[] = Object.freeze([
@@ -60,6 +65,7 @@ export const UNSUPPORTED_API_PATHS: Readonly<Record<string, { route: 'ui_ai_chat
   'media.saveAs': { route: 'none', message: '外掛版以 UI 端下載取代另存新檔' }
 })
 
+const METHOD_GROUPS: ReadonlySet<string> = new Set(BACKEND_METHOD_GROUPS)
 const PATH_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,31}(\.[A-Za-z][A-Za-z0-9]{0,31}){0,3}$/
 const MAX_ARGS = 8
 const OWN = Object.prototype.hasOwnProperty
@@ -75,6 +81,8 @@ export interface DispatcherOptions {
   media?: PluginMedia
   /** 回顧的續跑／single-flight／進度（`pipeline.reviewLastDays`、`review.status`）；省略＝直接呼叫 core（單元測試）。 */
   review?: ReviewCoordinator
+  /** 「補媒體金鑰」的 single-flight 與可查詢狀態（`pipeline.backfillMediaKeys`、`tasks.status`）；省略＝直接呼叫 core。 */
+  mediaBackfill?: LongTaskTracker
   /** `backend.info` 的內容。 */
   info(): Record<string, JsonValue>
   /** 超過這個時間就把執行中的呼叫轉成 job（必須 < host 的 30 s）。 */
@@ -126,12 +134,15 @@ export class Dispatcher {
 
   async call(method: string, params: unknown): Promise<Envelope> {
     if (this.disposed) return fail('backend_stopped', 'backend is stopped')
-    if (method !== 'api.invoke') return fail('method_unknown', String(method).slice(0, 64))
+    if (typeof method !== 'string' || !METHOD_GROUPS.has(method)) return fail('method_unknown', String(method).slice(0, 64))
     if (!plain(params) || typeof params.path !== 'string') return fail('invalid_args', 'params.path is required')
     const path = params.path
     const args = params.args === undefined ? [] : params.args
     if (!Array.isArray(args) || args.length > MAX_ARGS) return fail('invalid_args', `args must be an array of at most ${MAX_ARGS} items`)
     if (!PATH_PATTERN.test(path)) return fail('path_unknown', 'malformed path')
+    const group = backendMethodFor(path)
+    if (group === null) return fail('path_unknown', path)
+    if (group !== method) return fail('method_mismatch', `${path} belongs to ${group}, not ${method}`)
 
     // 內部路徑
     switch (path) {
@@ -161,13 +172,15 @@ export class Dispatcher {
       }
       case 'extract.stats': return this.finalize(this.opts.queue.stats())
       case 'review.status': return this.opts.review ? this.finalize(this.opts.review.status()) : fail('review_unavailable', 'review tracking is not available in this build')
+      // 長任務的狀態（G-05）：回顧與補媒體金鑰；backend 重新啟動後由狀態檔讀回（taskStatus.ts、reviewRun.ts）。
+      case 'tasks.status': return this.finalize({ review: this.opts.review ? this.opts.review.status() : null, mediaBackfill: this.opts.mediaBackfill ? this.opts.mediaBackfill.status() : null })
       case 'media.prepare': return this.mediaPrepare(args[0])
       case 'result.chunk': return this.chunk(args[0])
       case 'job.poll': return this.pollJob(args[0])
       default: break
     }
 
-    const unsupported = (OWN.call(UNSUPPORTED_API_PATHS, path) ? UNSUPPORTED_API_PATHS[path] : null) ?? (path.startsWith('driver.') ? { route: 'none' as const, message: '外掛版不提供「填入 LINE」（driver_post）' } : null)
+    const unsupported = OWN.call(UNSUPPORTED_API_PATHS, path) ? UNSUPPORTED_API_PATHS[path] : null
     if (unsupported) return fail('unsupported_in_plugin', unsupported.message, unsupported.route)
     if (!this.allowed.has(path)) return fail('path_unknown', path)
 
@@ -180,6 +193,21 @@ export class Dispatcher {
     if (path === 'pipeline.reviewLastDays' && this.opts.review) {
       const review = this.opts.review
       return this.settle(Promise.resolve().then(() => review.run(args[0], () => run(...args) as Promise<never>)))
+    }
+    // 補媒體金鑰：同時只跑一個，開始／結束寫狀態檔，UI 重新載入或 backend 重啟後仍可用 `tasks.status` 查到結果。
+    if (path === 'pipeline.backfillMediaKeys' && this.opts.mediaBackfill) {
+      const tracker = this.opts.mediaBackfill
+      return this.settle(Promise.resolve().then(() => tracker.run(
+        () => run(...args) as Promise<{ ok?: unknown; scanned?: unknown; mediaBackfilled?: unknown; error?: unknown }>,
+        (value) => {
+          const scanned = typeof value?.scanned === 'number' ? value.scanned : 0
+          const filled = typeof value?.mediaBackfilled === 'number' ? value.mediaBackfilled : 0
+          return value?.ok === true
+            ? { ok: true, summary: `補媒體金鑰完成：補了 ${filled} 筆（掃描 ${scanned} 則）`, result: { scanned, mediaBackfilled: filled } }
+            : { ok: false, summary: `補媒體金鑰失敗：${typeof value?.error === 'string' ? value.error.slice(0, 200) : '未知錯誤'}`, result: { scanned, mediaBackfilled: filled } }
+        },
+        '補媒體金鑰進行中…'
+      )))
     }
     return this.settle(Promise.resolve().then(() => run(...args)))
   }

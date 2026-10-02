@@ -1,4 +1,5 @@
 import { useLineTodoApi } from '../platform/LineTodoApi'
+import { parseText, useUiState } from '../lib/uiState'
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react'
 import type {
   DriverFollowUpAction,
@@ -123,14 +124,26 @@ const FOCUSABLE = 'button:not([disabled]), textarea, summary, input:not([disable
  */
 const ENTER_REFIRE_GUARD_MS = 1000
 
+/** 已產生／編輯過的草稿保留多久（G-04：重新開啟畫面或對話框時直接還原，不再向 AI 要一份）。 */
+const REPLY_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000
+const parseReplyDraft = parseText(16 * 1024)
+
 export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Element {
   const api = useLineTodoApi()
   const driverApi = api.driver
   const uid = useId()
-  const [draft, setDraft] = useState('')
+  // G-04：上次的草稿（外掛版存在 UI 狀態；standalone 不保存）。有就直接用，不再花一次 AI 呼叫；「重新產生」仍可要新的。
+  const ui = useUiState()
+  const replyDraftKey = `reply.draft.${todo.id}`
+  const [restoredDraft] = useState(() => ui.read(replyDraftKey, parseReplyDraft, { maxAgeMs: REPLY_DRAFT_MAX_AGE_MS }))
+  const [draft, setDraft] = useState(restoredDraft ?? '')
   // 掛載時就會開始草擬：從 true 開始，初始焦點才會等 textarea 出現後再放（不會被「AI 草擬中…」換掉）。
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(restoredDraft === undefined)
   const [error, setError] = useState<string | null>(null)
+  // 草稿（AI 產生的或使用者改過的）一改變就保存。
+  useEffect(() => {
+    if (!loading && !error && draft !== '') ui.write(replyDraftKey, draft)
+  }, [ui, replyDraftKey, draft, loading, error])
   const [copied, setCopied] = useState(false)
 
   // ── 填入 LINE ──
@@ -204,7 +217,7 @@ export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Elemen
   }, [driverApi, todo.id])
 
   useEffect(() => {
-    void generate()
+    if (restoredDraft === undefined) void generate()
     void refreshStatus()
     api.settings
       .get()

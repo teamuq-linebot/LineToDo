@@ -10,6 +10,23 @@ import {
 } from './buckets'
 import type { CardDnd } from './KanbanBoard'
 import { useHostCapabilities } from '../../platform/LineTodoApi'
+import { useUiState } from '../../lib/uiState'
+
+/** 未儲存的編輯／關鍵字草稿保留多久（G-04：重新開啟畫面後還原；太舊的就丟掉）。 */
+const CARD_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+interface EditDraft { title: string; detail: string; bucket: TodoDTO['bucket']; priority: number; due: string }
+
+function parseEditDraft(raw: unknown): EditDraft | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined
+  const d = raw as Record<string, unknown>
+  if (typeof d.title !== 'string' || typeof d.detail !== 'string' || typeof d.due !== 'string' || typeof d.priority !== 'number') return undefined
+  if (d.bucket !== 'todo' && d.bucket !== 'waiting' && d.bucket !== 'schedule') return undefined
+  if (d.title.length > 2000 || d.detail.length > 20000 || d.due.length > 40) return undefined
+  return { title: d.title, detail: d.detail, bucket: d.bucket, priority: d.priority, due: d.due }
+}
+
+const parseKwDraft = (raw: unknown): string | undefined => (typeof raw === 'string' && raw.length <= 200 ? raw : undefined)
 
 /**
  * TodoCard — 單張代辦卡（IMPLEMENTATION_PLAN.md M3）。
@@ -184,17 +201,36 @@ export function TodoCard({
     | { phase: 'pending'; label: string }
     | { phase: 'error'; label: string; message: string }
   >(null)
+  // G-04：未儲存的編輯表單與「依關鍵字忽略」輸入存成草稿（外掛版；standalone 的 store 不保存），卡片重新出現時還原。
+  const ui = useUiState()
+  const editDraftKey = `card.edit.${todo.id}`
+  const kwDraftKey = `card.kw.${todo.id}`
+  const [restored] = useState(() => ({
+    edit: ui.read(editDraftKey, parseEditDraft, { maxAgeMs: CARD_DRAFT_MAX_AGE_MS }),
+    kw: ui.read(kwDraftKey, parseKwDraft, { maxAgeMs: CARD_DRAFT_MAX_AGE_MS })
+  }))
+
   // 「依關鍵字忽略」inline 表單狀態。
-  const [kwMode, setKwMode] = useState(false)
-  const [kwText, setKwText] = useState('')
+  const [kwMode, setKwMode] = useState(restored.kw !== undefined)
+  const [kwText, setKwText] = useState(restored.kw ?? '')
 
   // 編輯模式狀態（草稿欄位 + 驗證錯誤）。
-  const [editing, setEditing] = useState(false)
-  const [eTitle, setETitle] = useState(todo.title)
-  const [eDetail, setEDetail] = useState(todo.detail ?? '')
-  const [eBucket, setEBucket] = useState<TodoDTO['bucket']>(todo.bucket)
-  const [ePriority, setEPriority] = useState<number>(todo.priority)
-  const [eDue, setEDue] = useState<string>(isoToLocalInput(todo.dueAt))
+  const [editing, setEditing] = useState(restored.edit !== undefined)
+  const [eTitle, setETitle] = useState(restored.edit?.title ?? todo.title)
+  const [eDetail, setEDetail] = useState(restored.edit?.detail ?? todo.detail ?? '')
+  const [eBucket, setEBucket] = useState<TodoDTO['bucket']>(restored.edit?.bucket ?? todo.bucket)
+  const [ePriority, setEPriority] = useState<number>(restored.edit?.priority ?? todo.priority)
+  const [eDue, setEDue] = useState<string>(restored.edit?.due ?? isoToLocalInput(todo.dueAt))
+
+  // 輸入一改變就保存；表單關閉（儲存成功或取消）就刪掉草稿。
+  useEffect(() => {
+    if (editing) ui.write(editDraftKey, { title: eTitle, detail: eDetail, bucket: eBucket, priority: ePriority, due: eDue })
+    else ui.remove(editDraftKey)
+  }, [ui, editDraftKey, editing, eTitle, eDetail, eBucket, ePriority, eDue])
+  useEffect(() => {
+    if (kwMode) ui.write(kwDraftKey, kwText)
+    else ui.remove(kwDraftKey)
+  }, [ui, kwDraftKey, kwMode, kwText])
   const [editErr, setEditErr] = useState<string | null>(null)
   const [editPhase, setEditPhase] = useState<'idle' | 'writing' | 'refreshing' | 'refresh-error'>('idle')
   const editInFlight = useRef(false)

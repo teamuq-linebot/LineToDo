@@ -96,6 +96,55 @@ test('media: file open / save-as buttons are hidden in the plugin; images ask th
   assert.ok(!renderImage(false, STANDALONE).includes('linemedia'))
 })
 
+// ───────────── plugin developer guide conformance (G-02 / G-03 / G-04) ─────────────
+
+test('G-02: settings that cannot be read show the reason and a retry button instead of 載入設定中… forever; a failed write is shown under the title', async () => {
+  const { renderSettingsWith, PLUGIN, STANDALONE } = await renderer()
+  const reason = '讀取設定失敗：TeamUQ 已關閉這個外掛的「後端呼叫」權限（backend:invoke），所以讀不到 LINE 與待辦資料。'
+  for (const caps of [PLUGIN, STANDALONE]) {
+    const failed = renderSettingsWith(caps, undefined, { initialLoadError: reason })
+    assert.ok(failed.includes('data-testid="settings-load-error"'))
+    assert.ok(failed.includes(reason))
+    assert.ok(failed.includes('重試'))
+    assert.ok(!failed.includes('載入設定中'), 'not stuck on loading')
+    assert.ok(renderSettingsWith(caps, undefined, {}).includes('載入設定中'), 'still loading when nothing failed yet')
+  }
+  const write = renderSettingsWith(PLUGIN, VIEW, { initialActionError: '設定沒有儲存：外掛後端暫時無法回應（可能正在啟動或忙碌），稍後再試。' })
+  assert.ok(write.includes('data-testid="settings-action-error"') && write.includes('設定沒有儲存'))
+  assert.ok(write.includes('輪詢頻率（秒）'), 'the form is still there')
+})
+
+test('G-03: the backend status line says backend:invoke was revoked (and where to allow it again), says when the backend is down, and is absent when all is well', async () => {
+  const { renderBackendBar } = await renderer()
+  const revoked = renderBackendBar({ state: 'revoked', code: 'plugin_permission_denied' })
+  assert.match(revoked, /role="alert"/)
+  assert.match(revoked, /data-backend-link="revoked"/)
+  assert.match(revoked, /backend:invoke/)
+  assert.match(revoked, /重新允許/)
+  assert.match(renderBackendBar({ state: 'revoked', code: 'plugin_disabled' }), /停用/)
+  assert.match(renderBackendBar({ state: 'unavailable', code: 'plugin_backend_crashed' }), /意外結束/)
+  assert.equal(renderBackendBar({ state: 'ok', code: null }), '')
+  assert.equal(renderBackendBar({ state: 'unknown', code: null }), '')
+})
+
+test('G-04: a re-created plugin view restores the tab, the sort / filters and grouping from its saved UI state; standalone (no store) starts fresh as before', async () => {
+  const { renderAppWithState, PLUGIN, STANDALONE } = await renderer()
+  const active = (html) => html.match(/<button class="tab active">([^<]+)<\/button>/)?.[1]
+  assert.equal(active(renderAppWithState(PLUGIN, null)), '看板')
+  assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'topics' })), '群組議題')
+  assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'settings' })), '看板', 'a saved settings tab falls back to the board where there is no settings tab')
+  assert.equal(active(renderAppWithState(STANDALONE, { 'app.tab': 'settings' })), '設定')
+  const board = renderAppWithState(PLUGIN, { 'board.sortBy': 'priority', 'board.sortDirection': 'asc', 'board.chatKindFilter': 'group', 'board.localViewedFilter': 'unviewed', 'board.groupByChat': true })
+  assert.match(board, /<option value="priority" selected="">/)
+  assert.match(board, /<option value="asc" selected="">/)
+  assert.match(board, /<option value="group" selected="">/)
+  assert.match(board, /<option value="unviewed" selected="">/)
+  assert.match(board, /<input type="checkbox" checked=""/)
+  const fresh = renderAppWithState(PLUGIN, { 'board.sortBy': 'not-a-sort' })
+  assert.match(fresh, /<option value="updatedAt" selected="">/, 'a saved value of the wrong shape is ignored')
+  assert.match(renderAppWithState(STANDALONE, null), /<option value="updatedAt" selected="">/)
+})
+
 // ───────────── (2) the bundle fits the 1.6.8 view sandbox ─────────────
 
 let built = null
@@ -131,7 +180,9 @@ test('bundle: the JavaScript has no outbound network API, no linemedia://, no wi
   }
   // the one thing that talks to the backend is the view bridge
   assert.ok(files['main.js'].includes('tuqPlugin'), 'the bundle talks to window.tuqPlugin')
-  assert.ok(files['main.js'].includes('api.invoke'), 'through the single api.invoke dispatcher')
+  // G-07: one backend method per API namespace (the manifest's backendMethods), no longer a single api.invoke
+  assert.ok(!files['main.js'].includes("'api.invoke'") && !files['main.js'].includes('"api.invoke"'), 'the single api.invoke method is gone')
+  for (const group of ['db.todos', 'pipeline', 'events', 'extract']) assert.ok(files['main.js'].includes(`"${group}"`) || files['main.js'].includes(`'${group}'`), `the method group ${group} is in the bundle`)
   assert.ok(files['main.js'].includes('events.pull'), 'and the long-poll event channel')
 })
 

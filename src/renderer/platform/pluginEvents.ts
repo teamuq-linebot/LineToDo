@@ -16,7 +16,11 @@
  *     事件 payload 被壓成 `{overflow:true}`：都無法逐則補回，改成「重新同步」——對 `todos-changed`／`messages-persisted` 發一個空事件、
  *     並重拉 `pipeline.status`／`line.status` 後以 `pipeline-status`／`line-status` 發出，讓看板整個重載。
  *   - 失敗（backend 暫時不可用）以指數退避重試，永不 throw 到訂閱者。
+ *   - host 回「這個外掛不能用 backend」（`plugin_permission_denied`＝撤銷 backend:invoke、`plugin_disabled`、`plugin_not_installed`；G-03）：
+ *     不再當成暫時失敗做指數退避，改成每 `accessProbeMs`（預設 30 s）探一次，直到使用者在 TeamUQ 重新允許；畫面顯示的原因由
+ *     transport 的連線狀態（`pluginTransport.ts` 的 `link()`）負責。恢復後照「失敗後」的規則補一次重新同步。
  */
+import { ACCESS_HOST_CODES } from './pluginTransport'
 
 export const PLUGIN_EVENT_TYPES = [
   'line-message', 'line-status', 'messages-persisted', 'pipeline-run', 'pipeline-status',
@@ -36,10 +40,12 @@ export interface PluginEventPumpOptions {
   /** 失敗退避：第 n 次失敗等 `min(base * 2^(n-1), max)`。 */
   backoffBaseMs?: number
   backoffMaxMs?: number
+  /** host 回撤銷／停用／已移除時，多久探一次是否已恢復（不做指數退避）。 */
+  accessProbeMs?: number
   /** 一輪（pull 回來沒有事件）最短間隔，防止 backend 立即回空時變成忙迴圈。 */
   minLoopMs?: number
   /** 診斷用：重新同步／重開 session 的原因。 */
-  onDiagnostic?(event: { kind: 'resync' | 'reopen' | 'error'; detail: string }): void
+  onDiagnostic?(event: { kind: 'resync' | 'reopen' | 'error' | 'access'; detail: string }): void
 }
 
 type Listener = (payload: unknown) => void
@@ -63,7 +69,7 @@ export class PluginEventPump {
   private pulls = 0
 
   constructor(options: PluginEventPumpOptions) {
-    this.o = { waitMs: 3500, idleStopMs: 1000, backoffBaseMs: 500, backoffMaxMs: 15_000, minLoopMs: 200, ...options }
+    this.o = { waitMs: 3500, idleStopMs: 1000, backoffBaseMs: 500, backoffMaxMs: 15_000, accessProbeMs: 30_000, minLoopMs: 200, ...options }
   }
 
   /** 診斷／測試：目前是否有輪詢迴圈在跑、累計發出過幾次 `events.pull`。 */
@@ -195,6 +201,14 @@ export class PluginEventPump {
           // backend 重啟或 session 閒置過期：重開 session、重新同步，不算退避。
           run.sessionId = null
           this.o.onDiagnostic?.({ kind: 'reopen', detail: code })
+          continue
+        }
+        if (ACCESS_HOST_CODES.has(code)) {
+          // 撤銷／停用／移除：Core 已停掉 backend，session 不會再存在；固定間隔探測，恢復後重開 session 並重新同步。
+          run.sessionId = null
+          needResync = true
+          this.o.onDiagnostic?.({ kind: 'access', detail: code })
+          await this.sleep(run, this.o.accessProbeMs)
           continue
         }
         failures += 1

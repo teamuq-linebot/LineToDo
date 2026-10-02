@@ -1,28 +1,25 @@
-// Verifies a built .tuqplugin the way TeamUQ 1.6.8 installs one, using the REAL validators of the pinned release commit (b8b96cb3, extracted with `git archive`):
-//   reviewArtifact (packages/platform/plugin-artifact/src/install/reviewArtifact.ts):
-//     file extension + size limit -> zip structure / entry names / ratio (zip/zipReader.ts) -> signature.json + integrity.json read ->
-//     verifyIntegritySignature (trust/signature.ts, ed25519 over the exact integrity.json bytes, dev key looked up in a DevKeyStore) ->
-//     parseIntegrity + assertCoverage (integrity.ts) -> manifest sha256 vs integrity -> PluginManifestV2Schema (plugin-sdk manifestV2.ts) ->
-//     evaluateManifestSupport({ coreVersion: 1.6.8, win32-x64 }) -> auditNativeContent (native whitelist, .wasm is not native) ->
-//     every file extracted + sha256/size compared + native magic check -> icon is a PNG within PLUGIN_ICON_MAX_BYTES.
-// It runs entirely in a temporary directory: a fresh DevKeyStore (the shipped dev-e6301dd7a2967155.pub is the only key in it), no TeamUQ profile, no install.
-// Then it audits the package content (no .ps1, no better-sqlite3-multiple-ciphers, no private key, no standalone better-sqlite3 11.x).
+// Verifies a built .tuqplugin with the official author tool and audits its content (G-08: no teamuq-electron checkout, no pinned 1.6.8 validators,
+// no development key — the package is unsigned, G-09):
+//   1. `tuq-plugin-tool verify <file>` for TeamUQ 1.7.1 / win32-x64: the same reviewArtifact Core runs when the user picks the file
+//      (zip structure, integrity.json coverage and hashes, manifest schema + support, native whitelist, icon). Expected signer: unsigned.
+//   2. negative controls with the same tool (the check is not vacuous): one flipped byte, an older Core (1.7.0) and another platform must be refused.
+//   3. the content audit (lib/audit.mjs) on the unpacked zip: no .ps1 / line-driver, no better-sqlite3-multiple-ciphers, no key file or private-key
+//      marker, no standalone better-sqlite3 11.x, no node_modules, exactly the two pinned native modules, and no signature.json / delegation.json.
 //
-//   node scripts/plugin/verify-artifact.mjs [file.tuqplugin] [--pub <dev-key.pub>] [--core 1.6.8] [--report <file.json>]
+//   node scripts/plugin/verify-artifact.mjs [file.tuqplugin] [--report <file.json>]
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { DEV_KEY_ID, DIST, ROOT, TE_COMMIT, WORK } from './lib/paths.mjs'
-import { devKeySecretNeedles, parseArgs, sha256Hex } from './lib/pack.mjs'
-import { loadTeValidators } from './lib/te-snapshot.mjs'
+import { DIST, ROOT } from './lib/paths.mjs'
+import { parseArgs, sha256Hex } from './lib/pack.mjs'
 import { auditPackage } from './lib/audit.mjs'
-import { PLUGIN_ID, PLATFORM_ID } from './lib/manifest.mjs'
+import { PLUGIN_ID } from './lib/manifest.mjs'
+import { TARGET, verifyPackage } from './lib/tuqTool.mjs'
 import { PINNED_NATIVE } from './build-plugin.mjs'
 
 const TAR = process.platform === 'win32' ? 'C:/Windows/System32/tar.exe' : 'tar'
-const DEFAULT_PUB = 'C:/teamuq/teamuq-plugins/_install/windows/dev-e6301dd7a2967155.pub'
 
 function walk(dir, base = dir) {
   const out = []
@@ -49,96 +46,56 @@ function standaloneBinaries() {
   return found
 }
 
-export async function verifyArtifact({ file, pubFile = DEFAULT_PUB, coreVersion = '1.6.8' }) {
-  const { sdk, artifact } = await loadTeValidators()
+const brief = (run) => ({ command: run.command, exit: run.exit, stdout: run.json ?? run.stdout.trim(), stderr: run.stderr.trim() })
+
+export async function verifyArtifact({ file }) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'line-todo-verify-'))
-  const result = { teCommit: TE_COMMIT, file: path.basename(file), coreVersion, platform: PLATFORM_ID, steps: {}, ok: false, problems: [] }
+  const result = { file: path.basename(file), target: { ...TARGET }, steps: {}, ok: false, problems: [] }
   try {
     const bytes = fs.readFileSync(file)
     result.bytes = bytes.length
     result.sha256 = sha256Hex(bytes)
-    result.limits = { ...artifact.PLUGIN_ARTIFACT_LIMITS }
 
-    // the dev key: the public file the user imports, in a throwaway DevKeyStore
-    const pluginsRoot = path.join(sandbox, 'plugins')
-    fs.mkdirSync(pluginsRoot, { recursive: true })
-    const devKeys = artifact.createDevKeyStore({ pluginsRoot })
-    const pubText = fs.readFileSync(pubFile, 'utf8')
-    const candidate = devKeys.inspect(pubText)
-    result.steps.devKeyFile = { file: pubFile, keyId: candidate.keyId, fingerprint: candidate.fingerprint }
-    if (candidate.keyId !== DEV_KEY_ID) throw new Error(`${pubFile} is ${candidate.keyId}, expected ${DEV_KEY_ID}`)
-    await devKeys.add({ publicKey: pubText, label: 'line-todo verify' })
-
-    // the official review (zip + integrity + signature + manifest + support + native + icon)
-    const staged = await artifact.reviewArtifact(file, {
-      pluginsRoot,
-      anchors: artifact.TEAMUQ_TRUST_ANCHORS,
-      devKeys,
-      support: { coreVersion, platform: { id: PLATFORM_ID, osVersion: '10.0.26200' } },
-      findInstalled: async () => null,
-    })
-    try {
-      result.steps.reviewArtifact = {
-        passed: true,
-        signer: staged.signer,
-        manifestSha256: staged.manifestSha256,
-        integritySha256: staged.integritySha256,
-        totalBytes: staged.totalBytes,
-        fileCount: staged.fileCount,
-        manifestId: staged.manifest.id,
-        manifestVersion: staged.manifest.version,
-      }
-      const integrity = artifact.parseIntegrity(fs.readFileSync(path.join(staged.payloadDir, 'integrity.json')))
-      result.steps.integrity = integrity.files.map((entry) => ({ path: entry.path, size: entry.size, kind: entry.kind, platform: entry.platform }))
-      result.sizes = { archiveBytes: bytes.length, entries: integrity.files.length + 2, declaredUncompressed: integrity.files.reduce((total, entry) => total + entry.size, 0) }
-      result.steps.limitsOk =
-        result.sizes.archiveBytes <= artifact.PLUGIN_ARTIFACT_LIMITS.maxArchiveBytes &&
-        result.sizes.declaredUncompressed <= artifact.PLUGIN_ARTIFACT_LIMITS.maxTotalUncompressedBytes &&
-        result.sizes.entries <= artifact.PLUGIN_ARTIFACT_LIMITS.maxEntries
-      // the validators again, standalone, on the staged manifest (what check-manifest reports)
-      const parsed = sdk.PluginManifestV2Schema.safeParse(staged.manifest)
-      result.steps.schema = { ok: parsed.success }
-      result.steps.support = sdk.evaluateManifestSupport(parsed.data, { coreVersion, platform: { id: PLATFORM_ID, osVersion: '10.0.26200' } })
-      result.manifest = staged.manifest
-    } finally {
-      await staged.discard()
+    // 1. the official review
+    const verified = verifyPackage(file)
+    result.steps.verify = brief(verified)
+    if (verified.exit !== 0) result.problems.push(`tuq-plugin-tool verify exit ${verified.exit}: ${verified.stderr.trim()}`)
+    else {
+      if (verified.json?.signer?.kind !== 'unsigned') result.problems.push(`unexpected signer ${JSON.stringify(verified.json?.signer)}`)
+      if (verified.json?.id !== PLUGIN_ID) result.problems.push(`unexpected plugin id ${verified.json?.id}`)
     }
 
-    // negative controls with the same validators: a tampered byte and a wrong core version must be refused (the verifier is not vacuous)
+    // 2. negative controls with the same tool
     const tampered = Buffer.from(bytes)
     tampered[Math.floor(tampered.length / 2)] ^= 0xff
     const tamperedFile = path.join(sandbox, 'tampered.tuqplugin')
     fs.writeFileSync(tamperedFile, tampered)
-    const refuse = async (label, run) => {
-      try { await run(); result.steps[label] = { refused: false } } catch (error) { result.steps[label] = { refused: true, code: error.code ?? String(error.message).slice(0, 80) } }
+    const refusals = {
+      tamperedByte: verifyPackage(tamperedFile),
+      core170: verifyPackage(file, { ...TARGET, coreVersion: '1.7.0' }),
+      linuxPlatform: verifyPackage(file, { ...TARGET, platform: 'linux-x64', osVersion: '6.0' }),
     }
-    await refuse('negativeTamperedBytes', () => artifact.reviewArtifact(tamperedFile, { pluginsRoot, anchors: artifact.TEAMUQ_TRUST_ANCHORS, devKeys, support: { coreVersion, platform: { id: PLATFORM_ID, osVersion: '10.0.26200' } }, findInstalled: async () => null }))
-    await refuse('negativeCore167', () => artifact.reviewArtifact(file, { pluginsRoot, anchors: artifact.TEAMUQ_TRUST_ANCHORS, devKeys, support: { coreVersion: '1.6.7', platform: { id: PLATFORM_ID, osVersion: '10.0.26200' } }, findInstalled: async () => null }))
-    const emptyKeys = artifact.createDevKeyStore({ pluginsRoot: path.join(sandbox, 'empty-plugins') })
-    await refuse('negativeUnknownSigner', () => artifact.reviewArtifact(file, { pluginsRoot, anchors: artifact.TEAMUQ_TRUST_ANCHORS, devKeys: emptyKeys, support: { coreVersion, platform: { id: PLATFORM_ID, osVersion: '10.0.26200' } }, findInstalled: async () => null }))
+    result.steps.negative = Object.fromEntries(Object.entries(refusals).map(([label, run]) => [label, { refused: run.exit !== 0, exit: run.exit, stderr: run.stderr.trim().slice(0, 300) }]))
+    for (const [label, run] of Object.entries(refusals)) if (run.exit === 0) result.problems.push(`negative control ${label}: the tool did not refuse`)
 
-    // the content audit, on the unpacked zip (every entry, including manifest / integrity / signature)
+    // 3. the content audit, on the unpacked zip (every entry, including manifest / integrity)
     const unpacked = path.join(sandbox, 'unpacked')
     fs.mkdirSync(unpacked, { recursive: true })
     const untar = spawnSync(TAR, ['-xf', file, '-C', unpacked], { encoding: 'utf8' })
     if (untar.status !== 0) throw new Error(`cannot unpack: ${untar.stderr}`)
     const entries = walk(unpacked)
+    const manifest = JSON.parse(fs.readFileSync(path.join(unpacked, 'manifest.json'), 'utf8'))
+    const integrity = JSON.parse(fs.readFileSync(path.join(unpacked, 'integrity.json'), 'utf8'))
+    result.manifest = manifest
+    result.steps.integrity = integrity.files.map((entry) => ({ path: entry.path, size: entry.size, kind: entry.kind, platform: entry.platform }))
     const standalone = standaloneBinaries()
-    const allowedNative = Object.fromEntries((result.manifest?.native?.files ?? []).map((entry) => [entry.path, entry.path.endsWith('koffi.node') ? PINNED_NATIVE.koffi.sha256 : PINNED_NATIVE.betterSqlite3.sha256]))
-    const audit = auditPackage(entries, {
-      allowedNative,
-      standalone11Sha256: standalone.map((entry) => entry.sha256),
-      secretNeedles: devKeySecretNeedles(),
-    })
-    result.steps.audit = { ok: audit.ok, problems: audit.problems, natives: audit.natives, entryCount: audit.listing.length, standalone11Compared: standalone, secretNeedlesChecked: devKeySecretNeedles().length }
+    const allowedNative = Object.fromEntries((manifest.native?.files ?? []).map((entry) => [entry.path, entry.path.endsWith('koffi.node') ? PINNED_NATIVE.koffi.sha256 : PINNED_NATIVE.betterSqlite3.sha256]))
+    const audit = auditPackage(entries, { allowedNative, standalone11Sha256: standalone.map((entry) => entry.sha256) })
+    const unsignedOnly = entries.filter((entry) => entry.path === 'signature.json' || entry.path === 'delegation.json').map((entry) => entry.path)
+    result.steps.audit = { ok: audit.ok && unsignedOnly.length === 0, problems: audit.problems, natives: audit.natives, entryCount: audit.listing.length, standalone11Compared: standalone, signatureFiles: unsignedOnly }
     result.entries = audit.listing
     result.problems.push(...audit.problems)
-
-    const failedNegatives = ['negativeTamperedBytes', 'negativeCore167', 'negativeUnknownSigner'].filter((label) => result.steps[label]?.refused !== true)
-    for (const label of failedNegatives) result.problems.push(`${label}: the validator did not refuse`)
-    if (result.steps.limitsOk !== true) result.problems.push('package size is outside the 1.6.8 limits')
-    if (result.steps.support.length > 0) result.problems.push(`support issues: ${JSON.stringify(result.steps.support)}`)
-    if (result.manifest?.id !== PLUGIN_ID) result.problems.push('unexpected plugin id')
+    if (unsignedOnly.length > 0) result.problems.push(`an unsigned package must not carry ${unsignedOnly.join(', ')}`)
     result.ok = result.problems.length === 0
   } catch (error) {
     result.ok = false
@@ -149,14 +106,13 @@ export async function verifyArtifact({ file, pubFile = DEFAULT_PUB, coreVersion 
   return result
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = parseArgs(process.argv.slice(2))
   const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version
   const file = path.resolve(args._[0] ?? path.join(DIST, `${PLUGIN_ID}-${version}-win.tuqplugin`))
-  const result = await verifyArtifact({ file, pubFile: args.pub ? String(args.pub) : DEFAULT_PUB, coreVersion: String(args.core ?? '1.6.8') })
+  const result = await verifyArtifact({ file })
   const text = JSON.stringify(result, null, 2)
   if (args.report) fs.writeFileSync(path.resolve(String(args.report)), text)
-  fs.mkdirSync(WORK, { recursive: true })
   console.log(text)
   process.exit(result.ok ? 0 : 1)
 }
