@@ -17,6 +17,13 @@ export const ICON_PATH = 'ui/icon.png'
  */
 export const MIN_CORE_VERSION = '>=1.7.1'
 
+/**
+ * minCoreVersion of the DEVELOPMENT-KEY-SIGNED variant (build-plugin-devsigned.mjs), the only manifest field it changes: that variant carries
+ * signature.json, so TeamUQ 1.6.8 can review it, and it exists for the machines that run 0.1.1 (`>=1.6.8`) on 1.6.8. The plugin uses nothing
+ * that 1.6.8 lacks (see the devsigned evidence: same invoke gate, same ai:chat, same view bridge).
+ */
+export const DEV_SIGNED_MIN_CORE_VERSION = '>=1.6.8'
+
 /** Native files, in the order they are listed in `native.files`. Both live next to the backend bundle (backend/index.mjs finds them by `import.meta.url`). */
 export const NATIVE_FILES = Object.freeze([
   { path: `backend/native/${PLATFORM_ID}/koffi.node`, platform: PLATFORM_ID },

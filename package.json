@@ -40,6 +40,8 @@
     "build:plugin": "node scripts/plugin/build-plugin.mjs",
     "check:plugin-manifest": "node scripts/plugin/check-manifest.mjs",
     "verify:plugin-artifact": "node scripts/plugin/verify-artifact.mjs",
+    "build:plugin-devsigned": "node scripts/plugin/build-plugin-devsigned.mjs",
+    "verify:plugin-devsigned": "node scripts/plugin/verify-devsigned.mjs",
     "gen:plugin-icon": "node scripts/plugin/gen-icon.mjs",
     "test:plugin-package": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=600000 scripts/plugin/test-plugin-package.mjs",
     "test:plugin": "npm run test:plugin-backend && npm run test:plugin-api-adapter && npm run test:plugin-ui && npm run test:plugin-guide && npm run test:plugin-ai && npm run test:plugin-package",
