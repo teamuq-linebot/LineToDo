@@ -13,6 +13,10 @@
 //      this fails: the stand-in's setBackendInvokeRevoked and the fenced text (lib/backendError.ts) have to be revisited.
 //   3. the switch title (packages/features/settings/.../pluginPage/pluginText.ts PERMISSION_TEXT["backend:invoke"].title) is the one the plugin
 //      quotes (src/renderer/lib/backendError.ts BACKEND_INVOKE_TOGGLE_TITLE and the tests' scripts/plugin/lib/fenced-text.mjs). Review R1-N1.
+//   4. the place the fenced sentences send the user (0.1.3): this Core has a plugin management page labelled 「外掛」 — 1.6.8 as a settings group
+//      (packages/features/settings/.../settingsGroupConfig.ts), 1.7.1 as a My AI tab (packages/features/agent-org/.../categoryTabs.ts) — and the
+//      plugin's overview (pluginPage/drawers/OverviewTab.tsx) has the section 「它可以做的事」 listing the switch by its title with an 「允許」 box, plus
+//      the 恢復使用 / 重新啟動 buttons (disable → enable). The sentences (fenced-text.mjs) name those and no parent that only one version has.
 //
 // Where Core is looked for: --core <dir>, else $TEAMUQ_CORE_DIR, else teamuq-electron next to this checkout, else next to the main worktree
 // (for a linked worktree under .teamuq/worktrees/).
@@ -26,13 +30,19 @@ import { mock } from 'node:test'
 import { buildSync } from 'esbuild'
 
 import { ROOT } from './lib/paths.mjs'
-import { CORE_BACKEND_INVOKE_TITLE } from './lib/fenced-text.mjs'
+import {
+  CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, CORE_PLUGIN_PAGE_LABEL, EXPECTED_AI_FENCED_TEXT, EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT,
+  PLUGIN_PAGE_PLACE_TEXT, VERSION_SPECIFIC_PLACE
+} from './lib/fenced-text.mjs'
 import { createCoreGateStandin } from '../lib/core-invoke-gate-standin.mjs'
 
 const GATE = 'packages/platform/plugin-runtime/src/main/externalBackend/backendInvokeGate.ts'
 const COMPOSITION = 'apps/desktop/src/main/native/startup/pluginRuntimeComposition.ts'
 const PLUGIN_TEXT = 'packages/features/settings/src/ui/views/Settings/sections/pluginPage/pluginText.ts'
-const CORE_FILES = [GATE, COMPOSITION, PLUGIN_TEXT]
+const SETTINGS_GROUPS = 'packages/features/settings/src/ui/views/Settings/settingsGroupConfig.ts'
+const MY_AI_TABS = 'packages/features/agent-org/src/ui/agent-teams/navShell/categoryTabs.ts'
+const OVERVIEW = 'packages/features/settings/src/ui/views/Settings/sections/pluginPage/drawers/OverviewTab.tsx'
+const CORE_FILES = [GATE, COMPOSITION, PLUGIN_TEXT, SETTINGS_GROUPS, MY_AI_TABS, OVERVIEW]
 
 /** exit 2 = not compared (no Core source); exit 1 = compared and different */
 function notRun(reason) {
@@ -85,6 +95,35 @@ check(`the backend:invoke switch title on Core's settings page is the one the pl
   assert.ok(productMatch, 'src/renderer/lib/backendError.ts: BACKEND_INVOKE_TOGGLE_TITLE not found')
   assert.equal(productMatch[1], titleMatch[1], 'src/renderer/lib/backendError.ts BACKEND_INVOKE_TOGGLE_TITLE')
   assert.equal(CORE_BACKEND_INVOKE_TITLE, titleMatch[1], 'scripts/plugin/lib/fenced-text.mjs CORE_BACKEND_INVOKE_TITLE')
+})
+
+// ── 4. where the fenced sentences send the user (0.1.3) ──
+const settingsGroup = read(SETTINGS_GROUPS).match(/id:\s*"plugins",\s*label:\s*"([^"]+)"/u)
+const myAiTab = read(MY_AI_TABS).match(/\{\s*id:\s*"plugins",\s*label:\s*"([^"]+)"/u)
+const pluginPages = [settingsGroup && `a settings group 「${settingsGroup[1]}」`, myAiTab && `a My AI tab 「${myAiTab[1]}」`].filter(Boolean)
+check(`the plugin management page the fenced sentences name, 「${CORE_PLUGIN_PAGE_LABEL}」, exists in this Core (here: ${pluginPages.join(' and ') || 'none found'})`, () => {
+  assert.ok(settingsGroup || myAiTab, `neither ${SETTINGS_GROUPS} nor ${MY_AI_TABS} has a "plugins" entry`)
+  for (const found of [settingsGroup, myAiTab].filter(Boolean)) assert.equal(found[1], CORE_PLUGIN_PAGE_LABEL, 'the plugin page label')
+})
+const overview = read(OVERVIEW)
+check(`on the plugin's overview: 「${CORE_PERMISSIONS_SECTION_TITLE}」 lists the switch by its title with an 「允許」 box; 「恢復使用」 and 「重新啟動」 are there`, () => {
+  const start = overview.indexOf('function AllowSection')
+  assert.ok(start >= 0, `${OVERVIEW}: AllowSection not found`)
+  const allow = overview.slice(start, overview.indexOf('\nfunction ', start + 1) > 0 ? overview.indexOf('\nfunction ', start + 1) : undefined)
+  assert.ok(allow.includes(`>${CORE_PERMISSIONS_SECTION_TITLE}</h3>`), `AllowSection title is not 「${CORE_PERMISSIONS_SECTION_TITLE}」`)
+  assert.match(allow, /<b>\{text\.title\}<\/b>/u, 'the switch is not shown by its title (describePermission(permission).title)')
+  assert.match(allow, /type="checkbox"[\s\S]*?\/> 允許/u, 'no 「允許」 checkbox')
+  assert.match(overview, /btn\("恢復使用", \(\) => void page\.resume\(id\)/u, '「恢復使用」 (resume) button not found')
+  assert.match(overview, /btn\("重新啟動", \(\) => void page\.restart\(id\)/u, '「重新啟動」 (restart) button not found')
+})
+check('the fenced sentences name that place and no parent that only one TeamUQ version has', () => {
+  for (const [name, text] of Object.entries({ EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT, EXPECTED_AI_FENCED_TEXT })) {
+    assert.ok(text.includes(PLUGIN_PAGE_PLACE_TEXT), `${name} does not send the user to ${PLUGIN_PAGE_PLACE_TEXT}`)
+    assert.doesNotMatch(text, VERSION_SPECIFIC_PLACE, `${name} names a version-specific place`)
+  }
+  for (const [name, text] of Object.entries({ EXPECTED_FENCED_TEXT, EXPECTED_AI_FENCED_TEXT })) {
+    assert.ok(text.includes(`「${CORE_PERMISSIONS_SECTION_TITLE}」裡已允許「${CORE_BACKEND_INVOKE_TITLE}」`), `${name} does not point at the switch inside 「${CORE_PERMISSIONS_SECTION_TITLE}」`)
+  }
 })
 
 // ── 2. the composition ──
@@ -192,7 +231,7 @@ async function scenario(side) {
   const log = []
   const step = async (label, promise) => { log.push([label, await settle(promise)]) }
   await step('1 ping', side.call('ping'))
-  // backend:invoke turned off in 我的 AI › 外掛 while a call is in flight
+  // backend:invoke turned off on the plugin page while a call is in flight
   const a = side.call('hang'); await tick(); await tick()
   await side.setBackendInvokeRevoked(true)
   await step('2 in-flight at revoke', a)
@@ -247,4 +286,4 @@ if (failures.length > 0) {
   console.log(`\nDIFFERENT: ${failures.length} check(s) failed — the stand-in or the plugin's text no longer matches this Core.`)
   process.exit(1)
 }
-console.log('\nSAME: the stand-in, the composition it assumes and the switch title all match this Core.')
+console.log('\nSAME: the stand-in, the composition it assumes, the switch title and the place the fenced sentences name all match this Core.')

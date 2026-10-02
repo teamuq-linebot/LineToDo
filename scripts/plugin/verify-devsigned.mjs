@@ -10,7 +10,7 @@
 //      the installed version; commitUpdate then re-checks assertUpdateAllowed). A throwaway plugins root trusts the public key file users import:
 //        install   — nothing installed: must be accepted, signer dev-e6301dd7a2967155;
 //        update    — 0.1.1 installed (its signer read from the REAL 0.1.1 package by the same Core): must be an update, not signer_changed;
-//        negative controls (the check is not vacuous): the unsigned 0.1.2 as update (1.6.8 signature_missing, 1.7.1 signer_changed), the same
+//        negative controls (the check is not vacuous): the unsigned package of the same version as update (1.6.8 signature_missing, 1.7.1 signer_changed), the same
 //        content signed by another development key as update (signer_changed), a flipped byte, Core 1.6.7, and no trusted key.
 //   3. the official 1.7.1 author tool: `verify --anchors self --key-id … --public-key …` with the development public key (and without any key:
 //      signer_unknown).
@@ -188,11 +188,11 @@ export async function verifyDevsigned({ file, unsignedFile, previousFile, unsign
       out.negative = neg
       const refusedWith = (entry, code) => entry !== undefined && entry.accepted === false && entry.code === code
       if (spec.label === '1.6.8') {
-        expect('1.6.8: unsigned 0.1.2 install is not signature_missing', refusedWith(neg.unsignedInstall, 'signature_missing'), neg.unsignedInstall)
-        expect('1.6.8: unsigned 0.1.2 update is not signature_missing', refusedWith(neg.unsignedUpdate, 'signature_missing'), neg.unsignedUpdate)
+        expect('1.6.8: the unsigned package install is not signature_missing', refusedWith(neg.unsignedInstall, 'signature_missing'), neg.unsignedInstall)
+        expect('1.6.8: the unsigned package update is not signature_missing', refusedWith(neg.unsignedUpdate, 'signature_missing'), neg.unsignedUpdate)
         expect('1.6.8: no trusted key is not signer_unknown', refusedWith(neg.noTrustedKey, 'signer_unknown'), neg.noTrustedKey)
       } else {
-        expect('1.7.1: unsigned 0.1.2 update from dev-signed 0.1.1 is not signer_changed', refusedWith(neg.unsignedUpdate, 'signer_changed'), neg.unsignedUpdate)
+        expect('1.7.1: the unsigned package update from dev-signed 0.1.1 is not signer_changed', refusedWith(neg.unsignedUpdate, 'signer_changed'), neg.unsignedUpdate)
         // no trusted key, picked file: 1.7.1 resolves the package to unsigned (refuseUnverifiedKey is off for a picked file) — recorded, not asserted
       }
       expect(`${spec.label}: another development key is not signer_changed`, refusedWith(neg.otherKeyUpdate, 'signer_changed'), neg.otherKeyUpdate)

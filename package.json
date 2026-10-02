@@ -1,6 +1,6 @@
 {
   "name": "line-todo",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "LINE 新訊息語意抽取代辦看板（Electron + qwen）",
   "main": "out/main/index.js",
   "author": "",

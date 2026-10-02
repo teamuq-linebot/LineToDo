@@ -15,7 +15,7 @@ import {
   AI_CHAT_REFERENCE, ORCHESTRATOR_DEFAULTS, TurnWindow, createAiOrchestrator, createVisibilitySource, describeStatus, parseModelJson
 } from '../../src/plugin/ui/aiOrchestrator.ts'
 import { CONTRACT, createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
-import { CORE_BACKEND_INVOKE_TITLE, EXPECTED_AI_FENCED_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME } from './lib/fenced-text.mjs'
+import { CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, EXPECTED_AI_FENCED_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE } from './lib/fenced-text.mjs'
 
 // ───────────── manual clock (ai-lover test/helpers.mjs FakeClock, same idea) ─────────────
 
@@ -766,6 +766,8 @@ test('describeStatus: every state has a user-facing sentence; the "foreground on
   assert.doesNotMatch(text('paused', 'backend_revoked'), /自動繼續|自動恢復/, 'review B1: no promise of resuming by itself')
   assert.doesNotMatch(text('paused', 'backend_revoked'), RECOVERY_PROMISE, 'tester r1 §3.2: no paraphrased promise either')
   assert.equal(text('paused', 'backend_revoked'), EXPECTED_AI_FENCED_TEXT, 'word for word')
+  assert.ok(text('paused', 'backend_revoked').includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，確認「${CORE_PERMISSIONS_SECTION_TITLE}」裡已允許「${CORE_BACKEND_INVOKE_TITLE}」且外掛是啟用的`), '0.1.3: where to go and what to check')
+  assert.doesNotMatch(text('paused', 'backend_revoked'), VERSION_SPECIFIC_PLACE, '0.1.3: no place that only one TeamUQ version has')
   assert.match(text('unavailable', 'no_provider'), /找不到可用/)
   assert.match(text('revoked', 'access_revoked'), /ai:chat/)
   assert.match(text('stopped', null), /尚未啟動/)
@@ -810,6 +812,7 @@ test('G-03 / B1: Core fencing backend:invoke (plugin_permission_denied, then plu
   assert.match(sentence, /TeamUQ 目前不讓這個外掛呼叫後端/)
   assert.ok(sentence.includes(`「${CORE_BACKEND_INVOKE_TITLE}」權限被關閉、外掛被停用，或後端太久沒有回應而被隔離`), sentence)
   assert.equal(sentence, EXPECTED_AI_FENCED_TEXT)
+  assert.doesNotMatch(sentence, VERSION_SPECIFIC_PLACE, '0.1.3: no place that only one TeamUQ version has')
   assert.match(sentence, /停用再啟用，或重新啟動 TeamUQ/)
   assert.doesNotMatch(sentence, /自動繼續|自動恢復/, 'Core 1.7.1 does not lift the fence when the permission is allowed again')
   const afterFirst = pulls

@@ -21,7 +21,7 @@ import { BACKEND_METHOD_GROUPS } from '../../src/shared/pluginWire.ts'
 import { runPluginContract } from '../lib/plugin-contract-harness.mjs'
 import { generateFixtures, makeTempRoot, rmQuiet } from '../lib/runtimes.mjs'
 
-// the plugin version is package.json's (0.1.2: plugin-guide conformance; 0.1.1 was the dev-key-signed review-repair release)
+// the plugin version is package.json's (0.1.3: the fenced sentences name no version-specific place; 0.1.2: plugin-guide conformance; 0.1.1 was the dev-key-signed review-repair release)
 const VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version
 const TAR = process.platform === 'win32' ? 'C:/Windows/System32/tar.exe' : 'tar'
 
@@ -99,7 +99,7 @@ test('the build is deterministic: two builds from different work / output direct
   assert.equal(a.report.sha256, b.report.sha256)
   assert.ok(a.zip.equals(b.zip))
   assert.equal(a.report.signer, 'unsigned')
-  assert.equal(VERSION, '0.1.2')
+  assert.equal(VERSION, '0.1.3')
   assert.equal(a.outName, `tuqdev.line-todo-${VERSION}-win.tuqplugin`)
   // the overrides only restate kinds that differ from the tool's default (the two natives with their platform; html / css / wasm as code)
   assert.deepEqual(kindOverrides(a.files), a.report.overrides)

@@ -3,7 +3,7 @@
 // G-08 / G-09 (TeamUQ plugin developer guide, "快速開始"): the package is validated and packed by the official author tool
 // (scripts/plugin/vendor/tuq-plugin-tool.mjs: `validate` + `pack --unsigned`). The previous chain — teamuq-electron's test fixture packer and
 // 1.6.8 validators taken from a pinned commit, signed with the shared development key — is gone from the default chain: it reads no teamuq-electron
-// checkout and no key file. Only the separate dev-signed variant (names at the end of this file) still does, for 0.1.1 → 0.1.2 updates on 1.6.8.
+// checkout and no key file. Only the separate dev-signed variant (names at the end of this file) still does, for 0.1.1 → current-version updates on 1.6.8.
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 

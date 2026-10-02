@@ -36,7 +36,7 @@ import { BACKEND_METHOD_GROUPS, backendMethodFor } from '../../src/shared/plugin
 import { BACKEND_METHODS, buildManifest } from './lib/manifest.mjs'
 import { ROOT } from './lib/paths.mjs'
 import { CORE_INVOKE_LIMITS, createCoreGateStandin } from '../lib/core-invoke-gate-standin.mjs'
-import { CORE_BACKEND_INVOKE_TITLE, EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME } from './lib/fenced-text.mjs'
+import { CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE } from './lib/fenced-text.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function until(predicate, { timeout = 3000, step = 5, message = 'condition' } = {}) {
@@ -67,7 +67,9 @@ function assertFencedSentence(text, label) {
   assert.doesNotMatch(text, STALE_PERMISSION_NAME, `${label}: no switch name that TeamUQ's settings page does not show`)
   assert.doesNotMatch(text, /目前在 TeamUQ 中是停用狀態/, `${label}: plugin_disabled is not asserted to mean "disabled"`)
   for (const cause of [`「${CORE_BACKEND_INVOKE_TITLE}」權限（backend:invoke）被關閉`, '外掛被停用', '太久沒有回應而被 TeamUQ 隔離']) assert.ok(text.includes(cause), `${label}: names the fence source ${cause}`)
-  assert.ok(text.includes(`「我的 AI › 外掛」確認這個外掛已允許「${CORE_BACKEND_INVOKE_TITLE}」而且是啟用的`), `${label}: what to check, with the switch's title on TeamUQ's settings page`)
+  assert.ok(text.includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，確認「${CORE_PERMISSIONS_SECTION_TITLE}」裡已允許「${CORE_BACKEND_INVOKE_TITLE}」，而且外掛是啟用的`), `${label}: where to go and what to check, with the names TeamUQ 1.6.8 and 1.7.1 both show`)
+  // the sentence itself, not the "<action>失敗：" prefix (「讀取設定失敗：」 is about the plugin's own settings)
+  assert.doesNotMatch(text.slice(text.length - EXPECTED_FENCED_TEXT.length), VERSION_SPECIFIC_PLACE, `${label}: 0.1.3 — no place that only one TeamUQ version has (「我的 AI › 外掛」 is 1.7.1 only, 「設定 › 外掛」 1.6.8 only)`)
   assert.match(text, /停用再啟用，或重新啟動 TeamUQ/, `${label}: what actually lifts the fence`)
 }
 
@@ -207,6 +209,8 @@ test('G-03 / B1: Core fences on revoke — the call in flight ends plugin_permis
       assert.match(timeoutText, /稍後再試也不會恢復/)
       assert.match(timeoutText, /停用再啟用，或重新啟動 TeamUQ/)
       assert.equal(timeoutText, EXPECTED_TIMEOUT_TEXT, 'the timeout sentence, word for word')
+      assert.ok(timeoutText.includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，把它停用再啟用`), 'where to go (0.1.3)')
+      assert.doesNotMatch(timeoutText, VERSION_SPECIFIC_PLACE, '0.1.3: no place that only one TeamUQ version has')
       assert.doesNotMatch(timeoutText, RECOVERY_PROMISE)
       await assert.rejects(api.ping(), (e) => e.code === 'plugin_disabled')
       assertFencedSentence(describeLink(api.plugin.backendLink()).text, 'plugin_disabled after a timeout')
