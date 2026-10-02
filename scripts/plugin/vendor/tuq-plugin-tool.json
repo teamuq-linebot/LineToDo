@@ -4,7 +4,11 @@
   "bytes": 530656,
   "builtFromCore": "1.7.1",
   "teamuqElectronCommit": "550cdce1f8d58a937f9490bed0293e3fa714a902",
-  "howObtained": "The TeamUQ UI download (我的 AI › 外掛 › 更多與進階 › 給外掛開發者) embeds output/plugin-tools/tuq-plugin-tool.mjs, which TeamUQ's prebuild regenerates with .teamuq/scripts/plugin-tools/build-devkit.mjs. This copy was produced by running that same build script of teamuq-electron V1 @ 550cdce1f with `--out` pointing into this repository (read only for teamuq-electron: nothing was written there; `git status --porcelain` stayed empty). The copy sitting in teamuq-electron/output/plugin-tools/ (sha256 0f696d2d…3831, 530410 bytes) predates commit 6ba1fe6f6 by one build; it differs only in the remote-surface storage upload schema, not in validate / pack / verify.",
-  "usedFor": ["validate", "pack --unsigned", "verify"],
+  "howObtained": "The TeamUQ UI download (我的 AI › 外掛 › 更多與進階 › 給外掛開發者) embeds output/plugin-tools/tuq-plugin-tool.mjs, which TeamUQ's prebuild regenerates with .teamuq/scripts/plugin-tools/build-devkit.mjs. This copy was produced by running that same build script of teamuq-electron V1 @ 550cdce1f with `--out` pointing into this repository (read only for teamuq-electron: nothing was written there; `git status --porcelain` stayed empty). The copy sitting in teamuq-electron/output/plugin-tools/ (sha256 0f696d2d…3831, 530410 bytes) predates commit 6ba1fe6f6 (\"Fix public plugin entry verification and SDK request initialization\") and does not run: it throws TypeError: Cannot read properties of undefined (reading 'op') while loading (remote-surface request schema), for validate and verify alike — a TeamUQ UI built from that output would hand out a broken tool. The copy here is the fixed build.",
+  "usedFor": [
+    "validate",
+    "pack --unsigned",
+    "verify"
+  ],
   "note": "The tool embeds TEAMUQ_TRUST_ANCHORS; replace it (and this record) when TeamUQ ships a new devkit."
 }
