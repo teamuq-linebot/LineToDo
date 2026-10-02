@@ -9,6 +9,7 @@
 import { createPluginLineTodoApi, PLUGIN_CAPABILITIES } from '../../renderer/platform/pluginApi'
 import type { PluginAiConnection, PluginLineTodoApi, TuqPluginHost } from '../../renderer/platform/pluginApi'
 import type { AiChatApi, VisibilityEnv } from './aiOrchestrator'
+import { NOT_IN_HOST_TEXT } from '../../shared/teamuqPlaces'
 
 /** `window.tuqPlugin` 中本外掛用到的完整形狀（pluginViewBridge.ts：presentation、ai、backend、assets）。 */
 export type TuqPluginView = TuqPluginHost & { ai?: AiChatApi; presentation?: VisibilityEnv['presentation'] }
@@ -61,6 +62,7 @@ export function bootPluginApi(options: BootOptions = {}): PluginHostBoot | null 
 }
 
 export function renderNotInHost(root: HTMLElement): void {
-  root.textContent = '這個頁面要在 TeamUQ 內開啟（設定 → 外掛 → line-todo）。找不到 TeamUQ 提供的外掛橋接（window.tuqPlugin）。'
+  // 0.1.3 r1：不寫「設定 → 外掛 → line-todo」（1.6.8 才有）；看板與設定 view 的位置見 src/shared/teamuqPlaces.ts。
+  root.textContent = NOT_IN_HOST_TEXT
   root.style.padding = '24px'
 }

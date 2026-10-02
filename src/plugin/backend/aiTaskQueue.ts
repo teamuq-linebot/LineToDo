@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto'
 import { LlmProviderError } from '../../main/llm/provider/types'
 import type { LlmErrorCode, LlmProvider, LlmRequest, LlmResponse } from '../../main/llm/provider/types'
 import { AI_COMMIT_TEXT_MAX_BYTES, utf8Bytes } from '../../shared/pluginWire'
+import { AI_CHAT_ALLOW_STEPS } from '../../shared/teamuqPlaces'
 import { outputContractFor } from './aiOutputContract'
 
 export type AiTaskKind = 'draftReply' | 'analyzeNotMine' | 'groupTopics' | 'unknown'
@@ -287,7 +288,8 @@ export function toProviderError(error: unknown): LlmProviderError {
     case 'unavailable': return make('invalid_config', 'TeamUQ 的 Codex 目前無法使用（請確認已安裝、已登入、版本符合）')
     case 'not_granted':
     case 'plugin_not_active':
-    case 'access_revoked': return make('invalid_config', '此外掛的 AI 權限（ai:chat）已被關閉，請在 TeamUQ 設定中重新允許')
+    // 0.1.3 r1：不寫「TeamUQ 設定」（1.7.1 的外掛管理不在「設定」裡）；位置與開關標題見 src/shared/teamuqPlaces.ts。
+    case 'access_revoked': return make('invalid_config', `此外掛的 AI 權限（ai:chat）已被關閉，${AI_CHAT_ALLOW_STEPS}`)
     case 'invalid_json':
     case 'invalid_result': return make('bad_output', 'AI 回覆的格式不正確')
     case 'empty_reply': return make('bad_output', 'AI 沒有回覆內容')

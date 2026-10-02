@@ -15,6 +15,7 @@ import { AI_COMMIT_TEXT_MAX_BYTES, MAX_REQUEST_BYTES, REPLY_TRUNCATED_MARK, fitR
 import { toWire } from '../../src/renderer/platform/pluginTransport.ts'
 import { CONTRACT } from '../lib/mock-tuq-ai.mjs'
 import { backendMethodFor } from '../../src/shared/pluginWire.ts'
+import { EXPECTED_AI_CHAT_REVOKED_TASK_TEXT, namesVersionSpecificPlace } from './lib/fenced-text.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const rejection = (promise) => promise.then(() => { throw new Error('expected a rejection') }, (error) => error)
@@ -164,6 +165,12 @@ test('UI-relay provider: every failure arrives as the LlmProviderError core alre
     assert.match(error.userMessage, message, code)
   }
   assert.match(toProviderError(new AiTaskError('quota_exhausted', 95_000)).userMessage, /約 95 秒後/)
+  // 0.1.3 r1: ai:chat off — where to allow it again, word for word, in names both TeamUQ 1.6.8 and 1.7.1 show (was 「請在 TeamUQ 設定中重新允許」)
+  for (const code of ['access_revoked', 'not_granted', 'plugin_not_active']) {
+    const message = toProviderError(new AiTaskError(code)).userMessage
+    assert.equal(message, EXPECTED_AI_CHAT_REVOKED_TASK_TEXT, code)
+    assert.equal(namesVersionSpecificPlace(message), false, code)
+  }
   assert.equal(toProviderError(new Error('boom')).code, 'unknown', 'a non-bridge error never leaks its message')
   // end to end through complete()
   const { q } = queue()

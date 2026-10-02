@@ -15,7 +15,7 @@ import {
   AI_CHAT_REFERENCE, ORCHESTRATOR_DEFAULTS, TurnWindow, createAiOrchestrator, createVisibilitySource, describeStatus, parseModelJson
 } from '../../src/plugin/ui/aiOrchestrator.ts'
 import { CONTRACT, createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
-import { CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, EXPECTED_AI_FENCED_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE } from './lib/fenced-text.mjs'
+import { CORE_AI_CHAT_TITLE, CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, EXPECTED_AI_CHAT_REVOKED_TEXT, EXPECTED_AI_FENCED_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE, namesVersionSpecificPlace } from './lib/fenced-text.mjs'
 
 // ───────────── manual clock (ai-lover test/helpers.mjs FakeClock, same idea) ─────────────
 
@@ -770,6 +770,10 @@ test('describeStatus: every state has a user-facing sentence; the "foreground on
   assert.doesNotMatch(text('paused', 'backend_revoked'), VERSION_SPECIFIC_PLACE, '0.1.3: no place that only one TeamUQ version has')
   assert.match(text('unavailable', 'no_provider'), /找不到可用/)
   assert.match(text('revoked', 'access_revoked'), /ai:chat/)
+  // 0.1.3 r1: ai:chat switched off — where to allow it again, in names both TeamUQ 1.6.8 and 1.7.1 show (not 「TeamUQ 設定 → 外掛」, 1.6.8 only)
+  assert.equal(text('revoked', 'access_revoked'), EXPECTED_AI_CHAT_REVOKED_TEXT, 'r1: word for word')
+  assert.ok(text('revoked', 'access_revoked').includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，在「${CORE_PERMISSIONS_SECTION_TITLE}」裡允許「${CORE_AI_CHAT_TITLE}」`), 'r1: the ai:chat switch by its title on TeamUQ\'s plugin page')
+  assert.equal(namesVersionSpecificPlace(text('revoked', 'access_revoked')), false, 'r1: no place that only one TeamUQ version has')
   assert.match(text('stopped', null), /尚未啟動/)
 })
 

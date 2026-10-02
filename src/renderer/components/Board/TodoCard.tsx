@@ -10,6 +10,7 @@ import {
 } from './buckets'
 import type { CardDnd } from './KanbanBoard'
 import { useHostCapabilities } from '../../platform/LineTodoApi'
+import { undoInSettingsHint } from '../../../shared/teamuqPlaces'
 // 未儲存的編輯／關鍵字草稿保留多久（G-04：重新開啟畫面後還原；太舊的就丟掉）：7 天，定義在 uiState.ts 的 UI_DRAFT_RETENTION，
 // 看板啟動時與開著的期間每小時也會主動清掉過期的（review N1）。
 import { CARD_DRAFT_MAX_AGE_MS, useUiState } from '../../lib/uiState'
@@ -354,7 +355,7 @@ export function TodoCard({
     const label = chatName ?? todo.chatId
     if (
       window.confirm(
-        `封鎖「${label}」？\n之後不再從這個對話抽代辦，並會清掉它目前的未完成代辦（可到設定頁解除）。`
+        `封鎖「${label}」？\n之後不再從這個對話抽代辦，並會清掉它目前的未完成代辦${undoInSettingsHint(caps.settingsTab)}。`
       )
     ) {
       void runCardAction('封鎖這個對話', () => actions.onBlockChat(todo.chatId))
@@ -608,7 +609,7 @@ export function TodoCard({
             </button>
           </div>
           <span className="muted kw-ignore-hint">
-            之後這個對話新抽到、標題或備註含此詞的代辦會自動忽略（可到設定頁解除）。
+            之後這個對話新抽到、標題或備註含此詞的代辦會自動忽略{undoInSettingsHint(caps.settingsTab)}。
           </span>
         </div>
       ) : (

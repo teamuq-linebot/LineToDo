@@ -18,6 +18,8 @@ import { ROOT, WORK } from './lib/paths.mjs'
 import { UI_TEXT_FILES, copyTextAsLf, toLf } from './build-ui.mjs'
 import { TOOL_RECORD, assertToolIntact, validateStage } from './lib/tuqTool.mjs'
 import { BACKEND_METHOD_GROUPS } from '../../src/shared/pluginWire.ts'
+import { PLUGIN_PAGE_PLACE } from '../../src/shared/teamuqPlaces.ts'
+import { CORE_AI_CHAT_TITLE, SHIPPED_VERSION_SPECIFIC_PLACE } from './lib/fenced-text.mjs'
 import { runPluginContract } from '../lib/plugin-contract-harness.mjs'
 import { generateFixtures, makeTempRoot, rmQuiet } from '../lib/runtimes.mjs'
 
@@ -162,6 +164,24 @@ test('package content: no .ps1, no better-sqlite3-multiple-ciphers, no private k
   assert.deepEqual(verdict.steps.audit.signatureFiles, [], 'unsigned: no signature.json / delegation.json')
   assert.ok(verdict.steps.audit.standalone11Compared.length >= 1, 'the standalone 11.x binary hash was compared')
   assert.deepEqual(verdict.steps.audit.natives.map((n) => n.sha256).sort(), [PINNED_NATIVE.koffi.sha256, PINNED_NATIVE.betterSqlite3.sha256].sort())
+})
+
+test('0.1.3 r1: the shipped UI and backend name no TeamUQ place that only 1.6.8 or only 1.7.1 has (「設定 → 外掛」, 「TeamUQ 設定」, 「我的 AI › 外掛」)', async () => {
+  const { a } = await getBuilt()
+  // esbuild may write a character as \uXXXX: decode before matching, so the check sees what the user sees
+  const decode = (s) => s.replace(/\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g, (_, braced, plain) => String.fromCodePoint(parseInt(braced ?? plain, 16)))
+  const shipped = ['ui/main.js', 'ui/settings.js', 'ui/index.html', 'ui/settings.html', 'backend/index.mjs', 'manifest.json']
+  for (const rel of shipped) {
+    const text = decode(readFileSync(join(a.stageDir, ...rel.split('/')), 'utf8'))
+    const hit = text.match(SHIPPED_VERSION_SPECIFIC_PLACE)
+    assert.equal(hit, null, `${rel}: ${hit ? text.slice(Math.max(0, hit.index - 40), hit.index + 60) : ''}`)
+  }
+  // the r1 place names are really in the shipped bundles (the sentences are assembled from them at run time)
+  const ui = decode(readFileSync(join(a.stageDir, 'ui', 'main.js'), 'utf8'))
+  const backend = decode(readFileSync(join(a.stageDir, 'backend', 'index.mjs'), 'utf8'))
+  for (const name of [CORE_AI_CHAT_TITLE, PLUGIN_PAGE_PLACE, `」分頁`]) assert.ok(ui.includes(name), `ui/main.js: ${name}`)
+  for (const name of [CORE_AI_CHAT_TITLE, PLUGIN_PAGE_PLACE]) assert.ok(backend.includes(name), `backend/index.mjs: ${name}`)
+  assert.equal(SHIPPED_VERSION_SPECIFIC_PLACE.test('到 TeamUQ 設定 → 外掛重新允許'), true, 'not vacuous')
 })
 
 test('the content audit really flags forbidden content (guard is not vacuous)', () => {

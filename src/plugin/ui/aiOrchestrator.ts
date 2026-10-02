@@ -24,6 +24,7 @@ import { validateExtractResult } from '../../shared/extractResult'
 import { fitReplyText } from '../../shared/pluginWire'
 import { ACCESS_HOST_CODES } from '../../renderer/platform/pluginTransport'
 import { BACKEND_INVOKE_TOGGLE_TITLE, PERMISSIONS_SECTION_TITLE, PLUGIN_PAGE_PLACE } from '../../renderer/lib/backendError'
+import { AI_CHAT_ALLOW_STEPS } from '../../shared/teamuqPlaces'
 
 // ───────────────────────── 1.6.8 ai:chat 的型別（只列用到的）─────────────────────────
 
@@ -331,7 +332,8 @@ export function describeStatus(status: OrchestratorStatus, now = Date.now()): st
   const secs = status.resumeAt === null ? null : Math.max(1, Math.ceil((status.resumeAt - now) / 1000))
   switch (status.state) {
     case 'stopped': return 'AI 整理尚未啟動'
-    case 'revoked': return '已關閉此外掛的 AI 權限（ai:chat）；到 TeamUQ 設定 → 外掛重新允許後，重新開啟看板'
+    // 0.1.3 r1：不寫「設定 → 外掛」（1.6.8 才有）；位置與開關標題只用兩版都有的名稱（src/shared/teamuqPlaces.ts）。
+    case 'revoked': return `已關閉此外掛的 AI 權限（ai:chat）；${AI_CHAT_ALLOW_STEPS}後，重新開啟看板`
     case 'unavailable': return status.reason?.startsWith('provider_') ? (PROVIDER_STATE_TEXT[status.reason.slice('provider_'.length)] ?? 'AI 目前無法使用') : 'AI 目前無法使用（找不到可用的 AI 供應者）'
     case 'paused':
       switch (status.reason) {

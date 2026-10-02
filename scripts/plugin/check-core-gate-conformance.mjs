@@ -17,6 +17,10 @@
 //      (packages/features/settings/.../settingsGroupConfig.ts), 1.7.1 as a My AI tab (packages/features/agent-org/.../categoryTabs.ts) — and the
 //      plugin's overview (pluginPage/drawers/OverviewTab.tsx) has the section 「它可以做的事」 listing the switch by its title with an 「允許」 box, plus
 //      the 恢復使用 / 重新啟動 buttons (disable → enable). The sentences (fenced-text.mjs) name those and no parent that only one version has.
+//   5. the other places the plugin's text names (0.1.3 r1; src/shared/teamuqPlaces.ts): the ai:chat switch title (pluginText.ts, and that it is a
+//      switch in 「它可以做的事」), the 「設定」 tab of an opened plugin that shows its settings view (pluginPage/drawers/PluginDrawerHost.tsx), and
+//      the sidebar entry labelled with the view title (packages/features/plugins/src/ui/pluginTabs.ts → usePluginSurfaces.ts → App.tsx <Sidebar>).
+//      The r1 sentences (fenced-text.mjs R1_PLACE_SENTENCES) name those and no parent that only one version has.
 //
 // Where Core is looked for: --core <dir>, else $TEAMUQ_CORE_DIR, else teamuq-electron next to this checkout, else next to the main worktree
 // (for a linked worktree under .teamuq/worktrees/).
@@ -31,8 +35,9 @@ import { buildSync } from 'esbuild'
 
 import { ROOT } from './lib/paths.mjs'
 import {
-  CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, CORE_PLUGIN_PAGE_LABEL, EXPECTED_AI_FENCED_TEXT, EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT,
-  PLUGIN_PAGE_PLACE_TEXT, VERSION_SPECIFIC_PLACE
+  BOARD_VIEW_TITLE, CORE_AI_CHAT_TITLE, CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, CORE_PLUGIN_PAGE_LABEL, CORE_PLUGIN_SETTINGS_TAB_LABEL,
+  EXPECTED_AI_CHAT_REVOKED_TASK_TEXT, EXPECTED_AI_CHAT_REVOKED_TEXT, EXPECTED_AI_FENCED_TEXT, EXPECTED_FENCED_TEXT, EXPECTED_NOT_IN_HOST_TEXT,
+  EXPECTED_TIMEOUT_TEXT, EXPECTED_UNDO_HINT_PLUGIN, PLUGIN_PAGE_PLACE_TEXT, R1_PLACE_SENTENCES, VERSION_SPECIFIC_PLACE, namesVersionSpecificPlace
 } from './lib/fenced-text.mjs'
 import { createCoreGateStandin } from '../lib/core-invoke-gate-standin.mjs'
 
@@ -42,7 +47,11 @@ const PLUGIN_TEXT = 'packages/features/settings/src/ui/views/Settings/sections/p
 const SETTINGS_GROUPS = 'packages/features/settings/src/ui/views/Settings/settingsGroupConfig.ts'
 const MY_AI_TABS = 'packages/features/agent-org/src/ui/agent-teams/navShell/categoryTabs.ts'
 const OVERVIEW = 'packages/features/settings/src/ui/views/Settings/sections/pluginPage/drawers/OverviewTab.tsx'
-const CORE_FILES = [GATE, COMPOSITION, PLUGIN_TEXT, SETTINGS_GROUPS, MY_AI_TABS, OVERVIEW]
+const DRAWER = 'packages/features/settings/src/ui/views/Settings/sections/pluginPage/drawers/PluginDrawerHost.tsx'
+const PLUGIN_TABS = 'packages/features/plugins/src/ui/pluginTabs.ts'
+const PLUGIN_SURFACES = 'packages/features/plugins/src/ui/usePluginSurfaces.ts'
+const APP = 'apps/desktop/src/renderer/App.tsx'
+const CORE_FILES = [GATE, COMPOSITION, PLUGIN_TEXT, SETTINGS_GROUPS, MY_AI_TABS, OVERVIEW, DRAWER, PLUGIN_TABS, PLUGIN_SURFACES, APP]
 
 /** exit 2 = not compared (no Core source); exit 1 = compared and different */
 function notRun(reason) {
@@ -124,6 +133,48 @@ check('the fenced sentences name that place and no parent that only one TeamUQ v
   for (const [name, text] of Object.entries({ EXPECTED_FENCED_TEXT, EXPECTED_AI_FENCED_TEXT })) {
     assert.ok(text.includes(`「${CORE_PERMISSIONS_SECTION_TITLE}」裡已允許「${CORE_BACKEND_INVOKE_TITLE}」`), `${name} does not point at the switch inside 「${CORE_PERMISSIONS_SECTION_TITLE}」`)
   }
+})
+
+// ── 5. the other places the plugin's text names (0.1.3 r1) ──
+const productPlaces = fs.readFileSync(path.join(ROOT, 'src', 'shared', 'teamuqPlaces.ts'), 'utf8')
+const productConst = (name) => productPlaces.match(new RegExp(`export const ${name} = '([^']+)'`, 'u'))?.[1]
+const pluginText = read(PLUGIN_TEXT)
+const aiChatTitle = pluginText.match(/"ai:chat":\s*\{\s*title:\s*"([^"]+)"/u)
+check(`the ai:chat switch title on Core's plugin page is the one the plugin quotes, and it is a switch in 「${CORE_PERMISSIONS_SECTION_TITLE}」 (Core: 「${aiChatTitle?.[1]}」)`, () => {
+  assert.ok(aiChatTitle, `${PLUGIN_TEXT}: PERMISSION_TEXT["ai:chat"].title not found`)
+  assert.equal(CORE_AI_CHAT_TITLE, aiChatTitle[1], 'scripts/plugin/lib/fenced-text.mjs CORE_AI_CHAT_TITLE')
+  assert.equal(productConst('AI_CHAT_TOGGLE_TITLE'), aiChatTitle[1], 'src/shared/teamuqPlaces.ts AI_CHAT_TOGGLE_TITLE')
+  assert.match(pluginText, /"ai:chat":\s*\{[^}]*\boff:\s*"/u, 'PERMISSION_TEXT["ai:chat"] has no `off` text: AllowSection would not list it as a switch')
+  assert.match(pluginText, /export function isRevocablePermission[\s\S]*?permission\.startsWith\("ai:"\)/u, 'isRevocablePermission no longer covers ai:')
+  assert.match(overview, /permissions\.filter\(\(permission\) => isRevocablePermission\(permission\) && describePermission\(permission\)\.off !== undefined\)/u, 'AllowSection: the switch list is no longer revocable + off text')
+})
+const drawer = read(DRAWER)
+check(`an opened plugin has the tab 「${CORE_PLUGIN_SETTINGS_TAB_LABEL}」 that shows its settings view`, () => {
+  assert.match(drawer, new RegExp(`\\["settings", "${CORE_PLUGIN_SETTINGS_TAB_LABEL}"\\]`, 'u'), `${DRAWER}: TABS has no ["settings", "${CORE_PLUGIN_SETTINGS_TAB_LABEL}"]`)
+  assert.match(drawer, /drawer\.tab === "settings" \? <SettingsTab /u, `${DRAWER}: the settings tab does not render SettingsTab`)
+  assert.equal(productConst('PLUGIN_SETTINGS_TAB_LABEL'), CORE_PLUGIN_SETTINGS_TAB_LABEL, 'src/shared/teamuqPlaces.ts PLUGIN_SETTINGS_TAB_LABEL')
+})
+const manifestBoardTitle = fs.readFileSync(path.join(ROOT, 'scripts', 'plugin', 'lib', 'manifest.mjs'), 'utf8').match(/\{\s*id:\s*'board',\s*title:\s*'([^']+)'/u)?.[1]
+check(`the board view is in Core's sidebar under its view title (manifest: 「${manifestBoardTitle}」)`, () => {
+  const tabs = read(PLUGIN_TABS)
+  assert.match(tabs, /view\.presentations\.includes\('settings'\)\)\.map\(\(view\) => \(\{[\s\S]*?label: view\.title,/u, `${PLUGIN_TABS}: plugin tabs are not labelled with view.title`)
+  assert.match(read(PLUGIN_SURFACES), /sidebarTabs = useMemo\(\(\) => tabs\.map\(\(tab\) => \(\{ id: tab\.tabId, label: tab\.label/u, `${PLUGIN_SURFACES}: sidebarTabs do not carry the tab label`)
+  assert.match(read(APP), /<Sidebar\s+pluginTabs=\{pluginSurfaces\.sidebarTabs\}/u, `${APP}: the sidebar does not get the plugin tabs`)
+  assert.equal(manifestBoardTitle, BOARD_VIEW_TITLE, 'scripts/plugin/lib/manifest.mjs views[board].title')
+  assert.equal(productConst('BOARD_VIEW_TITLE'), BOARD_VIEW_TITLE, 'src/shared/teamuqPlaces.ts BOARD_VIEW_TITLE')
+})
+check('the r1 sentences name those places and no parent that only one TeamUQ version has', () => {
+  for (const [name, text] of Object.entries(R1_PLACE_SENTENCES)) {
+    assert.ok(text.includes(PLUGIN_PAGE_PLACE_TEXT), `${name} does not send the user to ${PLUGIN_PAGE_PLACE_TEXT}`)
+    assert.equal(namesVersionSpecificPlace(text), false, `${name} names a version-specific place`)
+  }
+  for (const [name, text] of Object.entries({ EXPECTED_AI_CHAT_REVOKED_TEXT, EXPECTED_AI_CHAT_REVOKED_TASK_TEXT })) {
+    assert.ok(text.includes(`「${CORE_PERMISSIONS_SECTION_TITLE}」裡允許「${CORE_AI_CHAT_TITLE}」`), `${name} does not point at the ai:chat switch inside 「${CORE_PERMISSIONS_SECTION_TITLE}」`)
+  }
+  for (const [name, text] of Object.entries({ EXPECTED_NOT_IN_HOST_TEXT, EXPECTED_UNDO_HINT_PLUGIN })) {
+    assert.ok(text.includes(`「${CORE_PLUGIN_SETTINGS_TAB_LABEL}」分頁`), `${name} does not point at the 「${CORE_PLUGIN_SETTINGS_TAB_LABEL}」 tab`)
+  }
+  assert.ok(EXPECTED_NOT_IN_HOST_TEXT.includes(`側邊欄的「${BOARD_VIEW_TITLE}」`), 'EXPECTED_NOT_IN_HOST_TEXT does not name the sidebar entry')
 })
 
 // ── 2. the composition ──
@@ -286,4 +337,4 @@ if (failures.length > 0) {
   console.log(`\nDIFFERENT: ${failures.length} check(s) failed — the stand-in or the plugin's text no longer matches this Core.`)
   process.exit(1)
 }
-console.log('\nSAME: the stand-in, the composition it assumes, the switch title and the place the fenced sentences name all match this Core.')
+console.log('\nSAME: the stand-in, the composition it assumes, the switch titles, the place the fenced sentences name and the other places the plugin\'s text names all match this Core.')

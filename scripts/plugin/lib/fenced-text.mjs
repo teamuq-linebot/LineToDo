@@ -45,3 +45,44 @@ export const PLUGIN_PAGE_PLACE_TEXT = `TeamUQ 管理外掛的「${CORE_PLUGIN_PA
  * neither 「我的 AI」 nor 「設定」 at all — those parents differ by version.
  */
 export const VERSION_SPECIFIC_PLACE = /我的\s*AI|設定|›/u
+
+// ── 0.1.3 r1: every other sentence that names a place in TeamUQ (src/shared/teamuqPlaces.ts) ──
+// developer-evidence-r1 §1 lists them; before r1 they said 「TeamUQ 設定 → 外掛」 / 「TeamUQ 設定中」 / 「設定 → 外掛 → line-todo」 (1.6.8 only) or
+// 「設定頁」 for the plugin's settings, which in the plugin lives inside TeamUQ, not on a board tab.
+
+/** PERMISSION_TEXT["ai:chat"].title in pluginText.ts (1.6.8 :112, 1.7.1 :118); `check:core-gate-conformance` re-reads it. */
+export const CORE_AI_CHAT_TITLE = '用你的 AI 對話額度回答你'
+/** The tab that shows the plugin's settings view once the plugin is opened (PluginDrawerHost.tsx TABS, both versions). */
+export const CORE_PLUGIN_SETTINGS_TAB_LABEL = '設定'
+/** The sidebar label of the board view = the manifest's views[board].title (Core labels plugin tabs with view.title: pluginTabs.ts). */
+export const BOARD_VIEW_TITLE = 'LINE 待辦'
+
+/** plugin/ui/aiOrchestrator.ts describeStatus('revoked') — ai:chat switched off */
+export const EXPECTED_AI_CHAT_REVOKED_TEXT = '已關閉此外掛的 AI 權限（ai:chat）；請到 TeamUQ 管理外掛的「外掛」頁打開這個外掛，在「它可以做的事」裡允許「用你的 AI 對話額度回答你」後，重新開啟看板'
+/** plugin/backend/aiTaskQueue.ts toProviderError(access_revoked / not_granted / plugin_not_active).userMessage */
+export const EXPECTED_AI_CHAT_REVOKED_TASK_TEXT = '此外掛的 AI 權限（ai:chat）已被關閉，請到 TeamUQ 管理外掛的「外掛」頁打開這個外掛，在「它可以做的事」裡允許「用你的 AI 對話額度回答你」'
+/** plugin/ui/host.ts renderNotInHost (board and settings views opened outside TeamUQ) */
+export const EXPECTED_NOT_IN_HOST_TEXT = '這個頁面要在 TeamUQ 裡開啟：看板在 TeamUQ 側邊欄的「LINE 待辦」；外掛的選項在 TeamUQ 管理外掛的「外掛」頁打開這個外掛後的「設定」分頁。找不到 TeamUQ 提供的外掛橋接（window.tuqPlugin）。'
+/** renderer/components/Board/TodoCard.tsx (block chat / ignore by keyword): where to undo it — plugin host, then standalone (unchanged) */
+export const EXPECTED_UNDO_HINT_PLUGIN = '（可到 TeamUQ 管理外掛的「外掛」頁打開這個外掛後的「設定」分頁解除）'
+export const EXPECTED_UNDO_HINT_STANDALONE = '（可到設定頁解除）'
+
+/** The r1 sentences, by where they live. */
+export const R1_PLACE_SENTENCES = Object.freeze({
+  EXPECTED_AI_CHAT_REVOKED_TEXT, EXPECTED_AI_CHAT_REVOKED_TASK_TEXT, EXPECTED_NOT_IN_HOST_TEXT, EXPECTED_UNDO_HINT_PLUGIN
+})
+
+/**
+ * Does a sentence name a place only one TeamUQ version has? Same rule as VERSION_SPECIFIC_PLACE, except that the plugin's own 「設定」 TAB
+ * (after 「打開這個外掛」, present in both versions) is allowed; 「設定 → …」, 「TeamUQ 設定」, 「設定頁」 and a bare 「設定」 are not. Arrows too.
+ */
+export function namesVersionSpecificPlace(text) {
+  const tab = `打開這個外掛後的「${CORE_PLUGIN_SETTINGS_TAB_LABEL}」分頁`
+  return VERSION_SPECIFIC_PLACE.test(text.split(tab).join('')) || /[→>]/u.test(text)
+}
+
+/**
+ * The 1.6.8-only / 1.7.1-only places the plugin used to print, as they could appear in the SHIPPED bundles (after \uXXXX decoding):
+ * 「我的 AI › 外掛」 (0.1.2), 「TeamUQ 設定 → 外掛」 / 「TeamUQ 設定中」 / 「設定 → 外掛 → line-todo」 (before r1).
+ */
+export const SHIPPED_VERSION_SPECIFIC_PLACE = /我的\s*AI\s*[›>→]|TeamUQ\s*設定|設定\s*[›>→]\s*外掛/u

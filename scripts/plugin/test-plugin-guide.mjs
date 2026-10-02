@@ -36,7 +36,14 @@ import { BACKEND_METHOD_GROUPS, backendMethodFor } from '../../src/shared/plugin
 import { BACKEND_METHODS, buildManifest } from './lib/manifest.mjs'
 import { ROOT } from './lib/paths.mjs'
 import { CORE_INVOKE_LIMITS, createCoreGateStandin } from '../lib/core-invoke-gate-standin.mjs'
-import { CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE } from './lib/fenced-text.mjs'
+import {
+  BOARD_VIEW_TITLE, CORE_AI_CHAT_TITLE, CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, CORE_PLUGIN_SETTINGS_TAB_LABEL, EXPECTED_FENCED_TEXT,
+  EXPECTED_NOT_IN_HOST_TEXT, EXPECTED_TIMEOUT_TEXT, EXPECTED_UNDO_HINT_PLUGIN, EXPECTED_UNDO_HINT_STANDALONE, PLUGIN_PAGE_PLACE_TEXT, R1_PLACE_SENTENCES,
+  RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE, namesVersionSpecificPlace
+} from './lib/fenced-text.mjs'
+import * as places from '../../src/shared/teamuqPlaces.ts'
+import { renderNotInHost } from '../../src/plugin/ui/host.ts'
+import { PLUGIN_CAPABILITIES, STANDALONE_CAPABILITIES } from '../../src/renderer/platform/capabilities.ts'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function until(predicate, { timeout = 3000, step = 5, message = 'condition' } = {}) {
@@ -593,6 +600,41 @@ test('N1: drafts holding LINE-derived text have ONE retention table (cards 7 d, 
   timers[0].fn()
   assert.deepEqual([...local.data.keys()], ['lt-ui:reply.draft.b'], 'swept again by the hourly timer')
   assert.equal(browserUiState({ get localStorage() { throw new Error('blocked') }, setInterval: () => 0 }), NO_UI_STATE)
+})
+
+// ───────────── 0.1.3 r1: every other sentence that names a place in TeamUQ ─────────────
+
+test('0.1.3 r1: the sentences that send the user somewhere in TeamUQ use only names both 1.6.8 and 1.7.1 show — not-in-host page, where to undo a block / keyword ignore, ai:chat off', () => {
+  // the view opened outside TeamUQ (board and settings share it): was 「設定 → 外掛 → line-todo」 (1.6.8 only)
+  const root = { textContent: '', style: {} }
+  renderNotInHost(root)
+  assert.equal(root.textContent, EXPECTED_NOT_IN_HOST_TEXT, 'word for word')
+  assert.ok(root.textContent.includes(`TeamUQ 側邊欄的「${BOARD_VIEW_TITLE}」`), 'the board by its sidebar label')
+  assert.ok(root.textContent.includes(`${PLUGIN_PAGE_PLACE_TEXT}後的「${CORE_PLUGIN_SETTINGS_TAB_LABEL}」分頁`), 'the settings view by the plugin page tab')
+  // the sidebar label Core shows is the manifest's board view title (pluginTabs.ts label: view.title)
+  const board = buildManifest({ version: '0.1.3' }).contributes.views.find((v) => v.id === 'board')
+  assert.equal(board.title, BOARD_VIEW_TITLE, 'manifest views[board].title')
+  assert.equal(places.BOARD_VIEW_TITLE, board.title, 'src/shared/teamuqPlaces.ts BOARD_VIEW_TITLE')
+  // the Core names the product quotes are the ones the tests (and check:core-gate-conformance) hold
+  assert.equal(places.AI_CHAT_TOGGLE_TITLE, CORE_AI_CHAT_TITLE)
+  assert.equal(places.PLUGIN_SETTINGS_TAB_LABEL, CORE_PLUGIN_SETTINGS_TAB_LABEL)
+  assert.equal(places.PERMISSIONS_SECTION_TITLE, CORE_PERMISSIONS_SECTION_TITLE)
+  // block a chat / ignore by keyword: the plugin board has no 「設定」 tab (its settings view lives in TeamUQ); standalone keeps 「設定頁」
+  assert.equal(PLUGIN_CAPABILITIES.settingsTab, false)
+  assert.equal(STANDALONE_CAPABILITIES.settingsTab, true)
+  assert.equal(places.undoInSettingsHint(PLUGIN_CAPABILITIES.settingsTab), EXPECTED_UNDO_HINT_PLUGIN)
+  assert.equal(places.undoInSettingsHint(STANDALONE_CAPABILITIES.settingsTab), EXPECTED_UNDO_HINT_STANDALONE, 'standalone unchanged')
+  const card = readFileSync(join(ROOT, 'src', 'renderer', 'components', 'Board', 'TodoCard.tsx'), 'utf8')
+  assert.equal(card.includes('可到設定頁解除'), false, 'TodoCard.tsx: no hard-coded 「可到設定頁解除」 (the plugin has no settings tab on the board)')
+  assert.equal(card.split('undoInSettingsHint(caps.settingsTab)').length - 1, 2, 'TodoCard.tsx: both hints (block chat, ignore by keyword) follow the host')
+  // every r1 sentence: the plugin page by the name both versions show, no version-specific parent
+  for (const [name, sentence] of Object.entries(R1_PLACE_SENTENCES)) {
+    assert.ok(sentence.includes(PLUGIN_PAGE_PLACE_TEXT), `${name}: ${PLUGIN_PAGE_PLACE_TEXT}`)
+    assert.equal(namesVersionSpecificPlace(sentence), false, `${name}: no place that only one TeamUQ version has`)
+  }
+  assert.equal(namesVersionSpecificPlace('到 TeamUQ 設定 → 外掛重新允許'), true, 'the rule is not vacuous (1.6.8 place)')
+  assert.equal(namesVersionSpecificPlace('請到 TeamUQ「我的 AI › 外掛」'), true, 'the rule is not vacuous (1.7.1 place)')
+  assert.equal(namesVersionSpecificPlace('（可到設定頁解除）'), true, 'the rule is not vacuous (plugin settings as a board tab)')
 })
 
 // ───────────── G-06 ─────────────

@@ -5,6 +5,7 @@
  * standalone 與外掛共用的元件都用它：外掛版的錯誤帶 TeamUQ host 的固定錯誤碼（`pluginTransport.ts` 的 `PluginBackendError.code`），
  * standalone 的 IPC 錯誤沒有這些碼，就照原本的訊息顯示。這個檔案不 import 外掛傳輸層（standalone bundle 不需要它），只看 `code`。
  */
+import { PERMISSIONS_SECTION_TITLE, PLUGIN_PAGE_PLACE } from '../../shared/teamuqPlaces'
 
 /** `revoked`＝TeamUQ 已隔離這個外掛的後端呼叫（權限關閉／停用／逾時，見下方 FENCED_TEXT）或外掛已移除；`unavailable`＝暫時的，稍後再試。 */
 export type BackendErrorKind = 'revoked' | 'unavailable' | 'invalid' | 'other'
@@ -20,11 +21,10 @@ export const BACKEND_INVOKE_TOGGLE_TITLE = '讓畫面和它的背景程式溝通
  * 被隔離時要使用者去的地方（0.1.3）。不寫完整路徑，因為外掛管理頁在不同版本的 TeamUQ 放在不同地方：1.6.8 是「設定」裡的「外掛」分類
  * （`settingsGroupConfig.ts` @ b8b96cb3），1.7.1 搬到「我的 AI」的「外掛」分頁（`categoryTabs.ts` @ 550cdce1f）。兩版的那一頁都叫「外掛」，
  * 打開外掛後的「總覽」都有「它可以做的事」與同名的權限開關、「暫停使用／恢復使用／重新啟動」（`OverviewTab.tsx`）。
- * 這兩個名稱由 `npm run check:core-gate-conformance` 對 Core 原始碼核對。
+ * 這兩個名稱由 `npm run check:core-gate-conformance` 對 Core 原始碼核對。定義在 `src/shared/teamuqPlaces.ts`（外掛 backend 的訊息也用同一組名稱）。
+ * `PERMISSIONS_SECTION_TITLE`＝外掛頁「總覽」裡列出權限開關的區塊標題（Core `OverviewTab.tsx` AllowSection）。
  */
-export const PLUGIN_PAGE_PLACE = 'TeamUQ 管理外掛的「外掛」頁'
-/** 外掛頁「總覽」裡列出權限開關的區塊標題（Core `OverviewTab.tsx` AllowSection）。 */
-export const PERMISSIONS_SECTION_TITLE = '它可以做的事'
+export { PERMISSIONS_SECTION_TITLE, PLUGIN_PAGE_PLACE }
 
 /**
  * TeamUQ 已「隔離」這個外掛的後端呼叫（review B1：照 Core 1.7.1 `backendInvokeGate.ts` 的實際行為寫）。重試不會好，要使用者到 TeamUQ 處理。
