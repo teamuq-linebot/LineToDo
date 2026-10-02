@@ -1,5 +1,5 @@
 import { useLineTodoApi } from '../platform/LineTodoApi'
-import { parseText, useUiState } from '../lib/uiState'
+import { REPLY_DRAFT_MAX_AGE_MS, parseText, useUiState } from '../lib/uiState'
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react'
 import type {
   DriverFollowUpAction,
@@ -124,8 +124,8 @@ const FOCUSABLE = 'button:not([disabled]), textarea, summary, input:not([disable
  */
 const ENTER_REFIRE_GUARD_MS = 1000
 
-/** 已產生／編輯過的草稿保留多久（G-04：重新開啟畫面或對話框時直接還原，不再向 AI 要一份）。 */
-const REPLY_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000
+// 已產生／編輯過的草稿保留多久（G-04：畫面被重建後直接還原，不再向 AI 要一份）：24 小時，定義在 uiState.ts 的 UI_DRAFT_RETENTION。
+// review N1：使用者關閉對話框就刪除；沒關就被重建的，過期後由看板啟動時／每小時的清除刪掉。
 const parseReplyDraft = parseText(16 * 1024)
 
 export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Element {
@@ -383,6 +383,8 @@ export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Elemen
 
   function close(): void {
     if (runningRef.current) return
+    // 使用者自己關閉＝這份草稿用完了：從 UI 狀態刪掉（review N1）。畫面被重建（不是關閉）時不會走到這裡，草稿照 G-04 保留。
+    ui.remove(replyDraftKey)
     onClose()
   }
 

@@ -16,7 +16,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildBackendBundle } from './build-backend.mjs'
-import { buildPluginUi } from './build-ui.mjs'
+import { buildPluginUi, toLf } from './build-ui.mjs'
 import { DIST, ROOT, WORK } from './lib/paths.mjs'
 import { parseArgs, sha256Hex } from './lib/pack.mjs'
 import { BACKEND_METHODS, NATIVE_FILES, PERMISSIONS, PLUGIN_ID, RESOURCES, buildManifest } from './lib/manifest.mjs'
@@ -77,7 +77,8 @@ export async function collectPackageFiles({ workDir }) {
   add('vendor/sqlite3mc-wasm/sqlite3.wasm', fs.readFileSync(path.join(wasmDir, 'sqlite3.wasm')), 'code')
   add('vendor/sqlite3mc-wasm/PROVENANCE.json', fs.readFileSync(path.join(wasmDir, 'PROVENANCE.json')), 'asset')
   // licences
-  add('LICENSES/THIRD_PARTY_NOTICES.md', read('src', 'plugin', 'THIRD_PARTY_NOTICES.md'), 'asset')
+  // authored text from the checkout: LF whatever core.autocrlf did (the package bytes depend on the commit only; build-ui.mjs toLf)
+  add('LICENSES/THIRD_PARTY_NOTICES.md', toLf(read('src', 'plugin', 'THIRD_PARTY_NOTICES.md').toString('utf8')), 'asset')
   add('LICENSES/koffi-LICENSE.txt', fs.readFileSync(nodeModule('koffi', 'LICENSE.txt')), 'asset')
   add('LICENSES/better-sqlite3-LICENSE.txt', fs.readFileSync(nodeModule('better-sqlite3-plugin', 'LICENSE')), 'asset')
   add('LICENSES/zod-LICENSE.txt', fs.readFileSync(nodeModule('zod', 'LICENSE')), 'asset')

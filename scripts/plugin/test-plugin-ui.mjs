@@ -100,7 +100,7 @@ test('media: file open / save-as buttons are hidden in the plugin; images ask th
 
 test('G-02: settings that cannot be read show the reason and a retry button instead of 載入設定中… forever; a failed write is shown under the title', async () => {
   const { renderSettingsWith, PLUGIN, STANDALONE } = await renderer()
-  const reason = '讀取設定失敗：TeamUQ 已關閉這個外掛的「後端呼叫」權限（backend:invoke），所以讀不到 LINE 與待辦資料。'
+  const reason = '讀取設定失敗：TeamUQ 目前不讓這個外掛呼叫後端，所以讀不到 LINE 與待辦資料。'
   for (const caps of [PLUGIN, STANDALONE]) {
     const failed = renderSettingsWith(caps, undefined, { initialLoadError: reason })
     assert.ok(failed.includes('data-testid="settings-load-error"'))
@@ -114,14 +114,23 @@ test('G-02: settings that cannot be read show the reason and a retry button inst
   assert.ok(write.includes('輪詢頻率（秒）'), 'the form is still there')
 })
 
-test('G-03: the backend status line says backend:invoke was revoked (and where to allow it again), says when the backend is down, and is absent when all is well', async () => {
+test('G-03 / B1: the backend status line, when Core fences the plugin, names the three causes and the actions that work (no "comes back by itself"), says when the backend is down, and is absent when all is well', async () => {
   const { renderBackendBar } = await renderer()
   const revoked = renderBackendBar({ state: 'revoked', code: 'plugin_permission_denied' })
   assert.match(revoked, /role="alert"/)
   assert.match(revoked, /data-backend-link="revoked"/)
-  assert.match(revoked, /backend:invoke/)
-  assert.match(revoked, /重新允許/)
-  assert.match(renderBackendBar({ state: 'revoked', code: 'plugin_disabled' }), /停用/)
+  for (const code of ['plugin_permission_denied', 'plugin_disabled']) {
+    const html = renderBackendBar({ state: 'revoked', code })
+    assert.match(html, /backend:invoke/, code)
+    assert.match(html, /外掛被停用/, code)
+    assert.match(html, /太久沒有回應而被 TeamUQ 隔離/, code)
+    assert.match(html, /確認這個外掛已允許「後端呼叫」而且是啟用的/, code)
+    assert.match(html, /停用再啟用，或重新啟動 TeamUQ/, code)
+    assert.doesNotMatch(html, /自動恢復|目前在 TeamUQ 中是停用狀態/, code)
+  }
+  const timeout = renderBackendBar({ state: 'revoked', code: 'backend_invoke_timeout' })
+  assert.match(timeout, /停用再啟用/)
+  assert.doesNotMatch(timeout, /已重新啟動它/)
   assert.match(renderBackendBar({ state: 'unavailable', code: 'plugin_backend_crashed' }), /意外結束/)
   assert.equal(renderBackendBar({ state: 'ok', code: null }), '')
   assert.equal(renderBackendBar({ state: 'unknown', code: null }), '')

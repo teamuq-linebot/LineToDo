@@ -14,7 +14,8 @@ import { verifyArtifact } from './verify-artifact.mjs'
 import { auditPackage } from './lib/audit.mjs'
 import { sha256Hex } from './lib/pack.mjs'
 import { BACKEND_METHODS, DESCRIPTION, NATIVE_FILES, PERMISSIONS, PLUGIN_ID, buildManifest } from './lib/manifest.mjs'
-import { WORK } from './lib/paths.mjs'
+import { ROOT, WORK } from './lib/paths.mjs'
+import { UI_TEXT_FILES, copyTextAsLf, toLf } from './build-ui.mjs'
 import { TOOL_RECORD, assertToolIntact, validateStage } from './lib/tuqTool.mjs'
 import { BACKEND_METHOD_GROUPS } from '../../src/shared/pluginWire.ts'
 import { runPluginContract } from '../lib/plugin-contract-harness.mjs'
@@ -103,6 +104,36 @@ test('the build is deterministic: two builds from different work / output direct
   // the overrides only restate kinds that differ from the tool's default (the two natives with their platform; html / css / wasm as code)
   assert.deepEqual(kindOverrides(a.files), a.report.overrides)
   for (const o of a.report.overrides) assert.ok(o.kind !== defaultKind(o.path) || o.platform !== undefined, o.path)
+})
+
+test('the package bytes depend on the commit, not on the checkout: authored text (ui html, theme-boot.js, THIRD_PARTY_NOTICES) is packed with LF even when core.autocrlf checked it out with CRLF', async () => {
+  const { a } = await getBuilt()
+  const sources = {
+    'ui/index.html': ['src', 'plugin', 'ui', 'index.html'],
+    'ui/settings.html': ['src', 'plugin', 'ui', 'settings.html'],
+    'ui/theme-boot.js': ['src', 'plugin', 'ui', 'theme-boot.js'],
+    'LICENSES/THIRD_PARTY_NOTICES.md': ['src', 'plugin', 'THIRD_PARTY_NOTICES.md']
+  }
+  assert.deepEqual(UI_TEXT_FILES.map((f) => `ui/${f}`), Object.keys(sources).filter((p) => p.startsWith('ui/')), 'every copied UI file is covered')
+  for (const [entry, parts] of Object.entries(sources)) {
+    const packed = a.files.find((f) => f.path === entry)
+    assert.ok(packed, entry)
+    assert.equal(packed.data.includes(0x0d), false, `${entry}: no CR byte`)
+    assert.equal(packed.data.toString('utf8'), toLf(readFileSync(join(ROOT, ...parts), 'utf8')), `${entry}: the source with LF`)
+  }
+  // the same file checked out with LF and with CRLF is copied to the same bytes
+  const dir = makeTempRoot('line-todo-eol-')
+  try {
+    for (const [entry, parts] of Object.entries(sources)) {
+      const lf = toLf(readFileSync(join(ROOT, ...parts), 'utf8'))
+      assert.ok(lf.includes('\n'), `${entry} has lines`)
+      writeFileSync(join(dir, 'lf'), lf)
+      writeFileSync(join(dir, 'crlf'), lf.replace(/\n/g, '\r\n'))
+      copyTextAsLf(join(dir, 'lf'), join(dir, 'lf.out'))
+      copyTextAsLf(join(dir, 'crlf'), join(dir, 'crlf.out'))
+      assert.ok(readFileSync(join(dir, 'lf.out')).equals(readFileSync(join(dir, 'crlf.out'))), entry)
+    }
+  } finally { rmQuiet(dir) }
 })
 
 test('the tool\'s review (verify, same reviewArtifact as Core) for TeamUQ 1.7.1: unsigned, all integrity / manifest / native / icon checks pass; tampering, Core 1.7.0 and another platform are refused', async () => {

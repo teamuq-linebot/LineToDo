@@ -10,10 +10,9 @@ import {
 } from './buckets'
 import type { CardDnd } from './KanbanBoard'
 import { useHostCapabilities } from '../../platform/LineTodoApi'
-import { useUiState } from '../../lib/uiState'
-
-/** 未儲存的編輯／關鍵字草稿保留多久（G-04：重新開啟畫面後還原；太舊的就丟掉）。 */
-const CARD_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+// 未儲存的編輯／關鍵字草稿保留多久（G-04：重新開啟畫面後還原；太舊的就丟掉）：7 天，定義在 uiState.ts 的 UI_DRAFT_RETENTION，
+// 看板啟動時與開著的期間每小時也會主動清掉過期的（review N1）。
+import { CARD_DRAFT_MAX_AGE_MS, useUiState } from '../../lib/uiState'
 
 interface EditDraft { title: string; detail: string; bucket: TodoDTO['bucket']; priority: number; due: string }
 

@@ -1,11 +1,15 @@
 // TeamUQ plugin developer guide conformance (research-gap-audit G-01…G-07): the view-side modules and the adapter against the real Dispatcher / backend.
 //
 //   G-07  the backend method allow-list: one method per API namespace; Core's allow-list really limits what reaches the backend
-//   G-03  backend:invoke revoked / plugin disabled: a distinct link state and message, no busy retries, the event pump probes instead of backing off forever
+//   G-03  backend:invoke revoked / plugin disabled / call timed out — Core 1.7.1 FENCES the plugin (review B1; Core is played by
+//         scripts/lib/core-invoke-gate-standin.mjs, checked against Core's real gate): a distinct link state and message that names the three
+//         causes and the actions that work, no promise of automatic recovery, no busy retries, the event pump probes instead of backing off forever
 //   G-02  every failure becomes a user-facing sentence (lib/backendError.ts) — revoked / unavailable / version mismatch / other
 //   G-05  long tasks: after a backend restart the lost job (job_not_found) is explained with the status the new backend reads back
 //   G-01  theme: the OS appearance is the default and is followed; a manual choice can be dropped again; theme-boot.js does the same before first paint
 //   G-04  UI state: saved on change, restored on start, expiring drafts, never throws; standalone stays unsaved
+//   N1    drafts with LINE-derived text: one retention table, read-time expiry + an active sweep at start and every hour
+//   N2    the long-task poll backs off on failure instead of stopping
 //   G-06  the backend reads nothing from context.settings (static guard; the runtime proof is in test-backend-contract.mjs)
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
@@ -20,14 +24,18 @@ import { EventHub } from '../../src/plugin/backend/eventHub.ts'
 import { ReviewCoordinator, ReviewLedger } from '../../src/plugin/backend/reviewRun.ts'
 import { describeLink } from '../../src/plugin/ui/backendLink.ts'
 import { backendErrorText, describeBackendError, guarded } from '../../src/renderer/lib/backendError.ts'
-import { RESUMABLE_REVIEW_STATES, explainInterrupted, longTaskNotes, readLongTasks } from '../../src/renderer/lib/longTasks.ts'
+import { RESUMABLE_REVIEW_STATES, explainInterrupted, longTaskNotes, longTaskPollDelayMs, readLongTasks } from '../../src/renderer/lib/longTasks.ts'
 import { THEME_KEY, applyTheme, readStoredTheme, resolveTheme, systemTheme, toggleChoice } from '../../src/renderer/lib/theme.ts'
-import { NO_UI_STATE, createLocalUiState, parseOneOf, parseStringSet, serializeStringSet } from '../../src/renderer/lib/uiState.ts'
+import {
+  CARD_DRAFT_MAX_AGE_MS, NO_UI_STATE, REPLY_DRAFT_MAX_AGE_MS, UI_DRAFT_RETENTION, UI_DRAFT_SWEEP_INTERVAL_MS,
+  browserUiState, createLocalUiState, parseOneOf, parseStringSet, serializeStringSet
+} from '../../src/renderer/lib/uiState.ts'
 import { PluginEventPump } from '../../src/renderer/platform/pluginEvents.ts'
 import { PluginApiError, PluginBackendError, createPluginLineTodoApi } from '../../src/renderer/platform/pluginApi.ts'
 import { BACKEND_METHOD_GROUPS, backendMethodFor } from '../../src/shared/pluginWire.ts'
 import { BACKEND_METHODS, buildManifest } from './lib/manifest.mjs'
 import { ROOT } from './lib/paths.mjs'
+import { createCoreGateStandin } from '../lib/core-invoke-gate-standin.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function until(predicate, { timeout = 3000, step = 5, message = 'condition' } = {}) {
@@ -40,23 +48,21 @@ async function until(predicate, { timeout = 3000, step = 5, message = 'condition
 const FAST_EVENTS = { waitMs: 50, idleStopMs: 20, backoffBaseMs: 10, backoffMaxMs: 40, minLoopMs: 5 }
 const NO_RETRY = { attempts: 0 }
 
-/** A view bridge in front of `target` that, like Core's backendInvokeGate, refuses methods outside the manifest allow-list; `fail` simulates host errors. */
-function coreHost(target, { allow = BACKEND_METHODS } = {}) {
-  const state = { calls: [], fail: null, refusedMethods: [] }
-  return {
-    state,
-    host: {
-      backend: {
-        async call(method, params) {
-          state.calls.push({ method, path: params?.path })
-          if (state.fail) throw new Error(typeof state.fail === 'function' ? state.fail(method, params) : state.fail)
-          if (!allow.includes(method)) { state.refusedMethods.push(method); throw new Error('backend_method_not_allowed') }
-          return JSON.parse(JSON.stringify(await target.call(method, JSON.parse(JSON.stringify(params)))))
-        }
-      },
-      assets: { url: (p) => `tuqplugin://tuqdev.line-todo/data/${p}` }
-    }
-  }
+/** Core 1.7.1's invoke gate + view bridge in front of `target` (scripts/lib/core-invoke-gate-standin.mjs: fences like Core, allow-list = the manifest). */
+function coreHost(target, { allow = BACKEND_METHODS, timeoutMs } = {}) {
+  return createCoreGateStandin(target, { methods: allow, ...(timeoutMs ? { timeoutMs } : {}) })
+}
+
+/**
+ * Review B1: what the status line / panels say while Core fences the plugin. It must cover all three of Core's fence sources, give the actions that
+ * actually work, never promise that allowing the permission again brings it back, and never claim plugin_disabled means "disabled".
+ */
+function assertFencedSentence(text, label) {
+  assert.doesNotMatch(text, /自動恢復|自動繼續|會恢復。?$/, `${label}: no promise of automatic recovery (Core 1.7.1 keeps the fence when the permission is allowed again)`)
+  assert.doesNotMatch(text, /目前在 TeamUQ 中是停用狀態/, `${label}: plugin_disabled is not asserted to mean "disabled"`)
+  for (const cause of [/「後端呼叫」權限（backend:invoke）被關閉/, /外掛被停用/, /太久沒有回應而被 TeamUQ 隔離/]) assert.match(text, cause, `${label}: names the fence source ${cause}`)
+  assert.match(text, /「我的 AI › 外掛」確認這個外掛已允許「後端呼叫」而且是啟用的/, `${label}: what to check`)
+  assert.match(text, /停用再啟用，或重新啟動 TeamUQ/, `${label}: what actually lifts the fence`)
 }
 
 function fakeLinePort() {
@@ -126,73 +132,141 @@ test('G-07: the manifest allow-list is the method groups; every adapter call use
   })
 })
 
-// ───────────── G-03 ─────────────
+// ───────────── G-03 (review B1: Core 1.7.1 fences the plugin) ─────────────
 
-test('G-03: backend:invoke revoked → the call fails at once with accessDenied (no busy retries), the link turns revoked with the right sentence, and recovers on the next success', async () => {
+test('G-03 / B1: Core fences on revoke — the call in flight ends plugin_permission_denied, every later call plugin_disabled (no busy retries); allowing the permission again does NOT recover, only activate (disable → enable) does; the status line never promises automatic recovery', async () => {
   await withRealBackend(async ({ backend }) => {
-    const core = coreHost(backend)
+    const held = []
+    let hold = false
+    // the runtime holds db.todos.list while `hold` is set, so a call is really in flight when the fence comes down
+    const runtime = { call: async (method, params) => { if (hold && params?.path === 'db.todos.list') await new Promise((resolve) => held.push(resolve)); return backend.call(method, params) } }
+    const core = coreHost(runtime)
     const api = createPluginLineTodoApi({ host: core.host, events: { enabled: false } })
     const seen = []
-    const off = api.plugin.onBackendLink((link) => seen.push(link))
+    const off = api.plugin.onBackendLink((link) => seen.push(`${link.state}:${link.code ?? ''}`))
+    const release = () => { hold = false; for (const resolve of held.splice(0)) resolve() }
     try {
       assert.deepEqual(api.plugin.backendLink(), { state: 'unknown', code: null })
       await api.ping()
       assert.deepEqual(api.plugin.backendLink(), { state: 'ok', code: null })
-      core.state.fail = 'plugin_permission_denied'
-      const before = core.state.calls.length
-      const error = await api.db.todos.list({}).then(() => null, (e) => e)
+
+      // 1. the user turns backend:invoke off in 我的 AI › 外掛 while a call is in flight
+      hold = true
+      const inFlight = api.db.todos.list({}).then(() => null, (e) => e)
+      await until(() => core.inFlight === 1, { message: 'db.todos.list in flight' })
+      core.setBackendInvokeRevoked(true)
+      const error = await inFlight
       assert.ok(error instanceof PluginBackendError)
       assert.equal(error.code, 'plugin_permission_denied')
       assert.equal(error.accessDenied, true)
-      assert.equal(core.state.calls.length - before, 1, 'not retried like a busy backend')
       assert.deepEqual(api.plugin.backendLink(), { state: 'revoked', code: 'plugin_permission_denied' })
-      const shown = describeLink(api.plugin.backendLink())
+      let shown = describeLink(api.plugin.backendLink())
       assert.equal(shown.tone, 'err')
-      assert.match(shown.text, /backend:invoke/)
-      assert.match(shown.text, /重新允許/)
-      assert.doesNotMatch(shown.text, /暫時/, 'not "temporarily interrupted"')
-      // disabled plugin: same family, its own sentence
-      core.state.fail = 'plugin_disabled'
-      await assert.rejects(api.ping(), (e) => e.accessDenied === true)
-      assert.match(describeLink(api.plugin.backendLink()).text, /停用/)
-      // crashed backend: unavailable, a different (warning) sentence
-      core.state.fail = 'plugin_backend_crashed'
-      await assert.rejects(api.ping(), (e) => e instanceof PluginBackendError && e.accessDenied === false)
-      assert.equal(api.plugin.backendLink().state, 'unavailable')
-      assert.equal(describeLink(api.plugin.backendLink()).tone, 'warn')
-      // the user allows it again
-      core.state.fail = null
+      assertFencedSentence(shown.text, 'in flight at revoke')
+
+      // 2. every later call: plugin_disabled — Core does not repeat the reason; not retried like a busy backend
+      const before = core.state.calls.length
+      await assert.rejects(api.ping(), (e) => e instanceof PluginBackendError && e.code === 'plugin_disabled' && e.accessDenied === true)
+      assert.equal(core.state.calls.length - before, 1, 'one host call, no busy retries')
+      assert.deepEqual(api.plugin.backendLink(), { state: 'revoked', code: 'plugin_disabled' })
+      shown = describeLink(api.plugin.backendLink())
+      assertFencedSentence(shown.text, 'plugin_disabled after a revoke')
+
+      // 3. the user allows it again: refreshGrants does not activate → still plugin_disabled, the line does not change
+      core.setBackendInvokeRevoked(false)
+      for (let i = 0; i < 3; i += 1) await assert.rejects(api.ping(), (e) => e.code === 'plugin_disabled')
+      assert.deepEqual(api.plugin.backendLink(), { state: 'revoked', code: 'plugin_disabled' })
+      assert.equal(describeLink(api.plugin.backendLink()).text, shown.text)
+
+      // 4. disable → enable the plugin (afterEnable → activate): only now does it work again
+      core.disable()
+      await assert.rejects(api.ping(), (e) => e.code === 'plugin_disabled')
+      core.enable()
+      release()
       await api.ping()
       assert.deepEqual(api.plugin.backendLink(), { state: 'ok', code: null })
       assert.equal(describeLink(api.plugin.backendLink()), null)
-      assert.deepEqual(seen.map((l) => l.state), ['ok', 'revoked', 'revoked', 'unavailable', 'ok'])
-    } finally { off(); api.dispose() }
+
+      // 5. one call past Core's deadline: the call ends backend_invoke_timeout and the whole plugin is fenced (not "restarted, try again later")
+      hold = true
+      const slow = api.db.todos.list({}).then(() => null, (e) => e)
+      await until(() => core.inFlight === 1, { message: 'db.todos.list in flight' })
+      core.timeoutNow()
+      const timedOut = await slow
+      assert.equal(timedOut.code, 'backend_invoke_timeout')
+      assert.equal(timedOut.accessDenied, true, 'a timeout fences: retrying does not help')
+      assert.deepEqual(api.plugin.backendLink(), { state: 'revoked', code: 'backend_invoke_timeout' })
+      const timeoutText = describeLink(api.plugin.backendLink()).text
+      assert.doesNotMatch(timeoutText, /已重新啟動它|稍後再試。?$/, 'no "restarted, try again later"')
+      assert.match(timeoutText, /稍後再試也不會恢復/)
+      assert.match(timeoutText, /停用再啟用，或重新啟動 TeamUQ/)
+      await assert.rejects(api.ping(), (e) => e.code === 'plugin_disabled')
+      assertFencedSentence(describeLink(api.plugin.backendLink()).text, 'plugin_disabled after a timeout')
+      core.setBackendInvokeRevoked(false)
+      await assert.rejects(api.ping(), (e) => e.code === 'plugin_disabled', 'allowing again does not lift a timeout fence either')
+      core.disable(); core.enable()
+      release()
+      await api.ping()
+      assert.equal(api.plugin.backendLink().state, 'ok')
+
+      // 6. a crashed backend is not fenced: unavailable (warning), and the next success clears it
+      core.setRuntime({ call: async () => { throw Object.assign(new Error('exited'), { code: 'plugin_backend_exited' }) } })
+      await assert.rejects(api.ping(), (e) => e instanceof PluginBackendError && e.code === 'plugin_backend_crashed' && e.accessDenied === false)
+      assert.equal(api.plugin.backendLink().state, 'unavailable')
+      assert.equal(describeLink(api.plugin.backendLink()).tone, 'warn')
+      core.setRuntime(runtime)
+      await api.ping()
+
+      assert.deepEqual(seen, [
+        'ok:', 'revoked:plugin_permission_denied', 'revoked:plugin_disabled', 'ok:',
+        'revoked:backend_invoke_timeout', 'revoked:plugin_disabled', 'ok:', 'unavailable:plugin_backend_crashed', 'ok:'
+      ])
+      assert.deepEqual(core.state.stops, ['disabled', 'disabled', 'hung', 'disabled'], 'Core stopped the backend on each fence')
+    } finally {
+      release()
+      off(); api.dispose()
+    }
   })
 })
 
-test('G-03: the event pump probes a revoked backend at a fixed interval (no endless exponential backoff), reports it, and resyncs the board once access is back', async () => {
-  let revoked = true
-  let calls = 0
-  const diagnostics = []
-  const call = async (path) => {
-    calls += 1
-    if (revoked) throw new PluginBackendError(path, 'plugin_permission_denied')
-    if (path === 'events.open') return { sessionId: 's1', seq: 0 }
-    if (path === 'events.pull') { await sleep(10); return { events: [], seq: 0, gap: false, closed: false } }
-    return { ok: true }
-  }
-  const pump = new PluginEventPump({ call, waitMs: 10, idleStopMs: 10, backoffBaseMs: 1, backoffMaxMs: 2, accessProbeMs: 60, minLoopMs: 5, onDiagnostic: (d) => diagnostics.push(d) })
-  const changed = []
-  const off = pump.subscribe('todos-changed', (p) => changed.push(p))
-  try {
-    await sleep(200)
-    // with backoffMaxMs 2 a failing loop would make ~100 calls in 200 ms; the access probe makes one per 60 ms
-    assert.ok(calls >= 2 && calls <= 6, `${calls} probes in 200 ms`)
-    assert.ok(diagnostics.length > 0 && diagnostics.every((d) => d.kind === 'access' && d.detail === 'plugin_permission_denied'))
-    revoked = false
-    await until(() => changed.length > 0, { timeout: 1000, message: 'the resync after access came back' })
-    assert.deepEqual(changed[0], { createdIds: [], resolvedIds: [], updatedIds: [] }, 'an empty todos-changed makes the board reload')
-  } finally { off(); pump.dispose(); await pump.settled() }
+test('G-03 / B1: the event pump under Core fencing — fixed-interval probes (no endless backoff) that keep getting plugin_disabled after the permission is allowed again (no resync, the line stays); the board resyncs only after activate', async () => {
+  await withRealBackend(async ({ backend }) => {
+    const core = coreHost(backend)
+    const diagnostics = []
+    const api = createPluginLineTodoApi({ host: core.host, events: { ...FAST_EVENTS, accessProbeMs: 60, onDiagnostic: (d) => diagnostics.push(d) } })
+    const changed = []
+    const off = api.pipeline.onTodosChanged((payload) => changed.push(payload))
+    const eventCalls = () => core.state.results.filter((r) => r.path?.startsWith('events.'))
+    try {
+      await until(() => core.state.results.some((r) => r.path === 'events.pull' && r.ok), { message: 'the event long poll' })
+      core.setBackendInvokeRevoked(true)
+      await until(() => diagnostics.some((d) => d.kind === 'access'), { message: 'the pump noticing the fence' })
+      const atFence = eventCalls().length
+      await sleep(300)
+      const probes = eventCalls().length - atFence
+      // with backoffBaseMs 10 / backoffMaxMs 40 an ordinary failing loop would make ~10 calls in 300 ms; the access probe makes one per 60 ms
+      assert.ok(probes >= 2 && probes <= 7, `${probes} probes in 300 ms`)
+      assert.ok(eventCalls().slice(atFence).every((r) => !r.ok && r.error === 'plugin_disabled'), 'after the fence every probe is plugin_disabled')
+      assert.ok(diagnostics.filter((d) => d.kind === 'access').every((d) => ['plugin_permission_denied', 'plugin_disabled'].includes(d.detail)))
+      assert.equal(api.plugin.backendLink().state, 'revoked')
+
+      // allowed again in 我的 AI › 外掛: Core keeps the fence → still plugin_disabled, no resync, the status line stays
+      core.setBackendInvokeRevoked(false)
+      const changedBefore = changed.length
+      const atAllow = eventCalls().length
+      await sleep(300)
+      assert.ok(eventCalls().length - atAllow >= 2, 'still probing')
+      assert.ok(eventCalls().slice(atAllow).every((r) => !r.ok && r.error === 'plugin_disabled'), 'allowing the permission again does not lift the fence')
+      assert.equal(changed.length, changedBefore, 'no resync while Core still fences')
+      assert.deepEqual(api.plugin.backendLink(), { state: 'revoked', code: 'plugin_disabled' })
+
+      // disable → enable (activate): the next probe gets through, the session is reopened and the board reloads
+      core.disable(); core.enable()
+      await until(() => changed.length > changedBefore, { timeout: 2000, message: 'the resync after activate' })
+      assert.deepEqual(changed.at(-1), { createdIds: [], resolvedIds: [], updatedIds: [] }, 'an empty todos-changed makes the board reload')
+      await until(() => api.plugin.backendLink().state === 'ok', { message: 'the link back to ok' })
+    } finally { off(); api.dispose() }
+  })
 })
 
 // ───────────── G-02 ─────────────
@@ -200,12 +274,16 @@ test('G-03: the event pump probes a revoked backend at a fixed interval (no endl
 test('G-02: every failure becomes one user-facing sentence: revoked / unavailable / version mismatch from host codes; other errors keep their message; guarded() never rethrows', async () => {
   const revoked = describeBackendError(new PluginBackendError('db.todos.list', 'plugin_permission_denied'))
   assert.equal(revoked.kind, 'revoked')
-  assert.match(revoked.text, /TeamUQ「我的 AI › 外掛」重新允許/)
-  for (const code of ['plugin_backend_unavailable', 'plugin_backend_crashed', 'backend_invoke_timeout', 'job_not_found']) assert.equal(describeBackendError({ code }).kind, 'unavailable', code)
+  assertFencedSentence(revoked.text, 'plugin_permission_denied')
+  // Core 1.7.1 fences on revoke, disable and timeout; after that every call is plugin_disabled (review B1)
+  for (const code of ['plugin_permission_denied', 'plugin_disabled', 'backend_invoke_timeout', 'plugin_not_installed']) assert.equal(describeBackendError({ code }).kind, 'revoked', code)
+  for (const code of ['plugin_backend_unavailable', 'plugin_backend_crashed', 'job_not_found']) assert.equal(describeBackendError({ code }).kind, 'unavailable', code)
   for (const code of ['backend_method_not_allowed', 'method_mismatch']) assert.match(describeBackendError({ code }).text, /重新安裝外掛/, code)
   assert.equal(describeBackendError(new Error('找不到此待辦')).text, '找不到此待辦')
   assert.equal(describeBackendError(new Error('')).text, '發生未知錯誤')
-  assert.equal(backendErrorText({ code: 'plugin_disabled' }, '讀取設定失敗').startsWith('讀取設定失敗：這個外掛目前在 TeamUQ 中是停用狀態'), true)
+  const disabled = backendErrorText({ code: 'plugin_disabled' }, '讀取設定失敗')
+  assert.ok(disabled.startsWith('讀取設定失敗：TeamUQ 目前不讓這個外掛呼叫後端'), disabled)
+  assertFencedSentence(disabled, 'plugin_disabled')
   const shown = []
   assert.equal(await guarded(async () => { throw new PluginBackendError('settings.get', 'plugin_backend_unavailable') }, (text) => shown.push(text), '讀取設定失敗'), undefined)
   assert.deepEqual(shown, ['讀取設定失敗：外掛後端暫時無法回應（可能正在啟動或忙碌），稍後再試。'])
@@ -213,18 +291,18 @@ test('G-02: every failure becomes one user-facing sentence: revoked / unavailabl
 })
 
 test('G-02: through the real adapter, a backend that is down rejects every call with a host code (the panels catch it and show describeBackendError), never a silent empty value', async () => {
-  await withRealBackend(async ({ backend }) => {
-    const core = coreHost(backend)
-    const api = createPluginLineTodoApi({ host: core.host, events: { enabled: false }, busyRetry: { attempts: 2, baseMs: 1, maxMs: 2 } })
-    try {
-      core.state.fail = 'plugin_backend_unavailable'
-      for (const run of [() => api.settings.get(), () => api.db.chats.list(true), () => api.db.todos.list({}), () => api.pipeline.status(), () => api.messages.recent(), () => api.line.status()]) {
-        const error = await run().then(() => null, (e) => e)
-        assert.ok(error instanceof PluginBackendError, 'rejects (the UI shows the reason)')
-        assert.equal(describeBackendError(error).kind, 'unavailable')
-      }
-    } finally { api.dispose() }
-  })
+  // a backend that throws: Core answers plugin_backend_unavailable (backendInvokeGate.ts:159)
+  const core = coreHost({ call: async () => { throw new Error('backend down') } })
+  const api = createPluginLineTodoApi({ host: core.host, events: { enabled: false }, busyRetry: { attempts: 2, baseMs: 1, maxMs: 2 } })
+  try {
+    for (const run of [() => api.settings.get(), () => api.db.chats.list(true), () => api.db.todos.list({}), () => api.pipeline.status(), () => api.messages.recent(), () => api.line.status()]) {
+      const error = await run().then(() => null, (e) => e)
+      assert.ok(error instanceof PluginBackendError, 'rejects (the UI shows the reason)')
+      assert.equal(error.code, 'plugin_backend_unavailable')
+      assert.equal(describeBackendError(error).kind, 'unavailable')
+    }
+    assert.ok(core.state.results.every((r) => r.error === 'plugin_backend_unavailable'))
+  } finally { api.dispose() }
 })
 
 // ───────────── G-05 ─────────────
@@ -236,6 +314,11 @@ test('G-05: longTaskNotes — running shows progress, paused / incomplete / inte
   for (const state of ['paused', 'incomplete', 'interrupted']) assert.equal(longTaskNotes(view(state)).reviewText, `R:${state}`)
   for (const state of ['idle', 'done']) assert.equal(longTaskNotes(view(state)).reviewText, null)
   assert.deepEqual(longTaskNotes(null), { reviewRunning: false, reviewText: null, backfillRunning: false, backfillText: null })
+})
+
+test('N2: the long-task poll never stops — 3 s while queries succeed, doubling per consecutive failure up to 30 s (the board component is exercised in test-plugin-ui-effects.mjs)', () => {
+  assert.deepEqual([0, 1, 2, 3, 4, 50].map(longTaskPollDelayMs), [3000, 6000, 12000, 24000, 30000, 30000])
+  assert.equal(longTaskPollDelayMs(-1), 3000)
 })
 
 test('G-05: a review whose backend restarts mid-run: the waiting call ends in job_not_found, and the board explains it with the status the NEW backend read back (interrupted, N/M)', async () => {
@@ -382,6 +465,60 @@ test('G-04: the UI state store saves on change and restores, rejects wrong shape
   NO_UI_STATE.write('app.tab', 'stream')
   assert.equal(NO_UI_STATE.read('app.tab', tab), undefined)
   assert.equal(createLocalUiState(null), NO_UI_STATE)
+})
+
+// ───────────── review N1: retention of drafts with LINE-derived text ─────────────
+
+/** a localStorage-like store that can be enumerated (key / length), like the real one */
+function enumerableStorage(initial = {}) {
+  const data = new Map(Object.entries(initial))
+  return { data, getItem: (k) => (data.has(k) ? data.get(k) : null), setItem: (k, v) => data.set(k, String(v)), removeItem: (k) => data.delete(k), key: (i) => [...data.keys()][i] ?? null, get length() { return data.size } }
+}
+
+test('N1: drafts holding LINE-derived text have ONE retention table (cards 7 d, reply 24 h) used both when reading and by an active sweep that also removes drafts nobody will read again; browserUiState sweeps at start and every hour', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  assert.deepEqual(UI_DRAFT_RETENTION.map((r) => [r.prefix, r.maxAgeMs]), [['card.edit.', 7 * DAY], ['card.kw.', 7 * DAY], ['reply.draft.', DAY]])
+  assert.deepEqual([CARD_DRAFT_MAX_AGE_MS, REPLY_DRAFT_MAX_AGE_MS, UI_DRAFT_SWEEP_INTERVAL_MS], [7 * DAY, DAY, 60 * 60 * 1000])
+  // the components read with the same numbers, not with private copies
+  for (const [file, name] of [['src/renderer/components/Board/TodoCard.tsx', 'CARD_DRAFT_MAX_AGE_MS'], ['src/renderer/components/DraftReplyDialog.tsx', 'REPLY_DRAFT_MAX_AGE_MS']]) {
+    const code = readFileSync(join(ROOT, file), 'utf8')
+    assert.match(code, new RegExp(`import \\{[^}]*\\b${name}\\b[^}]*\\} from '[^']*lib/uiState'`), `${file} imports ${name}`)
+    assert.doesNotMatch(code, new RegExp(`const ${name}\\s*=`), `${file} has no private ${name}`)
+    assert.match(code, new RegExp(`maxAgeMs: ${name}`), `${file} reads with ${name}`)
+  }
+
+  // sweep: removes expired / broken drafts of every rule, keeps fresh drafts and everything that is not a draft
+  let now = 100 * DAY
+  const storage = enumerableStorage()
+  const ui = createLocalUiState(storage, { now: () => now })
+  const writeAt = (key, value, at) => { const keep = now; now = at; ui.write(key, value); now = keep }
+  writeAt('card.edit.done-long-ago', { title: '客戶要的報價單' }, now - 8 * DAY)
+  writeAt('card.edit.fresh', { title: '回覆王小姐' }, now - 6 * DAY)
+  writeAt('card.kw.old', '報價', now - 8 * DAY)
+  writeAt('reply.draft.old', '好的，明天回覆您', now - 25 * 60 * 60 * 1000)
+  writeAt('reply.draft.fresh', '收到', now - 23 * 60 * 60 * 1000)
+  writeAt('app.tab', 'stream', now - 300 * DAY)
+  storage.setItem('lt-ui:reply.draft.broken', '{not json')
+  storage.setItem('lt-theme', 'light')
+  assert.equal(ui.sweep(UI_DRAFT_RETENTION), 4)
+  assert.deepEqual([...storage.data.keys()].sort(), ['lt-theme', 'lt-ui:app.tab', 'lt-ui:card.edit.fresh', 'lt-ui:reply.draft.fresh'])
+  assert.equal(NO_UI_STATE.sweep(UI_DRAFT_RETENTION), 0)
+  assert.equal(createLocalUiState(fakeStorage()).sweep(UI_DRAFT_RETENTION), 0, 'a storage that cannot be enumerated: nothing to do, no throw')
+
+  // browserUiState (the board view's store): sweeps right away and then every UI_DRAFT_SWEEP_INTERVAL_MS
+  const local = enumerableStorage({
+    'lt-ui:reply.draft.a': JSON.stringify({ v: 'old reply', at: 0 }),
+    'lt-ui:reply.draft.b': JSON.stringify({ v: 'new reply', at: Date.now() })
+  })
+  const timers = []
+  const store = browserUiState({ localStorage: local, setInterval: (fn, ms) => { timers.push({ fn, ms }); return timers.length } })
+  assert.equal(store.persistent, true)
+  assert.deepEqual([...local.data.keys()], ['lt-ui:reply.draft.b'], 'swept at start')
+  assert.deepEqual(timers.map((t) => t.ms), [UI_DRAFT_SWEEP_INTERVAL_MS])
+  local.setItem('lt-ui:card.kw.z', JSON.stringify({ v: 'kw', at: 0 }))
+  timers[0].fn()
+  assert.deepEqual([...local.data.keys()], ['lt-ui:reply.draft.b'], 'swept again by the hourly timer')
+  assert.equal(browserUiState({ get localStorage() { throw new Error('blocked') }, setInterval: () => 0 }), NO_UI_STATE)
 })
 
 // ───────────── G-06 ─────────────

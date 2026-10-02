@@ -6,21 +6,32 @@
  * standalone 的 IPC 錯誤沒有這些碼，就照原本的訊息顯示。這個檔案不 import 外掛傳輸層（standalone bundle 不需要它），只看 `code`。
  */
 
+/** `revoked`＝TeamUQ 已隔離這個外掛的後端呼叫（權限關閉／停用／逾時，見下方 FENCED_TEXT）或外掛已移除；`unavailable`＝暫時的，稍後再試。 */
 export type BackendErrorKind = 'revoked' | 'unavailable' | 'invalid' | 'other'
 
-/** 撤銷 backend:invoke、停用、移除外掛：使用者要到 TeamUQ 處理，重試不會好。 */
+/**
+ * TeamUQ 已「隔離」這個外掛的後端呼叫（review B1：照 Core 1.7.1 `backendInvokeGate.ts` 的實際行為寫）。重試不會好，要使用者到 TeamUQ 處理。
+ *   - Core 有三種隔離來源：關閉「後端呼叫」權限（refreshGrants → revoke）、停用外掛（beforeDisable → revoke）、單次呼叫逾時（timeoutPlugin）。
+ *   - 隔離當下正在進行的呼叫拿到原因碼（`plugin_permission_denied`／`backend_invoke_timeout`）；之後每個新呼叫一律是 `plugin_disabled`，
+ *     Core 不再告訴外掛是哪一種原因（`:74`）。所以 `plugin_disabled` 不能斷定是「停用」，`plugin_permission_denied` 也可能是停用造成的。
+ *   - 解除隔離只有 `activate()`（外掛停用再啟用的 afterEnable）或重新啟動 TeamUQ。在「我的 AI › 外掛」重新允許權限**不會**解除（refreshGrants
+ *     不呼叫 activate），所以這裡不承諾「重新允許後會自動恢復」，而是列出使用者實際能做、而且有效的操作。
+ */
+const FENCED_TEXT = 'TeamUQ 目前不讓這個外掛呼叫後端，所以讀不到 LINE 與待辦資料。可能的原因：「後端呼叫」權限（backend:invoke）被關閉、外掛被停用，或外掛後端太久沒有回應而被 TeamUQ 隔離。請到 TeamUQ「我的 AI › 外掛」確認這個外掛已允許「後端呼叫」而且是啟用的；如果之後仍沒有恢復，請把外掛停用再啟用，或重新啟動 TeamUQ。'
+
 const REVOKED_TEXT: Record<string, string> = {
-  plugin_permission_denied: 'TeamUQ 已關閉這個外掛的「後端呼叫」權限（backend:invoke），所以讀不到 LINE 與待辦資料。到 TeamUQ「我的 AI › 外掛」重新允許後，這裡會自動恢復。',
-  plugin_disabled: '這個外掛目前在 TeamUQ 中是停用狀態，後端沒有在執行。到 TeamUQ「我的 AI › 外掛」啟用後，這裡會自動恢復。',
+  plugin_permission_denied: FENCED_TEXT,
+  plugin_disabled: FENCED_TEXT,
+  // 逾時也會隔離（Core `timeoutPlugin`）：之後所有呼叫都是 plugin_disabled，「稍後再試」不會成功。
+  backend_invoke_timeout: '外掛後端太久沒有回應，TeamUQ 已把它停止，並暫停這個外掛的後端呼叫；稍後再試也不會恢復。請到 TeamUQ「我的 AI › 外掛」把這個外掛停用再啟用，或重新啟動 TeamUQ。',
   plugin_not_installed: '這個外掛已從 TeamUQ 移除，請重新安裝。'
 }
 
-/** backend 暫時不能用：TeamUQ 會重新啟動它，稍後再試。 */
+/** backend 暫時不能用（沒起來、忙、當掉）：沒有被隔離，稍後再試。 */
 const UNAVAILABLE_TEXT: Record<string, string> = {
   plugin_backend_unavailable: '外掛後端暫時無法回應（可能正在啟動或忙碌），稍後再試。',
   plugin_backend_busy: '外掛後端暫時無法回應（可能正在啟動或忙碌），稍後再試。',
   plugin_backend_crashed: '外掛後端意外結束，TeamUQ 會重新啟動它；稍後再試。',
-  backend_invoke_timeout: '外掛後端太久沒有回應，TeamUQ 已重新啟動它；稍後再試。',
   backend_call_failed: '無法連到外掛後端，稍後再試。',
   backend_stopped: '外掛後端正在關閉或重新啟動，稍後再試。',
   runtime_not_running: '外掛後端還在啟動中，稍後再試。',

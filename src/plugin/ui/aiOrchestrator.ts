@@ -22,6 +22,7 @@
  */
 import { validateExtractResult } from '../../shared/extractResult'
 import { fitReplyText } from '../../shared/pluginWire'
+import { ACCESS_HOST_CODES } from '../../renderer/platform/pluginTransport'
 
 // ───────────────────────── 1.6.8 ai:chat 的型別（只列用到的）─────────────────────────
 
@@ -168,7 +169,7 @@ export interface OrchestratorConfig {
   quotaDefaultMs: number
   busyBackoffMs: number
   backendBackoffMs: number
-  /** host 回撤銷／停用／已移除（backend:invoke 不能用）時，多久再探一次（G-03）。 */
+  /** host 回「後端呼叫被隔離／外掛已移除」（backend:invoke 不能用）時，多久再探一次（G-03）。 */
   backendRevokedProbeMs: number
   /** 使用者動作最多願意等多久的配額空檔，超過就直接回 rate_limited。 */
   taskMaxWaitMs: number
@@ -291,7 +292,7 @@ export interface OrchestratorStatus {
   state: OrchestratorState
   /**
    * 暫停／不可用的原因：`view_hidden`、`view_not_visible`、`rate_limited`、`quota_exhausted`、`busy`、`backend`、
-   * `backend_revoked`（TeamUQ 撤銷了 backend:invoke、停用或移除外掛；G-03）、`provider_<state>`、`no_provider`…
+   * `backend_revoked`（TeamUQ 隔離了這個外掛的後端呼叫：權限關閉、停用或逾時，或外掛已移除；G-03／review B1）、`provider_<state>`、`no_provider`…
    */
   reason: string | null
   /** 預計何時恢復（毫秒 epoch；未知＝null）。 */
@@ -338,7 +339,8 @@ export function describeStatus(status: OrchestratorStatus, now = Date.now()): st
         case 'rate_limited': return `已達 TeamUQ 的 AI 呼叫上限${typeof status.turnsPerMinute === 'number' ? `（每分鐘 ${status.turnsPerMinute} 次）` : ''}，${secs ?? '稍後'}${secs === null ? '' : ' 秒後'}繼續`
         case 'quota_exhausted': return `Codex 額度已用完，${secs === null ? '稍後' : `約 ${Math.ceil(secs / 60)} 分鐘後`}繼續`
         case 'backend': return '與外掛後端的連線暫時中斷，稍後重試'
-        case 'backend_revoked': return 'TeamUQ 已關閉此外掛的「後端呼叫」權限（或停用了外掛），AI 整理暫停；到 TeamUQ「我的 AI › 外掛」重新允許後會自動繼續'
+        // review B1：Core 1.7.1 重新允許權限不會解除隔離，這裡不承諾自動繼續，只列出有效的操作。
+        case 'backend_revoked': return 'TeamUQ 目前不讓這個外掛呼叫後端（「後端呼叫」權限被關閉、外掛被停用，或後端太久沒有回應而被隔離），AI 整理暫停；請到 TeamUQ「我的 AI › 外掛」確認已允許「後端呼叫」且外掛是啟用的，仍沒有恢復就把外掛停用再啟用，或重新啟動 TeamUQ'
         default: return 'AI 整理暫停中，稍後繼續'
       }
     default: return status.busy ? 'AI 正在整理新訊息…' : 'AI 整理已就緒（看板在前景時才會整理新訊息）'
@@ -406,8 +408,8 @@ const GATE_REASON: Record<string, string> = { hidden: 'view_not_visible', rate: 
 const ACCESS_CODES = new Set(['not_granted', 'plugin_not_active', 'access_revoked'])
 const PROVIDER_CODES = new Set(['provider_unavailable', 'provider_not_ready', 'unsupported_version', 'model_unavailable', 'unavailable', 'provider_not_found', 'not_supported_yet'])
 const BUSY_CODES = new Set(['busy', 'session_limit', 'session_not_found', 'turn_in_progress', 'session_closed'])
-/** host 對 backend:invoke 的「不能用」：撤銷、停用、已移除（與 pluginTransport.ts 的 ACCESS_HOST_CODES 相同）。 */
-const BACKEND_ACCESS_CODES = new Set(['plugin_permission_denied', 'plugin_disabled', 'plugin_not_installed'])
+/** host 對 backend:invoke 的「不能用」：Core 隔離了後端呼叫（權限關閉、停用、逾時）或外掛已移除——就是 pluginTransport.ts 的 ACCESS_HOST_CODES。 */
+const BACKEND_ACCESS_CODES: ReadonlySet<string> = ACCESS_HOST_CODES
 
 export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
   const clock = deps.clock ?? SYSTEM_CLOCK
@@ -758,7 +760,7 @@ export function createAiOrchestrator(deps: OrchestratorDeps): AiOrchestrator {
     return true
   }
 
-  /** backend 呼叫失敗：一般失敗短暫退避；撤銷／停用／移除（G-03）改成較長的探測間隔，狀態列顯示原因（不是「暫時中斷」）。 */
+  /** backend 呼叫失敗：一般失敗短暫退避；被隔離／已移除（G-03）改成較長的探測間隔，狀態列顯示原因（不是「暫時中斷」）。 */
   const applyBackendFailure = (error?: unknown): void => {
     backendRevoked = error !== undefined && BACKEND_ACCESS_CODES.has(codeOf(error))
     blockers.backend = now() + (backendRevoked ? cfg.backendRevokedProbeMs : cfg.backendBackoffMs)

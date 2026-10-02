@@ -31,7 +31,7 @@
     "test:plugin-backend": "npm run test:plugin-backend-unit && npm run test:plugin-backend-contract",
     "build:plugin-ui": "node scripts/plugin/build-ui.mjs",
     "test:plugin-api-adapter": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/plugin/test-plugin-api-adapter.mjs",
-    "test:plugin-ui": "node --experimental-strip-types --test scripts/plugin/test-plugin-ui.mjs",
+    "test:plugin-ui": "node --experimental-strip-types --test scripts/plugin/test-plugin-ui.mjs scripts/plugin/test-plugin-ui-effects.mjs",
     "test:plugin-guide": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-plugin-guide.mjs",
     "test:ai-orchestrator": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-ai-orchestrator.mjs",
     "test:ai-bridge": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-ai-bridge.mjs",

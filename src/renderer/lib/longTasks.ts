@@ -34,6 +34,23 @@ export function longTaskNotes(view: LongTaskStatusView | null | undefined): Long
   }
 }
 
+/** backend 還在跑長任務時，畫面多久查一次狀態。 */
+export const LONG_TASK_POLL_MS = 3000
+/** 查詢連續失敗時的最長間隔。 */
+export const LONG_TASK_POLL_MAX_MS = 30_000
+
+/**
+ * 下一次查詢前要等多久（review N2）：成功時固定 `LONG_TASK_POLL_MS`；連續失敗 n 次就退避成 `LONG_TASK_POLL_MS * 2^n`（上限 30 s），
+ * 但不會停止查詢——之前只要失敗一次就不再排下一次，看板會一直以為任務還在跑。
+ */
+export function longTaskPollDelayMs(failures: number): number {
+  const n = Math.max(0, Math.min(10, Math.floor(failures)))
+  return Math.min(LONG_TASK_POLL_MS * 2 ** n, LONG_TASK_POLL_MAX_MS)
+}
+
+/** 查不到狀態時（`pollFailures > 0`）按鈕不再因為「上次看到的還在跑」而停用；看板上顯示的說明。 */
+export const LONG_TASK_STATUS_UNKNOWN_TEXT = '暫時查不到長任務的進度（稍後會再查）；按鈕已先開放，需要時可以直接再按一次。'
+
 type StatusSource = { pipeline: { longTaskStatus?: () => Promise<LongTaskStatusView> } }
 
 /** 查目前的長任務狀態；宿主不提供或查詢失敗都回 null（呼叫端照原本的方式顯示）。 */

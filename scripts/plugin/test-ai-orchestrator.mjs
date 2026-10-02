@@ -761,6 +761,7 @@ test('describeStatus: every state has a user-facing sentence; the "foreground on
   assert.doesNotMatch(text('unavailable', 'provider_unsupported_version'), /\d+\.\d+/)
   assert.match(text('paused', 'backend'), /暫時中斷/)
   assert.match(text('paused', 'backend_revoked'), /後端呼叫/)
+  assert.doesNotMatch(text('paused', 'backend_revoked'), /自動繼續|自動恢復/, 'review B1: no promise of resuming by itself')
   assert.match(text('unavailable', 'no_provider'), /找不到可用/)
   assert.match(text('revoked', 'access_revoked'), /ai:chat/)
   assert.match(text('stopped', null), /尚未啟動/)
@@ -779,14 +780,21 @@ test('G-10: the rate-limit sentence uses the limit the host reported (getOptions
   await ctx.orch.stop()
 })
 
-test('G-03: backend:invoke revoked (extract.pull rejects plugin_permission_denied) is its own paused reason — not "暫時中斷" — probed every 30 s, and work resumes once the backend answers again', async () => {
+test('G-03 / B1: Core fencing backend:invoke (plugin_permission_denied, then plugin_disabled for every probe — also after the permission is allowed again) is its own paused reason — not "暫時中斷", no promise of resuming by itself — probed every 30 s; work resumes only once Core lets calls through again (activate)', async () => {
   const ctx = setup({ items: 1 })
-  let revoked = true
+  // Core 1.7.1 (backendInvokeGate.ts): the call at the fence gets the reason, every later call plugin_disabled until activate()
+  let fence = 'plugin_permission_denied'
   const realPull = ctx.chans.extract.pull
   let pulls = 0
+  const codes = []
   ctx.chans.extract.pull = async (options) => {
     pulls += 1
-    if (revoked) throw Object.assign(new Error('plugin_permission_denied'), { code: 'plugin_permission_denied' })
+    if (fence) {
+      const code = fence
+      fence = 'plugin_disabled'
+      codes.push(code)
+      throw Object.assign(new Error(code), { code })
+    }
     return realPull(options)
   }
   ctx.orch.start()
@@ -794,21 +802,41 @@ test('G-03: backend:invoke revoked (extract.pull rejects plugin_permission_denie
   const status = ctx.orch.status()
   assert.equal(status.state, 'paused')
   assert.equal(status.reason, 'backend_revoked')
-  assert.match(describeStatus(status, ctx.clock.now()), /TeamUQ 已關閉此外掛的「後端呼叫」權限/)
+  const sentence = describeStatus(status, ctx.clock.now())
+  assert.match(sentence, /TeamUQ 目前不讓這個外掛呼叫後端/)
+  assert.match(sentence, /「後端呼叫」權限被關閉、外掛被停用，或後端太久沒有回應而被隔離/)
+  assert.match(sentence, /停用再啟用，或重新啟動 TeamUQ/)
+  assert.doesNotMatch(sentence, /自動繼續|自動恢復/, 'Core 1.7.1 does not lift the fence when the permission is allowed again')
   const afterFirst = pulls
   await ctx.clock.advance(20_000)
   assert.equal(pulls, afterFirst, 'no hammering: nothing within the 30 s probe interval')
-  revoked = false
+  // the user allows the permission again: Core still fences → the 30 s probe gets plugin_disabled and the reason stays
   await ctx.clock.advance(15_000)
   await ctx.settle()
   assert.ok(pulls > afterFirst, 'probed again after 30 s')
-  assert.equal(ctx.chans.itemStates()[0], 'done', 'the item is processed once access is back')
+  assert.deepEqual(codes.slice(0, 2), ['plugin_permission_denied', 'plugin_disabled'])
+  assert.equal(ctx.orch.status().reason, 'backend_revoked', 'plugin_disabled keeps the same reason')
+  assert.equal(ctx.chans.itemStates()[0] === 'done', false)
+  // disable → enable the plugin (activate): the next probe gets through
+  fence = null
+  await ctx.clock.advance(31_000)
+  await ctx.settle()
+  assert.equal(ctx.chans.itemStates()[0], 'done', 'the item is processed once Core lets calls through again')
   assert.notEqual(ctx.orch.status().reason, 'backend_revoked')
-  // an ordinary backend failure keeps the short backoff and the old wording
+  // a timeout fences too (timeoutPlugin): same paused reason, not the short "暫時中斷" backoff
+  const realPull3 = ctx.chans.extract.pull
+  ctx.chans.extract.pull = async () => { throw Object.assign(new Error('backend_invoke_timeout'), { code: 'backend_invoke_timeout' }) }
+  ctx.chans.addItem({ chatId: 'c8' })
+  ctx.chans.announce()
+  await ctx.settle()
+  assert.equal(ctx.orch.status().reason, 'backend_revoked')
+  ctx.chans.extract.pull = realPull3
+  // an ordinary backend failure (not fenced) keeps the short backoff and the old wording
   const realPull2 = ctx.chans.extract.pull
   ctx.chans.extract.pull = async () => { throw Object.assign(new Error('plugin_backend_unavailable'), { code: 'plugin_backend_unavailable' }) }
   ctx.chans.addItem({ chatId: 'c9' })
   ctx.chans.announce()
+  await ctx.clock.advance(31_000) // the next 30 s probe
   await ctx.settle()
   assert.equal(ctx.orch.status().reason, 'backend')
   ctx.chans.extract.pull = realPull2

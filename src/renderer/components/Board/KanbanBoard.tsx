@@ -17,7 +17,7 @@ import { DraftReplyDialog } from '../DraftReplyDialog'
 import type { TodoCardActions } from './TodoCard'
 import { NotMineReviewPanel } from './NotMineReviewPanel'
 import { backendErrorText } from '../../lib/backendError'
-import { explainInterrupted, longTaskNotes, readLongTasks } from '../../lib/longTasks'
+import { LONG_TASK_STATUS_UNKNOWN_TEXT, explainInterrupted, longTaskNotes, longTaskPollDelayMs, readLongTasks } from '../../lib/longTasks'
 import type { LongTaskStatusView } from '../../../shared/api'
 import {
   parseBoolean, parseOneOf, parseShortString, parseStringSet, serializeStringSet, usePersistentState
@@ -48,9 +48,6 @@ const parseChatId = parseShortString(200)
 const parseViewedIds = parseStringSet(5000)
 const serializeViewedIds = serializeStringSet(5000)
 const parseDraftTodoId = (raw: unknown): string | null | undefined => (raw === null ? null : parseChatId(raw))
-/** 長任務在 backend 跑的時候，多久查一次狀態。 */
-const LONG_TASK_POLL_MS = 3000
-
 /** 欄級 DnD 契約：KanbanBoard → Column。 */
 export interface BoardDnd {
   draggingId: string | null
@@ -315,14 +312,17 @@ export function KanbanBoard(): JSX.Element {
   )
 }
 
-function ReviewControls({
+/** 看板工具列：回顧最近 N 天、補媒體金鑰、長任務狀態（G-05／review N2）。`pollDelayMs`：測試用（預設 `longTaskPollDelayMs`）。 */
+export function ReviewControls({
   api,
   onRefresh,
-  onShowNotMine
+  onShowNotMine,
+  pollDelayMs = longTaskPollDelayMs
 }: {
   api: ReturnType<typeof useLineTodoApi>
   onRefresh: () => Promise<boolean>
   onShowNotMine: () => void
+  pollDelayMs?: (failures: number) => number
 }): JSX.Element {
   const [reviewing, setReviewing] = useState(false)
   const [progress, setProgress] = useState<BackfillProgress | null>(null)
@@ -333,7 +333,10 @@ function ReviewControls({
   const [backfillNote, setBackfillNote] = useState<string | null>(null)
   /** backend 回報的長任務狀態（外掛版；standalone 為 null）。 */
   const [tasks, setTasks] = useState<LongTaskStatusView | null>(null)
+  /** 長任務狀態連續查詢失敗的次數（review N2）：> 0 時 `tasks` 是舊的，按鈕不再因它停用，查詢以退避繼續。 */
+  const [pollFailures, setPollFailures] = useState(0)
   const notes = longTaskNotes(tasks)
+  const statusUnknown = pollFailures > 0
   /** 回顧／補金鑰在 backend 跑、但不是這個畫面按下去的（畫面重新開啟、或等待中的呼叫斷掉之後）。 */
   const remoteRunning = (notes.reviewRunning && !reviewing) || (notes.backfillRunning && !backfilling)
 
@@ -351,21 +354,24 @@ function ReviewControls({
     return () => { alive = false }
   }, [api])
 
+  // 查詢失敗（review N2）：不停止，以退避再查（失敗次數變了，effect 會重排下一次）；在查到之前按鈕不因舊狀態停用。
   useEffect(() => {
     if (!remoteRunning || !api.pipeline.longTaskStatus) return undefined
     let alive = true
     const timer = setTimeout(() => {
       void readLongTasks(api).then((view) => {
-        if (!alive || !view) return
+        if (!alive) return
+        if (!view) { setPollFailures((n) => n + 1); return }
+        setPollFailures(0)
         const before = longTaskNotes(tasks)
         const after = longTaskNotes(view)
         setTasks(view)
         if (before.reviewRunning && !after.reviewRunning) { setReviewNote(view.review?.summary ?? null); void onRefresh() }
         if (before.backfillRunning && !after.backfillRunning) setBackfillNote(view.mediaBackfill?.summary ?? null)
       })
-    }, LONG_TASK_POLL_MS)
+    }, pollDelayMs(pollFailures))
     return () => { alive = false; clearTimeout(timer) }
-  }, [api, onRefresh, remoteRunning, tasks])
+  }, [api, onRefresh, remoteRunning, tasks, pollFailures, pollDelayMs])
 
   useEffect(() => {
     let alive = true
@@ -425,13 +431,13 @@ function ReviewControls({
     } finally { setBackfilling(false) }
   }
 
-  const reviewBusy = reviewing || notes.reviewRunning
-  const backfillBusy = backfilling || notes.backfillRunning
+  const reviewBusy = reviewing || (notes.reviewRunning && !statusUnknown)
+  const backfillBusy = backfilling || (notes.backfillRunning && !statusUnknown)
   const reviewLabel = reviewing
     ? progress?.phase === 'extracting' && progress.total > 0
       ? `處理中 ${progress.processed}/${progress.total} 聊天…`
       : progress?.phase === 'fetching' ? '撈取訊息中…' : '回顧中…'
-    : notes.reviewRunning
+    : notes.reviewRunning && !statusUnknown
       ? (notes.reviewText ?? '回顧中…')
       : `🔄 回顧最近 ${REVIEW_DAYS} 天`
 
@@ -444,6 +450,7 @@ function ReviewControls({
       </button>
       {hasApiKey === false && !reviewBusy && <span className="review-hint">{notReadyShortText(aiProvider)}</span>}
       {reviewNote && <span className="review-note">{reviewNote}</span>}
+      {statusUnknown && remoteRunning && <span className="review-note" data-testid="long-task-status-unknown">{LONG_TASK_STATUS_UNKNOWN_TEXT}</span>}
       <button className="btn-review-week" disabled={backfillBusy} onClick={() => void onBackfillMediaKeys()}
         title="重讀近 7 天訊息、補既有媒體卡片的金鑰（不需金鑰、不跑 AI）">
         {backfillBusy ? '補金鑰中…' : '🖼️ 補媒體金鑰(近7天)'}

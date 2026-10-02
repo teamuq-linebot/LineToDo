@@ -16,9 +16,10 @@
  *     事件 payload 被壓成 `{overflow:true}`：都無法逐則補回，改成「重新同步」——對 `todos-changed`／`messages-persisted` 發一個空事件、
  *     並重拉 `pipeline.status`／`line.status` 後以 `pipeline-status`／`line-status` 發出，讓看板整個重載。
  *   - 失敗（backend 暫時不可用）以指數退避重試，永不 throw 到訂閱者。
- *   - host 回「這個外掛不能用 backend」（`plugin_permission_denied`＝撤銷 backend:invoke、`plugin_disabled`、`plugin_not_installed`；G-03）：
- *     不再當成暫時失敗做指數退避，改成每 `accessProbeMs`（預設 30 s）探一次，直到使用者在 TeamUQ 重新允許；畫面顯示的原因由
- *     transport 的連線狀態（`pluginTransport.ts` 的 `link()`）負責。恢復後照「失敗後」的規則補一次重新同步。
+ *   - host 回「這個外掛不能用 backend」（`pluginTransport.ts` 的 `ACCESS_HOST_CODES`：Core 隔離了後端呼叫或外掛已移除；G-03）：
+ *     不再當成暫時失敗做指數退避，改成每 `accessProbeMs`（預設 30 s）探一次；畫面顯示的原因由 transport 的連線狀態（`link()`）負責。
+ *     Core 1.7.1 只有在外掛停用再啟用（activate）或 TeamUQ 重新啟動後才解除隔離，重新允許權限不會解除（review B1），而停用時 Core 會關掉
+ *     這個 view；所以探測多半等不到恢復，只是保險（例如 Core 之後改成重新允許就解除）。探測成功時照「失敗後」的規則補一次重新同步。
  */
 import { ACCESS_HOST_CODES } from './pluginTransport'
 
@@ -204,7 +205,7 @@ export class PluginEventPump {
           continue
         }
         if (ACCESS_HOST_CODES.has(code)) {
-          // 撤銷／停用／移除：Core 已停掉 backend，session 不會再存在；固定間隔探測，恢復後重開 session 並重新同步。
+          // Core 已隔離後端呼叫（或外掛已移除）並停掉 backend，session 不會再存在；固定間隔探測，解除隔離後重開 session 並重新同步。
           run.sessionId = null
           needResync = true
           this.o.onDiagnostic?.({ kind: 'access', detail: code })

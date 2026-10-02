@@ -4,9 +4,9 @@
  * 方法名稱（G-07）：manifest 的 `backendMethods` 是命名空間分組（`src/shared/pluginWire.ts` 的 `BACKEND_METHOD_GROUPS`），
  * 每次呼叫用 `backendMethodFor(path)` 選出所屬的組；不屬於任何一組的路徑在 view 端就以 `path_unknown` 拒絕，不送給 host。
  *
- * 連線狀態（G-03）：每次 host 呼叫的結果決定 `link()`——成功＝`ok`；`plugin_permission_denied`／`plugin_disabled`／`plugin_not_installed`
- * ＝`revoked`（使用者在 TeamUQ 撤銷了 backend:invoke、停用或移除了外掛；Core 會把 backend 停掉，重試沒有用）；backend 沒起來／當掉／逾時
- * ＝`unavailable`。畫面用 `onLink()` 顯示明確的原因，而不是空白看板。
+ * 連線狀態（G-03）：每次 host 呼叫的結果決定 `link()`——成功＝`ok`；`ACCESS_HOST_CODES`（`plugin_permission_denied`／`plugin_disabled`／
+ * `backend_invoke_timeout`／`plugin_not_installed`）＝`revoked`（TeamUQ 已隔離這個外掛的後端呼叫：權限被關閉、外掛被停用或後端逾時，或外掛已移除；
+ * Core 會把 backend 停掉，重試沒有用）；backend 沒起來／忙／當掉＝`unavailable`。畫面用 `onLink()` 顯示明確的原因，而不是空白看板。
  *
  * 只描述 TeamUQ 1.6.8 view bridge 與 backend dispatcher（`src/plugin/backend/dispatcher.ts`）的線上格式，不碰 React／DOM：
  *   - host：`backend.call(method, params)` 把 params 驗成 JSON（陣列 ≤ 4096、數字必須有限、不能有 undefined），請求／回應各 ≤ 64 KiB，
@@ -60,14 +60,21 @@ export class PluginBackendError extends PluginApiError {
     super(hostCode, path)
     this.name = 'PluginBackendError'
   }
-  /** 使用者撤銷了 backend:invoke、停用或移除了外掛（重試不會好，要使用者在 TeamUQ 處理）。 */
+  /** TeamUQ 已隔離這個外掛的後端呼叫（權限關閉、停用、逾時）或外掛已移除：重試不會好，要使用者在 TeamUQ 處理。 */
   get accessDenied(): boolean { return ACCESS_HOST_CODES.has(this.code) }
 }
 
-/** host 對「這個外掛不能用 backend」的說法：撤銷 backend:invoke（`backendInvokeGate.ts` 的 revoke）、外掛停用、外掛已移除。 */
-export const ACCESS_HOST_CODES: ReadonlySet<string> = new Set(['plugin_permission_denied', 'plugin_disabled', 'plugin_not_installed'])
-/** host 對「backend 暫時不能用」的說法（沒起來、忙、當掉、逾時被重啟）。 */
-export const UNAVAILABLE_HOST_CODES: ReadonlySet<string> = new Set(['plugin_backend_unavailable', 'plugin_backend_busy', 'plugin_backend_crashed', 'backend_invoke_timeout', 'backend_call_failed'])
+/**
+ * host 對「這個外掛不能用 backend」的說法（Core 1.7.1 `backendInvokeGate.ts`；review B1）：
+ *   - `plugin_permission_denied`：隔離當下進行中的呼叫（revoke：關閉 backend:invoke 或停用外掛），或權限仍是關閉的；
+ *   - `backend_invoke_timeout`：單次呼叫逾時，Core 隔離整個外掛（timeoutPlugin）；
+ *   - `plugin_disabled`：隔離之後的每一個新呼叫（不論隔離原因），或外掛真的是停用的；
+ *   - `plugin_not_installed`：外掛已移除。
+ * 隔離只在外掛停用再啟用（activate）或 TeamUQ 重新啟動後解除；重新允許權限不會解除。
+ */
+export const ACCESS_HOST_CODES: ReadonlySet<string> = new Set(['plugin_permission_denied', 'plugin_disabled', 'backend_invoke_timeout', 'plugin_not_installed'])
+/** host 對「backend 暫時不能用」的說法（沒起來、忙、當掉；沒有隔離）。 */
+export const UNAVAILABLE_HOST_CODES: ReadonlySet<string> = new Set(['plugin_backend_unavailable', 'plugin_backend_busy', 'plugin_backend_crashed', 'backend_call_failed'])
 
 export type BackendLinkState = 'unknown' | 'ok' | 'revoked' | 'unavailable'
 export interface BackendLink {

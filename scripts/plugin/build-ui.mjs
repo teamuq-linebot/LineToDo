@@ -12,7 +12,7 @@
 //   font-src <origin> data:; connect-src <origin>; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'
 // ...which means for us: no inline <script> / on*= attributes, no <base>/<iframe>/<object>/<embed>, no network API pointed anywhere but the plugin origin
 // (the UI has none at all: everything goes through window.tuqPlugin.backend), no `linemedia://` (not in img-src), no `window.api` (standalone's preload).
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
@@ -127,6 +127,19 @@ export function analyzeUiBundle({ files, metafiles = [] }) {
   }
 }
 
+/** The UI files copied as they are (not bundled). */
+export const UI_TEXT_FILES = Object.freeze(['index.html', 'settings.html', 'theme-boot.js'])
+
+/**
+ * Authored text that goes into the package byte for byte gets LF line endings, whatever the checkout did to it (core.autocrlf=true gives CRLF,
+ * false / input gives LF). Without this the artifact's sha256 depended on the checkout, not on the commit (tester-evidence §4.4).
+ * esbuild output is already independent of the source line endings.
+ */
+export const toLf = (text) => String(text).replace(/\r\n?/g, '\n')
+export function copyTextAsLf(from, to) {
+  writeFileSync(to, toLf(readFileSync(from, 'utf8')))
+}
+
 export async function buildPluginUi({ outDir }) {
   rmSync(outDir, { recursive: true, force: true })
   mkdirSync(outDir, { recursive: true })
@@ -152,7 +165,7 @@ export async function buildPluginUi({ outDir }) {
     })
     metafiles.push(result.metafile)
   }
-  for (const file of ['index.html', 'settings.html', 'theme-boot.js']) copyFileSync(join(UI_SRC, file), join(outDir, file))
+  for (const file of UI_TEXT_FILES) copyTextAsLf(join(UI_SRC, file), join(outDir, file))
   const files = {}
   for (const name of readdirSync(outDir)) files[name] = readFileSync(join(outDir, name), 'utf8')
   const analysis = analyzeUiBundle({ files, metafiles })

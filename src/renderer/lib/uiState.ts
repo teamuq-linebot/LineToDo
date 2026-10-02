@@ -9,8 +9,35 @@
  *
  * 每筆值存成 `{ v, at }`；讀取時可給 `maxAgeMs`，過期的草稿直接丟掉並刪除。值超過 `maxValueBytes`（預設 256 KiB）就不寫，避免把 localStorage 撐爆。
  * 壞掉的 JSON、型別不符（`parse` 回 undefined）一律當成「沒有存過」。
+ *
+ * 含 LINE 衍生文字的草稿（review N1）：卡片未儲存的編輯與關鍵字（`card.edit.*`、`card.kw.*`，7 天）、草擬回覆（`reply.draft.*`，24 小時）。
+ * 期限只定義在 `UI_DRAFT_RETENTION` 一處，讀取時的過期判斷與主動清除用同一組數字。主動清除：看板 view 啟動時（`browserUiState()`）
+ * 與開著的期間每小時（`UI_DRAFT_SWEEP_INTERVAL_MS`）掃一次，刪掉所有過期的草稿——包含待辦已完成或刪除、之後再也不會被讀取的那些。
+ * 限制：view 沒有開著時沒有任何外掛程式碼能碰這個 localStorage，所以過期的草稿最晚在「下一次開啟看板」時刪除；看板開著時，
+ * 最晚在過期後一小時內刪除。草擬回覆在使用者關閉對話框時就刪除（DraftReplyDialog）。
  */
 import { createContext, useCallback, useContext, useState } from 'react'
+
+const DAY_MS = 24 * 60 * 60 * 1000
+/** 卡片未儲存的編輯表單／關鍵字草稿保存多久。 */
+export const CARD_DRAFT_MAX_AGE_MS = 7 * DAY_MS
+/** 草擬回覆（AI 產生或使用者改過的回覆全文）保存多久。 */
+export const REPLY_DRAFT_MAX_AGE_MS = DAY_MS
+/** 主動清除的間隔（看板開著時）。 */
+export const UI_DRAFT_SWEEP_INTERVAL_MS = 60 * 60 * 1000
+
+export interface UiRetentionRule {
+  /** key 前綴（不含 store 的 `lt-ui:`）。 */
+  prefix: string
+  maxAgeMs: number
+}
+
+/** 含 LINE 衍生文字的 UI 狀態與保存期限（唯一定義處）。 */
+export const UI_DRAFT_RETENTION: readonly UiRetentionRule[] = Object.freeze([
+  Object.freeze({ prefix: 'card.edit.', maxAgeMs: CARD_DRAFT_MAX_AGE_MS }),
+  Object.freeze({ prefix: 'card.kw.', maxAgeMs: CARD_DRAFT_MAX_AGE_MS }),
+  Object.freeze({ prefix: 'reply.draft.', maxAgeMs: REPLY_DRAFT_MAX_AGE_MS })
+])
 
 export interface UiStateReadOptions {
   /** 超過這個時間（毫秒）的值視為沒有存過。 */
@@ -22,13 +49,16 @@ export interface UiStateStore {
   read<T>(key: string, parse: (raw: unknown) => T | undefined, options?: UiStateReadOptions): T | undefined
   write(key: string, value: unknown): void
   remove(key: string): void
+  /** 刪掉符合規則前綴、已過期（或壞掉）的值；回傳刪了幾筆。不能列舉 key 的 storage 回 0。 */
+  sweep(rules: readonly UiRetentionRule[]): number
 }
 
 export const NO_UI_STATE: UiStateStore = Object.freeze({
   persistent: false,
   read: () => undefined,
   write: () => undefined,
-  remove: () => undefined
+  remove: () => undefined,
+  sweep: () => 0
 })
 
 export interface LocalUiStateOptions {
@@ -37,7 +67,7 @@ export interface LocalUiStateOptions {
   now?(): number
 }
 
-type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
+type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> & Partial<Pick<Storage, 'key' | 'length'>>
 
 export function createLocalUiState(storage: StorageLike | null | undefined, options: LocalUiStateOptions = {}): UiStateStore {
   if (!storage) return NO_UI_STATE
@@ -72,17 +102,49 @@ export function createLocalUiState(storage: StorageLike | null | undefined, opti
     },
     remove(key: string): void {
       try { storage.removeItem(full(key)) } catch { /* 忽略 */ }
+    },
+    sweep(rules: readonly UiRetentionRule[]): number {
+      if (typeof storage.key !== 'function' || typeof storage.length !== 'number') return 0
+      const expired: string[] = []
+      try {
+        const at = now()
+        for (let index = 0; index < storage.length; index += 1) {
+          const name = storage.key(index)
+          if (name === null || !name.startsWith(prefix)) continue
+          const rule = rules.find((r) => name.startsWith(prefix + r.prefix))
+          if (!rule) continue
+          let savedAt: unknown
+          try { savedAt = (JSON.parse(storage.getItem(name) ?? 'null') as { at?: unknown } | null)?.at } catch { savedAt = undefined }
+          if (typeof savedAt !== 'number' || at - savedAt > rule.maxAgeMs) expired.push(name)
+        }
+      } catch { /* storage 不可用：這次不清 */ }
+      let removed = 0
+      for (const name of expired) {
+        try { storage.removeItem(name); removed += 1 } catch { /* 忽略 */ }
+      }
+      return removed
     }
   }
 }
 
-/** 外掛 view 用：取 `window.localStorage`（被封鎖時退回不保存）。 */
-export function browserUiState(): UiStateStore {
+type BrowserWindow = { localStorage: StorageLike; setInterval(handler: () => void, ms: number): unknown }
+
+/**
+ * 外掛看板 view 用：取 `window.localStorage`（被封鎖時退回不保存），並主動清除過期的草稿（review N1）：建立時清一次，之後每
+ * `UI_DRAFT_SWEEP_INTERVAL_MS` 清一次（view 存在多久就清多久）。`win`：測試用。
+ */
+export function browserUiState(win: BrowserWindow | undefined = typeof window !== 'undefined' ? (window as unknown as BrowserWindow) : undefined): UiStateStore {
+  let store: UiStateStore
   try {
-    return createLocalUiState(typeof window !== 'undefined' ? window.localStorage : null)
+    store = createLocalUiState(win ? win.localStorage : null)
   } catch {
     return NO_UI_STATE
   }
+  if (store.persistent && win) {
+    store.sweep(UI_DRAFT_RETENTION)
+    try { win.setInterval(() => { store.sweep(UI_DRAFT_RETENTION) }, UI_DRAFT_SWEEP_INTERVAL_MS) } catch { /* 沒有計時器：只在啟動時清 */ }
+  }
+  return store
 }
 
 const identity = (value: unknown): unknown => value
