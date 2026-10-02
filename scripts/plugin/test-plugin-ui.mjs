@@ -12,6 +12,7 @@ import test from 'node:test'
 import { build } from 'esbuild'
 
 import { ROOT, analyzeUiBundle, buildPluginUi } from './build-ui.mjs'
+import { CORE_BACKEND_INVOKE_TITLE, EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME } from './lib/fenced-text.mjs'
 
 const work = mkdtempSync(join(tmpdir(), 'plugin-ui-test-'))
 test.after(() => rmSync(work, { recursive: true, force: true }))
@@ -124,13 +125,19 @@ test('G-03 / B1: the backend status line, when Core fences the plugin, names the
     assert.match(html, /backend:invoke/, code)
     assert.match(html, /外掛被停用/, code)
     assert.match(html, /太久沒有回應而被 TeamUQ 隔離/, code)
-    assert.match(html, /確認這個外掛已允許「後端呼叫」而且是啟用的/, code)
+    assert.ok(html.includes(`確認這個外掛已允許「${CORE_BACKEND_INVOKE_TITLE}」而且是啟用的`), `${code}: the switch title on TeamUQ's settings page (R1-N1)`)
     assert.match(html, /停用再啟用，或重新啟動 TeamUQ/, code)
     assert.doesNotMatch(html, /自動恢復|目前在 TeamUQ 中是停用狀態/, code)
+    // tester r1 §3.2: word for word, so a paraphrased promise cannot slip in; R1-N1: never the name 「後端呼叫」
+    assert.ok(html.includes(EXPECTED_FENCED_TEXT), `${code}: the fenced sentence, word for word`)
+    assert.doesNotMatch(html, RECOVERY_PROMISE, code)
+    assert.doesNotMatch(html, STALE_PERMISSION_NAME, code)
   }
   const timeout = renderBackendBar({ state: 'revoked', code: 'backend_invoke_timeout' })
   assert.match(timeout, /停用再啟用/)
   assert.doesNotMatch(timeout, /已重新啟動它/)
+  assert.ok(timeout.includes(EXPECTED_TIMEOUT_TEXT), 'the timeout sentence, word for word')
+  assert.doesNotMatch(timeout, RECOVERY_PROMISE)
   assert.match(renderBackendBar({ state: 'unavailable', code: 'plugin_backend_crashed' }), /意外結束/)
   assert.equal(renderBackendBar({ state: 'ok', code: null }), '')
   assert.equal(renderBackendBar({ state: 'unknown', code: null }), '')

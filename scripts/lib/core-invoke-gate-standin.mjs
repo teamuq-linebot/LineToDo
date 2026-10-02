@@ -24,8 +24,9 @@
 // Not modelled: view generations (closeView), payload-size checks, the signer checks of the generic gate. The stand-in keeps the same runtime
 // object across a fence (Core stops the backend and starts a fresh one on the next admitted call — the plugin cannot tell the difference except
 // that in-memory backend state is gone; the tests that need a restart model it themselves).
-// developer-logs/r1/core-gate-conformance.mjs runs the same call sequence against Core's real createInstalledBackendInvokeGate and this stand-in
-// and checks that every call ends the same way.
+// `npm run check:core-gate-conformance` (scripts/plugin/check-core-gate-conformance.mjs; needs a teamuq-electron checkout, fails when there is
+// none) runs the same call sequence against Core's real createInstalledBackendInvokeGate and this stand-in and checks that every call ends the
+// same way, and that the composition still wires the gate as described above (review R1-N2). Run it whenever Core moves.
 
 export const CORE_INVOKE_LIMITS = Object.freeze({ inFlight: 8, timeoutMs: 30_000 })
 

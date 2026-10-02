@@ -3,7 +3,8 @@
 //
 //   G-02  the catch wiring the tester found untested (tester-evidence §3.2 G02-e…h): SettingsPanel read + write, useTodos.refresh,
 //         NotMineReviewPanel.load — each failure must reach the screen, none may become an unhandled rejection
-//   N2    a failed long-task status query must not leave the review / backfill buttons disabled forever
+//   N2    a failed long-task status query must not leave the review / backfill buttons disabled forever; a later successful query that still
+//         says running makes the state known again (tester r1 §3.1)
 //   N1    closing the draft-reply dialog deletes the saved reply draft (LINE-derived text)
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -215,6 +216,45 @@ test('N2 (effects): a long-task status query that fails once does not leave the 
       assert.equal(refreshed, 1, 'the board is reloaded once the review is seen finished')
       assert.equal(byAttr(view.container, 'data-testid', 'long-task-status-unknown'), null)
       assert.equal(reactProps(reviewButton()).disabled, false)
+    } finally { view.unmount(); api.dispose() }
+  })
+  assert.deepEqual(unhandled, [])
+})
+
+// Tester r1 §3.1 (mutation T-N2-b; the test is the tester's tester-logs/r1/make-n2-recovery.mjs, plus the backoff-reset check its title names):
+// the sequence above ends with `done`, so a success that does not reset the failure count went unnoticed. Here the poll after the failure
+// still says running.
+test('N2 (effects): after a failed query, a poll that succeeds and still says running makes the state known again — the buttons are disabled again, the "status unknown" note goes away and the backoff starts over', async () => {
+  const running = { review: { running: true, state: 'running', summary: 'R:running', chatsDone: 1, chatsTotal: 4, resumableMessages: 0 }, mediaBackfill: { running: true, state: 'running', summary: 'B:running' } }
+  const done = { review: { running: false, state: 'done', summary: 'R:done', chatsDone: 4, chatsTotal: 4, resumableMessages: 0 }, mediaBackfill: { running: false, state: 'done', summary: 'B:done' } }
+  const answers = ['running', 'fail', 'running', 'running', 'running', 'running', 'running', 'running', 'done']
+  let statusCalls = 0
+  const { api } = plugin({
+    'tasks.status': () => {
+      const next = answers[Math.min(statusCalls, answers.length - 1)]
+      statusCalls += 1
+      if (next === 'fail') throw Object.assign(new Error('status file unreadable'), { code: 'internal' })
+      return next === 'running' ? running : done
+    },
+    'pipeline.status': () => ({ hasApiKey: true }),
+    'settings.get': () => VIEW
+  })
+  const delays = []
+  const pollDelayMs = (failures) => { delays.push(failures); return 60 * 2 ** failures }
+  const unhandled = await collectingUnhandled(async () => {
+    const view = ui.mount(ui.reviewControlsScene(api, { onRefresh: async () => true, pollDelayMs }))
+    const buttons = () => walk(view.container).filter((el) => el.localName === 'button')
+    const reviewButton = () => buttons()[1]
+    const backfillButton = () => buttons()[2]
+    try {
+      await until(() => reviewButton() && reactProps(reviewButton()).disabled === true, { message: 'disabled while running' })
+      await until(() => statusCalls >= 2 && reactProps(reviewButton()).disabled === false && byAttr(view.container, 'data-testid', 'long-task-status-unknown'), { message: 'released + note after the failed query' })
+      // the next poll succeeds and the task is STILL running: the state is known again
+      await until(() => statusCalls >= 3 && reactProps(reviewButton()).disabled === true && byAttr(view.container, 'data-testid', 'long-task-status-unknown') === null, { message: 'disabled again, note gone, after a successful poll that still says running' })
+      assert.equal(reactProps(backfillButton()).disabled, true, 'the backfill button too')
+      assert.ok(delays.includes(1), `the failure was counted: ${delays.join(',')}`)
+      await until(() => delays.slice(delays.indexOf(1)).includes(0), { message: 'the backoff to start over (failures 0) after the successful poll', timeout: 1500 })
+      await until(() => view.container.textContent.includes('R:done'), { message: 'done' })
     } finally { view.unmount(); api.dispose() }
   })
   assert.deepEqual(unhandled, [])

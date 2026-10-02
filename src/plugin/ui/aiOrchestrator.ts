@@ -23,6 +23,7 @@
 import { validateExtractResult } from '../../shared/extractResult'
 import { fitReplyText } from '../../shared/pluginWire'
 import { ACCESS_HOST_CODES } from '../../renderer/platform/pluginTransport'
+import { BACKEND_INVOKE_TOGGLE_TITLE } from '../../renderer/lib/backendError'
 
 // ───────────────────────── 1.6.8 ai:chat 的型別（只列用到的）─────────────────────────
 
@@ -340,7 +341,8 @@ export function describeStatus(status: OrchestratorStatus, now = Date.now()): st
         case 'quota_exhausted': return `Codex 額度已用完，${secs === null ? '稍後' : `約 ${Math.ceil(secs / 60)} 分鐘後`}繼續`
         case 'backend': return '與外掛後端的連線暫時中斷，稍後重試'
         // review B1：Core 1.7.1 重新允許權限不會解除隔離，這裡不承諾自動繼續，只列出有效的操作。
-        case 'backend_revoked': return 'TeamUQ 目前不讓這個外掛呼叫後端（「後端呼叫」權限被關閉、外掛被停用，或後端太久沒有回應而被隔離），AI 整理暫停；請到 TeamUQ「我的 AI › 外掛」確認已允許「後端呼叫」且外掛是啟用的，仍沒有恢復就把外掛停用再啟用，或重新啟動 TeamUQ'
+        // R1-N1：權限名稱用 TeamUQ 設定頁上開關的實際標題（BACKEND_INVOKE_TOGGLE_TITLE）。
+        case 'backend_revoked': return `TeamUQ 目前不讓這個外掛呼叫後端（「${BACKEND_INVOKE_TOGGLE_TITLE}」權限被關閉、外掛被停用，或後端太久沒有回應而被隔離），AI 整理暫停；請到 TeamUQ「我的 AI › 外掛」確認已允許「${BACKEND_INVOKE_TOGGLE_TITLE}」且外掛是啟用的，仍沒有恢復就把外掛停用再啟用，或重新啟動 TeamUQ`
         default: return 'AI 整理暫停中，稍後繼續'
       }
     default: return status.busy ? 'AI 正在整理新訊息…' : 'AI 整理已就緒（看板在前景時才會整理新訊息）'

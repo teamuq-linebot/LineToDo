@@ -23,7 +23,7 @@ import { Dispatcher } from '../../src/plugin/backend/dispatcher.ts'
 import { EventHub } from '../../src/plugin/backend/eventHub.ts'
 import { ReviewCoordinator, ReviewLedger } from '../../src/plugin/backend/reviewRun.ts'
 import { describeLink } from '../../src/plugin/ui/backendLink.ts'
-import { backendErrorText, describeBackendError, guarded } from '../../src/renderer/lib/backendError.ts'
+import { BACKEND_INVOKE_TOGGLE_TITLE, backendErrorText, describeBackendError, guarded } from '../../src/renderer/lib/backendError.ts'
 import { RESUMABLE_REVIEW_STATES, explainInterrupted, longTaskNotes, longTaskPollDelayMs, readLongTasks } from '../../src/renderer/lib/longTasks.ts'
 import { THEME_KEY, applyTheme, readStoredTheme, resolveTheme, systemTheme, toggleChoice } from '../../src/renderer/lib/theme.ts'
 import {
@@ -35,7 +35,8 @@ import { PluginApiError, PluginBackendError, createPluginLineTodoApi } from '../
 import { BACKEND_METHOD_GROUPS, backendMethodFor } from '../../src/shared/pluginWire.ts'
 import { BACKEND_METHODS, buildManifest } from './lib/manifest.mjs'
 import { ROOT } from './lib/paths.mjs'
-import { createCoreGateStandin } from '../lib/core-invoke-gate-standin.mjs'
+import { CORE_INVOKE_LIMITS, createCoreGateStandin } from '../lib/core-invoke-gate-standin.mjs'
+import { CORE_BACKEND_INVOKE_TITLE, EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME } from './lib/fenced-text.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function until(predicate, { timeout = 3000, step = 5, message = 'condition' } = {}) {
@@ -56,12 +57,17 @@ function coreHost(target, { allow = BACKEND_METHODS, timeoutMs } = {}) {
 /**
  * Review B1: what the status line / panels say while Core fences the plugin. It must cover all three of Core's fence sources, give the actions that
  * actually work, never promise that allowing the permission again brings it back, and never claim plugin_disabled means "disabled".
+ * Tester r1 §3.2: the sentence is compared WORD FOR WORD (a paraphrased promise slipped past the old blacklist); only an "<action>失敗：" prefix may
+ * precede it. R1-N1: the switch is named the way TeamUQ's settings page names it.
  */
 function assertFencedSentence(text, label) {
-  assert.doesNotMatch(text, /自動恢復|自動繼續|會恢復。?$/, `${label}: no promise of automatic recovery (Core 1.7.1 keeps the fence when the permission is allowed again)`)
+  assert.ok(text.endsWith(EXPECTED_FENCED_TEXT), `${label}: the fenced sentence, word for word — got: ${text}`)
+  assert.match(text.slice(0, text.length - EXPECTED_FENCED_TEXT.length), /^([^：。]{1,24}：)?$/u, `${label}: nothing but an "<action>失敗：" prefix before it`)
+  assert.doesNotMatch(text, RECOVERY_PROMISE, `${label}: no promise of recovery (Core 1.7.1 keeps the fence when the permission is allowed again)`)
+  assert.doesNotMatch(text, STALE_PERMISSION_NAME, `${label}: no switch name that TeamUQ's settings page does not show`)
   assert.doesNotMatch(text, /目前在 TeamUQ 中是停用狀態/, `${label}: plugin_disabled is not asserted to mean "disabled"`)
-  for (const cause of [/「後端呼叫」權限（backend:invoke）被關閉/, /外掛被停用/, /太久沒有回應而被 TeamUQ 隔離/]) assert.match(text, cause, `${label}: names the fence source ${cause}`)
-  assert.match(text, /「我的 AI › 外掛」確認這個外掛已允許「後端呼叫」而且是啟用的/, `${label}: what to check`)
+  for (const cause of [`「${CORE_BACKEND_INVOKE_TITLE}」權限（backend:invoke）被關閉`, '外掛被停用', '太久沒有回應而被 TeamUQ 隔離']) assert.ok(text.includes(cause), `${label}: names the fence source ${cause}`)
+  assert.ok(text.includes(`「我的 AI › 外掛」確認這個外掛已允許「${CORE_BACKEND_INVOKE_TITLE}」而且是啟用的`), `${label}: what to check, with the switch's title on TeamUQ's settings page`)
   assert.match(text, /停用再啟用，或重新啟動 TeamUQ/, `${label}: what actually lifts the fence`)
 }
 
@@ -200,6 +206,8 @@ test('G-03 / B1: Core fences on revoke — the call in flight ends plugin_permis
       assert.doesNotMatch(timeoutText, /已重新啟動它|稍後再試。?$/, 'no "restarted, try again later"')
       assert.match(timeoutText, /稍後再試也不會恢復/)
       assert.match(timeoutText, /停用再啟用，或重新啟動 TeamUQ/)
+      assert.equal(timeoutText, EXPECTED_TIMEOUT_TEXT, 'the timeout sentence, word for word')
+      assert.doesNotMatch(timeoutText, RECOVERY_PROMISE)
       await assert.rejects(api.ping(), (e) => e.code === 'plugin_disabled')
       assertFencedSentence(describeLink(api.plugin.backendLink()).text, 'plugin_disabled after a timeout')
       core.setBackendInvokeRevoked(false)
@@ -233,7 +241,11 @@ test('G-03 / B1: the event pump under Core fencing — fixed-interval probes (no
   await withRealBackend(async ({ backend }) => {
     const core = coreHost(backend)
     const diagnostics = []
-    const api = createPluginLineTodoApi({ host: core.host, events: { ...FAST_EVENTS, accessProbeMs: 60, onDiagnostic: (d) => diagnostics.push(d) } })
+    // Tester r1 §3.3: the two regimes must be told apart. The fixed probe (accessProbeMs 60) and the ordinary failure backoff (1000 ms here) are
+    // far apart, so a pump that backs off while fenced makes no probe at all in the 300 ms window, and one that loops faster than the probe
+    // interval shows up in the gaps between probes.
+    const PROBE_MS = 60
+    const api = createPluginLineTodoApi({ host: core.host, events: { ...FAST_EVENTS, backoffBaseMs: 1000, backoffMaxMs: 1000, accessProbeMs: PROBE_MS, onDiagnostic: (d) => diagnostics.push({ ...d, at: Date.now() }) } })
     const changed = []
     const off = api.pipeline.onTodosChanged((payload) => changed.push(payload))
     const eventCalls = () => core.state.results.filter((r) => r.path?.startsWith('events.'))
@@ -242,10 +254,15 @@ test('G-03 / B1: the event pump under Core fencing — fixed-interval probes (no
       core.setBackendInvokeRevoked(true)
       await until(() => diagnostics.some((d) => d.kind === 'access'), { message: 'the pump noticing the fence' })
       const atFence = eventCalls().length
+      const accessAtFence = diagnostics.filter((d) => d.kind === 'access').length
       await sleep(300)
       const probes = eventCalls().length - atFence
-      // with backoffBaseMs 10 / backoffMaxMs 40 an ordinary failing loop would make ~10 calls in 300 ms; the access probe makes one per 60 ms
-      assert.ok(probes >= 2 && probes <= 7, `${probes} probes in 300 ms`)
+      // fixed 60 ms probe: ~5 calls in 300 ms; the 1000 ms failure backoff: none; a busy loop: dozens
+      assert.ok(probes >= 3 && probes <= 7, `fixed-interval probes, not the failure backoff: ${probes} probes in 300 ms`)
+      const accessTimes = diagnostics.filter((d) => d.kind === 'access').slice(accessAtFence - 1).map((d) => d.at)
+      const gaps = accessTimes.slice(1).map((t, i) => t - accessTimes[i])
+      assert.ok(gaps.length >= 3 && gaps.every((gap) => gap >= PROBE_MS - 15), `one probe per accessProbeMs (${PROBE_MS} ms), gaps: ${gaps.join(',')}`)
+      assert.equal(diagnostics.filter((d) => d.kind === 'error').length, 0, 'a fence is not handled as an ordinary failure')
       assert.ok(eventCalls().slice(atFence).every((r) => !r.ok && r.error === 'plugin_disabled'), 'after the fence every probe is plugin_disabled')
       assert.ok(diagnostics.filter((d) => d.kind === 'access').every((d) => ['plugin_permission_denied', 'plugin_disabled'].includes(d.detail)))
       assert.equal(api.plugin.backendLink().state, 'revoked')
@@ -269,6 +286,43 @@ test('G-03 / B1: the event pump under Core fencing — fixed-interval probes (no
   })
 })
 
+test('G-03 / B1 (tester r1 §3.4): the stand-in\'s OWN 30 s deadline — the timer inside the gate, not timeoutNow() — fences the whole plugin like Core\'s timeoutPlugin: every call in flight ends backend_invoke_timeout, the backend is stopped (hung), every later call is plugin_disabled, also after the permission is allowed again, until activate', async (t) => {
+  assert.equal(CORE_INVOKE_LIMITS.timeoutMs, 30_000, 'Core 1.7.1 PLUGIN_BACKEND_INVOKE_LIMITS: 30 s per call')
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const held = []
+  const core = createCoreGateStandin({ call: async (method) => (method === 'hang' ? new Promise((resolve) => held.push(resolve)) : { pong: true }) }, { methods: ['ping', 'hang'] })
+  const flush = async () => { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve)) }
+  try {
+    const first = core.invokeView('hang', {})
+    await flush()
+    t.mock.timers.tick(10_000)
+    const second = core.invokeView('hang', {}) // admitted 10 s later: its own deadline would be at 40 s
+    await flush()
+    assert.equal(core.inFlight, 2)
+    t.mock.timers.tick(19_999) // 29.999 s after the first call
+    await flush()
+    assert.equal(core.fenced, false, 'nothing happens before the 30 s deadline')
+    assert.equal(core.inFlight, 2)
+    t.mock.timers.tick(1) // 30 s: the first call's deadline
+    await flush()
+    assert.equal(core.fenced, true, 'a call past its deadline fences the plugin (not only that call fails)')
+    assert.equal(core.inFlight, 0, 'every call in flight is ended')
+    assert.deepEqual(await first, { ok: false, error: 'backend_invoke_timeout' })
+    assert.deepEqual(await second, { ok: false, error: 'backend_invoke_timeout' }, 'the other call in flight ends with the timeout too')
+    assert.deepEqual(core.state.stops, ['hung'], 'Core stops the hung backend')
+    assert.deepEqual(await core.invokeView('ping', {}), { ok: false, error: 'plugin_disabled' })
+    for (const resolve of held.splice(0)) resolve({ late: true }) // the backend answering late changes nothing
+    await flush()
+    core.setBackendInvokeRevoked(false)
+    assert.deepEqual(await core.invokeView('ping', {}), { ok: false, error: 'plugin_disabled' }, 'allowing the permission again does not lift a timeout fence')
+    core.disable(); core.enable()
+    assert.deepEqual(await core.invokeView('ping', {}), { ok: true, value: { pong: true } }, 'disable → enable (activate) does')
+    assert.deepEqual(core.state.stops, ['hung', 'disabled'])
+  } finally {
+    for (const resolve of held.splice(0)) resolve({ late: true })
+  }
+})
+
 // ───────────── G-02 ─────────────
 
 test('G-02: every failure becomes one user-facing sentence: revoked / unavailable / version mismatch from host codes; other errors keep their message; guarded() never rethrows', async () => {
@@ -288,6 +342,22 @@ test('G-02: every failure becomes one user-facing sentence: revoked / unavailabl
   assert.equal(await guarded(async () => { throw new PluginBackendError('settings.get', 'plugin_backend_unavailable') }, (text) => shown.push(text), '讀取設定失敗'), undefined)
   assert.deepEqual(shown, ['讀取設定失敗：外掛後端暫時無法回應（可能正在啟動或忙碌），稍後再試。'])
   assert.equal(await guarded(async () => 7, () => assert.fail('no error')), 7)
+})
+
+test('R1-N1: the plugin names the backend:invoke switch the way TeamUQ\'s settings page does (「讓畫面和它的背景程式溝通」), nowhere 「後端呼叫」', () => {
+  assert.equal(BACKEND_INVOKE_TOGGLE_TITLE, CORE_BACKEND_INVOKE_TITLE, 'Core pluginText.ts PERMISSION_TEXT["backend:invoke"].title')
+  assert.equal(describeBackendError({ code: 'plugin_disabled' }).text, EXPECTED_FENCED_TEXT)
+  // static: no user-facing string in the plugin sources still calls the switch 「後端呼叫」
+  const offenders = []
+  const scan = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) scan(full)
+      else if (/\.(ts|tsx)$/.test(entry.name) && STALE_PERMISSION_NAME.test(readFileSync(full, 'utf8'))) offenders.push(full)
+    }
+  }
+  scan(join(ROOT, 'src'))
+  assert.deepEqual(offenders, [])
 })
 
 test('G-02: through the real adapter, a backend that is down rejects every call with a host code (the panels catch it and show describeBackendError), never a silent empty value', async () => {
