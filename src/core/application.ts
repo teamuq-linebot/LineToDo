@@ -1,0 +1,527 @@
+import { EventEmitter } from 'node:events'
+import type {
+  Api, BackfillProgress, LineBridgeStatus, MessagesPersistedEvent, ReconcileProgress,
+  PipelineLoadStats, PipelineRunResult, PipelineStatus, ProviderHealth, RawLineMessage,
+  ReviewLastDaysResult, SettingsPatch, SettingsView, TodoDTO,
+  TodosChangedEvent, QwenTestResult
+  , NotMineReasonCode
+} from '../shared/api'
+import { openDatabase } from '../main/db/database'
+import type { AppDbEngine } from '../main/db/appDbEngine'
+import { createRepositories } from '../main/db/repositories'
+import type { Database } from 'better-sqlite3'
+
+import type { UpdateTodoPatch } from '../main/db/todos.repo'
+
+import type { AppSettings, SettingsStore } from '../main/config/settings'
+import { unconfiguredHealth, LlmProviderError } from '../main/llm/provider'
+import { listModels, makeQwen } from '../main/llm/qwenClient'
+import { draftReply } from '../main/llm/draftReply'
+import type { PipelineDefaults } from '../main/config/defaults'
+import type { QwenConfig } from '../main/config/qwen'
+import { reviewLastDays, backfillMediaKeys } from '../main/pipeline/backfill'
+import type { ChatExtractInput } from '../main/pipeline/runOnce'
+import type { ExtractResult } from '../main/llm/schema'
+import { deriveMsgId } from '../main/db/schema'
+import type { PipelineScheduler } from '../main/pipeline/scheduler'
+import type { RawLineMessage as NativeLineMessage } from '../main/line/types'
+import type { LineImportBatch } from '../main/line/importTypes'
+import type { ParticipantIdentityProvider } from '../main/line/identity'
+import { commitLineImportBatch, ensureLineImportSchema } from '../main/db/lineImport.repo'
+import { insertMessages } from '../main/db/messages.repo'
+import { ensureGroupTopicsSchema } from '../main/features/groupTopics/repository'
+import { createGroupTopicsService } from '../main/features/groupTopics/service'
+import { GROUP_TOPICS_BUNDLE_ENABLED } from '../main/features/groupTopics/prompts/bundle'
+
+export interface LineTodoApplicationPorts {
+  dataDir: string
+  dbPath: string
+  /** app DB 引擎（哪個 better-sqlite3 build／binding）；省略時用 standalone better-sqlite3。 */
+  appDbEngine?: AppDbEngine
+  onDatabase?(db: Database): void
+  line: {
+    start(): Promise<void> | void
+    stop(): Promise<void> | void
+    status(): LineBridgeStatus
+    onMessage(cb: (message: NativeLineMessage) => void): () => void
+    onStatus(cb: (status: LineBridgeStatus) => void): () => void
+    getMessagesSince(sinceMs: number, opts: { limit: number }): Promise<NativeLineMessage[]>
+    getLineImportBatch?(cursor: { createdTime: number; rowId: number }, opts: { limit: number; createdTimeExclusive?: number; source?: LineImportBatch['source'] }): Promise<LineImportBatch>
+    setBatchCommitter?(committer: (batch: LineImportBatch) => void | Promise<void>): void
+  }
+  participantIdentity?: ParticipantIdentityProvider
+  scheduler?: PipelineScheduler
+  schedulerFactory?: (db: import('better-sqlite3').Database, repos: ReturnType<typeof createRepositories>) => PipelineScheduler
+  settings: SettingsStore
+  pipelineConfig: { getDefaults(): PipelineDefaults; getQwenConfig(): QwenConfig; isProviderConfigured(): boolean }
+  providers: { resolveProvider(): ReturnType<typeof import('../main/llm/provider').resolveProvider> }
+  makeExtract(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null
+  media: {
+    open(msgId: string, db: Database): Promise<{ ok: boolean; error?: string }>
+    saveAs(msgId: string, db: Database): Promise<{ ok: boolean; canceled?: boolean; error?: string }>
+  }
+  app: {
+    ping(): { ok: boolean; ts: number; version: string }
+    openDataFolder(): Promise<{ ok: boolean }>
+    openOriginal(chatId: string): Promise<{ ok: boolean; error?: string }>
+  }
+  onSettingsChanged?(): void
+  afterPipelineRun?(result: PipelineRunResult, db: Database, schedule: (job: BackgroundJob) => void): void
+  afterStart?(db: Database, schedule: (job: BackgroundJob) => void): void
+  onReconcileProgress?(subscribe: (cb: (progress: ReconcileProgress) => void) => () => void): void
+}
+
+export type BackgroundJob = (signal: AbortSignal) => void | Promise<void>
+
+export interface LineTodoApplication {
+  api: Api
+  start(): Promise<void>
+  stop(): Promise<void>
+  dispose(): Promise<void>
+}
+
+const RECENT_DAYS = 7
+const UPDATE_BUCKETS = new Set<TodoDTO['bucket']>(['todo', 'waiting', 'schedule'])
+const UPDATE_COLUMNS = new Set(['todo', 'waiting', 'schedule', 'done'])
+function validFeedbackId(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) }
+
+function subscribe<T>(events: EventEmitter, event: string, cb: (value: T) => void): () => void {
+  events.on(event, cb)
+  return () => events.off(event, cb)
+}
+
+function sanitizeTodoPatch(raw: unknown): UpdateTodoPatch | null {
+  if (!raw || typeof raw !== 'object') return null
+  const value = raw as Record<string, unknown>
+  const patch: Record<string, unknown> = {}
+  if (value.title !== undefined) {
+    if (typeof value.title !== 'string' || value.title.trim() === '') return null
+    patch.title = value.title.trim()
+  }
+  if (value.detail !== undefined) {
+    if (value.detail !== null && typeof value.detail !== 'string') return null
+    patch.detail = value.detail
+  }
+  if (value.priority !== undefined) {
+    if (![1, 2, 3].includes(value.priority as number)) return null
+    patch.priority = value.priority
+  }
+  if (value.dueAt !== undefined) {
+    if (value.dueAt === null) patch.dueAt = null
+    else if (typeof value.dueAt === 'string' && !Number.isNaN(Date.parse(value.dueAt))) patch.dueAt = value.dueAt
+    else return null
+  }
+  if (value.bucket !== undefined) {
+    if (typeof value.bucket !== 'string' || !UPDATE_BUCKETS.has(value.bucket as TodoDTO['bucket'])) return null
+    patch.bucket = value.bucket
+  }
+  if (value.sourceMsgIds !== undefined) {
+    if (!Array.isArray(value.sourceMsgIds) || !value.sourceMsgIds.every((id) => typeof id === 'string')) return null
+    patch.sourceMsgIds = value.sourceMsgIds
+  }
+  return patch as UpdateTodoPatch
+}
+
+function buildSettingsView(settings: AppSettings, qwen: QwenConfig, isProviderConfigured: boolean, safeStorageAvailable: boolean): SettingsView {
+  return {
+    ...settings,
+    hasApiKey: isProviderConfigured,
+    apiKeySource: qwen.source,
+    safeStorageAvailable
+  }
+}
+
+export async function createLineTodoApplication(ports: LineTodoApplicationPorts): Promise<LineTodoApplication> {
+  const database = openDatabase({ dbPath: ports.dbPath, engine: ports.appDbEngine })
+  ports.onDatabase?.(database.db)
+  const repos = createRepositories(database.db)
+  const settings = ports.settings
+  let scheduler: PipelineScheduler
+  try {
+    const created = ports.scheduler ?? ports.schedulerFactory?.(database.db, repos)
+    if (!created) throw new Error('PipelineScheduler must be provided by runtime composition')
+    scheduler = created
+  } catch (error) {
+    database.close()
+    throw error
+  }
+  const events = new EventEmitter()
+  const disposers: Array<() => void> = []
+  let state: 'stopped' | 'running' | 'stopping' | 'disposed' = 'stopped'
+  let durableLineBatchInstalled = false
+  let lineImportSchemaReady = false
+  let groupTopicsService: ReturnType<typeof createGroupTopicsService> | null = null
+  const unknownIdentity: ParticipantIdentityProvider = {
+    resolve: () => ({ participantKey: null, scope: 'unknown', keyVersion: null, status: 'unknown', reason: 'safe_storage_unavailable' }),
+    epoch: () => null
+  }
+  let transition: Promise<void> | null = null
+  const recent: RawLineMessage[] = []
+  const backgroundJobs = new Set<{
+    controller: AbortController
+    handle: NodeJS.Immediate | null
+    done: Promise<void>
+    finish(): void
+  }>()
+
+  const scheduleBackground = (job: BackgroundJob): void => {
+    if (state !== 'running') return
+    let resolveDone!: () => void
+    let finished = false
+    const controller = new AbortController()
+    const entry = {
+      controller,
+      handle: null as NodeJS.Immediate | null,
+      done: new Promise<void>((resolve) => { resolveDone = resolve }),
+      finish: () => {
+        if (finished) return
+        finished = true
+        backgroundJobs.delete(entry)
+        resolveDone()
+      }
+    }
+    backgroundJobs.add(entry)
+    entry.handle = setImmediate(() => {
+      entry.handle = null
+      if (state !== 'running' || controller.signal.aborted) {
+        entry.finish()
+        return
+      }
+      void Promise.resolve().then(() => job(controller.signal)).catch((error) => {
+        if (!controller.signal.aborted) console.warn('[runtime] background job failed:', error instanceof Error ? error.name : 'unknown')
+      }).finally(entry.finish)
+    })
+  }
+
+  const stopBackground = async (): Promise<void> => {
+    const jobs = Array.from(backgroundJobs)
+    for (const job of jobs) {
+      job.controller.abort()
+      if (job.handle) {
+        clearImmediate(job.handle)
+        job.handle = null
+        job.finish()
+      }
+    }
+    await Promise.all(jobs.map((job) => job.done))
+  }
+
+  if (ports.line.setBatchCommitter) {
+    durableLineBatchInstalled = true
+    try {
+      ensureLineImportSchema(database.db)
+      lineImportSchemaReady = true
+    } catch (error) {
+      // Import coverage is additive and must not prevent the existing TODO app from starting.
+      console.warn('[line-import] additive schema unavailable; receipt and identity coverage disabled:', error instanceof Error ? error.name : 'unknown')
+    }
+    ports.line.setBatchCommitter((batch) => {
+      const persisted = lineImportSchemaReady
+        ? commitLineImportBatch(database.db, batch, ports.participantIdentity ?? unknownIdentity)
+        : insertMessages(batch.items.map((item) => item.message), database.db)
+      if (persisted.inserted > 0) {
+        const payload: MessagesPersistedEvent = { chatIds: persisted.chatIds, inserted: persisted.inserted }
+        events.emit('messages-persisted', payload)
+      }
+    })
+  }
+
+  // Feature-owned additive tables are optional and must never gate core/todo startup.
+  try {
+    if (!GROUP_TOPICS_BUNDLE_ENABLED) throw new Error('prompt_bundle_invalid')
+    ensureGroupTopicsSchema(database.db)
+    groupTopicsService = createGroupTopicsService(database.db)
+  } catch (error) {
+    console.warn('[group-topics] additive schema unavailable; feature disabled:', error instanceof Error ? error.name : 'unknown')
+  }
+
+  disposers.push(ports.line.onMessage((message) => {
+    if (state !== 'running') return
+    const native = { ...message }
+    delete native.keyMaterial
+    delete native.oid
+    delete native.sid
+    const safe = {
+      ...native,
+      msgId: deriveMsgId(message) ?? undefined,
+      origFilename: message.fileName ?? null
+    } as unknown as RawLineMessage
+    delete (safe as { fileName?: string }).fileName
+    recent.push(safe)
+    if (recent.length > 300) recent.splice(0, recent.length - 300)
+    events.emit('line-message', safe)
+    if (!durableLineBatchInstalled) {
+      try {
+        const persisted = repos.messages.insert(message)
+        if (persisted.inserted > 0) {
+          const payload: MessagesPersistedEvent = { chatIds: persisted.chatIds, inserted: persisted.inserted }
+          events.emit('messages-persisted', payload)
+        }
+      } catch (error) {
+        console.error('[db] insertMessage failed:', error instanceof Error ? error.name : 'unknown')
+      }
+    }
+  }))
+  disposers.push(ports.line.onStatus((status) => { if (state === 'running') events.emit('line-status', status) }))
+  const onSchedulerRun = (result: PipelineRunResult) => {
+    if (state !== 'running') return
+    events.emit('pipeline-run', result)
+    if (result.createdIds.length || result.resolvedIds.length || result.updatedIds.length) {
+      const changed: TodosChangedEvent = { createdIds: result.createdIds, resolvedIds: result.resolvedIds, updatedIds: result.updatedIds }
+      events.emit('todos-changed', changed)
+    }
+    ports.afterPipelineRun?.(result, database.db, scheduleBackground)
+  }
+  const onSchedulerStatus = (status: PipelineStatus) => { if (state === 'running') events.emit('pipeline-status', status) }
+  scheduler.on('run', onSchedulerRun)
+  scheduler.on('status', onSchedulerStatus)
+  disposers.push(() => scheduler.off('run', onSchedulerRun), () => scheduler.off('status', onSchedulerStatus))
+  const removeReconcileProgress = ports.onReconcileProgress?.((callback) => subscribe(events, 'reconcile-progress', callback))
+  if (removeReconcileProgress) disposers.push(removeReconcileProgress)
+
+  const api: Api = {
+    ping: async () => ports.app.ping(),
+    groupTopics: groupTopicsService ? {
+      setEnabled: async (chatId, enabled) => groupTopicsService?.enable(chatId, !!enabled) ?? { ok: false },
+      setCrossChatEnabled: async (chatId, enabled) => groupTopicsService?.enableCrossChat(chatId, !!enabled) ?? { ok: false },
+      crossChatEnabled: async (chatId) => groupTopicsService?.crossChatEnabled(chatId) ?? false,
+      pendingCount: async (chatId) => groupTopicsService?.pendingCount(chatId) ?? 0,
+      list: async (chatId) => groupTopicsService?.list(chatId) ?? { ok: false, topics: [] },
+      linkCandidates: async (chatId) => groupTopicsService?.listLinkCandidates(chatId) ?? [],
+      analyze: async (chatId) => groupTopicsService?.analyze(chatId, () => ports.providers.resolveProvider()) ?? { ok: false, reason: 'unavailable' },
+      todoRefs: async (topicId) => groupTopicsService?.todoRefs(topicId) ?? []
+    } : undefined,
+    messages: { recent: async () => recent.slice() },
+    line: {
+      status: async () => ports.line.status(),
+      setRunning: async (running) => { if (running) await ports.line.start(); else await ports.line.stop(); return ports.line.status() },
+      onMessage: (cb) => subscribe(events, 'line-message', cb),
+      onStatus: (cb) => subscribe(events, 'line-status', cb)
+    },
+    db: {
+      messages: {
+        list: async (query) => repos.messages.list(query),
+        recentByChat: async (chatId, limit = 30) => repos.messages.recentByChat(chatId, limit),
+        byChatSince: async (chatId, sinceMs) => repos.messages.byChatSince(chatId, sinceMs),
+        count: async (chatId) => repos.messages.count(chatId)
+      },
+      chats: {
+        list: async (includeBlocked = false) => repos.chats.list({ includeBlocked }),
+        get: async (chatId) => repos.chats.get(chatId),
+        setBlocked: async (chatId, blocked, reason) => repos.chats.setBlocked(chatId, !!blocked, reason ?? null),
+        blockAndClear: async (chatId) => {
+          repos.chats.setBlocked(chatId, true, 'manual')
+          return { ok: true, dismissed: repos.todos.dismissOpenByChat(chatId) }
+        },
+        addIgnoreKeyword: async (chatId, keyword) => {
+          const kw = (keyword ?? '').trim().toLowerCase()
+          if (!chatId) return { ok: false, dismissed: 0, error: '缺少 chatId' }
+          if (!kw) return { ok: false, dismissed: 0, error: '關鍵字不可為空' }
+          const current = settings.get().chatIgnoreKeywords
+          const existing = current[chatId] ?? []
+          settings.update({ chatIgnoreKeywords: { ...current, [chatId]: Array.from(new Set([...existing, kw])) } })
+          return { ok: true, dismissed: repos.todos.dismissOpenByChat(chatId, kw) }
+        },
+        removeIgnoreKeyword: async (chatId, keyword) => {
+          if (!chatId) return { ok: false }
+          const current = settings.get().chatIgnoreKeywords
+          const next = { ...current }
+          const values = (next[chatId] ?? []).filter((key) => key !== (keyword ?? '').trim().toLowerCase())
+          if (values.length) next[chatId] = values; else delete next[chatId]
+          settings.update({ chatIgnoreKeywords: next })
+          return { ok: true }
+        },
+        openOriginal: (chatId) => ports.app.openOriginal(chatId)
+      },
+      todos: {
+        list: async (query) => repos.todos.list(query),
+        get: async (id) => repos.todos.get(id),
+        openByChat: async (chatId) => repos.todos.openByChat(chatId),
+        updateStatus: async (id, status) => repos.todos.updateStatus(id, status),
+        update: async (id, rawPatch) => {
+          if (!id || !rawPatch) return null
+          const patch = sanitizeTodoPatch(rawPatch)
+          return patch ? repos.todos.update(id, patch) : null
+        },
+        draftReply: async (id) => {
+          if (!id) return { error: '缺少 todo id' }
+          const todo = repos.todos.get(id)
+          if (!todo) return { error: '找不到該代辦' }
+          const provider = ports.providers.resolveProvider()
+          if (!provider) return { error: '尚未設定 API 金鑰（請在設定頁填入，或設環境變數 QWEN_API_KEY）' }
+          try {
+            const chat = repos.chats.get(todo.chatId)
+            const limit = ports.pipelineConfig.getDefaults().recentContextLimit || 10
+            const recent = repos.messages.recentByChat(todo.chatId, Math.max(limit, 10))
+            const draft = await draftReply(provider, {
+              todo: { bucket: todo.bucket, title: todo.title, detail: todo.detail },
+              chatName: chat?.name ?? null,
+              isGroup: chat?.isGroup ?? false,
+              recentMessages: recent.map((message) => ({ direction: message.direction, sender: message.sender, text: message.text, timeIso: message.timeIso }))
+            }, {})
+            return { draft }
+          } catch (error) { return { error: error instanceof Error ? error.message : String(error) } }
+        },
+        moveColumn: async (id, toColumn) => {
+          if (!id || !UPDATE_COLUMNS.has(toColumn)) return null
+          return repos.todos.moveColumn(id, toColumn)
+        }
+        ,markNotMine: async (id, reasonCode: NotMineReasonCode, note) => {
+          if (!validFeedbackId(id) || !['other_person_assigned','general_announcement','delegated_or_third_party','unclear_context','other'].includes(reasonCode) || (note !== undefined && typeof note !== 'string')) return {ok:false,error:'理由格式不正確'}
+          const result = repos.notMine.mark(id,reasonCode,typeof note==='string'?note:undefined)
+          return result.feedbackId ? {ok:true,feedbackId:result.feedbackId} : {ok:false,error:result.error}
+        },
+        listNotMine: async () => repos.notMine.list(),
+        listNotMineCorrections: async () => repos.notMine.listCorrections(),
+        getNotMineReview: async (feedbackId) => validFeedbackId(feedbackId) ? repos.notMine.get(feedbackId) : null,
+        analyzeNotMine: async (feedbackId) => {
+          if(!validFeedbackId(feedbackId)) return {ok:false,reason:'feedback id 格式不正確'}
+          const review = repos.notMine.get(feedbackId)
+          if (!review) return {ok:false,reason:'標記已變更，請重新整理'}
+          const evidence = review.evidence.slice(0,50).map(m=>({direction:m.direction,sender:m.sender,time:m.timeIso,text:m.text?.slice(0,2000)??null}))
+          try {
+            const provider = ports.providers.resolveProvider()
+            if (!provider) return {ok:false,reason:'尚未設定可用的 AI provider；來源檢視、標記與復原仍可使用'}
+            const response=await provider.complete({system:'你是分類誤判分析助手。只能根據提供的紀錄提出可能原因，不能聲稱知道舊模型思路。回傳 JSON: inferredCauseCode, summary, suggestedCondition, suggestedEffect。條件與效果須簡短、可人工檢查，限本聊天室未來抽取。',user:JSON.stringify({todo:{bucket:review.todo.bucket,status:review.todo.status,title:review.todo.title,detail:review.todo.detail,confidence:review.todo.confidence},feedback:{reasonCode:review.reasonCode,note:review.note},evidence})})
+            if(response.text.length>16000) return {ok:false,reason:'分析回覆超過可保存大小'}
+            const parsed=JSON.parse(response.text) as Record<string,unknown>
+            const bounded=(x:unknown,max:number):string=>typeof x==='string'?x.trim().slice(0,max):''
+            const inferredCauseCode=bounded(parsed.inferredCauseCode,60)||'unclear_context', summary=bounded(parsed.summary,1000)
+            if (!summary) return {ok:false,reason:'分析未提供可用摘要'}
+            const suggestedCondition=bounded(parsed.suggestedCondition,500), suggestedEffect=bounded(parsed.suggestedEffect,500)
+            const saved=repos.notMine.analyze(feedbackId,{analysisVersion:'not-mine-analysis-v1',inferredCauseCode,summary,providerId:response.meta.provider,modelId:response.meta.model,suggestedCondition,suggestedEffect})
+            return saved?{ok:true,inferredCauseCode,summary,suggestedCondition:bounded(parsed.suggestedCondition,500),suggestedEffect:bounded(parsed.suggestedEffect,500),providerId:response.meta.provider,modelId:response.meta.model}:{ok:false,reason:'標記已變更，分析未保存'}
+          } catch (error) { return {ok:false,reason:error instanceof Error?error.message:'分析失敗'} }
+        },
+        reopenNotMine: async (feedbackId) => validFeedbackId(feedbackId) ? repos.notMine.reopen(feedbackId) : {ok:false,error:'feedback id 格式不正確'},
+        applyNotMineCorrection: async (feedbackId,condition,effect) => validFeedbackId(feedbackId)&&typeof condition==='string'&&typeof effect==='string' ? repos.notMine.apply(feedbackId,condition,effect) : {ok:false,error:'修正資料格式不正確'},
+        setNotMineCorrectionEnabled: async (correctionId,enabled) => validFeedbackId(correctionId) ? repos.notMine.setEnabled(correctionId,!!enabled) : {ok:false,error:'correction id 格式不正確'}
+      },
+      onMessagesPersisted: (cb) => subscribe(events, 'messages-persisted', cb)
+    },
+    pipeline: {
+      status: async () => scheduler.getStatus(),
+      loadStats: async (): Promise<PipelineLoadStats> => ({ ...repos.pipeline.getChatsSeenStats(), recentDays: RECENT_DAYS, chatsWithRecentMessages: repos.messages.countChatsWithRecent(RECENT_DAYS) }),
+      runOnce: async () => scheduler.triggerNow(),
+      reviewLastDays: async (days = 7): Promise<ReviewLastDaysResult> => reviewLastDays(Number.isFinite(days) && days > 0 ? Math.floor(days) : 7, {
+        db: database.db,
+        config: ports.pipelineConfig.getDefaults(),
+        fetchWindow: async (sinceMs) => {
+          try { return { messages: await ports.line.getMessagesSince(sinceMs, { limit: 20000 }) } }
+          catch (error) { return { messages: [], error: error instanceof Error ? error.message : String(error) } }
+        },
+        fetchImportBatch: lineImportSchemaReady && ports.line.getLineImportBatch
+          ? (cursor, opts) => ports.line.getLineImportBatch!(cursor, { ...opts, source: 'line-backfill' })
+          : undefined,
+        commitImportBatch: (batch) => commitLineImportBatch(database.db, batch, ports.participantIdentity ?? unknownIdentity),
+        extractFn: ports.makeExtract(),
+        correctionsForChat: (chatId) => repos.notMine.corrections(chatId),
+        onCorrectionsPayloadBuilt: (chatId,messageIds,rules) => rules.forEach(rule=>repos.notMine.effect(rule,chatId,messageIds,'reviewLastDays')),
+        onProgress: (progress: BackfillProgress) => { if (state === 'running') events.emit('backfill-progress', progress) }
+      }),
+      backfillMediaKeys: async (days = 7) => {
+        try {
+          const result = await backfillMediaKeys(Number.isFinite(days) && days > 0 ? Math.floor(days) : 7, {
+            db: database.db,
+            fetchWindow: async (sinceMs) => {
+              try { return { messages: await ports.line.getMessagesSince(sinceMs, { limit: 20000 }) } }
+              catch (error) { return { messages: [], error: error instanceof Error ? error.message : String(error) } }
+            },
+            fetchImportBatch: lineImportSchemaReady && ports.line.getLineImportBatch
+              ? (cursor, opts) => ports.line.getLineImportBatch!(cursor, { ...opts, source: 'line-backfill' })
+              : undefined,
+            commitImportBatch: (batch) => commitLineImportBatch(database.db, batch, ports.participantIdentity ?? unknownIdentity)
+          })
+          return { ok: true, scanned: result.scanned, mediaBackfilled: result.mediaBackfilled }
+        }
+        catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) } }
+      },
+      setRunning: async (running) => scheduler.setRunning(!!running),
+      testQwen: async (): Promise<QwenTestResult> => {
+        const config = ports.pipelineConfig.getQwenConfig()
+        if (!config.apiKey) return { ok: false, error: '尚未設定 API 金鑰（請在設定頁填入，或設環境變數 QWEN_API_KEY）' }
+        return listModels(makeQwen({ apiKey: config.apiKey, baseURL: config.baseURL, timeoutMs: config.timeoutMs }))
+      },
+      testAiProvider: async (): Promise<ProviderHealth> => {
+        const provider = ports.providers.resolveProvider()
+        if (!provider) return unconfiguredHealth()
+        try { return await provider.health() }
+        catch (error) {
+          if (error instanceof LlmProviderError) return { ok: false, code: error.code, summary: error.userMessage, details: {} }
+          return { ok: false, code: 'unknown', summary: 'AI 引擎健檢失敗（詳細原因請見 log）', details: {} }
+        }
+      },
+      onRun: (cb) => subscribe(events, 'pipeline-run', cb),
+      onStatus: (cb) => subscribe(events, 'pipeline-status', cb),
+      onTodosChanged: (cb) => subscribe(events, 'todos-changed', cb),
+      onBackfillProgress: (cb) => subscribe(events, 'backfill-progress', cb),
+      onReconcileProgress: (cb) => subscribe(events, 'reconcile-progress', cb)
+    },
+    settings: {
+      get: async () => buildSettingsView(settings.get(), ports.pipelineConfig.getQwenConfig(), ports.pipelineConfig.isProviderConfigured(), settings.isSafeStorageAvailable()),
+      update: async (patch: SettingsPatch) => { settings.update(patch); ports.onSettingsChanged?.(); return buildSettingsView(settings.get(), ports.pipelineConfig.getQwenConfig(), ports.pipelineConfig.isProviderConfigured(), settings.isSafeStorageAvailable()) },
+      setApiKey: async (apiKey) => {
+        if (typeof apiKey !== 'string') return { ok: false, error: '金鑰格式不正確' }
+        try { settings.setApiKey(apiKey); ports.onSettingsChanged?.(); return { ok: true } }
+        catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) } }
+      },
+      clearApiKey: async () => { settings.clearApiKey(); ports.onSettingsChanged?.(); return { ok: true } },
+      hasSafeStorageKey: async () => settings.hasSafeStorageKey()
+    },
+    app: { openDataFolder: () => ports.app.openDataFolder() },
+    media: { open: (msgId) => ports.media.open(msgId, database.db), saveAs: (msgId) => ports.media.saveAs(msgId, database.db) }
+  }
+
+  const stop = (): Promise<void> => {
+    if (state !== 'running') return transition ?? Promise.resolve()
+    if (transition) return transition.then(() => stop())
+    transition = (async () => {
+      state = 'stopping'
+      try {
+        await stopBackground()
+        await scheduler.stop()
+        await ports.line.stop()
+        state = 'stopped'
+      } finally { transition = null }
+    })()
+    return transition
+  }
+
+  return {
+    api,
+    start(): Promise<void> {
+      if (state === 'disposed') return Promise.reject(new Error('Application is disposed'))
+      if (state === 'running') return transition ?? Promise.resolve()
+      if (transition) return transition
+      transition = (async () => {
+        try {
+          state = 'running'
+          await ports.line.start()
+          scheduler.start()
+          ports.afterStart?.(database.db, scheduleBackground)
+        } catch (error) {
+          state = 'stopping'
+          await stopBackground()
+          try { await scheduler.stop() } catch { /* preserve startup failure */ }
+          try { await ports.line.stop() } catch { /* preserve startup failure */ }
+          state = 'stopped'
+          throw error
+        } finally { transition = null }
+      })()
+      return transition
+    },
+    stop(): Promise<void> {
+      return stop()
+    },
+    async dispose(): Promise<void> {
+      if (state === 'disposed') return
+      let failure: unknown
+      try { await stop() } catch (error) { failure = error }
+      try { for (const dispose of disposers.splice(0)) dispose() } catch (error) { failure ??= error }
+      events.removeAllListeners()
+      try { database.close() } catch (error) { failure ??= error }
+      state = 'disposed'
+      if (failure) throw failure
+    }
+  }
+}

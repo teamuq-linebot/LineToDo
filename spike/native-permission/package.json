@@ -1,0 +1,10 @@
+{
+  "name": "native-permission-spike",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Spike: native addon file access vs TeamUQ 1.6.8 backend permission model",
+  "dependencies": {
+    "better-sqlite3-multiple-ciphers": "11.10.0",
+    "koffi": "3.1.0"
+  }
+}

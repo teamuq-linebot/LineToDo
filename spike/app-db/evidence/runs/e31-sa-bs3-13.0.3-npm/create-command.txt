@@ -1,0 +1,1 @@
+ELECTRON_RUN_AS_NODE=1 "C:/teamuq/line-todo/node_modules/electron/dist/electron.exe" C:\Users\david\AppData\Local\Temp\teamuq-appdb-e31-sa-bs3-13.0.3-npm-ZmZFBv\host\host-bootstrap.mjs <base64url init> <base64url cfg>

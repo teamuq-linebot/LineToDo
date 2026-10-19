@@ -1,0 +1,50 @@
+{
+  "label": "e31-wasm-addons-700k",
+  "exitCode": 0,
+  "abi": "125",
+  "selfCheckBoot": true,
+  "selfCheckAfterEngine": true,
+  "selfCheckEnd": true,
+  "engine": true,
+  "engineInfo": "SQLite3 Multiple Ciphers 2.5.1",
+  "controlDenied": true,
+  "walDefaultLocking": {
+    "ok": false,
+    "error": "null function or function signature mismatch"
+  },
+  "wal": {
+    "ok": true,
+    "count": true,
+    "digest": true,
+    "maxRow": true
+  },
+  "rollback": {
+    "ok": true,
+    "count": true,
+    "digest": true
+  },
+  "wrongKey": true,
+  "bench": {
+    "copyMs": 93.66,
+    "openTotalMs": 309.14,
+    "loadBytesMs": 205.05,
+    "openVerifyMs": 1.55,
+    "checkpointMs": 90.32,
+    "watchBatchMs": 173.81,
+    "rawIncrementalMs": 56.26,
+    "listChats50Ms": 2.65,
+    "tailMs": 0.1,
+    "openPlusWatchBatchMs": 496.67
+  },
+  "keyScan": {
+    "candidates": 501,
+    "totalMs": 284.72,
+    "perCandidateMs": 0.57,
+    "hits": 1,
+    "rightKeyHit": true
+  }
+}
+STDERR(head): (node:7924) ExperimentalWarning: Permission is an experimental feature and might change at any time
+(Use `electron --trace-warnings ...` to show where the warning was created)
+(node:7924) SecurityWarning: The flag --allow-addons must be used with extreme caution. It could invalidate the permission model.
+

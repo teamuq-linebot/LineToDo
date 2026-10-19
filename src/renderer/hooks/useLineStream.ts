@@ -1,0 +1,81 @@
+import { useLineTodoApi } from '../platform/LineTodoApi'
+import { useEffect, useRef, useState } from 'react'
+import type { RawLineMessage, LineBridgeStatus } from '../types/api'
+import { backendErrorText } from '../lib/backendError'
+
+/**
+ * useLineStream — 訂閱 main 推來的 LINE 即時訊息與橋接狀態。
+ *
+ * 掛載時：
+ *   1. 先 invoke messages.recent() 回放 backlog（避免漏掉掛載前到達的訊息）。
+ *   2. invoke line.status() 取得目前橋接狀態。
+ *   3. 訂閱 line.onMessage / line.onStatus，之後即時更新。
+ * 卸載時自動 unsubscribe。
+ * 1、2 失敗時（外掛版：backend 沒起來、權限被撤銷…）`error` 帶原因，畫面顯示它（G-02），不留未處理的 rejection。
+ */
+const MAX_RENDER = 500
+
+export interface UseLineStream {
+  messages: RawLineMessage[]
+  status: LineBridgeStatus | null
+  /** 讀取 backlog／橋接狀態失敗的原因；沒有失敗＝null。 */
+  error: string | null
+}
+
+export function useLineStream(): UseLineStream {
+  const api = useLineTodoApi()
+  const [messages, setMessages] = useState<RawLineMessage[]>([])
+  const [status, setStatus] = useState<LineBridgeStatus | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  // 用 key 去重（同一則訊息可能既在 backlog 又在後續 push）
+  const seen = useRef<Set<string>>(new Set())
+
+  function keyOf(m: RawLineMessage): string {
+    return `${m.chatId}:${m.ts}:${m.sender}:${m.text}`
+  }
+
+  function add(incoming: RawLineMessage[]): void {
+    setMessages((prev) => {
+      const fresh = incoming.filter((m) => {
+        const k = keyOf(m)
+        if (seen.current.has(k)) return false
+        seen.current.add(k)
+        return true
+      })
+      if (fresh.length === 0) return prev
+      // 新訊息放最上面（最新在頂），裁掉超量
+      const next = [...fresh.reverse(), ...prev]
+      return next.length > MAX_RENDER ? next.slice(0, MAX_RENDER) : next
+    })
+  }
+
+  useEffect(() => {
+    let active = true
+
+    void api.messages.recent().then((backlog) => {
+      if (active && backlog.length) add(backlog)
+    }, (err: unknown) => {
+      if (active) setError(backendErrorText(err, '讀取最近訊息失敗'))
+    })
+    void api.line.status().then((s) => {
+      if (active) setStatus(s)
+    }, (err: unknown) => {
+      if (active) setError(backendErrorText(err, '讀取 LINE 橋接狀態失敗'))
+    })
+
+    const offMsg = api.line.onMessage((m) => {
+      // 觀測點：證明 renderer 收到 main 推來的訊息（main 在 DEBUG 模式會轉這行到 stdout）
+      console.log(`[stream] recv ${m.time} [${m.chat}] ${m.sender}: ${m.text.slice(0, 40)}`)
+      add([m])
+    })
+    const offStatus = api.line.onStatus((s) => { setStatus(s); setError(null) })
+
+    return () => {
+      active = false
+      offMsg()
+      offStatus()
+    }
+  }, [])
+
+  return { messages, status, error }
+}

@@ -1,0 +1,319 @@
+import { watch as fsWatch, type FSWatcher } from 'node:fs'
+import { watchFile as fsWatchFile, type StatWatcher } from 'node:fs'
+import { EventEmitter } from 'node:events'
+import type { RawLineMessage, LineBridgeStatus, LineBridgeState } from './types'
+import type { LineImportBatch } from './importTypes'
+import { commitAndAcknowledgeLineImportBatch, getLineImportBatch, type WatchEngineOptions } from './engine/watchEngine'
+
+/**
+ * LineWatcher — 在 main 進程以 in-process TS 引擎（engine/watchEngine）取增量新訊息。
+ * 把每則訊息以事件吐出，負責錯誤偵測與狀態回報。
+ *
+ * 觸發機制（雙驅動，任一先到就啟動一次 poll）：
+ *   1. 事件驅動：fs.watch 監看 LINE DB 目錄（dbDir）；偵測到 -wal 等寫入事件後
+ *      去抖 ~800ms，立即跑一次 getNewMessagesOnce（不必等 interval）。
+ *   2. 間隔輪詢：setInterval(intervalSec) 作為 fallback 上限（「最久 N 秒一定檢查一次」）。
+ *
+ *   引擎內建 stat-gate（edb/-wal size+mtime_ns 未變就直接回 0 則）讓「沒真的變動」的
+ *   多餘觸發幾乎零成本，所以寧可多觸發也不漏。
+ *
+ * fs.watch 不穩定時（ENOENT / EACCES / Windows 限制）：自動退回 fs.watchFile stat 輪詢，
+ * 再退回純 setInterval，任何錯誤均記 log 不崩潰。
+ *
+ * 事件：
+ *   'message' (msg: RawLineMessage)   每收到一則新訊息
+ *   'status'  (status: LineBridgeStatus) 橋接狀態變更（啟動/運行/錯誤/停止）
+ *   'log'     (line: string)          診斷行（除錯用）
+ *
+ * 設計重點：
+ *   - 引擎丟出的例外 → 標記 'error'（狀態語意與舊 spawn 路徑一致）。
+ *   - 一次 poll 結束前不開新一輪（busy guard）。
+ */
+
+export interface LineWatcherOptions {
+  /** 間隔輪詢秒數（fallback 上限） */
+  intervalSec: number
+  /** 單輪安全上限 */
+  limit?: number
+  /** 是否啟用 fs.watch 事件驅動即時觸發（預設 true） */
+  dbWatchEnabled?: boolean
+  /** LINE DB 目錄（含 qwd*.edb 和 -wal 的目錄） */
+  dbDir?: string
+  /**
+   * 引擎選項（checkpoint 檔、DB 路徑、key 快取檔）。standalone 不給＝沿用 userData 推導的預設；
+   * 外掛 backend 必須給（路徑都在 dataDir，且 backend 沒有 electron）。
+   */
+  engine?: Pick<WatchEngineOptions, 'stateFile' | 'dbPath' | 'keyOpts'>
+  /**
+   * 一批讀滿（hasMore）就立刻接著讀下一批，直到追上。預設 false＝每個 interval 只讀一批（standalone 現行行為）。
+   * 外掛首次匯入大量歷史訊息時開啟。
+   */
+  drainBacklog?: boolean
+  /**
+   * 給了就把 start() 的「立即跑一次」延後這麼多毫秒才開始（外掛 backend：`activate()` 要先回傳讓 host 收到 boot-ack，
+   * 第一次金鑰擷取與首批匯入才開始；review F2）。省略＝像以前一樣在 start() 裡立刻開始（standalone）。
+   */
+  startupDelayMs?: number
+}
+
+const DB_WATCH_DEBOUNCE_MS = 800
+// watchFile fallback 輪詢 stat 間隔（不需要很短，只是確保 fs.watch 退場後還能追到）
+const STAT_WATCHER_INTERVAL_MS = 2000
+
+export class LineWatcher extends EventEmitter {
+  private opts: LineWatcherOptions
+  private stopped = false
+  private busy = false
+  private batchCommitter: ((batch: LineImportBatch) => void | Promise<void>) | null = null
+
+  // 事件驅動觸發
+  private intervalTimer: NodeJS.Timeout | null = null
+  private debounceTimer: NodeJS.Timeout | null = null
+  private drainHandle: NodeJS.Immediate | null = null
+  private startupTimer: NodeJS.Timeout | null = null
+  private current: Promise<void> | null = null
+  private fsWatcher: FSWatcher | null = null
+  private statWatcher: StatWatcher | null = null
+
+  private status: LineBridgeStatus = {
+    state: 'stopped',
+    lastMessageAt: null,
+    messageCount: 0,
+    lastError: null,
+    restarts: 0
+  }
+
+  constructor(opts: LineWatcherOptions) {
+    super()
+    this.opts = opts
+  }
+
+  getStatus(): LineBridgeStatus {
+    return { ...this.status }
+  }
+
+  /** Install the main-process durable sink before start; failed commits leave the cursor untouched. */
+  setBatchCommitter(committer: (batch: LineImportBatch) => void | Promise<void>): void {
+    this.batchCommitter = committer
+  }
+
+  private setState(state: LineBridgeState, error?: string | null): void {
+    this.status.state = state
+    if (error !== undefined) this.status.lastError = error
+    this.emit('status', this.getStatus())
+  }
+
+  /** 啟動（idempotent）。 */
+  start(): void {
+    if (!this.stopped && this.intervalTimer) return // 已在跑
+    this.stopped = false
+
+    this.setState('starting', null)
+    this.emit('log', `[watcher] start — interval=${this.opts.intervalSec}s dbWatch=${this.opts.dbWatchEnabled ?? true}`)
+
+    // 立即跑一次，不等第一個間隔（外掛：startupDelayMs 之後，讓 activate() 先回傳）
+    if (this.opts.startupDelayMs === undefined) {
+      void this.poll('startup')
+    } else {
+      this.startupTimer = setTimeout(() => {
+        this.startupTimer = null
+        void this.poll('startup')
+      }, this.opts.startupDelayMs)
+      this.startupTimer.unref?.()
+    }
+
+    // 間隔 fallback：每 intervalSec 秒一定跑一次
+    this.intervalTimer = setInterval(() => {
+      void this.poll('interval')
+    }, this.opts.intervalSec * 1000)
+
+    // 事件驅動：fs.watch LINE DB 目錄
+    if (this.opts.dbWatchEnabled !== false) {
+      this.setupDbWatch()
+    }
+  }
+
+  /** 停止所有計時器與 watcher（進行中的 in-process poll 會自然跑完後不再排下一輪）。 */
+  stop(): void {
+    this.stopped = true
+
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer)
+      this.startupTimer = null
+    }
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer)
+      this.debounceTimer = null
+    }
+    if (this.drainHandle) {
+      clearImmediate(this.drainHandle)
+      this.drainHandle = null
+    }
+    if (this.intervalTimer) {
+      clearInterval(this.intervalTimer)
+      this.intervalTimer = null
+    }
+    this.teardownDbWatch()
+    this.setState('stopped')
+  }
+
+  // ─────────────────────────────────────────────
+  // fs.watch 事件驅動
+  // ─────────────────────────────────────────────
+
+  private setupDbWatch(): void {
+    const dbDir = this.opts.dbDir
+    if (!dbDir) return
+
+    try {
+      const watcher = fsWatch(dbDir, { persistent: false, recursive: false }, (event, filename) => {
+        // 優先關注 -wal（資料寫入訊號）；也接受其它檔案改變（edb 本體 rename/write）
+        const name = filename ?? ''
+        const relevant = name.includes('-wal') || name.includes('.edb') || name === ''
+        if (!relevant) return
+        this.emit('log', `[watcher] fs.watch hit: event=${event} file=${name} → debounce ${DB_WATCH_DEBOUNCE_MS}ms`)
+        this.scheduleDebounce()
+      })
+
+      watcher.on('error', (err) => {
+        this.emit('log', `[watcher] fs.watch error: ${err.message} — fallback to watchFile`)
+        this.teardownFsWatcher()
+        this.setupStatWatcherFallback(dbDir)
+      })
+
+      this.fsWatcher = watcher
+      this.emit('log', `[watcher] fs.watch started on ${dbDir}`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.emit('log', `[watcher] fs.watch setup failed (${msg}) — fallback to watchFile`)
+      this.setupStatWatcherFallback(dbDir)
+    }
+  }
+
+  /** fs.watchFile fallback：stat 輪詢偵測 -wal mtime 變化。 */
+  private setupStatWatcherFallback(dbDir: string): void {
+    if (this.statWatcher) return // 已有
+    const walPath = `${dbDir.replace(/[\\/]+$/, '')}\\Line.sqlite-wal`
+    try {
+      const sw = fsWatchFile(walPath, { persistent: false, interval: STAT_WATCHER_INTERVAL_MS }, (curr, prev) => {
+        if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) {
+          this.emit('log', `[watcher] watchFile stat changed (${walPath}) → debounce`)
+          this.scheduleDebounce()
+        }
+      })
+      this.statWatcher = sw
+      this.emit('log', `[watcher] watchFile fallback started on ${walPath}`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.emit('log', `[watcher] watchFile fallback also failed (${msg}) — pure interval only`)
+    }
+  }
+
+  private scheduleDebounce(): void {
+    if (this.stopped) return
+    if (this.debounceTimer) clearTimeout(this.debounceTimer)
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null
+      void this.poll('db-watch')
+    }, DB_WATCH_DEBOUNCE_MS)
+  }
+
+  private teardownFsWatcher(): void {
+    if (this.fsWatcher) {
+      try { this.fsWatcher.close() } catch { /* ignore */ }
+      this.fsWatcher = null
+    }
+  }
+
+  private teardownDbWatch(): void {
+    this.teardownFsWatcher()
+    if (this.statWatcher) {
+      // fsWatchFile 回傳值是 StatWatcher，用 unwatchFile 解綁
+      // statWatcher 物件本身沒有 close，只需停止即可
+      try {
+        (this.statWatcher as { stop?: () => void }).stop?.()
+      } catch { /* ignore */ }
+      this.statWatcher = null
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // 核心：in-process 引擎取一次增量
+  // ─────────────────────────────────────────────
+
+  /** 觸發一次 poll。若上一輪仍在跑（busy）則略過（不重入）。 */
+  private async poll(trigger: string): Promise<void> {
+    if (this.stopped) return
+    if (this.busy) {
+      this.emit('log', `[watcher] poll(${trigger}) skipped — busy`)
+      return
+    }
+    this.busy = true
+    const run = this.pollOnceInProcess(trigger)
+    this.current = run
+    try {
+      await run
+    } finally {
+      this.busy = false
+      if (this.current === run) this.current = null
+    }
+  }
+
+  /** 進行中的那一輪 poll 結束時 resolve（沒有進行中的就立刻 resolve）。外掛 dispose 用它等掃描／匯入收尾。 */
+  idle(): Promise<void> {
+    return this.current ? this.current.then(() => undefined, () => undefined) : Promise.resolve()
+  }
+
+  /**
+   * 把一則 RawLineMessage 走統一的下游 emit 路徑：
+   * 型別守衛 → 切 running → 累加計數 → emit('message')。
+   */
+  private emitMessage(msg: RawLineMessage): void {
+    if (this.stopped) return
+    if (typeof msg.chatId !== 'string' || typeof msg.ts !== 'number') {
+      // log 不帶訊息內容（review F7）：只記欄位型別，內容（文字、寄件人、聊天室）不進任何 log。
+      this.emit('log', `[watcher] skip malformed message: chatId=${typeof msg.chatId} ts=${typeof msg.ts}`)
+      return
+    }
+    if (this.status.state !== 'running') this.setState('running', null)
+    this.status.messageCount += 1
+    this.status.lastMessageAt = msg.time ?? new Date().toISOString()
+    this.emit('message', msg)
+  }
+
+  /**
+   * 取一次增量：呼叫 watchEngine.getNewMessagesOnce（自 checkpoint 取增量），
+   * 逐則走 emitMessage 下游路徑；正常完成時若還 starting 就切 running。
+   * 任何 throw → setState('error')。
+   */
+  private async pollOnceInProcess(trigger: string): Promise<void> {
+    const { limit = 500 } = this.opts
+    if (this.status.state !== 'running' && this.status.state !== 'starting') {
+      this.setState('starting', null)
+    }
+    this.emit('log', `[watcher] engine=ts getLineImportBatch(${trigger}) limit=${limit}`)
+    try {
+      if (!this.batchCommitter) throw new Error('durable LINE import sink is not configured')
+      const engine = this.opts.engine
+      const batch = await getLineImportBatch({ limit, ...engine })
+      if (this.stopped) return // stop() 在 await 期間發生：本輪結果整批丟棄，不 emit、不改狀態
+      if (engine) await commitAndAcknowledgeLineImportBatch(batch, this.batchCommitter, { stateFile: engine.stateFile, dbPath: engine.dbPath ?? undefined, openGateWhenMore: this.opts.drainBacklog })
+      else await commitAndAcknowledgeLineImportBatch(batch, this.batchCommitter)
+      if (this.stopped) return
+      for (const item of batch.items) this.emitMessage(item.message)
+      if (batch.hasMore && this.opts.drainBacklog && !this.drainHandle) {
+        this.drainHandle = setImmediate(() => {
+          this.drainHandle = null
+          void this.poll('drain')
+        })
+      }
+      // 正常完成：若還沒切到 running（e.g. 沒有新訊息），至少設 running 消除 starting 狀態。
+      if (this.status.state === 'starting') this.setState('running', null)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.emit('log', `[watcher] engine=ts error: ${msg}`)
+      if (this.stopped) return // 已停止：不得用 'error' 蓋掉 stop() 設下的 'stopped'
+      this.setState('error', msg)
+    }
+  }
+}

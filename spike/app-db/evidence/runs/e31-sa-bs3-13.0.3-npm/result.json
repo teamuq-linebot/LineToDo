@@ -1,0 +1,30 @@
+{
+  "label": "e31-sa-bs3-13.0.3-npm",
+  "electronExe": "C:/teamuq/line-todo/node_modules/electron/dist/electron.exe",
+  "engine": "bsqlite",
+  "vendor": "bs3-13.0.3-npm",
+  "wasmExclusive": false,
+  "wasmSyncSkip": false,
+  "allowAddons": true,
+  "permission": false,
+  "flags": [],
+  "dirs": {
+    "runRoot": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-bs3-13.0.3-npm-ZmZFBv",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-bs3-13.0.3-npm-ZmZFBv\\data",
+    "bootstrapFile": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e31-sa-bs3-13.0.3-npm-ZmZFBv\\host\\host-bootstrap.mjs"
+  },
+  "phases": [
+    {
+      "phase": "create",
+      "exitCode": 4294930435,
+      "exitCodeHex": "0xffff7003",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 217,
+      "resultWritten": false,
+      "filesAfter": [],
+      "result": null
+    }
+  ]
+}

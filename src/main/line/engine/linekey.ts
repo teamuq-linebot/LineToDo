@@ -1,0 +1,454 @@
+/**
+ * linekey.ts — 純 TS 取得 LINE-for-Windows DB 32-hex passphrase（Batch 2）。
+ *
+ * 逐一對照外部 Python 引擎 `line-cua-win/src/linekey.py`，行為求 parity。
+ * LINE Desktop（Windows, Qt6）把歷史訊息 DB 以 wxSQLite3 /
+ * QtCipherSqlitePlugin AES-128-CBC 加密，32-hex passphrase 僅存在執行中的
+ * LINE.exe 程序記憶體（登入時由伺服器下發）。我們掃描程序記憶體找 32-hex
+ * 候選，以「成功解密」確認——offset-independent，故 LINE 更新後仍可運作
+ * （只要 LINE 在跑）。
+ *
+ * 金鑰解析順序（getKey，對齊 linekey.py:171-182 `get_key`）：
+ *   1. $LINE_DB_KEY                          🟢 純 TS
+ *   2. cache 檔（<userData>/.linekey）試解驗證  🟢 純 TS
+ *   3. live recover（掃 LINE.exe 記憶體）      koffi FFI（native/procmem.ts）
+ *
+ * ★ 唯讀鐵律 ★：recover 只 ReadProcessMemory，嚴禁任何寫入 / 注入。
+ * ★ 秘密不落 repo ★：cache 檔預設寫 userData（app.getPath('userData')），
+ *   絕不寫入 repo 追蹤區、絕不進 git。
+ *
+ * 本檔為 Batch 2 新增，不改動任何現有執行路徑
+ * （watcher/pipeline/lineBridge/types）。test-decrypt 驗證 import Batch 1 的
+ * `openDb`，保持與 linedb.ts 一致。
+ */
+import { join } from 'node:path'
+
+import { getLineEnginePorts } from './enginePorts'
+import type { LineFsPort } from './fsPort'
+import { CIPHER, findDb, KDF_ITER, openDb, type Db } from './linedb'
+import { scanRegions, scanRegionsAsync } from '../native/procmem'
+
+/**
+ * 快取檔預設路徑：<userData>/.linekey。
+ *
+ * py 放在 line-cua-win repo 根（不適合本 App）。改放 Electron 的 userData。
+ * app.getPath 只在 Electron 主程序可用；於純 Node 測試環境（無 Electron）
+ * 惰性 require 會失敗，此時 fallback 到環境變數推導的路徑，並允許呼叫端注入
+ * 覆寫（見 getKey 的 opts.cacheFile）。
+ */
+function defaultCacheFile(): string {
+  try {
+    // 惰性載入：純 Node 測試不需 Electron。
+    const electron = require('electron') as { app?: { getPath?: (n: string) => string } }
+    const userData = electron?.app?.getPath?.('userData')
+    if (userData) return join(userData, '.linekey')
+  } catch {
+    // 非 Electron 環境 —— 落到下方 fallback。
+  }
+  const base =
+    process.env.LINE_TODO_USERDATA?.trim() ||
+    (process.env.APPDATA ? join(process.env.APPDATA, 'line-todo') : process.cwd())
+  return join(base, '.linekey')
+}
+
+/** getKey 選項（皆可注入，方便測試冷啟/自訂快取路徑）。 */
+export interface GetKeyOptions {
+  /** LINE DB 路徑；省略則 findDb()。 */
+  dbPath?: string | null
+  /** 快取檔路徑；省略則 <userData>/.linekey。 */
+  cacheFile?: string
+  /** 略過 env 段（測試 cache/recover 用）。 */
+  skipEnv?: boolean
+  /** 略過 cache 段（測試 cold recover 用）。 */
+  skipCache?: boolean
+  /** recover 命中後是否寫快取（預設 true）。 */
+  cache?: boolean
+  /** 略過 live recover（不掃 LINE 記憶體）：env／cache 都 miss 時直接回 null。driver_post D5。 */
+  skipRecover?: boolean
+  /**
+   * 協作式金鑰解析（外掛 backend；review F2）。給了 guard，呼叫端（watchEngine／reconcile）改走 `getKeyAsync`：
+   * 掃記憶體時定期讓出事件迴圈、同一時間只有一次掃描（single-flight）、掃不到時指數退避（不會每個 poll 都重掃）。
+   * standalone 不給＝走原本的同步 `getKey`，行為完全不變。
+   */
+  recoverGuard?: RecoverGuard
+  /** 測試注入：取代真正的記憶體掃描（預設 `scanRegionsAsync`）。只影響 `getKeyAsync`／`recoverKeyAsync`。 */
+  scanner?: (pid: number, onChunk: (bytes: Buffer) => boolean | void | Promise<boolean | void>) => Promise<void>
+}
+
+export interface RecoverGuardOptions {
+  /** 掃完沒找到 key 之後，第一次退避多久（預設 30 s）；連續失敗每次加倍。 */
+  minBackoffMs?: number
+  /** 退避上限（預設 5 分鐘）。 */
+  maxBackoffMs?: number
+  /** 連續占用事件迴圈超過多久就讓出一次（預設 20 ms）。 */
+  yieldSliceMs?: number
+  now?: () => number
+  /** 讓出事件迴圈（預設 `setImmediate`）。 */
+  yieldFn?: () => Promise<void>
+}
+
+/**
+ * RecoverGuard — 外掛 backend 的金鑰掃描守衛：single-flight、失敗退避、可取消、讓出事件迴圈。一個 backend 一個實例（assemble.ts 建立）。
+ *
+ * 只有「真的掃了 LINE 記憶體而沒找到」才退避；LINE 沒在跑（找不到 LINE.exe）不算——那一步很便宜，LINE 一啟動下一輪 poll 就能馬上開始掃。
+ */
+export class RecoverGuard {
+  private readonly o: Required<RecoverGuardOptions>
+  private failures = 0
+  private nextAllowedAt = 0
+  private inflight: Promise<string | null> | null = null
+  private cancelled = false
+  scans = 0
+
+  constructor(options: RecoverGuardOptions = {}) {
+    this.o = {
+      minBackoffMs: options.minBackoffMs ?? 30_000,
+      maxBackoffMs: options.maxBackoffMs ?? 5 * 60_000,
+      yieldSliceMs: options.yieldSliceMs ?? 20,
+      now: options.now ?? Date.now,
+      yieldFn: options.yieldFn ?? (() => new Promise<void>((resolve) => { setImmediate(resolve) }))
+    }
+  }
+
+  /** 目前還在退避期間（不該再掃）嗎？ */
+  blocked(): boolean { return this.o.now() < this.nextAllowedAt }
+  /** 距離下一次允許掃描還要多久（0＝現在就可以）。 */
+  retryInMs(): number { return Math.max(0, this.nextAllowedAt - this.o.now()) }
+  get isCancelled(): boolean { return this.cancelled }
+  /** 取消進行中的掃描（backend dispose）：掃描在下一個讓出點結束，之後的 `getKeyAsync` 一律回 null。 */
+  cancel(): void { this.cancelled = true }
+  /** 進行中的掃描（沒有就是已結束的 promise）。dispose 時等它收尾（刪暫存目錄、關 handle）。 */
+  idle(): Promise<void> { return this.inflight ? this.inflight.then(() => undefined, () => undefined) : Promise.resolve() }
+
+  noteSuccess(): void { this.failures = 0; this.nextAllowedAt = 0 }
+  noteScanFailure(): void {
+    this.failures += 1
+    this.nextAllowedAt = this.o.now() + Math.min(this.o.minBackoffMs * 2 ** (this.failures - 1), this.o.maxBackoffMs)
+  }
+
+  /** 讓出事件迴圈（距離上次讓出超過 yieldSliceMs 才真的讓；`force` 一定讓）。 */
+  async maybeYield(state: { since: number }, force = false): Promise<void> {
+    if (!force && this.o.now() - state.since < this.o.yieldSliceMs) return
+    await this.o.yieldFn()
+    state.since = this.o.now()
+  }
+
+  /** 同一時間只跑一次掃描；並行的呼叫共用同一個結果。 */
+  singleFlight(run: () => Promise<string | null>): Promise<string | null> {
+    if (this.inflight) return this.inflight
+    const flight = run().finally(() => { if (this.inflight === flight) this.inflight = null })
+    this.inflight = flight
+    return flight
+  }
+}
+
+/**
+ * findPid(name) — 取指定執行檔的 PID。
+ *
+ * 對齊 linekey.py:36-47（`find_pid`）。列舉經 `LineFsPort.listProcessIds`
+ * （standalone＝`tasklist` CSV 解析，plugin＝koffi Toolhelp32）。回第一個
+ * 命中的 PID，找不到回 null。
+ */
+export function findPid(name = 'LINE.exe'): number | null {
+  return getLineEnginePorts().fs.listProcessIds(name)[0] ?? null
+}
+
+/** ASCII 32-hex（前後不得再接 hex，對齊 linekey.py:85 `_ASCII_RE`）。 */
+const ASCII_RE = /(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])/g
+
+/**
+ * extractCandidates(bytes, seen, out) — 從一段記憶體 bytes 抽 32-hex 候選，
+ * 去重後追加到 out。對齊 linekey.py:118-121 的雙編碼掃描：
+ *   - ASCII：latin1 解碼後正則掃 [0-9a-fA-F]{32}。
+ *   - UTF-16LE：每隔一 byte 取一（偶數 offset），若第奇數 byte 全 0（\x00）
+ *     則視為 UTF-16LE 的 hex；等效 py 的 `(?:[0-9a-fA-F]\x00){32}`。
+ */
+function extractCandidates(bytes: Buffer, seen: Set<string>, out: string[]): void {
+  // ASCII
+  const asciiStr = bytes.toString('latin1')
+  for (const m of asciiStr.matchAll(ASCII_RE)) {
+    const key = m[0]
+    if (!seen.has(key)) {
+      seen.add(key)
+      out.push(key)
+    }
+  }
+  // UTF-16LE：取偶數 offset 的 byte，奇數 offset 須為 0。
+  // 逐位掃：每個 UTF-16LE hex char = [hexByte, 0x00]。
+  const isHex = (c: number): boolean =>
+    (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66)
+  for (let i = 0; i + 63 < bytes.length; i++) {
+    let ok = true
+    for (let j = 0; j < 32; j++) {
+      const lo = bytes[i + j * 2]
+      const hi = bytes[i + j * 2 + 1]
+      if (hi !== 0 || !isHex(lo)) {
+        ok = false
+        break
+      }
+    }
+    if (ok) {
+      let s = ''
+      for (let j = 0; j < 32; j++) s += String.fromCharCode(bytes[i + j * 2])
+      if (!seen.has(s)) {
+        seen.add(s)
+        out.push(s)
+      }
+      i += 63 // 跳過此候選（不重疊掃）
+    }
+  }
+}
+
+/** test-decrypt（單發）：用 openDb 開 copy 驗 sqlite_master，成功即 true。 */
+function decrypts(dbPath: string, key: string): boolean {
+  try {
+    const { cleanup } = openDb(key, dbPath)
+    cleanup()
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * BatchVerifier — recover 專用「一次複製、多次試解」的候選驗證器。
+ *
+ * py 的 `_decrypts` 每個候選都把整顆 ~200MB DB 複製到 temp 再開。實測 LINE.exe
+ * 記憶體含約 1.2 萬個 32-hex 候選、真 key 常落在數千名之後 → 逐一 copy 會產生
+ * 數百 GB I/O、耗時以小時計。這裡改成**複製一次**（edb 即可；驗 `sqlite_master`
+ * 不需 WAL 內容）為 read-only immutable 來源，之後每個候選只開一條 read-only
+ * 連線試 `key` pragma + `SELECT count(*) FROM sqlite_master`——**驗證條件與
+ * py/`openDb` 逐字相同**，只是省去重複 copy。命中的 key 最後仍會過一次正規
+ * `openDb`（snapshot+WAL merge）做最終確認，確保與日常開檔路徑一致。
+ */
+class BatchVerifier {
+  private fs: LineFsPort
+  private tmp: string
+  private copyPath: string
+
+  constructor(dbPath: string) {
+    this.fs = getLineEnginePorts().fs
+    this.tmp = this.fs.makeTempDir('linekey-scan-')
+    this.copyPath = join(this.tmp, 'm.edb')
+    // 只複製主 edb（驗 sqlite_master 不需 -wal/-shm）。以 readonly 開私有 copy，
+    // 不會動到來源、也不需 WAL merge。（不走 file: URI immutable —— 該形式在
+    // better-sqlite3(-multiple-ciphers) 下解析為「目錄不存在」，見 spike 診斷。）
+    this.fs.copyFile(dbPath, this.copyPath)
+  }
+
+  /** 試一把 key：能 SELECT count(*) FROM sqlite_master 即 true。 */
+  test(key: string): boolean {
+    let con: Db | null = null
+    try {
+      // 開私有 copy（readonly，避免對共用 copy 寫 sidecar；spike 已驗
+      // 好/壞 key 交錯開關不互相污染）。
+      con = getLineEnginePorts().sqlite.open(this.copyPath, {
+        readonly: true,
+        fileMustExist: true,
+      })
+      con.pragma(`cipher='${CIPHER}'`)
+      con.pragma(`kdf_iter=${KDF_ITER}`)
+      con.pragma(`key='${key}'`)
+      con.prepare('SELECT count(*) FROM sqlite_master').get()
+      return true
+    } catch {
+      return false
+    } finally {
+      if (con) {
+        try {
+          con.close()
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  dispose(): void {
+    try {
+      this.fs.removeDir(this.tmp)
+    } catch {
+      // 非致命
+    }
+  }
+}
+
+/**
+ * recoverKey(opts) — 掃 LINE.exe 記憶體找可解 DB 的 32-hex，命中即回並快取。
+ *
+ * 對齊 linekey.py:151-168（`recover_key`）：findDb → findPid → scanRegions
+ * 逐 chunk 抽候選 → 逐一 test-decrypt → 命中即中止掃描、寫快取、回傳。
+ * 找不到回 null。
+ *
+ * 效能：候選驗證走 BatchVerifier（複製一次、逐一試解），避免 py 逐候選 copy
+ * 200MB 的數百 GB I/O。邊掃邊試：每個 chunk 抽出的新候選立即試解，命中即回
+ * false 令 scanRegions 提早中止（省去累積全部候選）。命中後再過一次正規
+ * openDb 做最終確認。
+ */
+export function recoverKey(opts: GetKeyOptions = {}): string | null {
+  const dbPath = opts.dbPath ?? findDb()
+  if (!dbPath) return null
+  const pid = findPid('LINE.exe')
+  if (!pid) return null
+
+  const seen = new Set<string>()
+  let hit: string | null = null
+  const verifier = new BatchVerifier(dbPath)
+  try {
+    scanRegions(pid, (chunk) => {
+      const fresh: string[] = []
+      extractCandidates(chunk, seen, fresh)
+      for (const key of fresh) {
+        if (verifier.test(key)) {
+          hit = key
+          return false // 中止掃描
+        }
+      }
+      return true
+    })
+  } finally {
+    verifier.dispose()
+  }
+
+  return finishRecover(dbPath, hit, opts)
+}
+
+/** 掃描 chunk 之後的共同收尾：最終確認（正規 openDb）＋寫快取。 */
+function finishRecover(dbPath: string, hit: string | null, opts: GetKeyOptions): string | null {
+  // 最終確認：命中的 key 過一次正規 openDb（snapshot + WAL merge），確保與
+  // 日常開檔路徑一致；理論上必過（BatchVerifier 已驗），失敗即視為未命中。
+  if (hit && !decrypts(dbPath, hit)) hit = null
+
+  if (hit && opts.cache !== false) {
+    try {
+      getLineEnginePorts().fs.writeTextFile(opts.cacheFile ?? defaultCacheFile(), hit)
+    } catch {
+      // 快取寫入失敗非致命（對齊 py try/except OSError: pass）。
+    }
+  }
+  return hit
+}
+
+/**
+ * recoverKeyAsync(opts) — `recoverKey` 的協作式版本（外掛 backend）：同樣的流程（BatchVerifier 複製一次、邊掃邊試、命中再確認、寫快取），
+ * 但每個 chunk 之後、以及每試解 yieldSliceMs 之後都讓出事件迴圈；有 `opts.recoverGuard` 時 single-flight、失敗退避、可取消。
+ * 一個 chunk 內的 regex 抽取、單次試解、以及複製一次 edb 仍是同步的（各約數十毫秒到一秒）。
+ */
+export async function recoverKeyAsync(opts: GetKeyOptions = {}): Promise<string | null> {
+  const guard = opts.recoverGuard
+  const run = async (): Promise<string | null> => {
+    if (guard?.isCancelled) return null
+    const dbPath = opts.dbPath ?? findDb()
+    if (!dbPath) return null
+    const pid = findPid('LINE.exe')
+    if (!pid) return null // LINE 沒在跑：便宜，不退避
+
+    const scan = opts.scanner ?? scanRegionsAsync
+    const seen = new Set<string>()
+    let hit: string | null = null
+    const slice = { since: Date.now() }
+    const verifier = new BatchVerifier(dbPath)
+    if (guard) guard.scans += 1
+    try {
+      await scan(pid, async (chunk) => {
+        if (guard?.isCancelled) return false
+        const fresh: string[] = []
+        extractCandidates(chunk, seen, fresh)
+        for (const key of fresh) {
+          if (verifier.test(key)) {
+            hit = key
+            return false // 中止掃描
+          }
+          if (guard) await guard.maybeYield(slice)
+          if (guard?.isCancelled) return false
+        }
+        // 每個 chunk 之後一定讓出一次（一個 4 MB chunk 的抽取本身就要數十毫秒）。
+        if (guard) await guard.maybeYield(slice, true)
+        return true
+      })
+    } catch (error) {
+      guard?.noteScanFailure()
+      throw error
+    } finally {
+      verifier.dispose()
+    }
+    if (guard?.isCancelled) return null
+    const key = finishRecover(dbPath, hit, opts)
+    if (guard) { if (key) guard.noteSuccess(); else guard.noteScanFailure() }
+    return key
+  }
+  return guard ? guard.singleFlight(run) : run()
+}
+
+/**
+ * getKeyAsync(opts) — `getKey` 的協作式版本：env → cache → live recover（`recoverKeyAsync`）。
+ * 與 `getKey` 的差別只有：(1) recover 會讓出事件迴圈；(2) 有 `recoverGuard` 且還在退避期間時，env 之外一律直接回 null（不開 cache、不掃）。
+ */
+export async function getKeyAsync(opts: GetKeyOptions = {}): Promise<string | null> {
+  const dbPath = opts.dbPath ?? findDb()
+
+  if (!opts.skipEnv) {
+    const env = process.env.LINE_DB_KEY
+    if (env && env.trim()) return env.trim()
+  }
+  if (opts.recoverGuard?.isCancelled) return null
+  // 退避期間：快取在上一輪已經驗證失敗（否則不會走到掃描），不必再複製一次 200 MB 的資料庫去驗證同一把 key。
+  if (opts.recoverGuard?.blocked()) return null
+
+  if (!opts.skipCache) {
+    const cacheFile = opts.cacheFile ?? defaultCacheFile()
+    const fs = getLineEnginePorts().fs
+    if (fs.exists(cacheFile)) {
+      let cached = ''
+      try {
+        cached = fs.readTextFile(cacheFile).trim()
+      } catch {
+        cached = ''
+      }
+      if (cached && dbPath && decrypts(dbPath, cached)) return cached
+    }
+  }
+
+  if (opts.skipRecover) return null
+  return recoverKeyAsync({ ...opts, dbPath })
+}
+
+/**
+ * getKey(opts) — 解析 DB passphrase：env → cache → live recover。
+ *
+ * 對齊 linekey.py:171-182（`get_key`）：
+ *   1. $LINE_DB_KEY（strip）直接用。
+ *   2. cache 檔存在 → 讀出試解；LINE re-login 會 rotate key，故快取須經
+ *      test-decrypt 驗證通過才採用，否則往下 recover。
+ *   3. recoverKey()。
+ *
+ * 回傳 32-hex 或 null（三段皆 miss）。
+ */
+export function getKey(opts: GetKeyOptions = {}): string | null {
+  const dbPath = opts.dbPath ?? findDb()
+
+  // 1. env
+  if (!opts.skipEnv) {
+    const env = process.env.LINE_DB_KEY
+    if (env && env.trim()) return env.trim()
+  }
+
+  // 2. cache（須 test-decrypt 驗證，rotate 後不採用舊 key）
+  if (!opts.skipCache) {
+    const cacheFile = opts.cacheFile ?? defaultCacheFile()
+    const fs = getLineEnginePorts().fs
+    if (fs.exists(cacheFile)) {
+      let cached = ''
+      try {
+        cached = fs.readTextFile(cacheFile).trim()
+      } catch {
+        cached = ''
+      }
+      if (cached && dbPath && decrypts(dbPath, cached)) return cached
+    }
+  }
+
+  // 3. live recover（skipRecover：由使用者觸發的流程只用快取，不掃記憶體）
+  if (opts.skipRecover) return null
+  return recoverKey({ ...opts, dbPath })
+}

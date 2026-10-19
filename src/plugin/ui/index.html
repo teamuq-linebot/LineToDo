@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LINE 待辦看板</title>
+  <!-- 沒有 CSP meta：TeamUQ 對 HTML 回應加 Content-Security-Policy 標頭（pluginCsp.ts：script-src 只有 tuqplugin://<id>，沒有 inline）。
+       所以這裡不放任何 inline script／事件屬性；防閃爍的主題腳本也是外部檔（theme-boot.js），且只用相對路徑。 -->
+  <script src="theme-boot.js"></script>
+  <link rel="stylesheet" href="main.css">
+</head>
+<body>
+  <div id="root"></div>
+  <script src="main.js"></script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+{
+ "label": "e44-wasm-strict",
+ "engineLoaded": true,
+ "selfChecks": {
+  "create": "true/true/true",
+  "legacy": "true/true/true",
+  "import": "true/true/true",
+  "append-noclose": "true/true/true",
+  "reopen": "true/true/true"
+ },
+ "exits": {
+  "create": "0x0",
+  "legacy": "0x0",
+  "import": "0x0",
+  "append-noclose": "0x1",
+  "reopen": "0x0"
+ },
+ "legacy": {
+  "code": null,
+  "name": "SQLite3Error",
+  "message": "SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+  "stack": [
+   "SQLite3Error: SQLITE_IOERR_FSYNC: sqlite3 result code 1034: disk I/O error",
+   "    at toss3 (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9427:35)",
+   "    at checkSqlite3Rc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9463:7)",
+   "    at DB.checkRc (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9819:33)",
+   "    at Stmt.step (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:10426:14)",
+   "    at DB.exec (file:///C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db/vendor/wasm/sqlite3.mjs:9985:18)"
+  ]
+ },
+ "import": false,
+ "append": {
+  "exit": "0x1",
+  "files": [
+   {
+    "name": "line-todo.db",
+    "size": 0
+   }
+  ]
+ },
+ "reopen": false,
+ "interop": {
+  "error": "no such table: messages"
+ }
+}

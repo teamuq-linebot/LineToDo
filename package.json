@@ -1,0 +1,124 @@
+{
+  "name": "line-todo",
+  "version": "0.1.7",
+  "description": "LINE 新訊息語意抽取代辦看板（Electron + qwen）",
+  "main": "out/main/index.js",
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "prebuild": "node scripts/build-group-topics-prompts.mjs",
+    "start": "electron-vite preview",
+    "typecheck:node": "tsc -p tsconfig.node.json --noEmit",
+    "typecheck:web": "tsc -p tsconfig.web.json --noEmit",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test:chat-refresh": "node --experimental-strip-types --test scripts/test-chat-refresh.mjs",
+    "test:board-progress": "node --experimental-strip-types --test scripts/test-board-progress.mjs",
+    "test:complete-todo": "node --experimental-strip-types --test scripts/test-complete-todo.mjs",
+    "test:line-import": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-line-import.mjs",
+    "test:group-topics": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-group-topics.mjs",
+    "test:line-fs-port": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-line-fs-port.mjs",
+    "test:wasm-vfs": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-wasm-vfs.mjs",
+    "test:wasm-linedb": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-wasm-linedb.mjs",
+    "test:wasm-contract": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-wasm-contract.mjs",
+    "test:wasm-engine": "npm run test:wasm-vfs && npm run test:wasm-linedb && npm run test:wasm-contract",
+    "build:plugin-backend": "node scripts/plugin/build-backend.mjs",
+    "test:plugin-backend-unit": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-backend-units.mjs scripts/plugin/test-backend-media-reconcile.mjs scripts/plugin/test-extract-throughput.mjs scripts/plugin/test-review-resume.mjs scripts/plugin/test-backend-startup.mjs",
+    "test:plugin-backend-contract": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/plugin/test-backend-contract.mjs",
+    "test:plugin-backend": "npm run test:plugin-backend-unit && npm run test:plugin-backend-contract",
+    "build:plugin-ui": "node scripts/plugin/build-ui.mjs",
+    "test:plugin-api-adapter": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/plugin/test-plugin-api-adapter.mjs",
+    "test:plugin-ui": "node --experimental-strip-types --test scripts/plugin/test-plugin-ui.mjs scripts/plugin/test-plugin-ui-effects.mjs",
+    "test:plugin-guide": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-plugin-guide.mjs",
+    "test:ai-orchestrator": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-ai-orchestrator.mjs",
+    "test:ai-bridge": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-ai-bridge.mjs",
+    "test:ai-e2e": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-ai-e2e.mjs",
+    "test:host-ai": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-host-ai.mjs",
+    "test:prompt-settings": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-prompt-settings.mjs",
+    "test:plugin-ai": "npm run test:ai-orchestrator && npm run test:ai-bridge && npm run test:ai-e2e && npm run test:host-ai && npm run test:prompt-settings",
+    "build:plugin": "node scripts/plugin/build-plugin.mjs",
+    "check:plugin-manifest": "node scripts/plugin/check-manifest.mjs",
+    "verify:plugin-artifact": "node scripts/plugin/verify-artifact.mjs",
+    "build:plugin-devsigned": "node scripts/plugin/build-plugin-devsigned.mjs",
+    "verify:plugin-devsigned": "node scripts/plugin/verify-devsigned.mjs",
+    "gen:plugin-icon": "node scripts/plugin/gen-icon.mjs",
+    "test:plugin-package": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=600000 scripts/plugin/test-plugin-package.mjs",
+    "test:plugin": "npm run test:plugin-backend && npm run test:plugin-api-adapter && npm run test:plugin-ui && npm run test:plugin-guide && npm run test:plugin-ai && npm run test:plugin-package",
+    "check:core-gate-conformance": "node scripts/plugin/check-core-gate-conformance.mjs",
+    "check:group-topics-prompt": "node scripts/build-group-topics-prompts.mjs --check",
+    "rebuild": "electron-rebuild -f -w better-sqlite3,better-sqlite3-multiple-ciphers",
+    "dist": "electron-vite build && electron-builder --win",
+    "smoke:qwen": "node scripts/smoke-qwen.mjs",
+    "eval": "node scripts/eval/run-eval.mjs",
+    "probe:pipeline": "electron scripts/probe-pipeline-dryrun.cjs",
+    "probe:pipeline-branches": "electron scripts/probe-pipeline-branches.cjs",
+    "probe:breaker": "electron scripts/probe-breaker.cjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11",
+    "better-sqlite3-multiple-ciphers": "^11.10.0",
+    "koffi": "^3.1.0",
+    "openai": "^4",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3",
+    "@types/better-sqlite3": "^7",
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@vitejs/plugin-react": "^4",
+    "better-sqlite3-plugin": "npm:better-sqlite3@13.0.2",
+    "electron": "^31",
+    "electron-builder": "^24",
+    "electron-vite": "^2",
+    "esbuild": "^0.21.5",
+    "react": "^18",
+    "react-dom": "^18",
+    "typescript": "^5",
+    "vite": "^5"
+  },
+  "build": {
+    "appId": "com.davidhuang.line-todo",
+    "productName": "line-todo",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/line-driver",
+        "to": "line-driver",
+        "filter": [
+          "*.ps1"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/build/Release/*.node",
+      "node_modules/better-sqlite3-multiple-ciphers/build/Release/*.node",
+      "node_modules/koffi/**",
+      "node_modules/@koromix/**"
+    ],
+    "npmRebuild": true,
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh"
+    }
+  }
+}

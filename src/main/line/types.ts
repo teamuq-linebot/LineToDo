@@ -1,0 +1,61 @@
+/**
+ * RawLineMessage — 一則 LINE 訊息的型別；欄位契約沿用自原 watch_json.py 的 NDJSON 輸出
+ * （IMPLEMENTATION_PLAN.md §3）。現由 in-process TS 引擎（watchEngine.getNewMessagesOnce /
+ * getMessagesSince）產生同型別物件，watcher.ts 逐則 emit 給下游。
+ */
+export interface RawLineMessage {
+  /**
+   * LINE _message._id — 原生全域唯一訊息 id，App 端去重的真鍵。
+   * 罕見無 _id 的列為 null，此時 deriveMsgId() 退回欄位組合 hash。
+   */
+  msgId: string | null
+  /** 顯示名稱；chat_name(chatId) 或回退 chatId */
+  chat: string
+  /** LINE _chatId 原值（唯一鍵） */
+  chatId: string
+  /** chatId[:1] !== "u"（fail-closed：非 1:1 一律當 group） */
+  isGroup: boolean
+  /** epoch 毫秒（= _createdTime） */
+  ts: number
+  /** 本地 ISO8601、秒精度、無時區後綴 */
+  time: string
+  /** "in" = 別人 / "out" = 自己 */
+  direction: 'in' | 'out'
+  /** "me"（out 時）或 sender 顯示名 */
+  sender: string
+  /** 文字內容；非文字訊息為 CT label（如 "[image]"） */
+  text: string
+  /** _contentType 原始 int（0 = 文字） */
+  contentType: number
+  // ── 媒體訊息（E2EE）解密輸入 —— 皆 optional，向後相容非媒體/舊列 ──
+  // 欄位契約沿用自原橋接 watch_json.py 對 LINE DB `_contentInfo`/`_contentMetadata` 的解析輸出；
+  // 現由 in-process TS 引擎（engine/rowToObj.ts）產生同值。只留 main/DB，keyMaterial 永不跨橋到
+  // renderer（media_feature_plan §4.2/4.4）。
+  /** base64（32B）金鑰素材；非 E2EE 媒體/文字為 null */
+  keyMaterial?: string | null
+  /** 檔案原名（檔案訊息）；圖片為 null */
+  fileName?: string | null
+  /** 明文位元組數（`.eimg == fileSize + 32`）；非媒體為 null */
+  fileSize?: number | null
+  /** OBS object id（選配，OBS 路 D 預留） */
+  oid?: string | null
+  /** OBS service id（選配） */
+  sid?: string | null
+  /** 該列是否為已收回訊息（LINE _attribute==1）；由橋接輸出。舊列/非收回為 false/undefined。 */
+  unsent?: boolean
+}
+
+/** LINE 橋接（in-process TS 輪詢引擎；watcher.ts，無子程序）目前狀態。 */
+export type LineBridgeState = 'starting' | 'running' | 'error' | 'stopped'
+
+export interface LineBridgeStatus {
+  state: LineBridgeState
+  /** 最近一則收到訊息的本地時間（ISO 或顯示用字串），尚無則 null */
+  lastMessageAt: string | null
+  /** 本 session 累計轉送的訊息數 */
+  messageCount: number
+  /** 最近一次錯誤訊息（state==='error' 時有意義） */
+  lastError: string | null
+  /** 子程序自啟動以來重啟次數 */
+  restarts: number
+}

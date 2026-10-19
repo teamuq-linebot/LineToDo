@@ -1,0 +1,102 @@
+{
+  "note": "launcher exit 0 = every phase child wrote a result file; pass/fail verdicts are in evidence/runs/<label>/result.json",
+  "fixtureDirRemoved": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-fixture-current-writer",
+  "runs": [
+    {
+      "label": "e31-sa-bs3-11.10.0",
+      "command": "node harness/run.mjs --electron C:/teamuq/line-todo/node_modules/electron/dist/electron.exe --label e31-sa-bs3-11.10.0 --engine bsqlite --vendor bs3-11.10.0-linetodo --no-permission --export-to <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 1880
+    },
+    {
+      "label": "e44-node-sqlite",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-node-sqlite --engine node-sqlite --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 1229
+    },
+    {
+      "label": "e44-node-sqlite-noaddons",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-node-sqlite-noaddons --engine node-sqlite --no-addons --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 1158
+    },
+    {
+      "label": "e44-bs3-13.0.2-teamuq",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-bs3-13.0.2-teamuq --engine bsqlite --vendor bs3-13.0.2-teamuq --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 1108
+    },
+    {
+      "label": "e44-bs3-13.0.2-npm",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-bs3-13.0.2-npm --engine bsqlite --vendor bs3-13.0.2-npm --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 1312
+    },
+    {
+      "label": "e44-bs3-13.0.3-npm",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-bs3-13.0.3-npm --engine bsqlite --vendor bs3-13.0.3-npm --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 1204
+    },
+    {
+      "label": "e44-bs3-13.0.3-npm-noaddons",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-bs3-13.0.3-npm-noaddons --engine bsqlite --vendor bs3-13.0.3-npm --no-addons --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 217
+    },
+    {
+      "label": "e44-bs3-11.10.0-linetodo",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-bs3-11.10.0-linetodo --engine bsqlite --vendor bs3-11.10.0-linetodo --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 320
+    },
+    {
+      "label": "e44-wasm-strict",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-wasm-strict --engine wasm --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 1212
+    },
+    {
+      "label": "e44-wasm-excl-strict",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-wasm-excl-strict --engine wasm --wasm-exclusive --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 1299
+    },
+    {
+      "label": "e44-wasm-nosync",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-wasm-nosync --engine wasm --wasm-sync-skip --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 2476
+    },
+    {
+      "label": "e44-wasm-excl-nosync",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-wasm-excl-nosync --engine wasm --wasm-exclusive --wasm-sync-skip --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 2190
+    },
+    {
+      "label": "e44-wasm-excl-nosync-noaddons",
+      "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-wasm-excl-nosync-noaddons --engine wasm --wasm-exclusive --wasm-sync-skip --no-addons --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 2146
+    },
+    {
+      "label": "e31-sa-node-sqlite",
+      "command": "node harness/run.mjs --electron C:/teamuq/line-todo/node_modules/electron/dist/electron.exe --label e31-sa-node-sqlite --engine node-sqlite --no-permission --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 418
+    },
+    {
+      "label": "e31-sa-bs3-13.0.3-npm",
+      "command": "node harness/run.mjs --electron C:/teamuq/line-todo/node_modules/electron/dist/electron.exe --label e31-sa-bs3-13.0.3-npm --engine bsqlite --vendor bs3-13.0.3-npm --no-permission --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 1,
+      "durationMs": 310
+    },
+    {
+      "label": "e31-sa-wasm-excl",
+      "command": "node harness/run.mjs --electron C:/teamuq/line-todo/node_modules/electron/dist/electron.exe --label e31-sa-wasm-excl --engine wasm --wasm-exclusive --no-permission --import-from <tmp>/teamuq-appdb-fixture-current-writer",
+      "exitCode": 0,
+      "durationMs": 2573
+    }
+  ]
+}

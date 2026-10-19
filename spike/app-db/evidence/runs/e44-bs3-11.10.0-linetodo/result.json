@@ -1,0 +1,121 @@
+{
+  "label": "e44-bs3-11.10.0-linetodo",
+  "electronExe": "C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe",
+  "engine": "bsqlite",
+  "vendor": "bs3-11.10.0-linetodo",
+  "wasmExclusive": false,
+  "wasmSyncSkip": false,
+  "allowAddons": true,
+  "permission": true,
+  "flags": [
+    "--permission",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-bs3-11.10.0-linetodo-6mNzOM/host/host-bootstrap.mjs",
+    "--allow-fs-read=C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-bs3-11.10.0-linetodo-6mNzOM/data",
+    "--allow-fs-write=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-bs3-11.10.0-linetodo-6mNzOM/data",
+    "--allow-addons"
+  ],
+  "dirs": {
+    "runRoot": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-11.10.0-linetodo-6mNzOM",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-11.10.0-linetodo-6mNzOM\\data",
+    "bootstrapFile": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-11.10.0-linetodo-6mNzOM\\host\\host-bootstrap.mjs"
+  },
+  "phases": [
+    {
+      "phase": "create",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 140,
+      "resultWritten": true,
+      "filesAfter": [],
+      "result": {
+        "phase": "create",
+        "label": "e44-bs3-11.10.0-linetodo",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": false,
+          "code": "ERR_DLOPEN_FAILED",
+          "name": "Error",
+          "message": "The module '\\\\?\\C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db\\vendor\\bs3-11.10.0-linetodo\\node_modules\\better-sqlite3\\build\\Release\\better_sqlite3.node'"
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "memoryRssMB": 105,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    }
+  ]
+}

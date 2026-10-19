@@ -1,0 +1,3 @@
+node_modules/
+vendor/*.zip
+vendor/sqlite3mc-*-wasm/

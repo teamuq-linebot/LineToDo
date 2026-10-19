@@ -1,0 +1,42 @@
+# probe-abi under Electron 44.2.0 (run-as-node)
+{
+  "runtime": {
+    "node": "24.20.0",
+    "electron": "44.2.0",
+    "modules_abi": "149",
+    "napi": "10",
+    "v8": "15.2.124.19-electron.0"
+  },
+  "koffi": {
+    "loaded": true,
+    "version": "3.1.0",
+    "GetCurrentProcessId": 20212
+  },
+  "bsqlite": {
+    "loaded": false,
+    "error": {
+      "code": "ERR_DLOPEN_FAILED",
+      "message": "The module '\\\\?\\C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\native-permission\\node_modules\\better-sqlite3-multiple-ciphers\\build\\Release\\better_sqlite3.node'"
+    }
+  }
+}
+
+# probe-abi under Electron 31.7.7 (run-as-node)
+{
+  "runtime": {
+    "node": "20.18.0",
+    "electron": "31.7.7",
+    "modules_abi": "125",
+    "napi": "9",
+    "v8": "12.6.228.30-electron.0"
+  },
+  "koffi": {
+    "loaded": true,
+    "version": "3.1.0",
+    "GetCurrentProcessId": 18984
+  },
+  "bsqlite": {
+    "loaded": true,
+    "select1": 1
+  }
+}

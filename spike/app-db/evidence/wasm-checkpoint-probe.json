@@ -1,0 +1,52 @@
+[
+  {
+    "journal": [
+      {
+        "journal_mode": "wal"
+      }
+    ],
+    "locking": "exclusive",
+    "autockpt": 1000
+  },
+  {
+    "tag": "after-insert",
+    "db": 8192,
+    "wal": 681960
+  },
+  {
+    "explicitCheckpoint": [
+      {
+        "busy": 0,
+        "log": 0,
+        "checkpointed": 0
+      }
+    ]
+  },
+  {
+    "tag": "after-explicit-checkpoint",
+    "db": 647168,
+    "wal": 0
+  },
+  {
+    "tag": "after-more",
+    "db": 647168,
+    "wal": 41112
+  },
+  {
+    "tag": "after-close",
+    "db": 647168,
+    "wal": 41112
+  },
+  {
+    "vfs": 2,
+    "lastError": null
+  },
+  {
+    "countAfterReopen": 3100
+  },
+  {
+    "tag": "after-reopen-close",
+    "db": 647168,
+    "wal": 41112
+  }
+]

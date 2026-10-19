@@ -1,0 +1,27 @@
+[
+  {
+    "label": "e44-wasm-addons",
+    "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-wasm-addons --engine wasm --fixtures C:/Users/david/AppData/Local/Temp/teamuq-wasm-spike-fixtures --iters 7 --scan 500",
+    "exit": 0
+  },
+  {
+    "label": "e44-wasm-noaddons",
+    "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-wasm-noaddons --engine wasm --fixtures C:/Users/david/AppData/Local/Temp/teamuq-wasm-spike-fixtures --iters 7 --scan 500 --no-addons",
+    "exit": 0
+  },
+  {
+    "label": "e31-wasm-addons",
+    "command": "node harness/run.mjs --electron C:/teamuq/line-todo/node_modules/electron/dist/electron.exe --label e31-wasm-addons --engine wasm --fixtures C:/Users/david/AppData/Local/Temp/teamuq-wasm-spike-fixtures --iters 7 --scan 500 --exp-perm",
+    "exit": 0
+  },
+  {
+    "label": "e31-bsqlite-addons",
+    "command": "node harness/run.mjs --electron C:/teamuq/line-todo/node_modules/electron/dist/electron.exe --label e31-bsqlite-addons --engine bsqlite --fixtures C:/Users/david/AppData/Local/Temp/teamuq-wasm-spike-fixtures --iters 7 --scan 500 --exp-perm",
+    "exit": 0
+  },
+  {
+    "label": "e44-bsqlite-addons",
+    "command": "node harness/run.mjs --electron C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe --label e44-bsqlite-addons --engine bsqlite --fixtures C:/Users/david/AppData/Local/Temp/teamuq-wasm-spike-fixtures --iters 7 --scan 500",
+    "exit": 0
+  }
+]

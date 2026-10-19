@@ -1,0 +1,860 @@
+{
+  "label": "e31-wasm-addons",
+  "electronExe": "C:/teamuq/line-todo/node_modules/electron/dist/electron.exe",
+  "engine": "wasm",
+  "allowAddons": true,
+  "copyVia": "koffi",
+  "exitCode": 0,
+  "signal": null,
+  "spawnError": null,
+  "durationMs": 13090,
+  "flags": [
+    "--experimental-permission",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-wasm-run-e31-wasm-addons-KyFGCu/host/host-bootstrap.mjs",
+    "--allow-fs-read=C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-wasm-run-e31-wasm-addons-KyFGCu/data",
+    "--allow-fs-write=C:/Users/david/AppData/Local/Temp/teamuq-wasm-run-e31-wasm-addons-KyFGCu/data",
+    "--allow-addons"
+  ],
+  "dirs": {
+    "runRoot": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-wasm-run-e31-wasm-addons-KyFGCu",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\wasm-sqlite",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-wasm-run-e31-wasm-addons-KyFGCu\\data"
+  },
+  "init": {
+    "version": 1,
+    "pluginId": "tuqdev.wasm-spike",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\wasm-sqlite",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-wasm-run-e31-wasm-addons-KyFGCu\\data",
+    "entry": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-wasm-run-e31-wasm-addons-KyFGCu\\host\\host-bootstrap.mjs",
+    "assetPacks": {},
+    "allowAddons": true,
+    "corePackaged": true
+  },
+  "result": {
+    "runtime": {
+      "node": "20.18.0",
+      "electron": "31.7.7",
+      "modules_abi": "125"
+    },
+    "permissionActive": true,
+    "cfgEcho": {
+      "engine": "wasm",
+      "copyVia": "koffi",
+      "iters": 7
+    },
+    "selfCheckBoot": {
+      "ok": true,
+      "code": null,
+      "allowAddons": true,
+      "probes": {
+        "permission": "active",
+        "scope_read": "ok",
+        "scope_read_home": "ok",
+        "scope_write_data": "ok",
+        "scope_write_narrow": "ok",
+        "scope_child": "ok",
+        "scope_worker": "ok",
+        "scope_addon_reported": "false",
+        "write_outside": "ok",
+        "read_outside": "ok",
+        "child_process": "ok",
+        "worker_threads": "ok",
+        "addon_code": "ERR_DLOPEN_FAILED",
+        "addon": "ok",
+        "data_write": "ok"
+      }
+    },
+    "controlNodeFsOutside": {
+      "denied": true,
+      "code": "ERR_ACCESS_DENIED"
+    },
+    "controlExistsOutside": {
+      "threw": true,
+      "code": "ERR_ACCESS_DENIED"
+    },
+    "koffi": {
+      "loaded": true,
+      "version": "3.1.0"
+    },
+    "engine": {
+      "loaded": true,
+      "loadMs": 103.89,
+      "info": {
+        "engine": "sqlite3mc-wasm",
+        "sqlite": "3.53.4",
+        "mc": "SQLite3 Multiple Ciphers 2.5.1",
+        "defaultVfs": "multipleciphers-unix-none",
+        "initWarnings": [
+          "Ignoring inability to install 'opfs' sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')",
+          "Ignoring inability to install the opfs-wl sqlite3_vfs: TypeError: Cannot read properties of undefined (reading 'href')"
+        ]
+      }
+    },
+    "memAfterEngineLoad": {
+      "rssMB": 49,
+      "heapUsedMB": 4,
+      "externalMB": 11,
+      "arrayBuffersMB": 0
+    },
+    "memBefore": {
+      "rssMB": 41,
+      "heapUsedMB": 4,
+      "externalMB": 2,
+      "arrayBuffersMB": 0
+    },
+    "selfCheckAfterEngine": {
+      "ok": true,
+      "code": null,
+      "allowAddons": true,
+      "probes": {
+        "permission": "active",
+        "scope_read": "ok",
+        "scope_read_home": "ok",
+        "scope_write_data": "ok",
+        "scope_write_narrow": "ok",
+        "scope_child": "ok",
+        "scope_worker": "ok",
+        "scope_addon_reported": "false",
+        "write_outside": "ok",
+        "read_outside": "ok",
+        "child_process": "ok",
+        "worker_threads": "ok",
+        "addon_code": "ERR_DLOPEN_FAILED",
+        "addon": "ok",
+        "data_write": "ok"
+      }
+    },
+    "walDefaultLocking": {
+      "ok": false,
+      "error": "null function or function signature mismatch"
+    },
+    "correctness": {
+      "wal": {
+        "ok": true,
+        "copied": [
+          "(edb)",
+          "-wal",
+          "-shm"
+        ],
+        "journalMode": "wal",
+        "checkpoint": [
+          0,
+          0,
+          0
+        ],
+        "countMatches": true,
+        "digestMatches": true,
+        "maxRowMatches": true,
+        "suite": {
+          "myMid": {
+            "ok": true,
+            "value": "uffffffffffffffffffffffffffffffff"
+          },
+          "listChats50": {
+            "ok": true,
+            "value": {
+              "n": 50,
+              "first3": [
+                {
+                  "chatId": "ueeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                  "name": "WAL新聯絡人",
+                  "lastUpdated": "2025-08-15T22:40:05",
+                  "isGroup": false
+                },
+                {
+                  "chatId": "c8cd0ba1228f13403d095cdda008cbfd0",
+                  "name": "專案群組3號🚀",
+                  "lastUpdated": "2025-08-15T22:40:05",
+                  "isGroup": true
+                },
+                {
+                  "chatId": "u4c1c8f025ee7bc25c686c4ef45eefd6f",
+                  "name": "覆寫名0",
+                  "lastUpdated": "2025-08-15T21:16:32",
+                  "isGroup": false
+                }
+              ],
+              "digest": "2c18c6832f3829dd02d42cd1078523c089e74d7782da65f588b5bb355c038642"
+            }
+          },
+          "listChats5000_digest": {
+            "ok": true,
+            "value": "2675b3fa3f6266e9a8bdbc7e41edcff8c03bf6100a8fefab9b515db3cb5a93c6"
+          },
+          "chatName_override": {
+            "ok": true,
+            "value": "覆寫名0"
+          },
+          "chatName_badJsonContactIsNull": {
+            "ok": true,
+            "value": [
+              null
+            ]
+          },
+          "resolveChat_direct": {
+            "ok": true,
+            "value": true
+          },
+          "resolveChat_exactGroup": {
+            "ok": true,
+            "value": "ce64065928eeb77b38b11d32fcdfacae1"
+          },
+          "resolveChat_ambiguousExact": {
+            "ok": true,
+            "value": "ambiguous exact name"
+          },
+          "resolveChat_fuzzyUnique": {
+            "ok": true,
+            "value": "me77d903f10ce5eb96d2d1153da380d77"
+          },
+          "resolveChat_walOnlyContact": {
+            "ok": true,
+            "value": "ueeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          },
+          "newMessages_tail": {
+            "ok": true,
+            "value": {
+              "n": 500,
+              "last": {
+                "rowId": 101053,
+                "chatId": "u0452e51d8b9eeb79b68e1f385b2eb50c",
+                "createdTime": 1755266410813,
+                "from": "u0452e51d8b9eeb79b68e1f385b2eb50c",
+                "text": "收到檔案交付開會回覆OK收到收到付款開會交付進度提醒我🙏交付交付請幫忙客戶提醒我",
+                "contentType": 0,
+                "msgId": "500000000000101048",
+                "contentMetadata": null,
+                "contentInfo": null,
+                "attribute": 0
+              },
+              "digest": "0e770187b76c5d1c7593c6e2bdf40dc3643c113c0e81166d921f578146a9a520"
+            }
+          },
+          "newMessages_byName": {
+            "ok": true,
+            "value": {
+              "n": 345,
+              "digest": "f976d16478ee55323e7d0fcc53ad4b770284b207051954fdeb8cbb55b3ffffe7"
+            }
+          },
+          "newMessagesAfter_walBoundary": {
+            "ok": true,
+            "value": {
+              "n": 501,
+              "firstRowId": 100005,
+              "lastRowId": 100505,
+              "digest": "d62bb2413369a5bf8283eaba4f2bf2153a0fc353e3a416e32b304fbe991484de"
+            }
+          },
+          "newMessagesAfter_exclusiveBound": {
+            "ok": true,
+            "value": {
+              "n": 500,
+              "digest": "32f55f08ee08d12581cfe5b399b135b106c5c0e16c42c57ad143e3ade9b6d6e9"
+            }
+          },
+          "pagingFullScan_tieBreak": {
+            "ok": true,
+            "value": {
+              "n": 102004,
+              "digest": "7a159fb9ca5c182fc137c63b41f925351f9774e99a380d02b20725c0c8ffa075"
+            }
+          },
+          "watchBatch_walBoundary": {
+            "ok": true,
+            "value": {
+              "hasMore": true,
+              "n": 500,
+              "sample": [
+                {
+                  "r": {
+                    "rowId": 100005,
+                    "chatId": "u12ab0384648f63bc0b05097ea453d6c3",
+                    "createdTime": 1755263856833,
+                    "from": "u12ab0384648f63bc0b05097ea453d6c3",
+                    "text": "待辦收到交付已上傳週五前已上傳交付進度待辦deadline開會已上傳週五前😀提醒我確認回覆檔案謝謝週五前請幫忙已上傳",
+                    "contentType": 0,
+                    "msgId": "500000000000100000",
+                    "contentMetadata": null,
+                    "contentInfo": null,
+                    "attribute": 0
+                  },
+                  "chatName": "聯絡人139",
+                  "senderName": "聯絡人139",
+                  "time": "2025-08-15T21:17:36",
+                  "accountMid": "uffffffffffffffffffffffffffffffff"
+                },
+                {
+                  "r": {
+                    "rowId": 100006,
+                    "chatId": "u7f88ab9ac47438b73e891fb137167bef",
+                    "createdTime": 1755263858780,
+                    "from": "u7f88ab9ac47438b73e891fb137167bef",
+                    "text": "開會 收到 OK 檔案 😀 開會 開會 報價單 回覆 下午三點 明天 收到 明天 😀 😀 交付 請幫忙 請幫忙 發票 🙏 進度 檔案 發票 謝謝 下午三點 記得",
+                    "contentType": 0,
+                    "msgId": "500000000000100001",
+                    "contentMetadata": "{\"e2eeVersion\":\"2\",\"MENTION\":\"{\\\"MENTIONEES\\\":[]}\"}",
+                    "contentInfo": null,
+                    "attribute": 0
+                  },
+                  "chatName": "覆寫名132",
+                  "senderName": "覆寫名132",
+                  "time": "2025-08-15T21:17:38",
+                  "accountMid": "uffffffffffffffffffffffffffffffff"
+                }
+              ],
+              "digest": "80a83065df6a79acfb45a2e6f4ef0581a5c535929c3951d7de123aa1292722d3"
+            }
+          },
+          "tail": {
+            "ok": true,
+            "value": {
+              "m": 1755268805248,
+              "rid": 102004
+            }
+          },
+          "sourceMonthly": {
+            "ok": true,
+            "value": {
+              "rows": [
+                {
+                  "ym": "2025-01",
+                  "c": 13543,
+                  "lo": 1735693200000,
+                  "hi": 1738338934067
+                },
+                {
+                  "ym": "2025-02",
+                  "c": 12359,
+                  "lo": 1738339318618,
+                  "hi": 1740758399999
+                },
+                {
+                  "ym": "2025-03",
+                  "c": 13665,
+                  "lo": 1740758400000,
+                  "hi": 1743436591491
+                },
+                {
+                  "ym": "2025-04",
+                  "c": 13338,
+                  "lo": 1743436904115,
+                  "hi": 1746028799948
+                },
+                {
+                  "ym": "2025-05",
+                  "c": 13616,
+                  "lo": 1746028834538,
+                  "hi": 1748707002082
+                },
+                {
+                  "ym": "2025-06",
+                  "c": 13234,
+                  "lo": 1748707357964,
+                  "hi": 1751299199999
+                },
+                {
+                  "ym": "2025-07",
+                  "c": 13686,
+                  "lo": 1751299200000,
+                  "hi": 1753977512360
+                },
+                {
+                  "ym": "2025-08",
+                  "c": 8563,
+                  "lo": 1753977631055,
+                  "hi": 1755268805248
+                }
+              ],
+              "digest": "c8056c990e095318f9b93a8bbca1cda37752e45d4005bb832049a61c5c2b8883"
+            }
+          },
+          "messageCount": {
+            "ok": true,
+            "value": 102004
+          },
+          "messageDigest": {
+            "ok": true,
+            "value": "411c77f1303937b9c5a995cf47730173d49c3be3c4bf82c4c8acc9755a3e7b78"
+          },
+          "int64probe": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "bigint",
+                "v": "534567890123456789n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "bigint",
+                "v": "9223372036854775807n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          }
+        }
+      },
+      "rollback": {
+        "ok": true,
+        "copied": [
+          "(edb)"
+        ],
+        "journalMode": "delete",
+        "checkpoint": [
+          0,
+          -1,
+          -1
+        ],
+        "countMatches": true,
+        "digestMatches": true,
+        "maxRowMatches": true,
+        "suite": {
+          "myMid": {
+            "ok": true,
+            "value": "uffffffffffffffffffffffffffffffff"
+          },
+          "listChats50": {
+            "ok": true,
+            "value": {
+              "n": 50,
+              "first3": [
+                {
+                  "chatId": "u4c1c8f025ee7bc25c686c4ef45eefd6f",
+                  "name": "覆寫名0",
+                  "lastUpdated": "2025-08-15T21:16:32",
+                  "isGroup": false
+                },
+                {
+                  "chatId": "u83d90d215ea14e90bac448e3d975d675",
+                  "name": "聯絡人1",
+                  "lastUpdated": "2025-08-15T21:15:01",
+                  "isGroup": false
+                },
+                {
+                  "chatId": "u539f09f9893f010fdc1e6578e3ca2cab",
+                  "name": "檔案名2",
+                  "lastUpdated": "2025-08-15T21:14:00",
+                  "isGroup": false
+                }
+              ],
+              "digest": "68d2173a65b5d7e7e02e6bcab979e8a8bf93f17cdd527006ab8c6ad5ab49b9f9"
+            }
+          },
+          "listChats5000_digest": {
+            "ok": true,
+            "value": "3dd3b39ebaaa69e5f9b039264360065b99d5c13bef9c528d5c8a69a634f289a0"
+          },
+          "chatName_override": {
+            "ok": true,
+            "value": "覆寫名0"
+          },
+          "chatName_badJsonContactIsNull": {
+            "ok": true,
+            "value": [
+              null
+            ]
+          },
+          "resolveChat_direct": {
+            "ok": true,
+            "value": true
+          },
+          "resolveChat_exactGroup": {
+            "ok": true,
+            "value": "ce64065928eeb77b38b11d32fcdfacae1"
+          },
+          "resolveChat_ambiguousExact": {
+            "ok": true,
+            "value": "ambiguous exact name"
+          },
+          "resolveChat_fuzzyUnique": {
+            "ok": true,
+            "value": "me77d903f10ce5eb96d2d1153da380d77"
+          },
+          "resolveChat_walOnlyContact": {
+            "ok": false,
+            "error": "{\"error\":\"no chat named 'WAL新聯絡人'\"}"
+          },
+          "newMessages_tail": {
+            "ok": true,
+            "value": {
+              "n": 20,
+              "last": {
+                "rowId": 100000,
+                "chatId": "u1a0cad6a5015b9108ecc597e1483cdcb",
+                "createdTime": 1755263796833,
+                "from": "uffffffffffffffffffffffffffffffff",
+                "text": null,
+                "contentType": 2,
+                "msgId": "500000000000099999",
+                "contentMetadata": "{\"OBS_POP\":\"b\",\"FILE_NAME\":\"f99999.bin\",\"FILE_SIZE\":\"100999\"}",
+                "contentInfo": "{\"size\":100999}",
+                "attribute": 0
+              },
+              "digest": "c14437cdc47e08e8836d01a156128946107680e24cde119a0629fa156be8a49d"
+            }
+          },
+          "newMessages_byName": {
+            "ok": true,
+            "value": {
+              "n": 337,
+              "digest": "e77c47705ccfe2d673775289fafee5f162a92ee82a96415f6748b2cddbc261a4"
+            }
+          },
+          "newMessagesAfter_walBoundary": {
+            "ok": true,
+            "value": {
+              "n": 0,
+              "digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            }
+          },
+          "newMessagesAfter_exclusiveBound": {
+            "ok": true,
+            "value": {
+              "n": 500,
+              "digest": "32f55f08ee08d12581cfe5b399b135b106c5c0e16c42c57ad143e3ade9b6d6e9"
+            }
+          },
+          "pagingFullScan_tieBreak": {
+            "ok": true,
+            "value": {
+              "n": 100004,
+              "digest": "99885c44ffc6dd24852ad58e0aac5c3c53b5be2ad9b901118c82450ea55fe94b"
+            }
+          },
+          "watchBatch_walBoundary": {
+            "ok": true,
+            "value": {
+              "hasMore": false,
+              "n": 0,
+              "sample": [],
+              "digest": "6f8843023b84a5ba2b7619bbdc0ad4f1afefc282c9b4573a2dd11ee086181eef"
+            }
+          },
+          "tail": {
+            "ok": true,
+            "value": {
+              "m": 1755263796833,
+              "rid": 100000
+            }
+          },
+          "sourceMonthly": {
+            "ok": true,
+            "value": {
+              "rows": [
+                {
+                  "ym": "2025-01",
+                  "c": 13543,
+                  "lo": 1735693200000,
+                  "hi": 1738338934067
+                },
+                {
+                  "ym": "2025-02",
+                  "c": 12359,
+                  "lo": 1738339318618,
+                  "hi": 1740758399999
+                },
+                {
+                  "ym": "2025-03",
+                  "c": 13665,
+                  "lo": 1740758400000,
+                  "hi": 1743436591491
+                },
+                {
+                  "ym": "2025-04",
+                  "c": 13338,
+                  "lo": 1743436904115,
+                  "hi": 1746028799948
+                },
+                {
+                  "ym": "2025-05",
+                  "c": 13616,
+                  "lo": 1746028834538,
+                  "hi": 1748707002082
+                },
+                {
+                  "ym": "2025-06",
+                  "c": 13234,
+                  "lo": 1748707357964,
+                  "hi": 1751299199999
+                },
+                {
+                  "ym": "2025-07",
+                  "c": 13686,
+                  "lo": 1751299200000,
+                  "hi": 1753977512360
+                },
+                {
+                  "ym": "2025-08",
+                  "c": 6563,
+                  "lo": 1753977631055,
+                  "hi": 1755263796833
+                }
+              ],
+              "digest": "a8c0e6566cb4f23132046311e1468624f12c9c33fb275d0859ffad9badbe7617"
+            }
+          },
+          "messageCount": {
+            "ok": true,
+            "value": 100004
+          },
+          "messageDigest": {
+            "ok": true,
+            "value": "0e106bd728301ead4cf2319c800fbd400d5ae1848f1d4aa4b1b8e888e6a7179c"
+          },
+          "int64probe": {
+            "ok": true,
+            "value": [
+              {
+                "k": "lineLike",
+                "jsType": "bigint",
+                "v": "534567890123456789n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "max",
+                "jsType": "bigint",
+                "v": "9223372036854775807n",
+                "sqlType": "integer"
+              },
+              {
+                "k": "safe",
+                "jsType": "number",
+                "v": 9007199254740991,
+                "sqlType": "integer"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "wrongKey": {
+      "rejected": true,
+      "error": "SQLITE_NOTADB: sqlite3 result code 26: file is not a database"
+    },
+    "bench": {
+      "iters": [
+        {
+          "copyMs": 17.26,
+          "openTotalMs": 104.94,
+          "open": {
+            "loadBytesMs": 58.22,
+            "openVerifyMs": 1.55,
+            "checkpointMs": 44.81
+          },
+          "memAfterOpen": {
+            "rssMB": 315,
+            "heapUsedMB": 5,
+            "externalMB": 158,
+            "arrayBuffersMB": 0
+          },
+          "watchBatchMs": 67.98,
+          "watchBatchRows": 500,
+          "watchBatchHasMore": true,
+          "rawIncrementalMs": 12.32,
+          "rawIncrementalRows": 501,
+          "listChats50Ms": 2.77,
+          "tailMs": 0.1,
+          "closeMs": 0.31
+        },
+        {
+          "copyMs": 17.87,
+          "openTotalMs": 115.98,
+          "open": {
+            "loadBytesMs": 61.42,
+            "openVerifyMs": 1.44,
+            "checkpointMs": 52.76
+          },
+          "memAfterOpen": {
+            "rssMB": 319,
+            "heapUsedMB": 5,
+            "externalMB": 158,
+            "arrayBuffersMB": 0
+          },
+          "watchBatchMs": 66.92,
+          "watchBatchRows": 500,
+          "watchBatchHasMore": true,
+          "rawIncrementalMs": 14.7,
+          "rawIncrementalRows": 501,
+          "listChats50Ms": 4.59,
+          "tailMs": 0.11,
+          "closeMs": 0.36
+        },
+        {
+          "copyMs": 18.97,
+          "openTotalMs": 108.1,
+          "open": {
+            "loadBytesMs": 54.88,
+            "openVerifyMs": 1.26,
+            "checkpointMs": 51.51
+          },
+          "memAfterOpen": {
+            "rssMB": 319,
+            "heapUsedMB": 5,
+            "externalMB": 158,
+            "arrayBuffersMB": 0
+          },
+          "watchBatchMs": 61.76,
+          "watchBatchRows": 500,
+          "watchBatchHasMore": true,
+          "rawIncrementalMs": 16.28,
+          "rawIncrementalRows": 501,
+          "listChats50Ms": 4.39,
+          "tailMs": 0.11,
+          "closeMs": 0.22
+        },
+        {
+          "copyMs": 15,
+          "openTotalMs": 107.58,
+          "open": {
+            "loadBytesMs": 59.93,
+            "openVerifyMs": 1.79,
+            "checkpointMs": 45.43
+          },
+          "memAfterOpen": {
+            "rssMB": 317,
+            "heapUsedMB": 5,
+            "externalMB": 158,
+            "arrayBuffersMB": 0
+          },
+          "watchBatchMs": 56.02,
+          "watchBatchRows": 500,
+          "watchBatchHasMore": true,
+          "rawIncrementalMs": 14.98,
+          "rawIncrementalRows": 501,
+          "listChats50Ms": 3.43,
+          "tailMs": 0.06,
+          "closeMs": 0.19
+        },
+        {
+          "copyMs": 15.81,
+          "openTotalMs": 120.67,
+          "open": {
+            "loadBytesMs": 64.17,
+            "openVerifyMs": 1.92,
+            "checkpointMs": 54.16
+          },
+          "memAfterOpen": {
+            "rssMB": 319,
+            "heapUsedMB": 5,
+            "externalMB": 158,
+            "arrayBuffersMB": 0
+          },
+          "watchBatchMs": 60.42,
+          "watchBatchRows": 500,
+          "watchBatchHasMore": true,
+          "rawIncrementalMs": 16.23,
+          "rawIncrementalRows": 501,
+          "listChats50Ms": 4.47,
+          "tailMs": 0.14,
+          "closeMs": 0.33
+        },
+        {
+          "copyMs": 16.68,
+          "openTotalMs": 111.45,
+          "open": {
+            "loadBytesMs": 60.17,
+            "openVerifyMs": 1.54,
+            "checkpointMs": 49.42
+          },
+          "memAfterOpen": {
+            "rssMB": 319,
+            "heapUsedMB": 5,
+            "externalMB": 158,
+            "arrayBuffersMB": 0
+          },
+          "watchBatchMs": 60.94,
+          "watchBatchRows": 500,
+          "watchBatchHasMore": true,
+          "rawIncrementalMs": 14.97,
+          "rawIncrementalRows": 501,
+          "listChats50Ms": 2.95,
+          "tailMs": 0.08,
+          "closeMs": 0.23
+        },
+        {
+          "copyMs": 15.27,
+          "openTotalMs": 107.14,
+          "open": {
+            "loadBytesMs": 58.31,
+            "openVerifyMs": 1.36,
+            "checkpointMs": 47.14
+          },
+          "memAfterOpen": {
+            "rssMB": 319,
+            "heapUsedMB": 5,
+            "externalMB": 158,
+            "arrayBuffersMB": 0
+          },
+          "watchBatchMs": 62.98,
+          "watchBatchRows": 500,
+          "watchBatchHasMore": true,
+          "rawIncrementalMs": 13.21,
+          "rawIncrementalRows": 501,
+          "listChats50Ms": 6.1,
+          "tailMs": 0.14,
+          "closeMs": 0.41
+        }
+      ],
+      "median": {
+        "copyMs": 16.68,
+        "openTotalMs": 108.1,
+        "loadBytesMs": 59.93,
+        "openVerifyMs": 1.54,
+        "checkpointMs": 49.42,
+        "watchBatchMs": 61.76,
+        "rawIncrementalMs": 14.97,
+        "listChats50Ms": 4.39,
+        "tailMs": 0.11,
+        "openPlusWatchBatchMs": 172.39
+      },
+      "first": {
+        "openTotalMs": 104.94,
+        "watchBatchMs": 67.98
+      }
+    },
+    "memEnd": {
+      "rssMB": 316,
+      "heapUsedMB": 6,
+      "externalMB": 154,
+      "arrayBuffersMB": 0
+    },
+    "keyScan": {
+      "candidates": 501,
+      "totalMs": 140.65,
+      "perCandidateMs": 0.28,
+      "hits": 1,
+      "rightKeyHit": true
+    },
+    "selfCheckEnd": {
+      "ok": true,
+      "code": null,
+      "allowAddons": true,
+      "probes": {
+        "permission": "active",
+        "scope_read": "ok",
+        "scope_read_home": "ok",
+        "scope_write_data": "ok",
+        "scope_write_narrow": "ok",
+        "scope_child": "ok",
+        "scope_worker": "ok",
+        "scope_addon_reported": "false",
+        "write_outside": "ok",
+        "read_outside": "ok",
+        "child_process": "ok",
+        "worker_threads": "ok",
+        "addon_code": "ERR_DLOPEN_FAILED",
+        "addon": "ok",
+        "data_write": "ok"
+      }
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "electron": "C:/teamuq/line-todo/node_modules/electron/dist/electron.exe",
+  "mode": "ELECTRON_RUN_AS_NODE=1, no permission flags (standalone runtime)",
+  "results": [
+    {
+      "name": "bs3-13.0.2-teamuq",
+      "status": 4294930435,
+      "statusHex": "0xffff7003",
+      "signal": null,
+      "stdout": "BEGIN bs3-13.0.2-teamuq node=20.18.0 modules=125 napi=9",
+      "stderr": []
+    },
+    {
+      "name": "bs3-13.0.2-npm",
+      "status": 4294930435,
+      "statusHex": "0xffff7003",
+      "signal": null,
+      "stdout": "BEGIN bs3-13.0.2-npm node=20.18.0 modules=125 napi=9",
+      "stderr": []
+    },
+    {
+      "name": "bs3-13.0.3-npm",
+      "status": 4294930435,
+      "statusHex": "0xffff7003",
+      "signal": null,
+      "stdout": "BEGIN bs3-13.0.3-npm node=20.18.0 modules=125 napi=9",
+      "stderr": []
+    },
+    {
+      "name": "bs3-11.10.0-linetodo",
+      "status": 0,
+      "statusHex": "0x0",
+      "signal": null,
+      "stdout": "BEGIN bs3-11.10.0-linetodo node=20.18.0 modules=125 napi=9\nOK sqlite=3.49.2",
+      "stderr": [
+        ""
+      ]
+    }
+  ]
+}

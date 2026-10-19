@@ -1,0 +1,16 @@
+{
+ "label": "e31-sa-node-sqlite",
+ "engineLoaded": false,
+ "engineError": {
+  "loaded": false,
+  "code": "ERR_UNKNOWN_BUILTIN_MODULE",
+  "name": "Error",
+  "message": "No such built-in module: node:sqlite"
+ },
+ "selfChecks": {
+  "create": "false/false/false"
+ },
+ "exits": {
+  "create": "0x0"
+ }
+}

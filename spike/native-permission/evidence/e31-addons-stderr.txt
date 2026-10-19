@@ -1,0 +1,3 @@
+(node:17768) ExperimentalWarning: Permission is an experimental feature and might change at any time
+(Use `electron --trace-warnings ...` to show where the warning was created)
+(node:17768) SecurityWarning: The flag --allow-addons must be used with extreme caution. It could invalidate the permission model.

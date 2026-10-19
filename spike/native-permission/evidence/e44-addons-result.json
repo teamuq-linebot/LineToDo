@@ -1,0 +1,140 @@
+{
+  "label": "e44-addons",
+  "electronExe": "C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe",
+  "allowAddons": true,
+  "exitCode": 0,
+  "signal": null,
+  "durationMs": 108,
+  "flags": [
+    "--permission",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-spike-run-e44-addons-N6lxYD/host/host-bootstrap.mjs",
+    "--allow-fs-read=C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/native-permission",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-spike-run-e44-addons-N6lxYD/data",
+    "--allow-fs-write=C:/Users/david/AppData/Local/Temp/teamuq-spike-run-e44-addons-N6lxYD/data",
+    "--allow-addons"
+  ],
+  "cwd": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-spike-run-e44-addons-N6lxYD\\data",
+  "dirs": {
+    "runRoot": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-spike-run-e44-addons-N6lxYD",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\native-permission",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-spike-run-e44-addons-N6lxYD\\data",
+    "outsideDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-spike-outside-e44-addons-b5bxmC"
+  },
+  "cfg": {
+    "outsideReadFixture": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-spike-outside-e44-addons-b5bxmC\\secret-read-fixture.txt",
+    "outsideWriteTarget": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-spike-outside-e44-addons-b5bxmC\\koffi-write-target.txt",
+    "outsidePlainDb": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-spike-outside-e44-addons-b5bxmC\\synthetic-plain.db",
+    "outsideCipherDb": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-spike-outside-e44-addons-b5bxmC\\synthetic-cipher.db",
+    "insideDataFixture": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-spike-run-e44-addons-N6lxYD\\data\\inside.txt",
+    "writePayload": "KOFFI-WROTE-OUTSIDE-DATADIR-1790851173662",
+    "cipherKey": "spike-cipher-key-123"
+  },
+  "result": {
+    "runtime": {
+      "node": "24.20.0",
+      "electron": "44.2.0",
+      "modules_abi": "149",
+      "napi": "10"
+    },
+    "permissionActive": true,
+    "selfCheck": {
+      "ok": true,
+      "code": null,
+      "allowAddons": true,
+      "probes": {
+        "permission": "active",
+        "scope_read": "ok",
+        "scope_read_home": "ok",
+        "scope_write_data": "ok",
+        "scope_write_narrow": "ok",
+        "scope_child": "ok",
+        "scope_worker": "ok",
+        "scope_addon_reported": "true",
+        "write_outside": "ok",
+        "read_outside": "ok",
+        "child_process": "ok",
+        "worker_threads": "ok",
+        "addon_code": "ERR_DLOPEN_FAILED",
+        "addon": "ok",
+        "data_write": "ok"
+      }
+    },
+    "experiments": {
+      "control_nodefs": {
+        "nodeFsReadOutside": {
+          "ok": false,
+          "denied": true,
+          "code": "ERR_ACCESS_DENIED"
+        },
+        "nodeFsWriteOutside": {
+          "ok": false,
+          "denied": true,
+          "code": "ERR_ACCESS_DENIED"
+        },
+        "nodeFsReadInsideDataDir": {
+          "ok": true,
+          "bytes": 23
+        },
+        "nodeFsExistsSyncOutside": {
+          "threw": true,
+          "code": "ERR_ACCESS_DENIED"
+        }
+      },
+      "koffi": {
+        "loaded": true,
+        "version": "3.1.0",
+        "read_outside": {
+          "ok": true,
+          "bytesRead": 40,
+          "text": "TOP-SECRET-OUTSIDE-DATADIR-1790851173644"
+        },
+        "write_outside": {
+          "ok": true,
+          "bytesWritten": 41
+        },
+        "write_verify_readback": {
+          "ok": true,
+          "bytesRead": 41,
+          "text": "KOFFI-WROTE-OUTSIDE-DATADIR-1790851173662"
+        }
+      },
+      "bsqlite": {
+        "loaded": true,
+        "open_plain_outside": {
+          "ok": false,
+          "code": "ERR_DLOPEN_FAILED"
+        },
+        "cipher_outside": {
+          "ok": false,
+          "code": "ERR_DLOPEN_FAILED"
+        },
+        "open_plain_outside_guard_neutralised": {
+          "ok": false,
+          "code": "ERR_DLOPEN_FAILED"
+        }
+      }
+    },
+    "selfCheckAfterAddons": {
+      "ok": true,
+      "code": null,
+      "allowAddons": true,
+      "probes": {
+        "permission": "active",
+        "scope_read": "ok",
+        "scope_read_home": "ok",
+        "scope_write_data": "ok",
+        "scope_write_narrow": "ok",
+        "scope_child": "ok",
+        "scope_worker": "ok",
+        "scope_addon_reported": "true",
+        "write_outside": "ok",
+        "read_outside": "ok",
+        "child_process": "ok",
+        "worker_threads": "ok",
+        "addon_code": "ERR_DLOPEN_FAILED",
+        "addon": "ok",
+        "data_write": "ok"
+      }
+    }
+  }
+}

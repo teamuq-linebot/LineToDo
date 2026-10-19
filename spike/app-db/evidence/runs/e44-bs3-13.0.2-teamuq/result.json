@@ -1,0 +1,3088 @@
+{
+  "label": "e44-bs3-13.0.2-teamuq",
+  "electronExe": "C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe",
+  "engine": "bsqlite",
+  "vendor": "bs3-13.0.2-teamuq",
+  "wasmExclusive": false,
+  "wasmSyncSkip": false,
+  "allowAddons": true,
+  "permission": true,
+  "flags": [
+    "--permission",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5/host/host-bootstrap.mjs",
+    "--allow-fs-read=C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/app-db",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5/data",
+    "--allow-fs-write=C:/Users/david/AppData/Local/Temp/teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5/data",
+    "--allow-addons"
+  ],
+  "dirs": {
+    "runRoot": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data",
+    "bootstrapFile": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\host\\host-bootstrap.mjs"
+  },
+  "phases": [
+    {
+      "phase": "create",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 279,
+      "resultWritten": true,
+      "filesAfter": [
+        {
+          "name": "line-todo.db",
+          "size": 577536
+        },
+        {
+          "name": "probe-fk.db",
+          "size": 0
+        },
+        {
+          "name": "probe.db",
+          "size": 16384
+        }
+      ],
+      "result": {
+        "phase": "create",
+        "label": "e44-bs3-13.0.2-teamuq",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": true,
+          "loadMs": 15.71,
+          "info": {
+            "engine": "better-sqlite3",
+            "package": "13.0.2",
+            "sqlite": "3.53.4",
+            "compileOptionsSample": [
+              "DEFAULT_FOREIGN_KEYS",
+              "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+              "DEFAULT_WAL_SYNCHRONOUS=1",
+              "DQS=0",
+              "OMIT_DEPRECATED",
+              "OMIT_PROGRESS_CALLBACK",
+              "OMIT_SHARED_CACHE",
+              "OMIT_TCL_VARIABLE",
+              "THREADSAFE=2"
+            ]
+          },
+          "adapterFiles": []
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "apiProbes": {
+          "pragmaSimpleUserVersion": {
+            "ok": true,
+            "value": 0
+          },
+          "pragmaAssign": {
+            "ok": true,
+            "value": []
+          },
+          "pragmaSimpleAfterAssign": {
+            "ok": true,
+            "value": 7
+          },
+          "pragmaNonSimple": {
+            "ok": true,
+            "value": [
+              "id",
+              "a",
+              "b",
+              "r",
+              "z"
+            ]
+          },
+          "pragmaJournalWal": {
+            "ok": true,
+            "value": [
+              {
+                "journal_mode": "wal"
+              }
+            ]
+          },
+          "pragmaQuickCheck": {
+            "ok": true,
+            "value": "ok"
+          },
+          "runPositional": {
+            "ok": true,
+            "value": {
+              "changes": 1,
+              "lastInsertRowid": 1
+            }
+          },
+          "runResultTypes": {
+            "ok": true,
+            "value": {
+              "changes": "number",
+              "lastInsertRowid": "number",
+              "keys": [
+                "changes",
+                "lastInsertRowid"
+              ]
+            }
+          },
+          "runNamedAt": {
+            "ok": true,
+            "value": 1
+          },
+          "runNamedColon": {
+            "ok": true,
+            "value": 1
+          },
+          "runNamedDollar": {
+            "ok": true,
+            "value": 1
+          },
+          "namedReusedTwice": {
+            "ok": true,
+            "value": {
+              "x": 9,
+              "y": 9
+            }
+          },
+          "namedExtraKey": {
+            "ok": true,
+            "value": 1
+          },
+          "namedMissingKey": {
+            "ok": false,
+            "error": "RangeError: Missing named parameter \"b\"",
+            "code": null
+          },
+          "getNoRow": {
+            "ok": true,
+            "value": "<undefined>"
+          },
+          "allSpread": {
+            "ok": true,
+            "value": [
+              "n1",
+              "x",
+              "y"
+            ]
+          },
+          "allEmpty": {
+            "ok": true,
+            "value": []
+          },
+          "rowPrototype": {
+            "ok": true,
+            "value": "Object.prototype"
+          },
+          "countType": {
+            "ok": true,
+            "value": "number"
+          },
+          "realType": {
+            "ok": true,
+            "value": 0.5
+          },
+          "bindNull": {
+            "ok": true,
+            "value": null
+          },
+          "bindUndefined": {
+            "ok": true,
+            "value": {
+              "v": null
+            }
+          },
+          "bindBoolean": {
+            "ok": false,
+            "error": "TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null",
+            "code": null
+          },
+          "bindBigInt": {
+            "ok": true,
+            "value": {
+              "v": 9007199254740992
+            }
+          },
+          "readInt64Large": {
+            "ok": true,
+            "value": 9007199254740992
+          },
+          "bindBuffer": {
+            "ok": true,
+            "value": {
+              "ctor": "Buffer",
+              "len": 3
+            }
+          },
+          "execMulti": {
+            "ok": true,
+            "value": 1
+          },
+          "txCommit": {
+            "ok": true,
+            "value": "tx1"
+          },
+          "txRollback": {
+            "ok": true,
+            "value": {
+              "unchanged": true,
+              "inTransaction": false
+            }
+          },
+          "txNestedInnerRollback": {
+            "ok": true,
+            "value": {
+              "insideWasTx": true,
+              "outerKept": true,
+              "innerGone": true,
+              "inTransactionAfter": false
+            }
+          },
+          "txNestedOuterRollback": {
+            "ok": true,
+            "value": {
+              "nestedRolledBackWithOuter": true
+            }
+          },
+          "txPromiseRejected": {
+            "ok": false,
+            "error": "TypeError: Transaction function cannot return a promise",
+            "code": null
+          },
+          "statementReuse": {
+            "ok": true,
+            "value": [
+              "x",
+              "y",
+              1
+            ]
+          },
+          "doubleQuotedStringLiteral": {
+            "ok": false,
+            "error": "SqliteError: no such column: \"not-a-column\" - should this be a string literal in single-quotes?",
+            "code": "SQLITE_ERROR"
+          },
+          "foreignKeysDefault": {
+            "ok": true,
+            "value": 1
+          }
+        },
+        "outsideDataDirOpen": {
+          "opened": false,
+          "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-13004.db",
+          "code": "ERR_ACCESS_DENIED",
+          "name": "Error",
+          "message": "Access to this API has been restricted. Use --allow-fs-read to manage permissions."
+        },
+        "phaseResult": {
+          "ok": true,
+          "schemaVersionConst": 6,
+          "openMs": 8.78,
+          "openLogs": [
+            "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\line-todo.db",
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\line-todo.db (schema 0 -> 6)"
+          ],
+          "state": {
+            "journalMode": "wal",
+            "lockingMode": "normal",
+            "foreignKeys": 1,
+            "busyTimeout": 5000,
+            "userVersion": 6,
+            "quickCheck": "ok"
+          },
+          "timings": {
+            "insertBatch2000": 22.88,
+            "listMessages50": 0.36,
+            "listTodos": 0.3,
+            "commitLineImportBatch40": 5.37
+          },
+          "ops": {
+            "chatUpsert": [
+              "{\"chatId\":\"c-noise\",\"name\":\"Noise\",\"isGroup\":true,\"blocked\":false,\"blockReason\":null,\"firstSeenAt\":\"<seen>\",\"lastSeenAt\":\"<seen>\"}",
+              "{\"chatId\":\"c-team\",\"name\":\"專案群 🚀\",\"isGroup\":true,\"blocked\":false,\"blockReason\":null,\"firstSeenAt\":\"<seen>\",\"lastSeenAt\":\"<seen>\"}",
+              "{\"chatId\":\"u-alice\",\"name\":\"Alice 愛麗絲\",\"isGroup\":false,\"blocked\":false,\"blockReason\":null,\"firstSeenAt\":\"<seen>\",\"lastSeenAt\":\"<seen>\"}"
+            ],
+            "chatBlock": {
+              "chatId": "c-noise",
+              "name": "Noise",
+              "isGroup": true,
+              "blocked": true,
+              "blockReason": "spam",
+              "firstSeenAt": "<seen>",
+              "lastSeenAt": "<seen>"
+            },
+            "chatBlockMissing": null,
+            "chatGet": {
+              "chatId": "c-team",
+              "name": "專案群 🚀",
+              "isGroup": true,
+              "blocked": false,
+              "blockReason": null,
+              "firstSeenAt": "<seen>",
+              "lastSeenAt": "<seen>"
+            },
+            "chatListDefault": [
+              "{\"chatId\":\"c-team\",\"name\":\"專案群 🚀\",\"isGroup\":true,\"blocked\":false,\"blockReason\":null,\"firstSeenAt\":\"<seen>\",\"lastSeenAt\":\"<seen>\"}",
+              "{\"chatId\":\"u-alice\",\"name\":\"Alice 愛麗絲\",\"isGroup\":false,\"blocked\":false,\"blockReason\":null,\"firstSeenAt\":\"<seen>\",\"lastSeenAt\":\"<seen>\"}"
+            ],
+            "chatListAll": [
+              "{\"chatId\":\"c-noise\",\"name\":\"Noise\",\"isGroup\":true,\"blocked\":true,\"blockReason\":\"spam\",\"firstSeenAt\":\"<seen>\",\"lastSeenAt\":\"<seen>\"}",
+              "{\"chatId\":\"c-team\",\"name\":\"專案群 🚀\",\"isGroup\":true,\"blocked\":false,\"blockReason\":null,\"firstSeenAt\":\"<seen>\",\"lastSeenAt\":\"<seen>\"}",
+              "{\"chatId\":\"u-alice\",\"name\":\"Alice 愛麗絲\",\"isGroup\":false,\"blocked\":false,\"blockReason\":null,\"firstSeenAt\":\"<seen>\",\"lastSeenAt\":\"<seen>\"}"
+            ],
+            "insert1": {
+              "attempted": 2000,
+              "inserted": 2000,
+              "mediaBackfilled": 0,
+              "unsentMarked": 0,
+              "chatIds": [
+                "c-noise",
+                "c-team",
+                "u-alice"
+              ],
+              "insertedIdsSha": "1140813a680243f1aa109f5a000b996bdc173581bee51a3113acf41b8426b5b1"
+            },
+            "insert2": {
+              "attempted": 46,
+              "inserted": 0,
+              "mediaBackfilled": 40,
+              "unsentMarked": 6,
+              "chatIds": [
+                "c-noise",
+                "c-team",
+                "u-alice"
+              ],
+              "insertedIdsSha": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            },
+            "insertSingle": {
+              "attempted": 1,
+              "inserted": 1,
+              "mediaBackfilled": 0,
+              "unsentMarked": 0,
+              "chatIds": [
+                "u-alice"
+              ],
+              "insertedIdsSha": "b4f17c49f99b81527642a49f392ec1462040db6e4010519db693655be7f760fa"
+            },
+            "batchRollback": {
+              "threw": false
+            },
+            "list": [
+              {
+                "msgId": "i:rb6001",
+                "chatId": "c-team",
+                "ts": 1790563201000,
+                "timeIso": "2026-09-28T02:40:01",
+                "direction": "in",
+                "sender": "成員2",
+                "text": "訊息 6001 請幫忙確認報價 ✅ xxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1999",
+                "chatId": "c-team",
+                "ts": 1790559199000,
+                "timeIso": "2026-09-28T01:33:19",
+                "direction": "in",
+                "sender": "成員4",
+                "text": "訊息 1999 請幫忙確認報價 ✅ xxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": true
+              },
+              {
+                "msgId": "i:m1996",
+                "chatId": "c-team",
+                "ts": 1790559196000,
+                "timeIso": "2026-09-28T01:33:16",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1996 請幫忙確認報價 ✅ xxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1993",
+                "chatId": "c-team",
+                "ts": 1790559193000,
+                "timeIso": "2026-09-28T01:33:13",
+                "direction": "in",
+                "sender": "成員5",
+                "text": "訊息 1993 請幫忙確認報價 ✅ xxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1990",
+                "chatId": "c-team",
+                "ts": 1790559190000,
+                "timeIso": "2026-09-28T01:33:10",
+                "direction": "in",
+                "sender": "成員2",
+                "text": "訊息 1990 請幫忙確認報價 ✅ x",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1987",
+                "chatId": "c-team",
+                "ts": 1790559187000,
+                "timeIso": "2026-09-28T01:33:07",
+                "direction": "in",
+                "sender": "成員6",
+                "text": "訊息 1987 請幫忙確認報價 ✅ xxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1984",
+                "chatId": "c-team",
+                "ts": 1790559184000,
+                "timeIso": "2026-09-28T01:33:04",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1984 請幫忙確認報價 ✅ xxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1981",
+                "chatId": "c-team",
+                "ts": 1790559181000,
+                "timeIso": "2026-09-28T01:33:01",
+                "direction": "in",
+                "sender": "成員0",
+                "text": "訊息 1981 請幫忙確認報價 ✅ xxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1978",
+                "chatId": "c-team",
+                "ts": 1790559178000,
+                "timeIso": "2026-09-28T01:32:58",
+                "direction": "in",
+                "sender": "成員4",
+                "text": "訊息 1978 請幫忙確認報價 ✅ xx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1975",
+                "chatId": "c-team",
+                "ts": 1790559175000,
+                "timeIso": "2026-09-28T01:32:55",
+                "direction": "in",
+                "sender": "成員1",
+                "text": "訊息 1975 請幫忙確認報價 ✅ xxxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1972",
+                "chatId": "c-team",
+                "ts": 1790559172000,
+                "timeIso": "2026-09-28T01:32:52",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1972 請幫忙確認報價 ✅ xxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1969",
+                "chatId": "c-team",
+                "ts": 1790559169000,
+                "timeIso": "2026-09-28T01:32:49",
+                "direction": "in",
+                "sender": "成員2",
+                "text": "訊息 1969 請幫忙確認報價 ✅ xxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1966",
+                "chatId": "c-team",
+                "ts": 1790559166000,
+                "timeIso": "2026-09-28T01:32:46",
+                "direction": "in",
+                "sender": "成員6",
+                "text": "訊息 1966 請幫忙確認報價 ✅ xxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1963",
+                "chatId": "c-team",
+                "ts": 1790559163000,
+                "timeIso": "2026-09-28T01:32:43",
+                "direction": "in",
+                "sender": "成員3",
+                "text": "訊息 1963 請幫忙確認報價 ✅ ",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1960",
+                "chatId": "c-team",
+                "ts": 1790559160000,
+                "timeIso": "2026-09-28T01:32:40",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1960 請幫忙確認報價 ✅ xxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1957",
+                "chatId": "c-team",
+                "ts": 1790559157000,
+                "timeIso": "2026-09-28T01:32:37",
+                "direction": "in",
+                "sender": "成員4",
+                "text": "訊息 1957 請幫忙確認報價 ✅ xxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1954",
+                "chatId": "c-team",
+                "ts": 1790559154000,
+                "timeIso": "2026-09-28T01:32:34",
+                "direction": "in",
+                "sender": "成員1",
+                "text": "訊息 1954 請幫忙確認報價 ✅ xxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1951",
+                "chatId": "c-team",
+                "ts": 1790559151000,
+                "timeIso": "2026-09-28T01:32:31",
+                "direction": "in",
+                "sender": "成員5",
+                "text": "訊息 1951 請幫忙確認報價 ✅ x",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1948",
+                "chatId": "c-team",
+                "ts": 1790559148000,
+                "timeIso": "2026-09-28T01:32:28",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1948 請幫忙確認報價 ✅ xxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1945",
+                "chatId": "c-team",
+                "ts": 1790559145000,
+                "timeIso": "2026-09-28T01:32:25",
+                "direction": "in",
+                "sender": "成員6",
+                "text": "訊息 1945 請幫忙確認報價 ✅ xxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1942",
+                "chatId": "c-team",
+                "ts": 1790559142000,
+                "timeIso": "2026-09-28T01:32:22",
+                "direction": "in",
+                "sender": "成員3",
+                "text": "訊息 1942 請幫忙確認報價 ✅ xxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1939",
+                "chatId": "c-team",
+                "ts": 1790559139000,
+                "timeIso": "2026-09-28T01:32:19",
+                "direction": "in",
+                "sender": "成員0",
+                "text": "訊息 1939 請幫忙確認報價 ✅ xx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1936",
+                "chatId": "c-team",
+                "ts": 1790559136000,
+                "timeIso": "2026-09-28T01:32:16",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1936 請幫忙確認報價 ✅ xxxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1933",
+                "chatId": "c-team",
+                "ts": 1790559133000,
+                "timeIso": "2026-09-28T01:32:13",
+                "direction": "in",
+                "sender": "成員1",
+                "text": "訊息 1933 請幫忙確認報價 ✅ xxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1930",
+                "chatId": "c-team",
+                "ts": 1790559130000,
+                "timeIso": "2026-09-28T01:32:10",
+                "direction": "in",
+                "sender": "成員5",
+                "text": "訊息 1930 請幫忙確認報價 ✅ xxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1927",
+                "chatId": "c-team",
+                "ts": 1790559127000,
+                "timeIso": "2026-09-28T01:32:07",
+                "direction": "in",
+                "sender": "成員2",
+                "text": "訊息 1927 請幫忙確認報價 ✅ xxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1924",
+                "chatId": "c-team",
+                "ts": 1790559124000,
+                "timeIso": "2026-09-28T01:32:04",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1924 請幫忙確認報價 ✅ ",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1921",
+                "chatId": "c-team",
+                "ts": 1790559121000,
+                "timeIso": "2026-09-28T01:32:01",
+                "direction": "in",
+                "sender": "成員3",
+                "text": "訊息 1921 請幫忙確認報價 ✅ xxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1918",
+                "chatId": "c-team",
+                "ts": 1790559118000,
+                "timeIso": "2026-09-28T01:31:58",
+                "direction": "in",
+                "sender": "成員0",
+                "text": "訊息 1918 請幫忙確認報價 ✅ xxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1915",
+                "chatId": "c-team",
+                "ts": 1790559115000,
+                "timeIso": "2026-09-28T01:31:55",
+                "direction": "in",
+                "sender": "成員4",
+                "text": "訊息 1915 請幫忙確認報價 ✅ xxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1912",
+                "chatId": "c-team",
+                "ts": 1790559112000,
+                "timeIso": "2026-09-28T01:31:52",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1912 請幫忙確認報價 ✅ x",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1909",
+                "chatId": "c-team",
+                "ts": 1790559109000,
+                "timeIso": "2026-09-28T01:31:49",
+                "direction": "in",
+                "sender": "成員5",
+                "text": "訊息 1909 請幫忙確認報價 ✅ xxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1906",
+                "chatId": "c-team",
+                "ts": 1790559106000,
+                "timeIso": "2026-09-28T01:31:46",
+                "direction": "in",
+                "sender": "成員2",
+                "text": "訊息 1906 請幫忙確認報價 ✅ xxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1903",
+                "chatId": "c-team",
+                "ts": 1790559103000,
+                "timeIso": "2026-09-28T01:31:43",
+                "direction": "in",
+                "sender": "成員6",
+                "text": "訊息 1903 請幫忙確認報價 ✅ xxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1900",
+                "chatId": "c-team",
+                "ts": 1790559100000,
+                "timeIso": "2026-09-28T01:31:40",
+                "direction": "out",
+                "sender": "me",
+                "text": "[image]",
+                "contentType": 1,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": 1043,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1897",
+                "chatId": "c-team",
+                "ts": 1790559097000,
+                "timeIso": "2026-09-28T01:31:37",
+                "direction": "in",
+                "sender": "成員0",
+                "text": "訊息 1897 請幫忙確認報價 ✅ xxxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1894",
+                "chatId": "c-team",
+                "ts": 1790559094000,
+                "timeIso": "2026-09-28T01:31:34",
+                "direction": "in",
+                "sender": "成員4",
+                "text": "訊息 1894 請幫忙確認報價 ✅ xxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1891",
+                "chatId": "c-team",
+                "ts": 1790559091000,
+                "timeIso": "2026-09-28T01:31:31",
+                "direction": "in",
+                "sender": "成員1",
+                "text": "訊息 1891 請幫忙確認報價 ✅ xxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1888",
+                "chatId": "c-team",
+                "ts": 1790559088000,
+                "timeIso": "2026-09-28T01:31:28",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1888 請幫忙確認報價 ✅ xxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1885",
+                "chatId": "c-team",
+                "ts": 1790559085000,
+                "timeIso": "2026-09-28T01:31:25",
+                "direction": "in",
+                "sender": "成員2",
+                "text": "訊息 1885 請幫忙確認報價 ✅ ",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1882",
+                "chatId": "c-team",
+                "ts": 1790559082000,
+                "timeIso": "2026-09-28T01:31:22",
+                "direction": "in",
+                "sender": "成員6",
+                "text": "訊息 1882 請幫忙確認報價 ✅ xxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1879",
+                "chatId": "c-team",
+                "ts": 1790559079000,
+                "timeIso": "2026-09-28T01:31:19",
+                "direction": "in",
+                "sender": "成員3",
+                "text": "訊息 1879 請幫忙確認報價 ✅ xxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1876",
+                "chatId": "c-team",
+                "ts": 1790559076000,
+                "timeIso": "2026-09-28T01:31:16",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1876 請幫忙確認報價 ✅ xxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1873",
+                "chatId": "c-team",
+                "ts": 1790559073000,
+                "timeIso": "2026-09-28T01:31:13",
+                "direction": "in",
+                "sender": "成員4",
+                "text": "訊息 1873 請幫忙確認報價 ✅ x",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1870",
+                "chatId": "c-team",
+                "ts": 1790559070000,
+                "timeIso": "2026-09-28T01:31:10",
+                "direction": "in",
+                "sender": "成員1",
+                "text": "訊息 1870 請幫忙確認報價 ✅ xxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1867",
+                "chatId": "c-team",
+                "ts": 1790559067000,
+                "timeIso": "2026-09-28T01:31:07",
+                "direction": "in",
+                "sender": "成員5",
+                "text": "訊息 1867 請幫忙確認報價 ✅ xxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1864",
+                "chatId": "c-team",
+                "ts": 1790559064000,
+                "timeIso": "2026-09-28T01:31:04",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1864 請幫忙確認報價 ✅ xxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1861",
+                "chatId": "c-team",
+                "ts": 1790559061000,
+                "timeIso": "2026-09-28T01:31:01",
+                "direction": "in",
+                "sender": "成員6",
+                "text": "訊息 1861 請幫忙確認報價 ✅ xx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1858",
+                "chatId": "c-team",
+                "ts": 1790559058000,
+                "timeIso": "2026-09-28T01:30:58",
+                "direction": "in",
+                "sender": "成員3",
+                "text": "訊息 1858 請幫忙確認報價 ✅ xxxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1855",
+                "chatId": "c-team",
+                "ts": 1790559055000,
+                "timeIso": "2026-09-28T01:30:55",
+                "direction": "in",
+                "sender": "成員0",
+                "text": "訊息 1855 請幫忙確認報價 ✅ xxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              }
+            ],
+            "listBefore": [
+              {
+                "msgId": "i:m9",
+                "chatId": "u-alice",
+                "ts": 1790557209000,
+                "timeIso": "2026-09-28T01:00:09",
+                "direction": "in",
+                "sender": "成員2",
+                "text": "訊息 9 請幫忙確認報價 ✅ xxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m8",
+                "chatId": "c-noise",
+                "ts": 1790557208000,
+                "timeIso": "2026-09-28T01:00:08",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 8 請幫忙確認報價 ✅ xxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m7",
+                "chatId": "c-team",
+                "ts": 1790557207000,
+                "timeIso": "2026-09-28T01:00:07",
+                "direction": "in",
+                "sender": "成員0",
+                "text": "訊息 7 請幫忙確認報價 ✅ xxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m6",
+                "chatId": "u-alice",
+                "ts": 1790557206000,
+                "timeIso": "2026-09-28T01:00:06",
+                "direction": "in",
+                "sender": "成員6",
+                "text": "訊息 6 請幫忙確認報價 ✅ xxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m5",
+                "chatId": "c-noise",
+                "ts": 1790557205000,
+                "timeIso": "2026-09-28T01:00:05",
+                "direction": "in",
+                "sender": "成員5",
+                "text": "訊息 5 請幫忙確認報價 ✅ xxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              }
+            ],
+            "recent": [
+              {
+                "msgId": "i:m1917",
+                "chatId": "u-alice",
+                "ts": 1790559117000,
+                "timeIso": "2026-09-28T01:31:57",
+                "direction": "in",
+                "sender": "成員6",
+                "text": "訊息 1917 請幫忙確認報價 ✅ xxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1920",
+                "chatId": "u-alice",
+                "ts": 1790559120000,
+                "timeIso": "2026-09-28T01:32:00",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1920 請幫忙確認報價 ✅ xxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1923",
+                "chatId": "u-alice",
+                "ts": 1790559123000,
+                "timeIso": "2026-09-28T01:32:03",
+                "direction": "in",
+                "sender": "成員5",
+                "text": "訊息 1923 請幫忙確認報價 ✅ xxxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1926",
+                "chatId": "u-alice",
+                "ts": 1790559126000,
+                "timeIso": "2026-09-28T01:32:06",
+                "direction": "in",
+                "sender": "成員1",
+                "text": "訊息 1926 請幫忙確認報價 ✅ xx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1929",
+                "chatId": "u-alice",
+                "ts": 1790559129000,
+                "timeIso": "2026-09-28T01:32:09",
+                "direction": "in",
+                "sender": "成員4",
+                "text": "訊息 1929 請幫忙確認報價 ✅ xxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1932",
+                "chatId": "u-alice",
+                "ts": 1790559132000,
+                "timeIso": "2026-09-28T01:32:12",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1932 請幫忙確認報價 ✅ xxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1935",
+                "chatId": "u-alice",
+                "ts": 1790559135000,
+                "timeIso": "2026-09-28T01:32:15",
+                "direction": "in",
+                "sender": "成員3",
+                "text": "訊息 1935 請幫忙確認報價 ✅ xxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1938",
+                "chatId": "u-alice",
+                "ts": 1790559138000,
+                "timeIso": "2026-09-28T01:32:18",
+                "direction": "in",
+                "sender": "成員6",
+                "text": "訊息 1938 請幫忙確認報價 ✅ x",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1941",
+                "chatId": "u-alice",
+                "ts": 1790559141000,
+                "timeIso": "2026-09-28T01:32:21",
+                "direction": "in",
+                "sender": "成員2",
+                "text": "訊息 1941 請幫忙確認報價 ✅ xxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1944",
+                "chatId": "u-alice",
+                "ts": 1790559144000,
+                "timeIso": "2026-09-28T01:32:24",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1944 請幫忙確認報價 ✅ xxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1947",
+                "chatId": "u-alice",
+                "ts": 1790559147000,
+                "timeIso": "2026-09-28T01:32:27",
+                "direction": "in",
+                "sender": "成員1",
+                "text": "訊息 1947 請幫忙確認報價 ✅ xxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1950",
+                "chatId": "u-alice",
+                "ts": 1790559150000,
+                "timeIso": "2026-09-28T01:32:30",
+                "direction": "in",
+                "sender": "成員4",
+                "text": "[image]",
+                "contentType": 1,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": 1044,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1953",
+                "chatId": "u-alice",
+                "ts": 1790559153000,
+                "timeIso": "2026-09-28T01:32:33",
+                "direction": "in",
+                "sender": "成員0",
+                "text": "訊息 1953 請幫忙確認報價 ✅ xxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1956",
+                "chatId": "u-alice",
+                "ts": 1790559156000,
+                "timeIso": "2026-09-28T01:32:36",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1956 請幫忙確認報價 ✅ xxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1959",
+                "chatId": "u-alice",
+                "ts": 1790559159000,
+                "timeIso": "2026-09-28T01:32:39",
+                "direction": "in",
+                "sender": "成員6",
+                "text": "訊息 1959 請幫忙確認報價 ✅ xxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1962",
+                "chatId": "u-alice",
+                "ts": 1790559162000,
+                "timeIso": "2026-09-28T01:32:42",
+                "direction": "in",
+                "sender": "成員2",
+                "text": "訊息 1962 請幫忙確認報價 ✅ xxxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1965",
+                "chatId": "u-alice",
+                "ts": 1790559165000,
+                "timeIso": "2026-09-28T01:32:45",
+                "direction": "in",
+                "sender": "成員5",
+                "text": "訊息 1965 請幫忙確認報價 ✅ xx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1968",
+                "chatId": "u-alice",
+                "ts": 1790559168000,
+                "timeIso": "2026-09-28T01:32:48",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1968 請幫忙確認報價 ✅ xxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1971",
+                "chatId": "u-alice",
+                "ts": 1790559171000,
+                "timeIso": "2026-09-28T01:32:51",
+                "direction": "in",
+                "sender": "成員4",
+                "text": "訊息 1971 請幫忙確認報價 ✅ xxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1974",
+                "chatId": "u-alice",
+                "ts": 1790559174000,
+                "timeIso": "2026-09-28T01:32:54",
+                "direction": "in",
+                "sender": "成員0",
+                "text": "訊息 1974 請幫忙確認報價 ✅ xxxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1977",
+                "chatId": "u-alice",
+                "ts": 1790559177000,
+                "timeIso": "2026-09-28T01:32:57",
+                "direction": "in",
+                "sender": "成員3",
+                "text": "訊息 1977 請幫忙確認報價 ✅ x",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1980",
+                "chatId": "u-alice",
+                "ts": 1790559180000,
+                "timeIso": "2026-09-28T01:33:00",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1980 請幫忙確認報價 ✅ xxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1983",
+                "chatId": "u-alice",
+                "ts": 1790559183000,
+                "timeIso": "2026-09-28T01:33:03",
+                "direction": "in",
+                "sender": "成員2",
+                "text": "訊息 1983 請幫忙確認報價 ✅ xxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1986",
+                "chatId": "u-alice",
+                "ts": 1790559186000,
+                "timeIso": "2026-09-28T01:33:06",
+                "direction": "in",
+                "sender": "成員5",
+                "text": "訊息 1986 請幫忙確認報價 ✅ xxxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1989",
+                "chatId": "u-alice",
+                "ts": 1790559189000,
+                "timeIso": "2026-09-28T01:33:09",
+                "direction": "in",
+                "sender": "成員1",
+                "text": "訊息 1989 請幫忙確認報價 ✅ ",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1992",
+                "chatId": "u-alice",
+                "ts": 1790559192000,
+                "timeIso": "2026-09-28T01:33:12",
+                "direction": "out",
+                "sender": "me",
+                "text": "訊息 1992 請幫忙確認報價 ✅ xxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1995",
+                "chatId": "u-alice",
+                "ts": 1790559195000,
+                "timeIso": "2026-09-28T01:33:15",
+                "direction": "in",
+                "sender": "成員0",
+                "text": "訊息 1995 請幫忙確認報價 ✅ xxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:m1998",
+                "chatId": "u-alice",
+                "ts": 1790559198000,
+                "timeIso": "2026-09-28T01:33:18",
+                "direction": "in",
+                "sender": "成員3",
+                "text": "訊息 1998 請幫忙確認報價 ✅ xxxxxxxxx",
+                "contentType": 0,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:single5000",
+                "chatId": "u-alice",
+                "ts": 1790562200000,
+                "timeIso": "2026-09-28T02:23:20",
+                "direction": "out",
+                "sender": "me",
+                "text": "[image]",
+                "contentType": 1,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              },
+              {
+                "msgId": "i:rb6000",
+                "chatId": "u-alice",
+                "ts": 1790563200000,
+                "timeIso": "2026-09-28T02:40:00",
+                "direction": "out",
+                "sender": "me",
+                "text": "[image]",
+                "contentType": 1,
+                "processed": false,
+                "ingestedAt": "<now>",
+                "origFilename": null,
+                "fileSize": null,
+                "unsent": false
+              }
+            ],
+            "since": 169,
+            "count": 2004,
+            "countChat": 668,
+            "countRecent": 2,
+            "unproc": {
+              "n": 100,
+              "firstLast": [
+                {
+                  "msgId": "d:7243e12feb72d13e79c006d2334b450d174d57a1",
+                  "chatId": "u-alice",
+                  "ts": 1790557200000,
+                  "timeIso": "2026-09-28T01:00:00",
+                  "direction": "out",
+                  "sender": "me",
+                  "text": "[image]",
+                  "contentType": 1,
+                  "processed": false,
+                  "ingestedAt": "<now>",
+                  "origFilename": null,
+                  "fileSize": 1000,
+                  "unsent": false
+                },
+                {
+                  "msgId": "i:m148",
+                  "chatId": "c-team",
+                  "ts": 1790557348000,
+                  "timeIso": "2026-09-28T01:02:28",
+                  "direction": "out",
+                  "sender": "me",
+                  "text": "訊息 148 請幫忙確認報價 ✅ xxxxx",
+                  "contentType": 0,
+                  "processed": false,
+                  "ingestedAt": "<now>",
+                  "origFilename": null,
+                  "fileSize": null,
+                  "unsent": false
+                }
+              ]
+            },
+            "markProcessed": 100,
+            "unprocAfter": 1237,
+            "todoCreate": [
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"schedule\",\"status\":\"scheduled\",\"title\":\"週會\",\"detail\":null,\"priority\":2,\"dueAt\":\"2026-10-03\",\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"寄樣品\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"準備報價單\",\"detail\":null,\"priority\":1,\"dueAt\":\"2026-10-05\",\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"確認匯款\",\"detail\":\"金額 12,000\",\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.9,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"群組公告：週五停機\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"waiting\",\"status\":\"waiting_reply\",\"title\":\"等對方回覆規格\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"u-alice\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"垃圾訊息待辦\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}"
+            ],
+            "todoGet": {
+              "id": "<uuid>",
+              "chatId": "c-team",
+              "bucket": "todo",
+              "status": "pending",
+              "title": "準備報價單",
+              "detail": null,
+              "priority": 1,
+              "dueAt": "2026-10-05",
+              "sourceMsgIds": [
+                "i:rb6001",
+                "i:m1999",
+                "i:m1996"
+              ],
+              "confidence": 0.5,
+              "completionEvidence": null,
+              "createdAt": "<now>",
+              "updatedAt": "<now>",
+              "resolvedAt": null
+            },
+            "todoGetMissing": null,
+            "todoList": [
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"schedule\",\"status\":\"scheduled\",\"title\":\"週會\",\"detail\":null,\"priority\":2,\"dueAt\":\"2026-10-03\",\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"寄樣品\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"準備報價單\",\"detail\":null,\"priority\":1,\"dueAt\":\"2026-10-05\",\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"確認匯款\",\"detail\":\"金額 12,000\",\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.9,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"群組公告：週五停機\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"waiting\",\"status\":\"waiting_reply\",\"title\":\"等對方回覆規格\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"u-alice\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"垃圾訊息待辦\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}"
+            ],
+            "todoListFiltered": [
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"寄樣品\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"準備報價單\",\"detail\":null,\"priority\":1,\"dueAt\":\"2026-10-05\",\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"確認匯款\",\"detail\":\"金額 12,000\",\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.9,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"群組公告：週五停機\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}"
+            ],
+            "openByChat": [
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"schedule\",\"status\":\"scheduled\",\"title\":\"週會\",\"detail\":null,\"priority\":2,\"dueAt\":\"2026-10-03\",\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"寄樣品\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"準備報價單\",\"detail\":null,\"priority\":1,\"dueAt\":\"2026-10-05\",\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"確認匯款\",\"detail\":\"金額 12,000\",\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.9,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"todo\",\"status\":\"pending\",\"title\":\"群組公告：週五停機\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}",
+              "{\"id\":\"<uuid>\",\"chatId\":\"c-team\",\"bucket\":\"waiting\",\"status\":\"waiting_reply\",\"title\":\"等對方回覆規格\",\"detail\":null,\"priority\":2,\"dueAt\":null,\"sourceMsgIds\":[\"i:rb6001\",\"i:m1999\",\"i:m1996\"],\"confidence\":0.5,\"completionEvidence\":null,\"createdAt\":\"<now>\",\"updatedAt\":\"<now>\",\"resolvedAt\":null}"
+            ],
+            "updateStatus": {
+              "id": "<uuid>",
+              "chatId": "c-team",
+              "bucket": "waiting",
+              "status": "pending",
+              "title": "等對方回覆規格",
+              "detail": null,
+              "priority": 2,
+              "dueAt": null,
+              "sourceMsgIds": [
+                "i:rb6001",
+                "i:m1999",
+                "i:m1996"
+              ],
+              "confidence": 0.5,
+              "completionEvidence": null,
+              "createdAt": "<now>",
+              "updatedAt": "<now>",
+              "resolvedAt": null
+            },
+            "update": {
+              "id": "<uuid>",
+              "chatId": "c-team",
+              "bucket": "todo",
+              "status": "pending",
+              "title": "準備報價單 v2",
+              "detail": "含運費",
+              "priority": 3,
+              "dueAt": "2026-10-06",
+              "sourceMsgIds": [
+                "i:rb6001",
+                "i:m1999",
+                "i:m1996",
+                "extra"
+              ],
+              "confidence": 0.5,
+              "completionEvidence": null,
+              "createdAt": "<now>",
+              "updatedAt": "<now>",
+              "resolvedAt": null
+            },
+            "updateNoop": {
+              "id": "<uuid>",
+              "chatId": "c-team",
+              "bucket": "todo",
+              "status": "pending",
+              "title": "準備報價單 v2",
+              "detail": "含運費",
+              "priority": 3,
+              "dueAt": "2026-10-06",
+              "sourceMsgIds": [
+                "i:rb6001",
+                "i:m1999",
+                "i:m1996",
+                "extra"
+              ],
+              "confidence": 0.5,
+              "completionEvidence": null,
+              "createdAt": "<now>",
+              "updatedAt": "<now>",
+              "resolvedAt": null
+            },
+            "reclassify": 1,
+            "reclassifySame": 0,
+            "moveColumn": {
+              "id": "<uuid>",
+              "chatId": "c-team",
+              "bucket": "schedule",
+              "status": "done",
+              "title": "週會",
+              "detail": null,
+              "priority": 2,
+              "dueAt": "2026-10-03",
+              "sourceMsgIds": [
+                "i:rb6001",
+                "i:m1999",
+                "i:m1996"
+              ],
+              "confidence": 0.5,
+              "completionEvidence": null,
+              "createdAt": "<now>",
+              "updatedAt": "<now>",
+              "resolvedAt": "<now>"
+            },
+            "mergeSources": {
+              "id": "<uuid>",
+              "chatId": "c-team",
+              "bucket": "todo",
+              "status": "pending",
+              "title": "準備報價單 v2",
+              "detail": "含運費",
+              "priority": 3,
+              "dueAt": "2026-10-06",
+              "sourceMsgIds": [
+                "i:rb6001",
+                "i:m1999",
+                "i:m1996",
+                "extra",
+                "new-1"
+              ],
+              "confidence": 0.5,
+              "completionEvidence": null,
+              "createdAt": "<now>",
+              "updatedAt": "<now>",
+              "resolvedAt": null
+            },
+            "resolve": {
+              "id": "<uuid>",
+              "chatId": "c-team",
+              "bucket": "todo",
+              "status": "done",
+              "title": "確認匯款",
+              "detail": "金額 12,000",
+              "priority": 2,
+              "dueAt": null,
+              "sourceMsgIds": [
+                "i:rb6001",
+                "i:m1999",
+                "i:m1996"
+              ],
+              "confidence": 0.9,
+              "completionEvidence": "對方已回覆",
+              "createdAt": "<now>",
+              "updatedAt": "<now>",
+              "resolvedAt": "<now>"
+            },
+            "dismissKw": 1,
+            "todoCount": 7,
+            "nmMark": {
+              "feedbackId": "<uuid>"
+            },
+            "nmMarkAgain": {
+              "error": "此待辦已標記"
+            },
+            "nmList": [
+              {
+                "feedbackId": "<uuid>",
+                "todo": {
+                  "id": "<uuid>",
+                  "chatId": "c-team",
+                  "bucket": "todo",
+                  "status": "dismissed",
+                  "title": "群組公告：週五停機",
+                  "detail": null,
+                  "priority": 2,
+                  "dueAt": null,
+                  "sourceMsgIds": [
+                    "i:rb6001",
+                    "i:m1999",
+                    "i:m1996"
+                  ],
+                  "confidence": 0.5,
+                  "completionEvidence": null,
+                  "createdAt": "<now>",
+                  "updatedAt": "<now>",
+                  "resolvedAt": "<now>"
+                },
+                "reasonCode": "general_announcement",
+                "note": "群組公告",
+                "markedAt": "<now>",
+                "analysis": null,
+                "analysisHistory": [],
+                "correction": null
+              }
+            ],
+            "nmGet": {
+              "feedbackId": "<uuid>",
+              "todo": {
+                "id": "<uuid>",
+                "chatId": "c-team",
+                "bucket": "todo",
+                "status": "dismissed",
+                "title": "群組公告：週五停機",
+                "detail": null,
+                "priority": 2,
+                "dueAt": null,
+                "sourceMsgIds": [
+                  "i:rb6001",
+                  "i:m1999",
+                  "i:m1996"
+                ],
+                "confidence": 0.5,
+                "completionEvidence": null,
+                "createdAt": "<now>",
+                "updatedAt": "<now>",
+                "resolvedAt": "<now>"
+              },
+              "reasonCode": "general_announcement",
+              "note": "群組公告",
+              "markedAt": "<now>",
+              "analysis": null,
+              "analysisHistory": [],
+              "correction": null,
+              "evidence": [
+                {
+                  "msgId": "i:m1996",
+                  "chatId": "c-team",
+                  "ts": 1790559196000,
+                  "timeIso": "2026-09-28T01:33:16",
+                  "direction": "out",
+                  "sender": "me",
+                  "text": "訊息 1996 請幫忙確認報價 ✅ xxxxxxx",
+                  "contentType": 0,
+                  "processed": false,
+                  "ingestedAt": "<now>",
+                  "origFilename": null,
+                  "fileSize": null,
+                  "unsent": false
+                },
+                {
+                  "msgId": "i:m1999",
+                  "chatId": "c-team",
+                  "ts": 1790559199000,
+                  "timeIso": "2026-09-28T01:33:19",
+                  "direction": "in",
+                  "sender": "成員4",
+                  "text": "訊息 1999 請幫忙確認報價 ✅ xxxxxxxxxx",
+                  "contentType": 0,
+                  "processed": false,
+                  "ingestedAt": "<now>",
+                  "origFilename": null,
+                  "fileSize": null,
+                  "unsent": true
+                },
+                {
+                  "msgId": "i:rb6001",
+                  "chatId": "c-team",
+                  "ts": 1790563201000,
+                  "timeIso": "2026-09-28T02:40:01",
+                  "direction": "in",
+                  "sender": "成員2",
+                  "text": "訊息 6001 請幫忙確認報價 ✅ xxxxxxxx",
+                  "contentType": 0,
+                  "processed": false,
+                  "ingestedAt": "<now>",
+                  "origFilename": null,
+                  "fileSize": null,
+                  "unsent": false
+                }
+              ],
+              "missingSourceMsgIds": []
+            },
+            "nmAnalyze": true,
+            "nmApply1": {
+              "ok": true
+            },
+            "nmApply2": {
+              "ok": true
+            },
+            "nmCorrections": [
+              {
+                "id": "<uuid>",
+                "feedbackId": "<uuid>",
+                "todoId": "<uuid>",
+                "chatId": "c-team",
+                "revision": 2,
+                "condition": "群組公告（含停機）",
+                "effect": "不建立待辦",
+                "enabled": true,
+                "updatedAt": "<now>"
+              }
+            ],
+            "nmDisable": {
+              "ok": true
+            },
+            "nmActiveOff": [],
+            "nmEnable": {
+              "ok": true
+            },
+            "nmActiveOn": [
+              {
+                "id": "<uuid>",
+                "revision": 2,
+                "condition": "群組公告（含停機）",
+                "effect": "不建立待辦"
+              }
+            ],
+            "nmReopen": {
+              "ok": true
+            },
+            "nmReopenAgain": {
+              "ok": false,
+              "error": "標記已變更，請重新整理"
+            },
+            "pipeFinish": {
+              "id": "<uuid>",
+              "startedAt": "<now>",
+              "finishedAt": "<now>",
+              "newMsgs": 2000,
+              "chatsSeen": 3,
+              "todosCreated": 7,
+              "todosResolved": 1,
+              "lineBridge": "ok",
+              "llmStatus": "partial",
+              "note": "spike"
+            },
+            "pipeGet": {
+              "id": "<uuid>",
+              "startedAt": "<now>",
+              "finishedAt": "<now>",
+              "newMsgs": 2000,
+              "chatsSeen": 3,
+              "todosCreated": 7,
+              "todosResolved": 1,
+              "lineBridge": "ok",
+              "llmStatus": "partial",
+              "note": "spike"
+            },
+            "pipeLast": {
+              "id": "<uuid>",
+              "startedAt": "<now>",
+              "finishedAt": "<now>",
+              "newMsgs": 2000,
+              "chatsSeen": 3,
+              "todosCreated": 7,
+              "todosResolved": 1,
+              "lineBridge": "ok",
+              "llmStatus": "partial",
+              "note": "spike"
+            },
+            "pipeStats": {
+              "sampleRuns": 0,
+              "chatsSeenP50": 0,
+              "chatsSeenP90": 0,
+              "chatsSeenMax": 0
+            },
+            "liReady": true,
+            "liCommit1": {
+              "inserted": 40,
+              "insertedMsgIds": [
+                "i:imp10000",
+                "i:imp10001",
+                "i:imp10002",
+                "i:imp10003",
+                "i:imp10004",
+                "i:imp10005",
+                "i:imp10006",
+                "i:imp10007",
+                "i:imp10008",
+                "i:imp10009",
+                "i:imp10010",
+                "i:imp10011",
+                "i:imp10012",
+                "i:imp10013",
+                "i:imp10014",
+                "i:imp10015",
+                "i:imp10016",
+                "i:imp10017",
+                "i:imp10018",
+                "i:imp10019",
+                "i:imp10020",
+                "i:imp10021",
+                "i:imp10022",
+                "i:imp10023",
+                "i:imp10024",
+                "i:imp10025",
+                "i:imp10026",
+                "i:imp10027",
+                "i:imp10028",
+                "i:imp10029",
+                "i:imp10030",
+                "i:imp10031",
+                "i:imp10032",
+                "i:imp10033",
+                "i:imp10034",
+                "i:imp10035",
+                "i:imp10036",
+                "i:imp10037",
+                "i:imp10038",
+                "i:imp10039"
+              ],
+              "mediaBackfilled": 0,
+              "unsentMarked": 0,
+              "chatIds": [
+                "u-alice",
+                "c-team",
+                "c-noise"
+              ],
+              "receiptInserted": true,
+              "keyedIdentityCount": 32,
+              "unknownIdentityCount": 8
+            },
+            "liCommitDup": {
+              "inserted": 0,
+              "insertedMsgIds": [],
+              "mediaBackfilled": 0,
+              "unsentMarked": 0,
+              "chatIds": [
+                "u-alice",
+                "c-team",
+                "c-noise"
+              ],
+              "receiptInserted": false,
+              "keyedIdentityCount": 32,
+              "unknownIdentityCount": 8
+            },
+            "liCommitEpoch": {
+              "inserted": 10,
+              "insertedMsgIds": [
+                "i:imp10040",
+                "i:imp10041",
+                "i:imp10042",
+                "i:imp10043",
+                "i:imp10044",
+                "i:imp10045",
+                "i:imp10046",
+                "i:imp10047",
+                "i:imp10048",
+                "i:imp10049"
+              ],
+              "mediaBackfilled": 0,
+              "unsentMarked": 0,
+              "chatIds": [
+                "u-alice",
+                "c-team",
+                "c-noise"
+              ],
+              "receiptInserted": true,
+              "keyedIdentityCount": 8,
+              "unknownIdentityCount": 2
+            },
+            "liCommitNoEpoch": {
+              "inserted": 5,
+              "insertedMsgIds": [
+                "i:imp10050",
+                "i:imp10051",
+                "i:imp10052",
+                "i:imp10053",
+                "i:imp10054"
+              ],
+              "mediaBackfilled": 0,
+              "unsentMarked": 0,
+              "chatIds": [
+                "u-alice",
+                "c-team",
+                "c-noise"
+              ],
+              "receiptInserted": true,
+              "keyedIdentityCount": 4,
+              "unknownIdentityCount": 1
+            },
+            "liNestedRollback": {
+              "threw": true,
+              "error": "FOREIGN KEY constraint failed",
+              "messagesUnchanged": true,
+              "batchesUnchanged": true,
+              "inTransactionAfter": false
+            },
+            "participants": [
+              {
+                "identity_status": "keyed",
+                "identity_reason": null,
+                "scope": "chat",
+                "n": 4
+              },
+              {
+                "identity_status": "unknown",
+                "identity_reason": "identity_epoch_changed",
+                "scope": "unknown",
+                "n": 40
+              },
+              {
+                "identity_status": "unknown",
+                "identity_reason": "safe_storage_unavailable",
+                "scope": "unknown",
+                "n": 8
+              },
+              {
+                "identity_status": "unknown",
+                "identity_reason": "source_id_missing",
+                "scope": "unknown",
+                "n": 3
+              }
+            ]
+          },
+          "digest": {
+            "rowCounts": {
+              "app_settings": 0,
+              "chats": 3,
+              "line_import_batches": 3,
+              "line_import_meta": 2,
+              "message_participants": 55,
+              "messages": 2059,
+              "pipeline_runs": 1,
+              "todo_classification_corrections": 2,
+              "todo_correction_effects": 1,
+              "todo_not_mine_events": 7,
+              "todos": 7
+            },
+            "digest": "bc6ea3a8fba92f100dfa4cf2cc7159a14aa99a2eb4b9d9df9b648a7804cbe197",
+            "normalizedDigest": "c2a590bccda1f4dea5ce57549c68e5fac6f8f695cbb6e0073831ef069dcd858a",
+            "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf"
+          },
+          "sameProcessReopenDigestEqual": true,
+          "opsSha": "ef7194e4a96d3e0567949721013ddc7fdb3d55e1c6535b4a93fa002e9785b1f4"
+        },
+        "memoryRssMB": 118,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    },
+    {
+      "phase": "legacy",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 236,
+      "resultWritten": true,
+      "filesAfter": [
+        {
+          "name": "legacy-bad.db",
+          "size": 57344
+        },
+        {
+          "name": "legacy-v1.db",
+          "size": 98304
+        },
+        {
+          "name": "line-todo.db",
+          "size": 577536
+        },
+        {
+          "name": "probe-fk.db",
+          "size": 0
+        },
+        {
+          "name": "probe.db",
+          "size": 16384
+        }
+      ],
+      "result": {
+        "phase": "legacy",
+        "label": "e44-bs3-13.0.2-teamuq",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": true,
+          "loadMs": 14.96,
+          "info": {
+            "engine": "better-sqlite3",
+            "package": "13.0.2",
+            "sqlite": "3.53.4",
+            "compileOptionsSample": [
+              "DEFAULT_FOREIGN_KEYS",
+              "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+              "DEFAULT_WAL_SYNCHRONOUS=1",
+              "DQS=0",
+              "OMIT_DEPRECATED",
+              "OMIT_PROGRESS_CALLBACK",
+              "OMIT_SHARED_CACHE",
+              "OMIT_TCL_VARIABLE",
+              "THREADSAFE=2"
+            ]
+          },
+          "adapterFiles": []
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "phaseResult": {
+          "seededUserVersion": 1,
+          "open": {
+            "openMs": 9.66,
+            "logs": [
+              "log [db] quick_check=ok (2ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\legacy-v1.db",
+              "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\legacy-v1.db (schema 1 -> 6)"
+            ],
+            "error": null
+          },
+          "state": {
+            "journalMode": "wal",
+            "lockingMode": "normal",
+            "foreignKeys": 1,
+            "busyTimeout": 5000,
+            "userVersion": 6,
+            "quickCheck": "ok"
+          },
+          "messagesColumns": [
+            "msg_id",
+            "chat_id",
+            "ts",
+            "time_iso",
+            "direction",
+            "sender",
+            "text",
+            "content_type",
+            "processed",
+            "ingested_at",
+            "key_material",
+            "orig_filename",
+            "file_size",
+            "media_backed_up",
+            "unsent"
+          ],
+          "notMineEventsColumns": [
+            "feedback_id",
+            "todo_id",
+            "event_type",
+            "previous_status",
+            "reason_code",
+            "note",
+            "source_msg_ids",
+            "analysis_json",
+            "correction_id",
+            "correction_revision",
+            "created_at",
+            "parent_feedback_id"
+          ],
+          "legacyRows": [
+            {
+              "msg_id": "i:old-1",
+              "key_material": null,
+              "orig_filename": null,
+              "file_size": null,
+              "media_backed_up": 0,
+              "unsent": 0
+            },
+            {
+              "msg_id": "i:old-2",
+              "key_material": null,
+              "orig_filename": null,
+              "file_size": null,
+              "media_backed_up": 0,
+              "unsent": 0
+            }
+          ],
+          "legacyTodoMark": {
+            "feedbackId": "<uuid>"
+          },
+          "legacyList": [
+            "{\"msgId\":\"i:old-1\",\"chatId\":\"c-old\",\"ts\":1790557200000,\"timeIso\":\"2026-09-28T09:00:00\",\"direction\":\"in\",\"sender\":\"老王\",\"text\":\"舊訊息一\",\"contentType\":0,\"processed\":true,\"ingestedAt\":\"<seen>\",\"origFilename\":null,\"fileSize\":null,\"unsent\":false}",
+            "{\"msgId\":\"i:old-2\",\"chatId\":\"c-old\",\"ts\":1790557201000,\"timeIso\":\"2026-09-28T09:00:01\",\"direction\":\"out\",\"sender\":\"me\",\"text\":\"舊訊息二\",\"contentType\":0,\"processed\":false,\"ingestedAt\":\"<seen>\",\"origFilename\":null,\"fileSize\":null,\"unsent\":false}"
+          ],
+          "digest": {
+            "rowCounts": {
+              "app_settings": 0,
+              "chats": 1,
+              "messages": 2,
+              "pipeline_runs": 0,
+              "todo_classification_corrections": 0,
+              "todo_correction_effects": 0,
+              "todo_not_mine_events": 1,
+              "todos": 1
+            },
+            "digest": "eaceb42ca7d3d74820713bf2e98b8c98f11d953e00e957468c99e24fa018634c",
+            "normalizedDigest": "d766332939ec831317359b20afbbb50c42b13ed3f48d6f0c24f4852f0929ced4",
+            "schemaDigest": "1f4a6356ed329865f27da557af45834b01da8d916a89111257059be0459bf154"
+          },
+          "badOpen": {
+            "threw": true,
+            "error": {
+              "name": "DbIntegrityError",
+              "code": null,
+              "message": "DB migration failed for C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\legacy-bad.db: migrate failed: duplicate column name: unsent",
+              "isDbIntegrityError": true
+            },
+            "logs": [
+              "log [db] quick_check=ok (1ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\legacy-bad.db",
+              "error [db] migrate failed for C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\legacy-bad.db: duplicate column name: unsent"
+            ]
+          },
+          "badAfter": {
+            "userVersion": 1,
+            "messagesColumns": [
+              "msg_id",
+              "chat_id",
+              "ts",
+              "time_iso",
+              "direction",
+              "sender",
+              "text",
+              "content_type",
+              "processed",
+              "ingested_at",
+              "unsent"
+            ],
+            "hasNotMineTable": false
+          },
+          "ok": true
+        },
+        "memoryRssMB": 107,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    },
+    {
+      "phase": "import",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 159,
+      "resultWritten": true,
+      "filesAfter": [
+        {
+          "name": "legacy-bad.db",
+          "size": 57344
+        },
+        {
+          "name": "legacy-v1.db",
+          "size": 98304
+        },
+        {
+          "name": "line-todo.db",
+          "size": 577536
+        },
+        {
+          "name": "probe-fk.db",
+          "size": 0
+        },
+        {
+          "name": "probe.db",
+          "size": 16384
+        }
+      ],
+      "result": {
+        "phase": "import",
+        "label": "e44-bs3-13.0.2-teamuq",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": true,
+          "loadMs": 15.76,
+          "info": {
+            "engine": "better-sqlite3",
+            "package": "13.0.2",
+            "sqlite": "3.53.4",
+            "compileOptionsSample": [
+              "DEFAULT_FOREIGN_KEYS",
+              "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+              "DEFAULT_WAL_SYNCHRONOUS=1",
+              "DQS=0",
+              "OMIT_DEPRECATED",
+              "OMIT_PROGRESS_CALLBACK",
+              "OMIT_SHARED_CACHE",
+              "OMIT_TCL_VARIABLE",
+              "THREADSAFE=2"
+            ]
+          },
+          "adapterFiles": []
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "phaseResult": {
+          "openLogs": [
+            "log [db] quick_check=ok (2ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\imported\\line-todo.db",
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\imported\\line-todo.db (schema 6 -> 6)"
+          ],
+          "state": {
+            "journalMode": "wal",
+            "lockingMode": "normal",
+            "foreignKeys": 1,
+            "busyTimeout": 5000,
+            "userVersion": 6,
+            "quickCheck": "ok"
+          },
+          "digest": {
+            "rowCounts": {
+              "app_settings": 0,
+              "chats": 3,
+              "line_import_batches": 3,
+              "line_import_meta": 2,
+              "message_participants": 55,
+              "messages": 2059,
+              "pipeline_runs": 1,
+              "todo_classification_corrections": 2,
+              "todo_correction_effects": 1,
+              "todo_not_mine_events": 7,
+              "todos": 7
+            },
+            "digest": "80f28f35fc1395786bb59dcd46e97dfc7678379cbef29994f18a0d81102199c9",
+            "normalizedDigest": "c2a590bccda1f4dea5ce57549c68e5fac6f8f695cbb6e0073831ef069dcd858a",
+            "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf"
+          },
+          "digestEqualsWriter": true,
+          "normalizedDigestEqualsWriter": true,
+          "todoCountAfterWrite": 8,
+          "reopenTodoCount": 8,
+          "ok": true
+        },
+        "memoryRssMB": 115,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    },
+    {
+      "phase": "append-noclose",
+      "exitCode": 1,
+      "exitCodeHex": "0x1",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 163,
+      "resultWritten": true,
+      "filesAfter": [
+        {
+          "name": "legacy-bad.db",
+          "size": 57344
+        },
+        {
+          "name": "legacy-v1.db",
+          "size": 98304
+        },
+        {
+          "name": "line-todo.db",
+          "size": 577536
+        },
+        {
+          "name": "line-todo.db-shm",
+          "size": 32768
+        },
+        {
+          "name": "line-todo.db-wal",
+          "size": 210152
+        },
+        {
+          "name": "probe-fk.db",
+          "size": 0
+        },
+        {
+          "name": "probe.db",
+          "size": 16384
+        }
+      ],
+      "result": {
+        "phase": "append-noclose",
+        "label": "e44-bs3-13.0.2-teamuq",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": true,
+          "loadMs": 16.4,
+          "info": {
+            "engine": "better-sqlite3",
+            "package": "13.0.2",
+            "sqlite": "3.53.4",
+            "compileOptionsSample": [
+              "DEFAULT_FOREIGN_KEYS",
+              "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+              "DEFAULT_WAL_SYNCHRONOUS=1",
+              "DQS=0",
+              "OMIT_DEPRECATED",
+              "OMIT_PROGRESS_CALLBACK",
+              "OMIT_SHARED_CACHE",
+              "OMIT_TCL_VARIABLE",
+              "THREADSAFE=2"
+            ]
+          },
+          "adapterFiles": []
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "phaseResult": {
+          "ok": true,
+          "state": {
+            "journalMode": "wal",
+            "lockingMode": "normal",
+            "foreignKeys": 1,
+            "busyTimeout": 5000,
+            "userVersion": 6,
+            "quickCheck": "ok"
+          },
+          "inserted": 300,
+          "digest": {
+            "rowCounts": {
+              "app_settings": 0,
+              "chats": 3,
+              "line_import_batches": 3,
+              "line_import_meta": 2,
+              "message_participants": 55,
+              "messages": 2359,
+              "pipeline_runs": 2,
+              "todo_classification_corrections": 2,
+              "todo_correction_effects": 1,
+              "todo_not_mine_events": 7,
+              "todos": 8
+            },
+            "digest": "544ac71b437a485e205ad29a45c5926810b7727ff5dcf3a07f7dec033290559f",
+            "normalizedDigest": "785289856903af85a9cbb0857848b91f9392adf030ae4e101a5d4ac3ecb0743c",
+            "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf"
+          },
+          "closed": false
+        },
+        "memoryRssMB": 114,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    },
+    {
+      "phase": "reopen",
+      "exitCode": 0,
+      "exitCodeHex": "0x0",
+      "signal": null,
+      "spawnError": null,
+      "durationMs": 161,
+      "resultWritten": true,
+      "filesAfter": [
+        {
+          "name": "legacy-bad.db",
+          "size": 57344
+        },
+        {
+          "name": "legacy-v1.db",
+          "size": 98304
+        },
+        {
+          "name": "line-todo.db",
+          "size": 647168
+        },
+        {
+          "name": "probe-fk.db",
+          "size": 0
+        },
+        {
+          "name": "probe.db",
+          "size": 16384
+        }
+      ],
+      "result": {
+        "phase": "reopen",
+        "label": "e44-bs3-13.0.2-teamuq",
+        "runtime": {
+          "node": "24.20.0",
+          "electron": "44.2.0",
+          "modules_abi": "149",
+          "napi": "10",
+          "sqliteBuiltin": "3.53.4"
+        },
+        "permissionActive": true,
+        "selfCheckBoot": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "engine": {
+          "loaded": true,
+          "loadMs": 15,
+          "info": {
+            "engine": "better-sqlite3",
+            "package": "13.0.2",
+            "sqlite": "3.53.4",
+            "compileOptionsSample": [
+              "DEFAULT_FOREIGN_KEYS",
+              "DEFAULT_WAL_AUTOCHECKPOINT=1000",
+              "DEFAULT_WAL_SYNCHRONOUS=1",
+              "DQS=0",
+              "OMIT_DEPRECATED",
+              "OMIT_PROGRESS_CALLBACK",
+              "OMIT_SHARED_CACHE",
+              "OMIT_TCL_VARIABLE",
+              "THREADSAFE=2"
+            ]
+          },
+          "adapterFiles": []
+        },
+        "selfCheckAfterEngine": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        },
+        "phaseResult": {
+          "openMs": 10.6,
+          "openLogs": [
+            "log [db] quick_check=ok (2ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\line-todo.db",
+            "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\line-todo.db (schema 6 -> 6)"
+          ],
+          "state": {
+            "journalMode": "wal",
+            "lockingMode": "normal",
+            "foreignKeys": 1,
+            "busyTimeout": 5000,
+            "userVersion": 6,
+            "quickCheck": "ok"
+          },
+          "digest": {
+            "rowCounts": {
+              "app_settings": 0,
+              "chats": 3,
+              "line_import_batches": 3,
+              "line_import_meta": 2,
+              "message_participants": 55,
+              "messages": 2359,
+              "pipeline_runs": 2,
+              "todo_classification_corrections": 2,
+              "todo_correction_effects": 1,
+              "todo_not_mine_events": 7,
+              "todos": 8
+            },
+            "digest": "544ac71b437a485e205ad29a45c5926810b7727ff5dcf3a07f7dec033290559f",
+            "normalizedDigest": "785289856903af85a9cbb0857848b91f9392adf030ae4e101a5d4ac3ecb0743c",
+            "schemaDigest": "2f0ae9b241b8b69a5c1f8b6cd48646eefe0ccd9abe95140eada08c1b37937fbf"
+          },
+          "digestEqualsBeforeKill": true,
+          "markerPresent": true,
+          "todoCount": 9,
+          "legacy": {
+            "userVersion": 6,
+            "digestEqual": true,
+            "logs": [
+              "log [db] quick_check=ok (0ms) C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\legacy-v1.db",
+              "log [db] opened C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-appdb-e44-bs3-13.0.2-teamuq-0h6Ss5\\data\\legacy-v1.db (schema 6 -> 6)"
+            ]
+          },
+          "ok": true
+        },
+        "memoryRssMB": 116,
+        "selfCheckEnd": {
+          "ok": true,
+          "code": null,
+          "allowAddons": true,
+          "probes": {
+            "permission": "active",
+            "scope_read": "ok",
+            "scope_read_home": "ok",
+            "scope_write_data": "ok",
+            "scope_write_narrow": "ok",
+            "scope_child": "ok",
+            "scope_worker": "ok",
+            "scope_addon_reported": "true",
+            "write_outside": "ok",
+            "read_outside": "ok",
+            "child_process": "ok",
+            "worker_threads": "ok",
+            "addon_code": "ERR_DLOPEN_FAILED",
+            "addon": "ok",
+            "data_write": "ok"
+          }
+        }
+      }
+    }
+  ],
+  "interopSystemNodeSqlite": {
+    "node": "24.2.0",
+    "quickCheck": "ok",
+    "userVersion": 6,
+    "journalModeOnDisk": "wal",
+    "messages": 2359,
+    "todos": 9
+  }
+}

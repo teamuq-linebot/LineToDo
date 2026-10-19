@@ -1,0 +1,16 @@
+{
+ "label": "e44-bs3-11.10.0-linetodo",
+ "engineLoaded": false,
+ "engineError": {
+  "loaded": false,
+  "code": "ERR_DLOPEN_FAILED",
+  "name": "Error",
+  "message": "The module '\\\\?\\C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\app-db\\vendor\\bs3-11.10.0-linetodo\\node_modules\\better-sqlite3\\build\\Release\\better_sqlite3.node'"
+ },
+ "selfChecks": {
+  "create": "true/true/true"
+ },
+ "exits": {
+  "create": "0x0"
+ }
+}

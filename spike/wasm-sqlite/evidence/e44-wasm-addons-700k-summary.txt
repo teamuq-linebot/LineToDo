@@ -1,0 +1,49 @@
+{
+  "label": "e44-wasm-addons-700k",
+  "exitCode": 0,
+  "abi": "149",
+  "selfCheckBoot": true,
+  "selfCheckAfterEngine": true,
+  "selfCheckEnd": true,
+  "engine": true,
+  "engineInfo": "SQLite3 Multiple Ciphers 2.5.1",
+  "controlDenied": true,
+  "walDefaultLocking": {
+    "ok": false,
+    "error": "null function"
+  },
+  "wal": {
+    "ok": true,
+    "count": true,
+    "digest": true,
+    "maxRow": true
+  },
+  "rollback": {
+    "ok": true,
+    "count": true,
+    "digest": true
+  },
+  "wrongKey": true,
+  "bench": {
+    "copyMs": 86.3,
+    "openTotalMs": 332.26,
+    "loadBytesMs": 208.59,
+    "openVerifyMs": 2.15,
+    "checkpointMs": 116.57,
+    "watchBatchMs": 151.75,
+    "rawIncrementalMs": 52.65,
+    "listChats50Ms": 2.35,
+    "tailMs": 0.08,
+    "openPlusWatchBatchMs": 508.27
+  },
+  "keyScan": {
+    "candidates": 501,
+    "totalMs": 290.62,
+    "perCandidateMs": 0.58,
+    "hits": 1,
+    "rightKeyHit": true
+  }
+}
+STDERR(head): (node:7192) [PERM0001] SecurityWarning: The flag --allow-addons must be used with extreme caution. It could invalidate the permission model.
+(Use `electron --trace-warnings ...` to show where the warning was created)
+

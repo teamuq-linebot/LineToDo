@@ -1,0 +1,15 @@
+# Why no ABI-149 better-sqlite3-multiple-ciphers binary could be produced on this machine
+
+## 1) No Windows SDK installed (node-gyp cannot compile)
+Windows Kits include dir:
+ls: cannot access '/c/Program Files (x86)/Windows Kits/10/Include/': No such file or directory
+VC toolset present at:
+14.41.34120
+node-gyp result: 'Could not find any Visual Studio installation to use' (VS finder requires a Windows SDK component).
+
+## 2) No published ABI-149 prebuilt exists at ANY version
+Highest published electron win32-x64 prebuild per release:
+- v11.10.0 (pinned): electron-v135 (max)
+- v12.11.1 (latest 12.x): electron-v146 (max)
+- v13.0.3 (latest stable): no win32-x64 prebuilds published
+Target needed: electron ABI 149 (Electron 44). NOT AVAILABLE.

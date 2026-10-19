@@ -1,0 +1,15 @@
+Error: The module '\\?\C:\teamuq\line-todo\.teamuq\worktrees\fulltrust-plugin-20261001\spike\native-permission\node_modules\better-sqlite3-multiple-ciphers\build\Release\better_sqlite3.node'
+was compiled against a different Node.js version using
+NODE_MODULE_VERSION 125. This version of Node.js requires
+NODE_MODULE_VERSION 149. Please try re-compiling or re-installing
+the module (for instance, using `npm rebuild` or `npm install`).
+    at process.func [as dlopen] (node:electron/js2c/node_init:2:2677)
+    at Object.<anonymous> (node:internal/modules/cjs/loader:2097:18)
+    at Object.func [as .node] (node:electron/js2c/node_init:2:2677)
+    at Module.load (node:internal/modules/cjs/loader:1658:32)
+    at node:internal/modules/cjs/loader:1450:12
+    at Module._load (node:electron/js2c/node_init:2:18263)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:268:19)
+    at Module.require (node:internal/modules/cjs/loader:1681:12)
+    at require (node:internal/modules/helpers:157:16)
+    at bindings (C:\teamuq\line-todo\.teamuq\worktrees\fulltrust-plugin-20261001\spike\native-permission\node_modules\bindings\bindings.js:112:48)

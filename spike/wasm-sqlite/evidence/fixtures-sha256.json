@@ -1,0 +1,58 @@
+{
+  "C:/Users/david/AppData/Local/Temp/teamuq-wasm-spike-fixtures": [
+    {
+      "file": "expected.json",
+      "bytes": 1921,
+      "sha256": "6367d462348cfb1af284b391d67f69ff4009d80556de274056995bc4ef562c0b"
+    },
+    {
+      "file": "rollback/m.edb",
+      "bytes": 28233728,
+      "sha256": "af52850182f8d3cd16a70595529d1e36d50fa9d9ecb529b64d064afc939974e0"
+    },
+    {
+      "file": "wal/m.edb",
+      "bytes": 28233728,
+      "sha256": "1024d9a521b933794cc73c869b8784634eee04ea39ac37ce5e85bc2a0fc63233"
+    },
+    {
+      "file": "wal/m.edb-shm",
+      "bytes": 65536,
+      "sha256": "72b92d6f8bc0c654b5e7f650e2d5bac76de7d9457e0be6ff6924a47d83a95dc4"
+    },
+    {
+      "file": "wal/m.edb-wal",
+      "bytes": 3662712,
+      "sha256": "b6dd7b73a0b541b62c839d760eee09027eb30ab2fbcbb9bd39c63ef4e5eedfa2"
+    }
+  ],
+  "C:/Users/david/AppData/Local/Temp/teamuq-wasm-spike-fixtures (deleted)": true,
+  "C:/Users/david/AppData/Local/Temp/teamuq-wasm-spike-fixtures-700k": [
+    {
+      "file": "expected.json",
+      "bytes": 1932,
+      "sha256": "205cf616590f32fe5d230ca970a7c636ab18ffd134e65522ea663fe727074b01"
+    },
+    {
+      "file": "rollback/m.edb",
+      "bytes": 196333568,
+      "sha256": "e407fe84cf7310a38027d5295f35e7d94cb47c1a4ab24c9f7b076d5df1449b59"
+    },
+    {
+      "file": "wal/m.edb",
+      "bytes": 196333568,
+      "sha256": "e6cdda7951fe188287cdb7d29419d5548c6b797e52e53aeb9918941b13a7bc77"
+    },
+    {
+      "file": "wal/m.edb-shm",
+      "bytes": 393216,
+      "sha256": "ff4ecc3bf44f627efdd7e2c6e2336d52e3d36dd22986b67ff2780bdc5916d22d"
+    },
+    {
+      "file": "wal/m.edb-wal",
+      "bytes": 3996432,
+      "sha256": "5171c4a32539c8671954c2c62d04c6cfbbf86cc0999ffbce868f5496cea1798f"
+    }
+  ],
+  "C:/Users/david/AppData/Local/Temp/teamuq-wasm-spike-fixtures-700k (deleted)": true
+}

@@ -1,0 +1,286 @@
+{
+  "queriedAt": "2026-10-01T11:30:25.880Z",
+  "commands": [
+    "gh api repos/WiseLibs/better-sqlite3/releases?per_page=12",
+    "npm view better-sqlite3@<v> engines dist.tarball dist.integrity --json"
+  ],
+  "releases": [
+    {
+      "tag": "v13.0.3",
+      "publishedAt": "2026-08-05T03:26:05Z",
+      "assetCount": 0,
+      "win32x64Abis": [],
+      "hasElectronV149": false,
+      "maxElectronAbi": 0
+    },
+    {
+      "tag": "v13.0.2",
+      "publishedAt": "2026-07-29T02:42:42Z",
+      "assetCount": 0,
+      "win32x64Abis": [],
+      "hasElectronV149": false,
+      "maxElectronAbi": 0
+    },
+    {
+      "tag": "v13.0.1",
+      "publishedAt": "2026-07-21T06:50:55Z",
+      "assetCount": 0,
+      "win32x64Abis": [],
+      "hasElectronV149": false,
+      "maxElectronAbi": 0
+    },
+    {
+      "tag": "v13.0.0",
+      "publishedAt": "2026-07-21T06:14:40Z",
+      "assetCount": 0,
+      "win32x64Abis": [],
+      "hasElectronV149": false,
+      "maxElectronAbi": 0
+    },
+    {
+      "tag": "v12.12.0",
+      "publishedAt": "2026-07-15T06:13:43Z",
+      "assetCount": 145,
+      "win32x64Abis": [
+        "electron-v121",
+        "electron-v123",
+        "electron-v125",
+        "electron-v128",
+        "electron-v130",
+        "electron-v132",
+        "electron-v133",
+        "electron-v135",
+        "electron-v136",
+        "electron-v139",
+        "electron-v140",
+        "electron-v143",
+        "electron-v145",
+        "electron-v146",
+        "electron-v148",
+        "node-v127",
+        "node-v137",
+        "node-v141",
+        "node-v147"
+      ],
+      "hasElectronV149": false,
+      "maxElectronAbi": 148
+    },
+    {
+      "tag": "v12.11.2",
+      "publishedAt": "2026-07-03T21:09:33Z",
+      "assetCount": 135,
+      "win32x64Abis": [
+        "electron-v121",
+        "electron-v123",
+        "electron-v125",
+        "electron-v128",
+        "electron-v130",
+        "electron-v132",
+        "electron-v133",
+        "electron-v135",
+        "electron-v136",
+        "electron-v139",
+        "electron-v140",
+        "electron-v143",
+        "electron-v145",
+        "electron-v146",
+        "electron-v148",
+        "node-v127",
+        "node-v137",
+        "node-v141",
+        "node-v147"
+      ],
+      "hasElectronV149": false,
+      "maxElectronAbi": 148
+    },
+    {
+      "tag": "v12.11.1",
+      "publishedAt": "2026-06-15T17:09:49Z",
+      "assetCount": 138,
+      "win32x64Abis": [
+        "electron-v121",
+        "electron-v123",
+        "electron-v125",
+        "electron-v128",
+        "electron-v130",
+        "electron-v132",
+        "electron-v133",
+        "electron-v135",
+        "electron-v136",
+        "electron-v139",
+        "electron-v140",
+        "electron-v143",
+        "electron-v145",
+        "electron-v146",
+        "node-v127",
+        "node-v137",
+        "node-v141",
+        "node-v147"
+      ],
+      "hasElectronV149": false,
+      "maxElectronAbi": 146
+    },
+    {
+      "tag": "v12.11.0",
+      "publishedAt": "2026-06-14T15:55:57Z",
+      "assetCount": 102,
+      "win32x64Abis": [
+        "electron-v121",
+        "electron-v123",
+        "electron-v125",
+        "electron-v128",
+        "electron-v130",
+        "electron-v132",
+        "electron-v133",
+        "electron-v135",
+        "electron-v136",
+        "electron-v139",
+        "node-v127",
+        "node-v137",
+        "node-v141",
+        "node-v147"
+      ],
+      "hasElectronV149": false,
+      "maxElectronAbi": 139
+    },
+    {
+      "tag": "v12.10.1",
+      "publishedAt": "2026-06-13T18:32:36Z",
+      "assetCount": 131,
+      "win32x64Abis": [
+        "electron-v121",
+        "electron-v123",
+        "electron-v125",
+        "electron-v128",
+        "electron-v130",
+        "electron-v132",
+        "electron-v133",
+        "electron-v135",
+        "electron-v136",
+        "electron-v139",
+        "electron-v140",
+        "electron-v143",
+        "electron-v145",
+        "node-v127",
+        "node-v137",
+        "node-v141",
+        "node-v147"
+      ],
+      "hasElectronV149": false,
+      "maxElectronAbi": 145
+    },
+    {
+      "tag": "v12.10.0",
+      "publishedAt": "2026-05-12T07:57:41Z",
+      "assetCount": 131,
+      "win32x64Abis": [
+        "electron-v121",
+        "electron-v123",
+        "electron-v125",
+        "electron-v128",
+        "electron-v130",
+        "electron-v132",
+        "electron-v133",
+        "electron-v135",
+        "electron-v136",
+        "electron-v139",
+        "electron-v140",
+        "electron-v143",
+        "electron-v145",
+        "node-v127",
+        "node-v137",
+        "node-v141",
+        "node-v147"
+      ],
+      "hasElectronV149": false,
+      "maxElectronAbi": 145
+    },
+    {
+      "tag": "v12.9.1",
+      "publishedAt": "2026-05-06T08:18:02Z",
+      "assetCount": 95,
+      "win32x64Abis": [
+        "electron-v121",
+        "electron-v123",
+        "electron-v125",
+        "electron-v128",
+        "electron-v130",
+        "electron-v132",
+        "electron-v133",
+        "electron-v135",
+        "electron-v136",
+        "electron-v139",
+        "node-v115",
+        "node-v127",
+        "node-v131",
+        "node-v137",
+        "node-v141"
+      ],
+      "hasElectronV149": false,
+      "maxElectronAbi": 139
+    },
+    {
+      "tag": "v12.9.0",
+      "publishedAt": "2026-04-12T16:07:07Z",
+      "assetCount": 141,
+      "win32x64Abis": [
+        "electron-v121",
+        "electron-v123",
+        "electron-v125",
+        "electron-v128",
+        "electron-v130",
+        "electron-v132",
+        "electron-v133",
+        "electron-v135",
+        "electron-v136",
+        "electron-v139",
+        "electron-v140",
+        "electron-v143",
+        "electron-v145",
+        "node-v115",
+        "node-v127",
+        "node-v131",
+        "node-v137",
+        "node-v141"
+      ],
+      "hasElectronV149": false,
+      "maxElectronAbi": 145
+    }
+  ],
+  "npm": {
+    "11.10.0": {
+      "dist.tarball": "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-11.10.0.tgz",
+      "dist.integrity": "sha512-EwhOpyXiOEL/lKzHz9AW1msWFNzGc/z+LzeB3/jnFJpxu+th2yqvzsSWas1v9jgs9+xiXJcD5A8CJxAG2TaghQ=="
+    },
+    "12.11.1": {
+      "engines": {
+        "node": "20.x || 22.x || 23.x || 24.x || 25.x || 26.x"
+      },
+      "dist.tarball": "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-12.11.1.tgz",
+      "dist.integrity": "sha512-dq9AtApgg5PGFtBzPFSBl3HZQjHok5gaQCM6zh2Yk0aSmDCs1CbnVI8/HgASQkNKsWFpseIO9beg5xxpYhbIfA=="
+    },
+    "12.12.0": {
+      "error": "No match found for version 12.12.0"
+    },
+    "13.0.2": {
+      "engines": {
+        "node": ">=22"
+      },
+      "dist.tarball": "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-13.0.2.tgz",
+      "dist.integrity": "sha512-jW6oufeDhXZaiX9Lw5A+oerVClx4iFrI6uDj1zu7SqUAjak9vbJvA0NEcKLNxHiQHb6kYCoFzzXYV0YOauhV3g==",
+      "gypfile": false
+    },
+    "13.0.3": {
+      "engines": {
+        "node": ">=22"
+      },
+      "dist.tarball": "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-13.0.3.tgz",
+      "dist.integrity": "sha512-RbOBxmLBG8uvFUc15X9+9SFemKcQ0WBuISBVkpuiaUB2qblC8UWlHEjdWVoZ8AdhSwmoEgsiXKfopX0CQxaACQ==",
+      "gypfile": false
+    }
+  },
+  "notes": [
+    "v13.x GitHub releases carry no binary assets: prebuilds/*.node are inside the npm tarball (N-API, binding.gyp NAPI_VERSION=10).",
+    "v12.x (and earlier) ship per-ABI electron/node tarballs on GitHub; electron-v149 (Electron 44) is checked per release below."
+  ]
+}

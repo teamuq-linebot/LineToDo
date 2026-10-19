@@ -1,0 +1,24 @@
+{
+    "name":  "SQLite3MultipleCiphers WASM",
+    "version":  "2.5.1",
+    "sqliteVersion":  "3.53.4",
+    "source":  "https://github.com/utelle/SQLite3MultipleCiphers/releases/tag/v2.5.1 (asset sqlite3mc-2.5.1-sqlite-3.53.4-wasm.zip, jswasm/ directory)",
+    "releaseAssetSha256":  "761a41b8dc996cfa21f193fc044739fbb0c4a31a1fd657a4df49cc59085577ce",
+    "files":  {
+                  "sqlite3.mjs":  "321215d86786ab0f83ab981152ad3c9b2b5763bd6a7b56a36272fae54562639d",
+                  "sqlite3.wasm":  "b6aedab9eee5cd5de0f13498e0bf64bb5ee9cc786d1d0303cc365578b64d18ab"
+              },
+    "license":  "SQLite3MultipleCiphers: MIT; SQLite: public domain; Emscripten glue: MIT / NCSA (see header of sqlite3.mjs)",
+    "usage":  "Loaded only by src/main/line/engine/wasmSqliteCipherEngine.ts (plugin backend). Packaged as kind:\u0027code\u0027 (a .wasm is not a native library in the 1.6.8 artifact classifier). Not used by the standalone app.",
+    "note":  "The WASM binary is unchanged. The JavaScript has the documented pathname-base patch; files records shipped hashes and upstreamFiles preserves original release hashes.",
+    "upstreamFiles":  {
+                          "sqlite3.wasm":  "b6aedab9eee5cd5de0f13498e0bf64bb5ee9cc786d1d0303cc365578b64d18ab",
+                          "sqlite3.mjs":  "058b526608afdd81c244540f525286275d7bcc6a11676d19fdda7be50502f10e"
+                      },
+    "localPatches":  [
+                         {
+                             "file":  "sqlite3.mjs",
+                             "change":  "Use file:/// instead of file://localhost/ as the base for getPath URL pathname normalization. Both bases yield identical pathnames; the hostname-free base passes the author network source scan."
+                         }
+                     ]
+}

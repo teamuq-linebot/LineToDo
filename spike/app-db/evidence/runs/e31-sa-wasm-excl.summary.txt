@@ -1,0 +1,53 @@
+{
+ "label": "e31-sa-wasm-excl",
+ "engineLoaded": true,
+ "selfChecks": {
+  "create": "false/false/false",
+  "legacy": "false/false/false",
+  "import": "false/false/false",
+  "append-noclose": "false/false/false",
+  "reopen": "false/false/false"
+ },
+ "exits": {
+  "create": "0x0",
+  "legacy": "0x0",
+  "import": "0x0",
+  "append-noclose": "0x1",
+  "reopen": "0x0"
+ },
+ "create": {
+  "ok": true,
+  "journal": "wal",
+  "uv": 6,
+  "qc": "ok",
+  "opsSha": "52e895398bbc6889705be60a41e40bbaa1286aa3b8f453bc03f8454c84a34673"
+ },
+ "legacy": true,
+ "import": true,
+ "append": {
+  "exit": "0x1",
+  "files": [
+   {
+    "name": "line-todo.db",
+    "size": 8192
+   },
+   {
+    "name": "line-todo.db-wal",
+    "size": 3245352
+   }
+  ]
+ },
+ "reopen": true,
+ "outside": {
+  "opened": true,
+  "path": "C:\\Users\\david\\AppData\\Local\\Temp\\appdb-outside-probe-10644.db"
+ },
+ "interop": {
+  "node": "24.2.0",
+  "quickCheck": "ok",
+  "userVersion": 6,
+  "journalModeOnDisk": "wal",
+  "messages": 2359,
+  "todos": 9
+ }
+}

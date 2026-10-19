@@ -1,0 +1,79 @@
+{
+  "source": {
+    "repo": "teamuq-electron",
+    "commit": "b8b96cb3",
+    "file": "packages/plugin-sdk/src/aiChatContracts.ts"
+  },
+  "limits": {
+    "systemChars": 16000,
+    "transcriptLines": 40,
+    "transcriptLineChars": 8000,
+    "transcriptChars": 60000,
+    "inputChars": 8000,
+    "imageBytes": 2097152,
+    "replyChars": 32000,
+    "sessionsPerPlugin": 1,
+    "sessionsTotal": 8,
+    "concurrentTurnsTotal": 4,
+    "turnsPerMinute": 20,
+    "turnsPerHour": 400,
+    "turnTimeoutMs": 300000,
+    "attachGraceMs": 60000,
+    "quotaCooldownMs": 300000,
+    "hiddenWindowMs": 120000,
+    "hiddenOpensPerInput": 2,
+    "hiddenTurnsPerInput": 2
+  },
+  "efforts": [
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+  ],
+  "errorCodes": [
+    "plugin_not_active",
+    "not_granted",
+    "request_invalid",
+    "input_too_large",
+    "provider_not_found",
+    "provider_not_ready",
+    "model_unavailable",
+    "unsupported_image",
+    "session_limit",
+    "session_not_found",
+    "turn_in_progress",
+    "rate_limited",
+    "quota_exhausted",
+    "busy",
+    "view_not_visible",
+    "unavailable"
+  ],
+  "failureCodes": [
+    "provider_unavailable",
+    "unsupported_version",
+    "quota_exhausted",
+    "stalled",
+    "provider_error",
+    "empty_reply",
+    "session_closed",
+    "reply_too_long",
+    "turn_timeout",
+    "access_revoked"
+  ],
+  "eventKinds": [
+    "failed",
+    "started",
+    "textDelta",
+    "completed",
+    "interrupted"
+  ],
+  "providerStates": [
+    "ready",
+    "not_installed",
+    "not_logged_in",
+    "unsupported_version",
+    "unavailable",
+    "not_supported_yet"
+  ]
+}

@@ -1,0 +1,164 @@
+import { ipcMain, shell, app } from 'electron'
+import {
+  getSettings,
+  updateSettings,
+  setApiKey,
+  clearApiKey,
+  isSafeStorageAvailable,
+  hasSafeStorageKey,
+  type SettingsView,
+  type SettingsPatch
+} from '../config/settings'
+import { getQwenConfig } from '../config/qwen'
+import { isProviderConfigured, resolveProvider } from '../llm/provider'
+import { draftReply } from '../llm/draftReply'
+import { getTodo } from '../db/todos.repo'
+import { getChat } from '../db/chats.repo'
+import { getRecentByChat } from '../db/messages.repo'
+import { getPipelineDefaults } from '../config/defaults'
+
+/**
+ * settings:* / todos:draftReply / app:openDataFolder IPC handler（IMPLEMENTATION_PLAN.md §5）。
+ *
+ * - settings:get        → SettingsView（不含金鑰；只回 hasApiKey + 來源 + safeStorage 可用性）
+ *                         hasApiKey 是 **provider-aware** 的（與 pipeline:status 同源）
+ * - settings:update     → 套用 patch 並落檔，回最新 SettingsView
+ * - settings:setApiKey  → safeStorage 加密落檔（不可用時回友善錯誤，不崩潰）
+ * - settings:clearApiKey→ 清除金鑰檔
+ * - todos:draftReply    → 用 qwen 草擬回覆（只回字串，不送出）
+ * - app:openDataFolder  → 開 userData 資料夾（除錯）
+ *
+ * 註：settings:testQwen 已在 pipeline.ipc.ts 註冊（與 scheduler 同檔），此處不重複。
+ */
+
+/**
+ * `hasApiKey` 的語意 = 「**目前這個 provider** 的引擎已就緒」，不是「有沒有 qwen 金鑰」
+ * （欄位名沿用歷史，preload SettingsView 已如此註記：http=有金鑰；CLI=設定無誤）。
+ *
+ * 因此這裡用 `isProviderConfigured()`，與 `pipeline:status` 的同名欄位（scheduler.getStatus）
+ * **同一個判定來源**。舊寫法 `getQwenConfig().apiKey !== null` 在 CLI provider 下恆為 false，
+ * 讓 settings:get 與 pipeline:status 對同一件事給出相反答案。
+ *
+ * `apiKeySource` 維持 HTTP 專屬語意（金鑰從哪來），CLI 下就是 'none'，不受本次修正影響 ——
+ * 設定頁的金鑰欄位本來就只在 http provider 下顯示。
+ */
+function buildView(): SettingsView {
+  const s = getSettings()
+  const cfg = getQwenConfig()
+  return {
+    ...s,
+    hasApiKey: isProviderConfigured(),
+    apiKeySource: cfg.source,
+    safeStorageAvailable: isSafeStorageAvailable()
+  }
+}
+
+export interface SettingsIpcHooks {
+  /** 設定更新後回呼（main 用來讓 scheduler 重排輪詢頻率，使 pollIntervalSec 變更即時生效）。 */
+  onSettingsChanged?: () => void
+}
+
+export function registerSettingsIpc(hooks: SettingsIpcHooks = {}): void {
+  ipcMain.handle('settings:get', (): SettingsView => buildView())
+
+  ipcMain.handle(
+    'settings:update',
+    (_e, args: { patch: SettingsPatch }): SettingsView => {
+      if (args?.patch && typeof args.patch === 'object') {
+        updateSettings(args.patch)
+        hooks.onSettingsChanged?.()
+      }
+      return buildView()
+    }
+  )
+
+  ipcMain.handle(
+    'settings:setApiKey',
+    (_e, args: { apiKey: string }): { ok: boolean; error?: string } => {
+      if (!args || typeof args.apiKey !== 'string') {
+        return { ok: false, error: '金鑰格式不正確' }
+      }
+      try {
+        setApiKey(args.apiKey)
+        // 金鑰也是設定（只是另存一個加密檔）。Batch 7：填了新金鑰後必須解除 provider 熔斷，
+        // 否則「金鑰過期 → 熔斷 → 使用者立刻換新金鑰」還要乾等 15 分鐘才會恢復。
+        hooks.onSettingsChanged?.()
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+  )
+
+  ipcMain.handle('settings:clearApiKey', (): { ok: boolean } => {
+    clearApiKey()
+    hooks.onSettingsChanged?.()
+    return { ok: true }
+  })
+
+  ipcMain.handle('settings:hasSafeStorageKey', (): boolean => hasSafeStorageKey())
+
+  // todos:draftReply —— 用 qwen 草擬回覆。只回字串，不送出（MVP）。
+  ipcMain.handle(
+    'todos:draftReply',
+    async (_e, args: { id: string }): Promise<{ draft?: string; error?: string }> => {
+      if (!args || typeof args.id !== 'string') {
+        return { error: '缺少 todo id' }
+      }
+      const todo = getTodo(args.id)
+      if (!todo) return { error: '找不到該代辦' }
+
+      const provider = resolveProvider()
+      if (!provider) {
+        return { error: '尚未設定 API 金鑰（請在設定頁填入，或設環境變數 QWEN_API_KEY）' }
+      }
+
+      try {
+        const chat = getChat(todo.chatId)
+        const limit = getPipelineDefaults().recentContextLimit || 10
+        const recent = getRecentByChat(todo.chatId, Math.max(limit, 10))
+        const draft = await draftReply(
+          provider,
+          {
+            todo: { bucket: todo.bucket, title: todo.title, detail: todo.detail },
+            chatName: chat?.name ?? null,
+            isGroup: chat?.isGroup ?? false,
+            recentMessages: recent.map((m) => ({
+              direction: m.direction,
+              sender: m.sender,
+              text: m.text,
+              timeIso: m.timeIso
+            }))
+          },
+          {}
+        )
+        return { draft }
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+  )
+
+  // chats:openOriginal —— 「開原聊天」。MVP：LINE Desktop 無穩定 deep-link，
+  // 這裡盡力嘗試喚起 LINE 主視窗（line:// scheme）；失敗回 ok:false 由 UI 提示手動切換。
+  ipcMain.handle(
+    'chats:openOriginal',
+    async (_e, args: { chatId: string }): Promise<{ ok: boolean; error?: string }> => {
+      if (!args || typeof args.chatId !== 'string') {
+        return { ok: false, error: '缺少 chatId' }
+      }
+      try {
+        // line:// 只能喚起 App，無法精準跳到特定聊天室（LINE Desktop 限制）。
+        await shell.openExternal('line://')
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    }
+  )
+
+  ipcMain.handle('app:openDataFolder', (): { ok: boolean } => {
+    void shell.openPath(app.getPath('userData'))
+    return { ok: true }
+  })
+}

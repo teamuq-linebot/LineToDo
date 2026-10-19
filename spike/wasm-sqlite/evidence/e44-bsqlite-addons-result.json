@@ -1,0 +1,147 @@
+{
+  "label": "e44-bsqlite-addons",
+  "electronExe": "C:/teamuq/teamuq-electron/node_modules/electron/dist/electron.exe",
+  "engine": "bsqlite",
+  "allowAddons": true,
+  "copyVia": "koffi",
+  "exitCode": 0,
+  "signal": null,
+  "spawnError": null,
+  "durationMs": 111,
+  "flags": [
+    "--permission",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-wasm-run-e44-bsqlite-addons-txQE6L/host/host-bootstrap.mjs",
+    "--allow-fs-read=C:/teamuq/line-todo/.teamuq/worktrees/fulltrust-plugin-20261001/spike/wasm-sqlite",
+    "--allow-fs-read=C:/Users/david/AppData/Local/Temp/teamuq-wasm-run-e44-bsqlite-addons-txQE6L/data",
+    "--allow-fs-write=C:/Users/david/AppData/Local/Temp/teamuq-wasm-run-e44-bsqlite-addons-txQE6L/data",
+    "--allow-addons"
+  ],
+  "dirs": {
+    "runRoot": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-wasm-run-e44-bsqlite-addons-txQE6L",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\wasm-sqlite",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-wasm-run-e44-bsqlite-addons-txQE6L\\data"
+  },
+  "init": {
+    "version": 1,
+    "pluginId": "tuqdev.wasm-spike",
+    "installDir": "C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\wasm-sqlite",
+    "dataDir": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-wasm-run-e44-bsqlite-addons-txQE6L\\data",
+    "entry": "C:\\Users\\david\\AppData\\Local\\Temp\\teamuq-wasm-run-e44-bsqlite-addons-txQE6L\\host\\host-bootstrap.mjs",
+    "assetPacks": {},
+    "allowAddons": true,
+    "corePackaged": true
+  },
+  "result": {
+    "runtime": {
+      "node": "24.20.0",
+      "electron": "44.2.0",
+      "modules_abi": "149"
+    },
+    "permissionActive": true,
+    "cfgEcho": {
+      "engine": "bsqlite",
+      "copyVia": "koffi",
+      "iters": 7
+    },
+    "selfCheckBoot": {
+      "ok": true,
+      "code": null,
+      "allowAddons": true,
+      "probes": {
+        "permission": "active",
+        "scope_read": "ok",
+        "scope_read_home": "ok",
+        "scope_write_data": "ok",
+        "scope_write_narrow": "ok",
+        "scope_child": "ok",
+        "scope_worker": "ok",
+        "scope_addon_reported": "true",
+        "write_outside": "ok",
+        "read_outside": "ok",
+        "child_process": "ok",
+        "worker_threads": "ok",
+        "addon_code": "ERR_DLOPEN_FAILED",
+        "addon": "ok",
+        "data_write": "ok"
+      }
+    },
+    "controlNodeFsOutside": {
+      "denied": true,
+      "code": "ERR_ACCESS_DENIED"
+    },
+    "controlExistsOutside": {
+      "threw": true,
+      "code": "ERR_ACCESS_DENIED"
+    },
+    "koffi": {
+      "loaded": true,
+      "version": "3.1.0"
+    },
+    "engine": {
+      "loaded": false,
+      "code": "ERR_DLOPEN_FAILED",
+      "stack": [
+        "Error: The module '\\\\?\\C:\\teamuq\\line-todo\\.teamuq\\worktrees\\fulltrust-plugin-20261001\\spike\\wasm-sqlite\\node_modules\\better-sqlite3-multiple-ciphers\\build\\Release\\better_sqlite3.node'",
+        "was compiled against a different Node.js version using",
+        "NODE_MODULE_VERSION 125. This version of Node.js requires",
+        "NODE_MODULE_VERSION 149. Please try re-compiling or re-installing"
+      ]
+    },
+    "memAfterEngineLoad": {
+      "rssMB": 105,
+      "heapUsedMB": 4,
+      "externalMB": 2,
+      "arrayBuffersMB": 0
+    },
+    "memBefore": {
+      "rssMB": 104,
+      "heapUsedMB": 4,
+      "externalMB": 2,
+      "arrayBuffersMB": 0
+    },
+    "selfCheckAfterEngine": {
+      "ok": true,
+      "code": null,
+      "allowAddons": true,
+      "probes": {
+        "permission": "active",
+        "scope_read": "ok",
+        "scope_read_home": "ok",
+        "scope_write_data": "ok",
+        "scope_write_narrow": "ok",
+        "scope_child": "ok",
+        "scope_worker": "ok",
+        "scope_addon_reported": "true",
+        "write_outside": "ok",
+        "read_outside": "ok",
+        "child_process": "ok",
+        "worker_threads": "ok",
+        "addon_code": "ERR_DLOPEN_FAILED",
+        "addon": "ok",
+        "data_write": "ok"
+      }
+    },
+    "selfCheckEnd": {
+      "ok": true,
+      "code": null,
+      "allowAddons": true,
+      "probes": {
+        "permission": "active",
+        "scope_read": "ok",
+        "scope_read_home": "ok",
+        "scope_write_data": "ok",
+        "scope_write_narrow": "ok",
+        "scope_child": "ok",
+        "scope_worker": "ok",
+        "scope_addon_reported": "true",
+        "write_outside": "ok",
+        "read_outside": "ok",
+        "child_process": "ok",
+        "worker_threads": "ok",
+        "addon_code": "ERR_DLOPEN_FAILED",
+        "addon": "ok",
+        "data_write": "ok"
+      }
+    }
+  }
+}
