@@ -1,7 +1,7 @@
 /**
- * chromeLineCdp.ts — `LinePage` 的實作：經 Chrome DevTools Protocol 操作共用瀏覽器（127.0.0.1:19222）裡的 LINE Chrome 外掛分頁。
+ * chromeLineCdp.ts — `LinePage` 的實作：經 Chrome DevTools Protocol 操作「LINE 背景 Chrome」（127.0.0.1:19223；scripts/line-bg/line-bg.mjs 啟動的 headless Chrome）裡的 LINE Chrome 外掛分頁。
  *
- * - 連線只到 127.0.0.1:19222（manifest `network.loopbackServices` 宣告的 http／ws），用 Node 內建的 fetch／WebSocket（不 import node:http／net）。
+ * - 連線只到 127.0.0.1:19223（manifest `network.loopbackServices` 宣告的 http／ws），用 Node 內建的 fetch／WebSocket（不 import node:http／net）。
  * - LINE 外掛的 CSS class 帶雜湊後綴，一律用 `[class*="前綴"]` 比對。
  * - 開聊天室只改 `location.hash`（`#/chats/<mid>`）；不點分頁、資料夾或導覽按鈕（點了會自動開啟列表第一個聊天室並標成已讀）。
  * - 輸入框是 `<textarea-ex>`，真正的 textarea 在它的 open shadow root 裡。
@@ -37,18 +37,18 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 async function listTargets(): Promise<CdpTarget[]> {
   let res: Response
   try {
-    res = await fetch('http://127.0.0.1:19222/json/list', { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
+    res = await fetch('http://127.0.0.1:19223/json/list', { signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
   } catch {
-    throw new ChromeLineError('browser_unreachable', '連不上共用瀏覽器（127.0.0.1:19222）。請先開啟 TeamUQ 的共用瀏覽器。')
+    throw new ChromeLineError('browser_unreachable', '連不上 LINE 背景 Chrome（127.0.0.1:19223）。請先執行 line-todo 的 scripts/line-bg/line-bg.mjs start。')
   }
-  if (!res.ok) throw new ChromeLineError('browser_unreachable', `共用瀏覽器回應 ${res.status}，無法列出分頁。`)
+  if (!res.ok) throw new ChromeLineError('browser_unreachable', `LINE 背景 Chrome 回應 ${res.status}，無法列出分頁。`)
   const body: unknown = await res.json()
   return Array.isArray(body) ? (body as CdpTarget[]) : []
 }
 
 async function openLineTab(): Promise<CdpTarget> {
   try {
-    const res = await fetch('http://127.0.0.1:19222/json/new?' + encodeURIComponent(LINE_INDEX_URL), { method: 'PUT', signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
+    const res = await fetch('http://127.0.0.1:19223/json/new?' + encodeURIComponent(LINE_INDEX_URL), { method: 'PUT', signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
     if (res.ok) {
       const target = (await res.json()) as CdpTarget
       if (target && typeof target.id === 'string') return target
@@ -56,7 +56,7 @@ async function openLineTab(): Promise<CdpTarget> {
   } catch {
     // 落到下面的錯誤
   }
-  throw new ChromeLineError('line_tab_unavailable', '共用瀏覽器裡沒有 LINE 外掛分頁，也無法自動開啟。請確認共用瀏覽器已安裝 LINE 外掛。')
+  throw new ChromeLineError('line_tab_unavailable', 'LINE 背景 Chrome 裡沒有 LINE 外掛分頁，也無法自動開啟。請重新執行 scripts/line-bg/line-bg.mjs start。')
 }
 
 type Listener = (msg: { method: string; params: Record<string, unknown> }) => void
@@ -97,7 +97,7 @@ class CdpSession {
   }
 
   static async connect(targetId: string): Promise<CdpSession> {
-    const ws = new WebSocket(`ws://127.0.0.1:19222/devtools/page/${encodeURIComponent(targetId)}`)
+    const ws = new WebSocket(`ws://127.0.0.1:19223/devtools/page/${encodeURIComponent(targetId)}`)
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new ChromeLineError('browser_unreachable', '連上 LINE 外掛分頁逾時。')), HTTP_TIMEOUT_MS)
       ws.addEventListener('open', () => { clearTimeout(timer); resolve() }, { once: true })
@@ -190,7 +190,6 @@ class CdpLinePage implements LinePage {
   }
 
   async searchChats(name: string): Promise<ChatHit[]> {
-    await this.s.send('Page.bringToFront').catch(() => undefined)
     const focused = await evaluate<boolean>(this.s, `(async () => { ${PRELUDE}
       if (!location.hash.startsWith('#/chats')) location.hash = '#/chats';
       for (let i = 0; i < 20 && !document.querySelector(${js(SEL.searchInput)}); i++) await sleep(250);
@@ -231,7 +230,6 @@ class CdpLinePage implements LinePage {
   }
 
   async openChat(mid: string): Promise<{ roomMid: string | null; header: string | null }> {
-    await this.s.send('Page.bringToFront').catch(() => undefined)
     return evaluate(this.s, `(async () => { ${PRELUDE}
       const mid = ${js(mid)};
       location.hash = '#/chats/' + encodeURIComponent(mid);
@@ -322,14 +320,14 @@ class CdpLinePage implements LinePage {
   }
 }
 
-/** 正式環境的 opener：找共用瀏覽器裡的 LINE 外掛分頁（沒有就開一個）並連上。 */
+/** 正式環境的 opener：找 LINE 背景 Chrome 裡的 LINE 外掛分頁（沒有就開一個）並連上。 */
 export function createCdpLinePageOpener(): LinePageOpener {
   return {
     async open(): Promise<LinePage> {
       const targets = await listTargets()
       const tab = targets.find(isLineTab) ?? (await openLineTab())
       const session = await CdpSession.connect(tab.id)
-      // 共用瀏覽器不在前景（或分頁在背景）時，focus()／輸入仍要有效。
+      // headless／背景分頁也要讓 focus()／輸入有效（從不把分頁切到前景）。
       await session.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined)
       return new CdpLinePage(session)
     }

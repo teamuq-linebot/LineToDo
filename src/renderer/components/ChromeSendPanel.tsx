@@ -4,7 +4,7 @@ import type { ChromeLineApi, ChromeLineSendResult } from '../../shared/api'
 /**
  * ChromeSendPanel — 草擬回覆對話框裡的「用 Chrome 發送」（外掛版：`api.chromeLine`）。
  *
- * 經 TeamUQ 共用瀏覽器裡的 LINE Chrome 外掛送出草稿。會真的送出，所以一定先顯示確認（收件聊天室、副作用），
+ * 經背景的 LINE（headless Chrome 裡的 LINE 外掛）送出草稿。會真的送出，所以一定先顯示確認（收件聊天室、副作用），
  * 按「確定發送」才呼叫 backend；送出的是按下確定當下的草稿內容。backend 以聊天室名稱找聊天室、核對 ID 與名稱後才按 Enter，
  * 並以 LINE 的 sendMessage 回應確認送達。
  */
@@ -55,8 +55,8 @@ export function ChromeSendPanel({ api, todoId, chatName, draft, draftReady, onBu
         <div className="set-notice-body">
           <div className="set-notice-title">要把上面的草稿送到「{chatName}」嗎？</div>
           <ul>
-            <li>會用 TeamUQ 共用瀏覽器裡的 LINE Chrome 外掛<strong>直接送出</strong>，送出後無法從這裡收回。</li>
-            <li>會在共用瀏覽器開啟這個聊天室，裡面的未讀訊息會變成已讀。</li>
+            <li>會用背景的 LINE（Chrome 外掛）<strong>直接送出</strong>，送出後無法從這裡收回。</li>
+            <li>會在背景開啟這個聊天室，裡面的未讀訊息會變成已讀。</li>
           </ul>
           <div className="modal-actions">
             <span style={{ flex: 1 }} />

@@ -531,7 +531,7 @@ export interface DriverApi {
   onProgress(cb: (p: DriverPostProgress) => void): () => void
 }
 
-// ── 用 Chrome 的 LINE 外掛發送（chromeLine）：外掛版 backend 經 CDP 操作共用瀏覽器（127.0.0.1:19222）的 LINE Chrome 外掛 ──
+// ── 用 Chrome 的 LINE 外掛發送（chromeLine）：外掛版 backend 經 CDP 操作 LINE 背景 Chrome（headless，127.0.0.1:19223）裡的 LINE Chrome 外掛 ──
 
 export type ChromeLineErrorCode =
   | 'busy'
@@ -539,9 +539,9 @@ export type ChromeLineErrorCode =
   | 'todo_not_found'
   /** LINE 桌面版 DB 沒有這個聊天室的名稱（要靠名稱在 Chrome 外掛裡找聊天室）。 */
   | 'chat_name_missing'
-  /** 共用瀏覽器的 CDP（127.0.0.1:19222）連不上。 */
+  /** LINE 背景 Chrome 的 CDP（127.0.0.1:19223）連不上。 */
   | 'browser_unreachable'
-  /** 共用瀏覽器沒有 LINE 外掛分頁，也開不出來（外掛沒裝？）。 */
+  /** LINE 背景 Chrome 沒有 LINE 外掛分頁，也開不出來。 */
   | 'line_tab_unavailable'
   /** LINE 外掛沒登入或畫面還沒好。 */
   | 'line_not_ready'

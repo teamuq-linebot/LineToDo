@@ -15,7 +15,7 @@
  *   （core 照 standalone 的邏輯跑，只有「模型輸出」那一步由 orchestrator 經 ai:chat 完成）；沒接時回「尚未接上」的明確失敗，不會假裝成功。
  *   `options.ai`（`PluginAiPort`）仍可逐項覆寫。
  * - 媒體：`media.assetUrl(msgId)` → `media.prepare`（backend 解密寫進 dataDir）→ `window.tuqPlugin.assets.url(path)`。
- * - 用 Chrome 發送：`chromeLine.status／send` → backend 經 CDP 操作共用瀏覽器的 LINE Chrome 外掛（外掛版才有；standalone 省略 `api.chromeLine`）。
+ * - 用 Chrome 發送：`chromeLine.status／send` → backend 經 CDP 操作 LINE 背景 Chrome 的 LINE 外掛（外掛版才有；standalone 省略 `api.chromeLine`）。
  *
  * 不依賴 React／DOM（node:test 以 mock `window.tuqPlugin` 驗證）。
  */

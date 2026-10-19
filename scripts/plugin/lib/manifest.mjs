@@ -39,16 +39,16 @@ export const NATIVE_FILES = Object.freeze([
  *   native:addons      koffi.node + better_sqlite3.node (with native.allowAddons)
  *   ai:chat            the UI-side extraction / reply drafting through TeamUQ's built-in Codex (window.tuqPlugin.ai)
  *   assets:plugin-data decrypted media from dataDir/media-cache via window.tuqPlugin.assets.url
- *   network:loopback   the backend's "send with Chrome" (chromeLineCdp.ts) talks CDP to the TeamUQ shared browser at 127.0.0.1:19222 (LOOPBACK_SERVICES)
+ *   network:loopback   the backend's "send with Chrome" (chromeLineCdp.ts) talks CDP to the LINE background Chrome at 127.0.0.1:19223 (LOOPBACK_SERVICES)
  */
 export const PERMISSIONS = Object.freeze(['ui:view', 'backend:invoke', 'native:addons', 'ai:chat', 'assets:plugin-data', 'network:loopback'])
 
 /**
- * The only local service the backend connects to: the TeamUQ shared browser's Chrome DevTools endpoint (HTTP /json/list, /json/new and the
+ * The only local service the backend connects to: the Chrome DevTools endpoint of the LINE background Chrome (scripts/line-bg/line-bg.mjs: a headless, muted Chrome running only the LINE extension) (HTTP /json/list, /json/new and the
  * page WebSocket), used to drive the LINE Chrome extension when the user presses "send with Chrome". Nothing else is reached over the network.
  */
 export const LOOPBACK_SERVICES = Object.freeze([
-  { id: 'shared-browser-cdp', port: 19222, protocols: ['http', 'ws'], purpose: 'TeamUQ shared browser (Chrome DevTools) for sending through the LINE Chrome extension' },
+  { id: 'line-background-chrome', port: 19223, protocols: ['http', 'ws'], purpose: 'LINE background Chrome (Chrome DevTools) for sending through the LINE Chrome extension' },
 ])
 
 /**
@@ -67,7 +67,7 @@ export const RESOURCES = Object.freeze({ memoryMB: 1024, cpuThreads: 2, maxSessi
 export const DESCRIPTION =
   '把 LINE 桌面版的新訊息整理成待辦看板。完全信任級外掛：會讀取 LINE 的本機資料與執行中 LINE.exe 的記憶體來取得解密金鑰，並在本機保存解密後的訊息與圖片。' +
   '整理待辦時，訊息內容會交給 TeamUQ 已登入的 AI；可在設定選擇供應者、模型與推理強度（看板開著才會整理，每分鐘有輪數限制）。' +
-  '草擬的回覆可按「用 Chrome 發送」：經 TeamUQ 共用瀏覽器（本機 127.0.0.1:19222）裡的 LINE Chrome 外掛送出（會開啟該聊天室，未讀會變已讀）。' +
+  '草擬的回覆可按「用 Chrome 發送」：經本機背景執行的 LINE Chrome 外掛（127.0.0.1:19223，先用 line-bg 啟動）送出（會開啟該聊天室，未讀會變已讀）。' +
   '外掛版不提供 LINE 桌面版的「填入 LINE」，也不直接啟動 CLI provider 或使用自訂 AI 端點。'
 
 export function buildManifest({ version }) {

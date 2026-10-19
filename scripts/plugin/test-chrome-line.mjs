@@ -161,7 +161,7 @@ test('createChromeLineSender: request validation, todo / chat name lookup, opene
   assert.equal(opened[0].calls.at(-1), 'close', 'the page connection is closed afterwards')
 
   const down = createChromeLineSender({
-    opener: { open: async () => { throw new ChromeLineError('browser_unreachable', '連不上共用瀏覽器') } },
+    opener: { open: async () => { throw new ChromeLineError('browser_unreachable', '連不上 LINE 背景 Chrome') } },
     resolveChatName: async () => 'Team A'
   })
   const r = await down.send({ todoId: 't1', text: 'hi' })
@@ -169,7 +169,7 @@ test('createChromeLineSender: request validation, todo / chat name lookup, opene
   assert.equal(r.stage, 'connect')
   assert.equal(r.sent, 'no')
   const st = await down.status()
-  assert.deepEqual(st, { ready: false, code: 'browser_unreachable', message: '連不上共用瀏覽器' })
+  assert.deepEqual(st, { ready: false, code: 'browser_unreachable', message: '連不上 LINE 背景 Chrome' })
 })
 
 test('createChromeLineSender: an exception after Enter is reported as "unknown", one send at a time', async () => {

@@ -17,7 +17,7 @@
  *     backend 重新啟動後仍查得到，G-05）、`events.*`（事件長輪詢）、`extract.*`（AI 抽取供料／收料／還租約）、`ai.*`（UI 中轉的單次 AI 呼叫：
  *     `ai.run` 由 UI 發起草擬回覆／誤判分析／群組議題分析，`ai.pull`／`ai.commit`／`ai.release` 是 UI orchestrator 領取並交回 ai:chat 的文字）、
  *     `media.prepare`（解密圖片寫進 dataDir，回相對路徑給 view 的 `assets.url()`）、`result.chunk`、`job.poll`。
- *   - `chromeLine.status`／`chromeLine.send`：用 Chrome 的 LINE 外掛發送（chromeLine.ts；經 CDP 操作共用瀏覽器，送出可能超過 soft deadline，走 settle 轉 job）。
+ *   - `chromeLine.status`／`chromeLine.send`：用 Chrome 的 LINE 外掛發送（chromeLine.ts；經 CDP 操作 LINE 背景 Chrome，送出可能超過 soft deadline，走 settle 轉 job）。
  */
 import { randomBytes } from 'node:crypto'
 import type { LineTodoApi } from '../../shared/api'

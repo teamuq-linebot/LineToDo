@@ -1,5 +1,5 @@
 /**
- * chromeLine.ts — 「用 Chrome 發送」：經共用瀏覽器（TeamUQ shared browser，CDP 127.0.0.1:19222）的 LINE Chrome 外掛送出一則訊息。
+ * chromeLine.ts — 「用 Chrome 發送」：經「LINE 背景 Chrome」（headless，CDP 127.0.0.1:19223；scripts/line-bg/line-bg.mjs）的 LINE Chrome 外掛送出一則訊息。
  *
  * 為什麼靠名稱找聊天室：LINE 桌面版 DB 的聊天室 ID 和 Chrome 外掛的 mid（`U/C/R`＋43 字 base64url）格式不同、無法互推，
  * 所以先用 todo 的聊天室名稱在 Chrome 外掛的聊天搜尋裡找「名稱完全相同且唯一」的聊天室，開啟後再核對 data-mid 與標頭名稱才送出。
@@ -52,7 +52,7 @@ export class ChromeLineError extends Error {
   }
 }
 
-/** 連上共用瀏覽器並取得 LINE 外掛分頁；連不上 throw `ChromeLineError`（browser_unreachable／line_tab_unavailable）。 */
+/** 連上 LINE 背景 Chrome 並取得 LINE 外掛分頁；連不上 throw `ChromeLineError`（browser_unreachable／line_tab_unavailable）。 */
 export interface LinePageOpener {
   open(): Promise<LinePage>
 }
@@ -104,7 +104,7 @@ export async function sendOnPage(page: LinePage, chatName: string, rawText: stri
   const text = normalizeText(rawText)
 
   track.stage = 'connect'
-  if (!(await page.ready())) return failure('line_not_ready', '共用瀏覽器的 LINE 外掛沒有登入，或聊天列表還沒出現。請在共用瀏覽器登入 LINE 後再試。', 'connect', chatName)
+  if (!(await page.ready())) return failure('line_not_ready', '背景的 LINE 沒有登入，或聊天列表還沒出現。請執行 scripts/line-bg/line-bg.mjs login 登入 LINE 後再試。', 'connect', chatName)
 
   track.stage = 'locate'
   let hits: ChatHit[]
@@ -169,7 +169,7 @@ export function createChromeLineSender(options: ChromeLineSenderOptions): Chrome
       let page: LinePage | null = null
       try {
         page = await options.opener.open()
-        if (!(await page.ready())) return { ready: false, code: 'line_not_ready', message: '共用瀏覽器的 LINE 外掛沒有登入，或聊天列表還沒出現。' }
+        if (!(await page.ready())) return { ready: false, code: 'line_not_ready', message: '背景的 LINE 沒有登入，或聊天列表還沒出現。' }
         return { ready: true, code: null, message: null }
       } catch (error) {
         const f = fromError(error, 'connect', null)

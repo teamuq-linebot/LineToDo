@@ -26,7 +26,7 @@ import type {
  *     review F1：放開 Enter 才觸發、自動重複的 Enter 不觸發、連按只觸發一次；helper 另外在切前景前守門。
  *   - 失敗：訊息本文與副作用列都來自 main 的 messages.ts（result.body／result.tail），「複製」任何時候都可以用
  *
- * 外掛版另有「用 Chrome 發送」（`api.chromeLine`，ChromeSendPanel）：經共用瀏覽器的 LINE Chrome 外掛**直接送出**，先確認才送；
+ * 外掛版另有「用 Chrome 發送」（`api.chromeLine`，ChromeSendPanel）：經背景的 LINE（Chrome 外掛）**直接送出**，先確認才送；
  * 發送中不可關閉、編輯或重新產生。
  */
 

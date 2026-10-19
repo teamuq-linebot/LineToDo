@@ -14,12 +14,12 @@
  *   | secrets         | Electron safeStorage                | 無（backend 不持有任何 AI 金鑰）                        |
  *   | media           | linemedia:// + shell／dialog        | media.prepare：解密寫進 dataDir/media-cache，UI 用 assets.url |
  *   | app/driver      | Electron shell／dialog／UIA         | unsupported_in_plugin                                 |
- *   | 送出訊息        | （無）                              | chromeLine：經 CDP 操作共用瀏覽器的 LINE Chrome 外掛（chromeLineCdp.ts）|
+ *   | 送出訊息        | （無）                              | chromeLine：經 CDP 操作 LINE 背景 Chrome 的 LINE 外掛（chromeLineCdp.ts）|
  *   | 開機對帳／收回掃描| runReconcile／scanRecentUnsent（hook）| 同一份程式，進度改進 EventHub；snapshot 在 dataDir      |
  *   | participantIdentity | safeStorage 加密的 install secret | unknownIdentity（設計 v2 §5.2 首版降級）              |
  *   | 事件            | webContents.send                    | EventHub（長輪詢 + capability session）                |
  *
- * 本檔不 import electron、不 import child_process／worker_threads、不做網路 I/O（chromeLine 的連線在 chromeLineCdp.ts，只連 127.0.0.1:19222）。
+ * 本檔不 import electron、不 import child_process／worker_threads、不做網路 I/O（chromeLine 的連線在 chromeLineCdp.ts，只連 127.0.0.1:19223）。
  */
 import { basename, dirname, join } from 'node:path'
 import { createLineTodoApplication } from '../../core/application'
@@ -119,7 +119,7 @@ export interface PluginBackendOptions {
    * 傳物件＝強制接上並以物件覆寫 `ReconcileDeps`（測試注入假來源）；傳 false＝不接。
    */
   reconcile?: false | Partial<ReconcileDeps>
-  /** 用 Chrome 的 LINE 外掛發送：省略＝連共用瀏覽器（127.0.0.1:19222）；給 opener＝測試用假頁面；false＝不提供（chromeLine.* 回 chrome_line_unavailable）。 */
+  /** 用 Chrome 的 LINE 外掛發送：省略＝連 LINE 背景 Chrome（127.0.0.1:19223）；給 opener＝測試用假頁面；false＝不提供（chromeLine.* 回 chrome_line_unavailable）。 */
   chromeLine?: false | LinePageOpener
   extract?: Partial<Omit<ExtractQueueOptions, 'db' | 'getConfig'>>
   /** 回顧的續跑帳本（預設 `<dataDir>/review-ledger.json`、24 小時過期）；`now` 供測試的假時鐘。 */
