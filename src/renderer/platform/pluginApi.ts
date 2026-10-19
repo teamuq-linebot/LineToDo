@@ -15,11 +15,12 @@
  *   （core 照 standalone 的邏輯跑，只有「模型輸出」那一步由 orchestrator 經 ai:chat 完成）；沒接時回「尚未接上」的明確失敗，不會假裝成功。
  *   `options.ai`（`PluginAiPort`）仍可逐項覆寫。
  * - 媒體：`media.assetUrl(msgId)` → `media.prepare`（backend 解密寫進 dataDir）→ `window.tuqPlugin.assets.url(path)`。
+ * - 用 Chrome 發送：`chromeLine.status／send` → backend 經 CDP 操作共用瀏覽器的 LINE Chrome 外掛（外掛版才有；standalone 省略 `api.chromeLine`）。
  *
  * 不依賴 React／DOM（node:test 以 mock `window.tuqPlugin` 驗證）。
  */
 import type {
-  DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult, ReviewLastDaysResult
+  ChromeLineApi, DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult, ReviewLastDaysResult
 } from '../../shared/api'
 import { PLUGIN_CAPABILITIES, type HostCapabilities } from './capabilities'
 import { normalizeHostAiSelection, type HostAiSelection } from '../../shared/hostAi'
@@ -118,6 +119,8 @@ export interface PluginExtras {
 export interface PluginLineTodoApi extends LineTodoApi {
   /** 外掛版沒有 driver_post。 */
   driver: undefined
+  /** 用 Chrome 的 LINE 外掛發送（backend 經 CDP）。 */
+  chromeLine: ChromeLineApi
   plugin: PluginExtras
   /** 卸載：停止事件輪詢（並關閉 session），之後的請求一律 reject `disposed`。 */
   dispose(): void
@@ -326,6 +329,10 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       todoRefs: (topicId) => call('groupTopics.todoRefs', topicId)
     },
     driver: undefined,
+    chromeLine: {
+      status: () => call('chromeLine.status'),
+      send: (req) => call('chromeLine.send', req)
+    },
     plugin: {
       host: 'plugin',
       capabilities: PLUGIN_CAPABILITIES,

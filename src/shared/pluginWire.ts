@@ -33,7 +33,8 @@ export const BACKEND_METHOD_GROUPS = Object.freeze([
   'extract',
   'ai',
   'result',
-  'job'
+  'job',
+  'chromeLine'
 ] as const)
 
 export type BackendMethodGroup = (typeof BACKEND_METHOD_GROUPS)[number]

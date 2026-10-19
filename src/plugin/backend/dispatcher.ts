@@ -17,6 +17,7 @@
  *     backend 重新啟動後仍查得到，G-05）、`events.*`（事件長輪詢）、`extract.*`（AI 抽取供料／收料／還租約）、`ai.*`（UI 中轉的單次 AI 呼叫：
  *     `ai.run` 由 UI 發起草擬回覆／誤判分析／群組議題分析，`ai.pull`／`ai.commit`／`ai.release` 是 UI orchestrator 領取並交回 ai:chat 的文字）、
  *     `media.prepare`（解密圖片寫進 dataDir，回相對路徑給 view 的 `assets.url()`）、`result.chunk`、`job.poll`。
+ *   - `chromeLine.status`／`chromeLine.send`：用 Chrome 的 LINE 外掛發送（chromeLine.ts；經 CDP 操作共用瀏覽器，送出可能超過 soft deadline，走 settle 轉 job）。
  */
 import { randomBytes } from 'node:crypto'
 import type { LineTodoApi } from '../../shared/api'
@@ -24,6 +25,7 @@ import { EXTRACT_SYSTEM_PROMPT } from '../../main/llm/extractPrompt'
 import { EXTRACT_OUTPUT_CONTRACT } from './aiOutputContract'
 import type { AiTaskQueue } from './aiTaskQueue'
 import { AI_RUN_PATHS } from './aiTaskQueue'
+import type { ChromeLineSender } from './chromeLine'
 import type { PromptService } from './promptService'
 import { PromptError } from '../../shared/promptSettings'
 import type { PromptRefinementRequest } from '../../shared/promptSettings'
@@ -87,6 +89,8 @@ export interface DispatcherOptions {
   review?: ReviewCoordinator
   /** 「補媒體金鑰」的 single-flight 與可查詢狀態（`pipeline.backfillMediaKeys`、`tasks.status`）；省略＝直接呼叫 core。 */
   mediaBackfill?: LongTaskTracker
+  /** 用 Chrome 的 LINE 外掛發送（`chromeLine.*`）；省略＝回 chrome_line_unavailable。 */
+  chromeLine?: ChromeLineSender
   /** `backend.info` 的內容。 */
   info(): Record<string, JsonValue>
   /** 超過這個時間就把執行中的呼叫轉成 job（必須 < host 的 30 s）。 */
@@ -193,6 +197,10 @@ export class Dispatcher {
       // 長任務的狀態（G-05）：回顧與補媒體金鑰；backend 重新啟動後由狀態檔讀回（taskStatus.ts、reviewRun.ts）。
       case 'tasks.status': return this.finalize({ review: this.opts.review ? this.opts.review.status() : null, mediaBackfill: this.opts.mediaBackfill ? this.opts.mediaBackfill.status() : null })
       case 'media.prepare': return this.mediaPrepare(args[0])
+      case 'chromeLine.status':
+        return this.opts.chromeLine ? this.settle(this.opts.chromeLine.status()) : fail('chrome_line_unavailable', 'Chrome LINE sending is not available in this build')
+      case 'chromeLine.send':
+        return this.opts.chromeLine ? this.settle(this.opts.chromeLine.send(args[0])) : fail('chrome_line_unavailable', 'Chrome LINE sending is not available in this build')
       case 'result.chunk': return this.chunk(args[0])
       case 'job.poll': return this.pollJob(args[0])
       default: break
