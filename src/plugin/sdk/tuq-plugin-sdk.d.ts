@@ -312,6 +312,7 @@ export type PluginAgentAvatarResultV1 = Readonly<{
 export interface PluginBackendAiApiV1 {
     getOptions(): Promise<PluginBackendAiOptionsV1>;
     openSession(options: PluginBackendAiOpenOptionsV1): Promise<PluginBackendAiSessionV1>;
+    complete(input: PluginBackendAiCompleteInputV1): Promise<PluginBackendAiCompleteResultV1>;
 }
 export interface PluginBackendSecretsApiV1 {
     get(name: string): Promise<string | null>;
@@ -375,6 +376,7 @@ export type PluginBackendAiOptionsV1 = {
     };
 };
 export type PluginBackendAiOpenOptionsV1 = {
+    taskId?: string;
     providerId?: string;
     modelId?: string;
     effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -386,6 +388,7 @@ export type PluginBackendAiOpenOptionsV1 = {
     resume?: undefined;
 } | {
     resume: string;
+    taskId?: string;
 };
 export interface PluginBackendAiSessionV1 {
     readonly sessionId: string;
@@ -412,6 +415,8 @@ export interface PluginBackendAiSessionV1 {
     interrupt(): Promise<void>;
     close(): Promise<void>;
 }
+export type PluginBackendAiCompleteInputV1 = { text: string; system: string; taskId?: string | undefined; effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined; providerId?: string | undefined; modelId?: string | undefined; transcript?: { text: string; role: "user" | "assistant"; }[] | undefined; image?: { mime: "image/jpeg" | "image/png"; data: Uint8Array<ArrayBufferLike>; } | undefined; } | { text: string; sessionId: string; taskId?: string | undefined; effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined; modelId?: string | undefined; image?: { mime: "image/jpeg" | "image/png"; data: Uint8Array<ArrayBufferLike>; } | undefined; }
+export type PluginBackendAiCompleteResultV1 = AiChatCompleteResult;
 export interface CapabilityListEntry {
     readonly category: string;
     readonly status: ViewStatus;
@@ -449,6 +454,9 @@ export type PluginBackendAiTurnBodyV1 = {
     kind: 'textDelta';
     text: string;
 } | {
+    kind: 'contentSaved';
+    sequenceNo: number;
+} | {
     kind: 'completed';
 } | {
     kind: 'interrupted';
@@ -462,6 +470,7 @@ export type PluginBackendAiTurnBodyV1 = {
 export type PluginBackendAiTurnEventV1 = PluginBackendAiTurnBodyV1 & {
     turnId: string;
 };
+export type AiChatCompleteResult = { text: string; requestId: string; sessionId: string; providerTurnId: string | null; historySaved: "pending" | "saved"; }
 export type ViewStatus = 'available' | 'provider_not_ready' | 'provider_not_allowed' | 'unresolved' | 'not_granted';
 export interface CandidateProvider extends ProviderView {
     readonly dataClass: 'local' | 'cloud';
@@ -544,6 +553,7 @@ export interface PluginAiSessionV1 {
     terminal:
       | { kind: 'started' }
       | { kind: 'textDelta'; text: string }
+      | { kind: 'contentSaved'; sequenceNo: number }
       | { kind: 'completed' }
       | { kind: 'interrupted' }
       | {
@@ -569,6 +579,7 @@ export interface PluginAiSessionV1 {
   onEvent(listener: (event:
     | { kind: 'started'; turnId: string }
     | { kind: 'textDelta'; text: string; turnId: string }
+    | { kind: 'contentSaved'; sequenceNo: number; turnId: string }
     | { kind: 'completed'; turnId: string }
     | { kind: 'interrupted'; turnId: string }
     | {
@@ -625,6 +636,7 @@ export interface PluginAiApiV1 {
     quota: { state: 'ok' | 'exhausted'; retryAfterMs: number | null }
   }>
   openSession(options: {
+    taskId?: string
     providerId?: string
     modelId?: string
     effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
@@ -632,6 +644,29 @@ export interface PluginAiApiV1 {
     transcript?: { role: 'user' | 'assistant'; text: string }[]
     resume?: string
   }): Promise<PluginAiSessionV1>
+  complete(input: {
+    taskId?: string
+    providerId?: string
+    modelId?: string
+    effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+    system: string
+    transcript?: { role: 'user' | 'assistant'; text: string }[]
+    text: string
+    image?: { mime: 'image/jpeg' | 'image/png'; data: Uint8Array }
+  } | {
+    taskId?: string
+    sessionId: string
+    modelId?: string
+    effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+    text: string
+    image?: { mime: 'image/jpeg' | 'image/png'; data: Uint8Array }
+  }): Promise<{
+    sessionId: string
+    requestId: string
+    text: string
+    providerTurnId: string | null
+    historySaved: 'pending' | 'saved'
+  }>
 }
 export interface PluginCapabilityApiV1 {
   list(): Promise<{

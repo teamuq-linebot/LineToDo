@@ -1,14 +1,14 @@
 {
     "file":  "tuq-plugin-tool.mjs",
-    "sha256":  "2d2e2ecca07176a8f019ddc7338109ece3a246760fe7f5fe5d24c50351ba346a",
-    "bytes":  5463838,
-    "builtFromCore":  "1.7.12",
-    "teamuqElectronCommit":  "fd20c5e7874786226b6e630d2da9d8f6abfcab60",
-    "howObtained":  "Copied from the workspace _devkit/bin/tuq-plugin-tool.mjs; verified against _devkit/kit.version.json.",
+    "sha256":  "a179f0e1201d036e4dc904782ca2fe1591f2ff14558221e457f737ab96a09d86",
+    "bytes":  8208252,
+    "builtFromCore":  "1.7.15",
+    "teamuqElectronCommit":  "bf4801ecc89f5aaff36147ee9993aa5cac843811",
+    "howObtained":  "Copied from the workspace _devkit/bin/tuq-plugin-tool.mjs (kit.version.json: kitVersion/coreVersion 1.7.15, file sha256 a179f0e1...); the kit does not record its build commit, teamuqElectronCommit is the v1.7.15 tag (used only by the dev-signed variant to load Core validators).",
     "usedFor":  [
                     "validate",
                     "pack --unsigned",
                     "verify"
                 ],
-    "note":  "The tool and copied SDK declarations are pinned to the TeamUQ Core 1.7.12 workspace devkit."
+    "note":  "The tool and copied SDK declarations are pinned to the TeamUQ Core 1.7.15 workspace devkit."
 }
