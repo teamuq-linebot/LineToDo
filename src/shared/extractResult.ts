@@ -1,7 +1,7 @@
 /**
  * extractResult.ts — 抽取輸出的 zod schema 與驗證（純函式、只依賴 zod）。
  *
- * 原本在 src/main/llm/schema.ts；外掛 UI 的 AI orchestrator（src/plugin/ui/aiOrchestrator.ts）要用「同一份」zod 驗證 ai:chat 回來的 JSON，
+ * 原本在 src/main/llm/schema.ts；外掛 backend 的 ExtractWorker（src/plugin/backend/extractWorker.ts）要用「同一份」zod 驗證 host.ai.complete 回來的 JSON，
  * 而 UI bundle 不能含 main-process 程式碼（scripts/plugin/build-ui.mjs 的輸入白名單），所以搬到 shared。
  * `src/main/llm/schema.ts` 重新匯出這裡的全部符號，所有既有的 import 路徑與行為不變。
  */

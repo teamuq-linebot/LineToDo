@@ -6,7 +6,7 @@
 //   * no child_process / worker_threads  -> the host self-check really spawns; success = the backend is refused at boot
 //   * no electron                        -> the backend is plain Node (run-as-node)
 //   * no better-sqlite3-multiple-ciphers -> LINE DB is read with the WASM engine; that native addon has no ABI-149 build
-//   * no openai / provider / CLI modules -> the backend never calls an LLM (UI does, through ai:chat)
+//   * no openai / provider / CLI modules -> the backend never talks to an LLM service itself; its only AI path is context.host.ai.complete (TeamUQ's ai:chat)
 //   * no network modules                 -> node:http(s)/net/tls/dns/dgram are not imported
 //   * the app DB driver is better-sqlite3 13.0.2 (alias `better-sqlite3-plugin`), never the standalone 11.x build
 // koffi is the only native-addon package. Two modes (`buildBackendBundle({ koffi })`):

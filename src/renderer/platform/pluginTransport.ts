@@ -25,11 +25,10 @@
 
 import { MAX_REQUEST_BYTES, backendMethodFor } from '../../shared/pluginWire'
 
-/** `window.tuqPlugin` 中本外掛用到的部分（其餘能力，例如 ai／presentation，由 Phase 4 的 orchestrator 自己取用）。 */
+/** `window.tuqPlugin` 中本外掛用到的部分。0.2.0 起 view 不再使用 view 端的 AI 橋接：AI 在 backend 經 `context.host.ai` 執行。 */
 export interface TuqPluginHost {
   backend: { call(method: string, params: unknown): Promise<unknown> }
   assets?: { url(path: string): string }
-  ai?: import('@teamuq/plugin-sdk').PluginAiApiV1
 }
 
 export class PluginApiError extends Error {
@@ -45,7 +44,7 @@ export class PluginApiError extends Error {
   }
 }
 
-/** backend 明確表示「外掛版不提供這個功能」（`unsupported_in_plugin`）。`route:'ui_ai_chat'` 表示改由 UI 端的 ai:chat 完成。 */
+/** backend 明確表示「外掛版不提供這個功能」（`unsupported_in_plugin`）。 */
 export class PluginUnsupportedError extends PluginApiError {
   readonly detail: string
   constructor(path: string, detail: string, route?: string) {

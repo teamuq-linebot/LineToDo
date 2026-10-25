@@ -1,8 +1,9 @@
-import type { PluginAiApiV1 } from '@teamuq/plugin-sdk'
+import type { PluginBackendAiApiV1, PluginBackendAiCompleteInputV1 } from '@teamuq/plugin-sdk'
 import type { PromptControl } from './promptSettings'
 
-export type HostAiOptions = Awaited<ReturnType<PluginAiApiV1['getOptions']>>
-export type HostAiEffort = NonNullable<Parameters<PluginAiApiV1['openSession']>[0]['effort']>
+/** TeamUQ 的 AI 選項（backend 的 `context.host.ai.getOptions()`；設定頁經 backend 的 `ai.options` 取得）。 */
+export type HostAiOptions = Awaited<ReturnType<PluginBackendAiApiV1['getOptions']>>
+export type HostAiEffort = NonNullable<PluginBackendAiCompleteInputV1['effort']>
 
 export interface HostAiSelection {
   providerId: string | null
@@ -27,5 +28,4 @@ export interface HostAiControl {
   getOptions(): Promise<HostAiOptions>
   getSelection(): Promise<HostAiSelection>
   setSelection(selection: HostAiSelection): Promise<HostAiSelection>
-  onSelectionChanged(listener: (selection: HostAiSelection) => void): () => void
 }

@@ -1,5 +1,5 @@
 // Phase 5 (G-08 / G-09) — the .tuqplugin built by the OFFICIAL author tool (scripts/plugin/vendor/tuq-plugin-tool.mjs: validate + pack --unsigned, then
-// verify) for TeamUQ 1.7.1: manifest, determinism, the tool's review, the content audit, and the SHIPPED BYTES running under the backend contract
+// verify) for TeamUQ 1.7.13+ (vendored tool = Core 1.7.15): manifest, determinism, the tool's review, the content audit, and the SHIPPED BYTES running under the backend contract
 // (Electron 44.2.0 run-as-node + the verbatim permission flags + self-check). Needs the same runtimes as test-backend-contract.mjs
 // (Electron 31 writes the fake LINE DB, Electron 44 is the backend runtime). No key file and no teamuq-electron checkout are read.
 import assert from 'node:assert/strict'
@@ -13,7 +13,7 @@ import { PINNED_NATIVE, buildPackage, defaultKind, kindOverrides } from './build
 import { verifyArtifact } from './verify-artifact.mjs'
 import { auditPackage } from './lib/audit.mjs'
 import { sha256Hex } from './lib/pack.mjs'
-import { BACKEND_METHODS, DESCRIPTION, NATIVE_FILES, PERMISSIONS, PLUGIN_ID, buildManifest } from './lib/manifest.mjs'
+import { BACKEND_METHODS, DESCRIPTION, MIN_CORE_VERSION, NATIVE_FILES, PERMISSIONS, PLUGIN_ID, RESIDENT_DESCRIPTION, RESIDENT_PERMISSION, buildManifest, permissionsFor, resolveResidentOption } from './lib/manifest.mjs'
 import { ROOT, WORK } from './lib/paths.mjs'
 import { UI_TEXT_FILES, copyTextAsLf, toLf } from './build-ui.mjs'
 import { TOOL_RECORD, assertToolIntact, validateStage } from './lib/tuqTool.mjs'
@@ -61,17 +61,17 @@ test('manifest: composed full-trust, ai:chat, both native modules, delete-on-uni
   assert.deepEqual(manifest.native.files.map((f) => f.path), ['backend/native/win32-x64/koffi.node', 'backend/native/win32-x64/better_sqlite3.node'])
   assert.equal(manifest.native.files.some((f) => /\.wasm$/.test(f.path)), false, '.wasm is code, not a native file')
   assert.deepEqual(manifest.data, { uninstall: 'delete' })
-  assert.equal(manifest.minCoreVersion, '>=1.7.1', 'unsigned packages need a Core that accepts them (1.6.8 / 1.7.0 refuse with signature_missing)')
+  assert.equal(manifest.minCoreVersion, '>=1.7.13', 'the backend runs the AI itself through context.host.ai.complete (Core 1.7.13+); unsigned packages also need a Core that accepts them (1.6.8 / 1.7.0 refuse with signature_missing)')
   assert.deepEqual(manifest.platforms, [{ id: 'win32-x64' }])
   assert.deepEqual(manifest.contributes.views.map((v) => [v.id, v.presentations]), [['board', ['tab', 'fullpage']], ['settings', ['settings']]])
   assert.ok(manifest.description.length <= 512, `description is ${manifest.description.length} chars`)
-  for (const phrase of ['LINE.exe 的記憶體', 'TeamUQ 已登入的 AI', '模型與推理強度', '填入 LINE', 'CLI provider', '自訂 AI 端點', '看板開著']) assert.ok(DESCRIPTION.includes(phrase), phrase)
+  for (const phrase of ['LINE.exe 的記憶體', 'TeamUQ 已登入的 AI', '模型與推理強度', '填入 LINE', 'CLI provider', '自訂 AI 端點', '看板不需要開著', 'TeamUQ 的 AI 歷史']) assert.ok(DESCRIPTION.includes(phrase), phrase)
 })
 
 test('the current author tool validates the stage and refuses an older Core and a manifest that breaks the contract', async () => {
   const tool = assertToolIntact()
   assert.equal(tool.sha256, TOOL_RECORD.sha256)
-  assert.equal(TOOL_RECORD.builtFromCore, '1.7.12')
+  assert.equal(TOOL_RECORD.builtFromCore, '1.7.15')
   const { a } = await getBuilt()
   assert.equal(a.report.validate.exit, 0, a.report.validate.stderr)
   assert.equal(a.report.validate.stdout.ok, true)
@@ -83,6 +83,10 @@ test('the current author tool validates the stage and refuses an older Core and 
   const old = validateStage(a.stageDir, { coreVersion: '1.7.0', platform: 'win32-x64', osVersion: '26200' })
   assert.notEqual(old.exit, 0)
   assert.match(JSON.stringify(old.json ?? old.stderr), /core_version_incompatible/)
+  // 1.7.12 is the Core of the previous devkit: it has host.ai but no host.ai.complete, so the package must not install there
+  const noComplete = validateStage(a.stageDir, { coreVersion: '1.7.12', platform: 'win32-x64', osVersion: '26200' })
+  assert.notEqual(noComplete.exit, 0)
+  assert.match(JSON.stringify(noComplete.json ?? noComplete.stderr), /core_version_incompatible/)
   const broken = join(a.stageDir, '..', 'stage-broken')
   rmQuiet(broken)
   mkdirSync(broken, { recursive: true })
@@ -138,14 +142,14 @@ test('the package bytes depend on the commit, not on the checkout: authored text
   } finally { rmQuiet(dir) }
 })
 
-test('the tool\'s review (verify, same reviewArtifact as Core) for TeamUQ 1.7.1: unsigned, all integrity / manifest / native / icon checks pass; tampering, Core 1.7.0 and another platform are refused', async () => {
+test('the tool\'s review (verify, same reviewArtifact as Core) for TeamUQ 1.7.15: unsigned, all integrity / manifest / native / icon checks pass; tampering, Core 1.7.0, Core 1.7.12 and another platform are refused', async () => {
   const { file } = await getBuilt()
   const verdict = await verifyArtifact({ file })
   assert.deepEqual(verdict.problems, [])
   assert.equal(verdict.ok, true)
   assert.equal(verdict.steps.verify.exit, 0)
   assert.deepEqual(verdict.steps.verify.stdout.signer, { kind: 'unsigned' })
-  for (const label of ['tamperedByte', 'core170', 'linuxPlatform']) assert.equal(verdict.steps.negative[label].refused, true, label)
+  for (const label of ['tamperedByte', 'core170', 'core1712', 'linuxPlatform']) assert.equal(verdict.steps.negative[label].refused, true, label)
   // native: exactly the two listed modules, kind native + platform; the .wasm files are code
   const kinds = Object.fromEntries(verdict.steps.integrity.map((e) => [e.path, [e.kind, e.platform]]))
   assert.deepEqual(kinds['backend/native/win32-x64/koffi.node'], ['native', 'win32-x64'])
@@ -277,4 +281,72 @@ test('the shipped bytes under the backend contract: unpack the package (no node_
   } finally {
     rmQuiet(root)
   }
+})
+
+// ───────────── background execution (background:resident): the build option that is OFF by default ─────────────
+
+const keysDeep = (value, out = new Set()) => {
+  if (value !== null && typeof value === 'object') for (const [key, inner] of Object.entries(value)) { out.add(key); keysDeep(inner, out) }
+  return out
+}
+
+test('resident build option: off by default (permissions, minCoreVersion and description are exactly the 0.2.0 ones); on only with an explicit minCoreVersion; a bad or missing range is an error, never a guess', () => {
+  assert.deepEqual(resolveResidentOption({ args: {}, env: {} }), { enabled: false })
+  assert.deepEqual(resolveResidentOption({}), { enabled: false })
+  assert.deepEqual(resolveResidentOption({ args: { 'resident-min-core': '>=1.8.0' }, env: { LINE_TODO_RESIDENT_MIN_CORE: '>=1.8.0' } }), { enabled: false }, 'a range alone does not switch it on')
+  assert.deepEqual(permissionsFor({ enabled: false }), [...PERMISSIONS])
+  assert.deepEqual(permissionsFor(undefined), [...PERMISSIONS])
+  const off = buildManifest({ version: VERSION })
+  assert.deepEqual(buildManifest({ version: VERSION, resident: { enabled: false } }), off, 'an explicit "off" is the default')
+  assert.equal(off.minCoreVersion, MIN_CORE_VERSION)
+  assert.equal(off.minCoreVersion, '>=1.7.13')
+  assert.deepEqual(off.permissions, ['ui:view', 'backend:invoke', 'native:addons', 'ai:chat', 'assets:plugin-data'])
+  assert.equal(off.description, DESCRIPTION)
+  assert.equal(keysDeep(off).has('residency'), false)
+  assert.equal(off.permissions.includes(RESIDENT_PERMISSION), false)
+
+  for (const bad of [undefined, '', '1.8.0 ', '>= 1.8.0', '~1.8.0', '>=1.8', 'latest', '>=01.8.0']) {
+    assert.throws(() => resolveResidentOption({ args: { resident: true, 'resident-min-core': bad }, env: {} }), /resident-min-core/, JSON.stringify(bad))
+  }
+  assert.throws(() => resolveResidentOption({ args: {}, env: { LINE_TODO_RESIDENT: '1' } }), /resident-min-core/, 'the environment switch needs the environment range too')
+  assert.deepEqual(resolveResidentOption({ args: {}, env: { LINE_TODO_RESIDENT: '1', LINE_TODO_RESIDENT_MIN_CORE: '>=1.8.0' } }), { enabled: true, minCoreVersion: '>=1.8.0' })
+  assert.deepEqual(resolveResidentOption({ args: { resident: true, 'resident-min-core': '^1.8.0' }, env: {} }), { enabled: true, minCoreVersion: '^1.8.0' })
+
+  const resident = resolveResidentOption({ args: { resident: true, 'resident-min-core': '>=1.8.0' }, env: {} })
+  const on = buildManifest({ version: VERSION, resident })
+  assert.deepEqual(on.permissions, [...PERMISSIONS, 'background:resident'], 'one permission more, nothing else')
+  assert.equal(on.minCoreVersion, '>=1.8.0', 'the value that was given')
+  assert.equal(on.description, RESIDENT_DESCRIPTION)
+  assert.notEqual(on.description, DESCRIPTION)
+  assert.ok(on.description.length <= 512, `description is ${on.description.length} chars`)
+  assert.ok(on.description.includes('關閉畫面後繼續在背景執行') && on.description.includes('預設是關閉'), 'it says what the switch is called and that it starts off')
+  assert.ok(!on.description.includes('停止背景程式，之後開啟看板會補整理；每分鐘'), 'the "stops when idle" parenthesis of the default text is replaced')
+  // Core rejects residency / reason in a manifest (design D:108, manifestV2.ts:230); background:resident needs full-trust and no provides (manifestV2.ts:249-252)
+  assert.equal(keysDeep(on).has('residency'), false)
+  assert.equal(keysDeep(on).has('reason'), false)
+  assert.equal(on.trustTier, 'full-trust')
+  assert.equal(on.provides, undefined)
+  // the only differences from the default manifest
+  const differing = Object.keys({ ...off, ...on }).filter((key) => JSON.stringify(off[key]) !== JSON.stringify(on[key])).sort()
+  assert.deepEqual(differing, ['description', 'minCoreVersion', 'permissions'])
+})
+
+test('resident build option: the author tool of this repo (Core 1.7.15) refuses the resident manifest ONLY because it does not know the permission yet (permission_unknown); once the tool knows it the stage validates', async () => {
+  const { a } = await getBuilt()
+  const stage = join(a.stageDir, '..', 'stage-resident-probe')
+  rmQuiet(stage)
+  mkdirSync(stage, { recursive: true })
+  for (const rel of ['ui/index.html', 'ui/settings.html', 'ui/icon.png', 'backend/index.mjs', ...NATIVE_FILES.map((f) => f.path)]) {
+    mkdirSync(join(stage, ...rel.split('/').slice(0, -1)), { recursive: true })
+    copyFileSync(join(a.stageDir, ...rel.split('/')), join(stage, ...rel.split('/')))
+  }
+  // minCoreVersion = the tool's own Core, so that an unreleased Core number is not a second reason to refuse
+  const resident = buildManifest({ version: VERSION, resident: { enabled: true, minCoreVersion: `>=${TOOL_RECORD.builtFromCore}` } })
+  writeFileSync(join(stage, 'manifest.json'), JSON.stringify(resident))
+  const run = validateStage(stage)
+  rmQuiet(stage)
+  if (run.exit === 0) return // the vendored tool was replaced by one that knows background:resident: nothing left to refuse
+  const errors = (run.json?.violations ?? []).filter((v) => v.severity === 'error')
+  assert.equal(run.exit, 1, run.stderr)
+  assert.deepEqual(errors.map((v) => [v.where, v.message]), [['support permission_unknown permissions', 'background:resident']], `the one reason: ${JSON.stringify(run.json ?? run.stderr).slice(0, 600)}`)
 })

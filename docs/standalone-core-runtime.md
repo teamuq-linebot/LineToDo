@@ -1,5 +1,7 @@
 # Standalone core and host
 
+> **2026-10-24 起凍結，已由外掛取代，不再建置發佈。** 獨立 Electron 版（`src/main` 及本文描述的 standalone host）程式碼保留供參考，不再維護、不再建置發佈；外掛版（`src/plugin/**`）為唯一發佈路線。
+
 `src/shared/api.ts` is the renderer/core API contract. It contains no Electron imports. The preload exposes the same contract through `window.api`; renderer business components receive it through `LineTodoApiProvider` (`src/renderer/platform/LineTodoApi.tsx`). Only renderer bootstrap reads `window.api`.
 
 `src/core/application.ts` composes one application instance from explicit ports. It owns a database connection and repository set for its `dataDir`, plus the API and service subscriptions. `src/core/runtime.ts` owns process lifecycle and the cross-process owner lock. It does not import Electron and can be assembled in Node with adapters supplied by the host.

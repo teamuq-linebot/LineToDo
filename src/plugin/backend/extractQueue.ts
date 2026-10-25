@@ -1,13 +1,14 @@
 /**
  * extractQueue.ts — 外掛版 AI 抽取的「供料／收料」（設計 v2 §4.3）。
  *
- * 1.6.8 的 `ai:chat` 只在 view 端可用、backend 沒有 AI，所以抽取的「大腦」在 UI（Phase 4 的 aiOrchestrator）。
- * backend 只做兩件事，而且**完全不打 LLM、不 spawn 任何東西**：
+ * 0.2.0 起抽取的「大腦」在 backend：`extractWorker.ts` 領走項目、經 AI port（`host.ai.complete`）取得模型輸出再交回本佇列
+ * （0.1.x 這個角色是看板 view 裡的 aiOrchestrator，經 `extract.pull`／`extract.commit` 的 RPC 來回；那條通道已移除）。
+ * 本佇列自己**完全不打 LLM、不 spawn 任何東西**，只做兩件事：
  *
  *   供料（outbox）：runOnce 的步驟 1-4（落庫、黑名單、噪音過濾、取未處理訊息按 chat 分組）照跑，
  *     但在呼叫 extractFn 之前停下，把每個 chat 的 `ChatExtractInput` 交給本佇列（`offer`）。
- *     本佇列依 `ai:chat` 的單輪輸入上限把 payload 切成 ≤ maxUserChars 的「片段」，UI 以 `pull` 領走（附租約）。
- *   收料（inbox）：UI 把 `ai:chat` 回來、已 parse 的 JSON 以 `commit` 送回；backend **重新用 zod 驗證**
+ *     本佇列依 `ai:chat` 的單輪輸入上限把 payload 切成 ≤ maxUserChars 的「片段」，worker 以 `pull` 領走（附租約）。
+ *   收料（inbox）：worker 把 AI 回來、已 parse 的 JSON 以 `commit` 送回；本佇列**重新用 zod 驗證**
  *     （格式錯誤 → 拒絕、該 chat 退避重排，訊息維持未處理），通過後走與 standalone 同一份落庫邏輯
  *     `applyChatExtract()`（近似去重、完成偵測、重新分類、標 processed）。
  *
@@ -33,6 +34,8 @@ export const DEFAULT_MAX_USER_CHARS = 7500
 /** recentContext 最多佔單輪預算的比例（其餘留給新訊息與 openTodos）。 */
 export const CONTEXT_BUDGET_RATIO = 0.2
 const DEFAULT_LEASE_MS = 120_000
+/** 單次領取租約的上限（ExtractWorker 的租約要涵蓋一個項目在 AI port 裡最壞的處理時間，約 14 分鐘）。 */
+const MAX_LEASE_MS = 20 * 60_000
 const DEFAULT_RETRY_BASE_MS = 30_000
 const DEFAULT_RETRY_MAX_MS = 30 * 60_000
 /**
@@ -184,6 +187,11 @@ export interface ExtractQueueOptions {
   retryMaxMs?: number
   /** 同步呼叫端的停滯上限（見 DEFAULT_AWAIT_TIMEOUT_MS）。 */
   awaitTimeoutMs?: number
+  /**
+   * 有人在領取嗎（外掛接到 ExtractWorker 是否在跑）。給了就以它為準：沒人領時 `request()` 立刻以 `extract_ui_offline` 失敗，
+   * 不必等「很久沒有人碰佇列」。省略＝照舊用最近一次 pull／commit／release／touch 的時間判斷。
+   */
+  consumerOnline?(): boolean
   /** 測試用：取代 setTimeout（回傳取消函式）。預設用 unref 的 setTimeout。 */
   schedule?(fn: () => void, ms: number): () => void
   pullBudgetBytes?: number
@@ -309,7 +317,7 @@ export class ExtractQueue implements ExtractSink {
   private gen = 0
   private disposed = false
   private lastPendingKey = ''
-  /** UI 最近一次碰這個佇列（pull／commit／release）的時間；從沒碰過＝佇列建立時間。看板在前景時 UI 至少每 15 秒會 pull 一次。 */
+  /** 領取端最近一次碰這個佇列（pull／commit／release／touch）的時間；從沒碰過＝佇列建立時間。ExtractWorker 每輪迴圈都會 touch。 */
   private uiSeenAt: number
   /** UI 最近一次交回結果（commit，不論成功失敗）的時間——「有在做事」的證據。只有領了又還回去（Codex 沒登入、被限流）不算。 */
   private commitAt: number
@@ -373,7 +381,8 @@ export class ExtractQueue implements ExtractSink {
    */
   request(input: ChatExtractInput): Promise<ExtractResult> {
     if (this.disposed) return Promise.reject(new Error('extract queue disposed'))
-    if (this.stallNow() - this.uiSeenAt >= this.awaitTimeoutMs) return Promise.reject(new Error('extract_ui_offline'))
+    const offline = this.opts.consumerOnline ? !this.opts.consumerOnline() : this.stallNow() - this.uiSeenAt >= this.awaitTimeoutMs
+    if (offline) return Promise.reject(new Error('extract_ui_offline'))
     const chatId = input.chat.chatId
     const parts = partitionExtractInput(input, { maxChars: this.maxChars, contextLimit: this.opts.getConfig().recentContextLimit })
     if (parts.length === 0) return Promise.resolve({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
@@ -393,6 +402,26 @@ export class ExtractQueue implements ExtractSink {
     })
   }
 
+  /** 有沒有待領取的項目（含退避中的；先收回租約過期的）。領取端用它決定要不要去準備 AI（空佇列不必問 host）。 */
+  hasPending(): boolean {
+    this.reap()
+    return this.countState('pending') > 0
+  }
+
+  /** 現在就能領的項目數（待領取、而且不在聊天室退避中）。狀態列用它判斷「是不是真的在等配額」。 */
+  runnable(): number {
+    this.reap()
+    const now = this.now()
+    let n = 0
+    for (const e of this.entries.values()) if (e.state === 'pending' && e.notBefore <= now) n += 1
+    return n
+  }
+
+  /** 領取端還活著（ExtractWorker 每輪迴圈呼叫；不改變任何項目）。 */
+  touch(): void {
+    this.uiSeenAt = this.stallNow()
+  }
+
   // ── outbox：pull ──
 
   pull(params: { max?: number; leaseMs?: number } = {}): PullResult {
@@ -400,7 +429,7 @@ export class ExtractQueue implements ExtractSink {
     const now = this.now()
     this.uiSeenAt = this.stallNow()
     const maxItems = Math.min(Math.max(1, Math.floor(params.max ?? this.opts.maxItemsPerPull ?? DEFAULT_MAX_ITEMS_PER_PULL)), 16)
-    const leaseMs = Math.min(Math.max(1000, params.leaseMs ?? this.opts.leaseMs ?? DEFAULT_LEASE_MS), 10 * 60_000)
+    const leaseMs = Math.min(Math.max(1000, params.leaseMs ?? this.opts.leaseMs ?? DEFAULT_LEASE_MS), MAX_LEASE_MS)
     const budget = this.opts.pullBudgetBytes ?? DEFAULT_PULL_BUDGET_BYTES
     const busyChats = new Set<string>()
     for (const e of this.entries.values()) if (e.state === 'leased') busyChats.add(e.chatId)

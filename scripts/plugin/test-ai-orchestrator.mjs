@@ -1,21 +1,32 @@
-// Phase 4 — the UI-side AI orchestrator (src/plugin/ui/aiOrchestrator.ts) against a mock `window.tuqPlugin.ai` that reproduces TeamUQ 1.6.8's ai:chat
-// (scripts/lib/mock-tuq-ai.mjs: strict request schema, session_limit, turn_in_progress, 20/min + 400/h sliding window, quota cooldown, view_not_visible,
-// access revocation, event stream). Time is a manual clock shared by the orchestrator and the mock host, so minute-long behaviour runs in milliseconds.
+// 0.2.0 — the backend AI port (src/plugin/backend/hostAi.ts) and the background ExtractWorker (src/plugin/backend/extractWorker.ts) against a mock
+// `context.host.ai` that reproduces TeamUQ Core 1.7.15 (scripts/lib/mock-tuq-ai.mjs: strict request schema, session_limit, 20/min + 400/h sliding window, quota cooldown,
+// access revocation, `complete` = one Session opened and closed per call, events dropped when nobody listens). There is no view, no visibility and no window.tuqPlugin
+// anywhere in this file. Time is a manual clock shared by the port, the worker and the mock host, so minute-long behaviour runs in milliseconds.
 //
-//   (a) quota      — never more than 20 sends in any 60 s window, no host rate_limited; 2 turns reserved for user actions; 400/h
-//   (b) visibility — hidden view: nothing is pulled, nothing is opened; visible again: work resumes; host `view_not_visible` releases the lease (not a failure)
-//   (c) retries    — turn_in_progress retried; rate_limited / quota_exhausted / provider_unavailable back off and re-queue; access_revoked stops
-//   (d) JSON       — ```json fenced replies parse and pass zod; bad JSON gets one repair turn, then the chat fails; zod-invalid replies fail
-//   limits         — system <= 16,000, one turn's input <= 8,000 (checked before a session is opened)
+//   (a) extraction runs in the backend through host.ai.complete, without a view            (worker drains the queue; "no view" is also proven end to end in test-ai-e2e)
+//   (b) quota: never more than 20 turns in any 60 s window, 2 turns reserved for user actions, 400/h; a quota error backs off and keeps every pending item
+//   (c) retries: busy / session_limit retried; rate_limited / quota_exhausted / provider errors back off and re-queue (lease released, no failure); access_revoked is probed
+//   (d) JSON: ```json fenced replies parse and pass zod; bad JSON gets one repair turn (transcript replay), then the item fails; zod-invalid replies fail
+//   (e) contentSaved (new in 1.7.15): the events of a turn can carry it; nothing in line-todo subscribes to turn events, and a turn with those events completes normally
+//   limits: system <= 16,000, one turn's input <= 8,000 (checked before the host is called)
 import assert from 'node:assert/strict'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
-import { EXTRACT_SYSTEM_PROMPT } from '../../src/main/llm/extractPrompt.ts'
+import { AiPortError } from '../../src/core/aiPort.ts'
 import {
-  AI_CHAT_REFERENCE, ORCHESTRATOR_DEFAULTS, TurnWindow, createAiOrchestrator, createVisibilitySource, describeStatus, parseModelJson
-} from '../../src/plugin/ui/aiOrchestrator.ts'
+  ACCESS_CODES, AI_CHAT_REFERENCE, BUSY_CODES, HOST_AI_DEFAULTS, PROVIDER_CODES, TurnWindow, codeOf, createHostAiPort, isTransientAiCode, worstCaseItemMs
+} from '../../src/plugin/backend/hostAi.ts'
+import { EXTRACT_WORKER_DEFAULTS, createExtractWorker } from '../../src/plugin/backend/extractWorker.ts'
+import { describeStatus as describeBoardStatus } from '../../src/plugin/ui/aiStatusText.ts'
+import { describeStatus } from '../../src/shared/aiStatus.ts'
+import { validateExtractResult } from '../../src/shared/extractResult.ts'
 import { CONTRACT, createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
 import { CORE_AI_CHAT_TITLE, CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, EXPECTED_AI_CHAT_REVOKED_TEXT, EXPECTED_AI_FENCED_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE, namesVersionSpecificPlace } from './lib/fenced-text.mjs'
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 // ───────────── manual clock (ai-lover test/helpers.mjs FakeClock, same idea) ─────────────
 
@@ -44,738 +55,661 @@ class FakeClock {
   }
 }
 
-// ───────────── fake backend channels (same protocol as ExtractQueue / AiTaskQueue: leases, commit statuses, release) ─────────────
-
-function makeChannels(clock, { items = [], tasks = [], system = 'SYSTEM_PROMPT_TEXT', format = 'OUTPUT_FORMAT_TEXT' } = {}) {
-  const store = { items: [], tasks: [], leases: new Map(), commits: [], releases: [], taskCommits: [], taskReleases: [], pulls: 0, taskPulls: 0, systemCalls: 0, listeners: new Set(), counter: 0, failAfter: new Map() }
-  const addItem = (item) => store.items.push({ chatId: 'c1', user: JSON.stringify({ chat: { chatId: item.chatId ?? 'c1' }, newMessages: [{ msgId: 'm1', text: '請幫我寄報價單' }] }), attempts: 0, notBefore: 0, state: 'pending', ...item })
-  const addTask = (task) => store.tasks.push({ kind: 'draftReply', system: 'TASK_SYSTEM', user: '{"x":1}', expectJson: false, state: 'pending', ...task })
-  items.forEach(addItem)
-  tasks.forEach(addTask)
-  const extract = {
-    system: async () => { store.systemCalls += 1; return { system, sha256: 'sha-1', chars: system.length, maxUserChars: 7500, format } },
-    pull: async ({ max = 1 } = {}) => {
-      store.pulls += 1
-      const out = []
-      for (const item of store.items) {
-        if (item.state !== 'pending' || item.notBefore > clock.now() || out.length >= max) continue
-        item.state = 'leased'
-        item.leaseId = `lease-${++store.counter}`
-        store.leases.set(item.leaseId, item)
-        out.push({ itemId: item.leaseId, chatId: item.chatId, user: item.user, userChars: item.user.length, attempts: item.attempts })
-      }
-      return { items: out, systemSha256: 'sha-1', retryAfterMs: null }
-    },
-    commit: async (results) => ({
-      results: results.map((r) => {
-        const item = store.leases.get(r.itemId)
-        store.commits.push(r)
-        if (!item) return { itemId: r.itemId, status: 'unknown_item' }
-        store.leases.delete(r.itemId)
-        if (r.ok) { item.state = 'done'; return { itemId: r.itemId, status: 'applied' } }
-        item.state = 'pending'; item.attempts += 1; item.notBefore = clock.now() + 30_000 * 2 ** (item.attempts - 1)
-        return { itemId: r.itemId, status: 'failed_recorded', code: r.failCode }
-      })
-    }),
-    release: async (ids) => {
-      store.releases.push(...ids)
-      for (const id of ids) { const item = store.leases.get(id); if (item) { store.leases.delete(id); item.state = 'pending' } }
-      return { released: ids.length, unknown: [] }
-    },
-    onPending: (cb) => { store.listeners.add(cb); return () => store.listeners.delete(cb) }
-  }
-  const taskChannel = {
-    pull: async ({ max = 1 } = {}) => {
-      store.taskPulls += 1
-      const out = []
-      for (const task of store.tasks) {
-        if (task.state !== 'pending' || out.length >= max) continue
-        task.state = 'leased'
-        task.leaseId = `task-lease-${++store.counter}`
-        store.leases.set(task.leaseId, task)
-        out.push({ taskId: task.leaseId, kind: task.kind, system: task.system, user: task.user, expectJson: task.expectJson })
-      }
-      return { tasks: out }
-    },
-    commit: async (results) => ({
-      results: results.map((r) => {
-        const task = store.leases.get(r.taskId)
-        store.taskCommits.push(r)
-        if (!task) return { taskId: r.taskId, status: 'unknown_task' }
-        store.leases.delete(r.taskId)
-        task.state = 'done'
-        return { taskId: r.taskId, status: r.ok ? 'accepted' : 'failed_recorded' }
-      })
-    }),
-    release: async (ids) => { store.taskReleases.push(...ids); return { released: ids.length } }
-  }
-  return {
-    store, extract, tasks: taskChannel, addItem, addTask,
-    /** the backend's `extract-pending` event */
-    announce: () => { for (const cb of [...store.listeners]) cb({ pending: store.items.filter((i) => i.state === 'pending').length }) },
-    itemStates: () => store.items.map((i) => i.state)
-  }
-}
-
-function makeVisibility(initial = true) {
-  const listeners = new Set()
-  const v = {
-    visible: initial,
-    isVisible: () => v.visible,
-    subscribe: (cb) => { listeners.add(cb); return () => listeners.delete(cb) },
-    set(next) { v.visible = next; for (const cb of [...listeners]) cb(next) }
-  }
-  return v
-}
-
 const GOOD = {
   importance: 'action',
   newTodos: [{ bucket: 'todo', title: '回覆報價單', detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: ['m1'] }],
   resolved: [], updates: []
 }
 const goodText = JSON.stringify(GOOD)
+const validate = (value) => { try { return { ok: true, value: validateExtractResult(value) } } catch (error) { return { ok: false, reason: String(error.message).slice(0, 80) } } }
+const background = (extra = {}) => ({ system: 'SYSTEM', user: '{"newMessages":[{"msgId":"m1","text":"請幫我寄報價單"}]}', expectJson: true, validate, priority: 'background', ...extra })
+const userAction = (extra = {}) => ({ system: 'DRAFT SYSTEM', user: '{"todo":1}', expectJson: false, priority: 'user', ...extra })
+const rejection = async (promise) => { try { await promise } catch (error) { return error } return assert.fail('expected a rejection') }
 
-function setup({ items = 1, tasks = [], reply = () => goodText, config = {}, visible = true, channels = {} } = {}) {
+function portSetup({ reply = () => goodText, config = {}, selection = undefined } = {}) {
   const clock = new FakeClock()
   const mock = createMockTuqAi({ now: clock.now, reply })
-  const chans = makeChannels(clock, { items: Array.from({ length: items }, (_, i) => ({ chatId: `c${i + 1}` })), tasks, ...channels })
-  const visibility = makeVisibility(visible)
+  const state = { selection }
   const logs = []
-  const orch = createAiOrchestrator({ ai: mock.ai, extract: chans.extract, tasks: chans.tasks, visibility, clock, config, log: (event, detail) => logs.push([event, detail]) })
-  return { clock, mock, chans, visibility, orch, logs, settle: () => flush(), at: () => clock.now() - 1_000_000 }
+  const port = createHostAiPort({ ai: mock.ai, selection: () => state.selection, clock, config, log: (event, detail) => logs.push([event, detail]) })
+  return { clock, mock, port, state, logs, settle: () => flush() }
 }
 
+/** Sends in the window [t, t + 60 s] for every t that starts a window: the largest count. */
+function maxPerMinute(times, window = 60_000) {
+  let best = 0
+  for (const start of times) best = Math.max(best, times.filter((t) => t >= start && t <= start + window).length)
+  return best
+}
+
+// ───────────── the contract the port and the mock follow ─────────────
+
+test('contract: the mock host and the port constants match the Core 1.7.15 ai:chat contract fixture (aiChatContracts.ts @ bf4801ecc, tag v1.7.15)', () => {
+  const L = CONTRACT.limits
+  assert.equal(CONTRACT.source.commit, 'bf4801ecc')
+  for (const key of ['systemChars', 'inputChars', 'transcriptLines', 'transcriptLineChars', 'transcriptChars', 'turnsPerMinute', 'turnsPerHour', 'replyChars', 'turnTimeoutMs']) {
+    assert.equal(AI_CHAT_REFERENCE[key], L[key], `AI_CHAT_REFERENCE.${key} vs contract`)
+  }
+  assert.equal(HOST_AI_DEFAULTS.perMinute, L.turnsPerMinute)
+  assert.equal(HOST_AI_DEFAULTS.perHour, L.turnsPerHour)
+  assert.ok(HOST_AI_DEFAULTS.perMinute - HOST_AI_DEFAULTS.extractReserve >= 1, 'background extraction can always make progress')
+  assert.ok(HOST_AI_DEFAULTS.completeGuardMs > L.turnTimeoutMs, 'our own guard is longer than the host turn timeout (the host answers first)')
+  assert.equal(L.sessionsPerPlugin, 1, 'one Session per plugin: every call is serialised')
+  // every error code the port classifies is a code the host can produce (error envelope or turn failure)
+  const known = new Set([...CONTRACT.errorCodes, ...CONTRACT.failureCodes])
+  for (const code of [...ACCESS_CODES, ...PROVIDER_CODES, ...BUSY_CODES, 'rate_limited', 'quota_exhausted', 'interrupted', 'empty_reply', 'turn_timeout', 'provider_error']) assert.ok(known.has(code), `${code} is a host code`)
+  // 1.7.15 additions the port relies on
+  assert.ok(CONTRACT.eventKinds.includes('contentSaved'), 'contentSaved is a turn event kind in 1.7.15')
+  assert.ok(CONTRACT.errorCodes.includes('one_shot_failed') && CONTRACT.errorCodes.includes('execution_unavailable'))
+  const sdk = readFileSync(join(ROOT, 'src', 'plugin', 'sdk', 'tuq-plugin-sdk.d.ts'), 'utf8')
+  assert.match(sdk, /complete\(input: PluginBackendAiCompleteInputV1\): Promise<PluginBackendAiCompleteResultV1>/, 'the vendored SDK declares context.host.ai.complete')
+  assert.match(sdk, /kind: 'contentSaved';\s*sequenceNo: number;/, 'the vendored SDK declares the contentSaved turn event')
+  // transient vs the item's own fault
+  for (const code of ['rate_limited', 'quota_exhausted', 'provider_not_ready', 'model_unavailable', 'unavailable', 'busy', 'session_limit', 'not_granted', 'access_revoked', 'interrupted', 'backend_stopped']) assert.equal(isTransientAiCode(code), true, code)
+  for (const code of ['empty_reply', 'invalid_json', 'invalid_result', 'provider_error', 'turn_timeout', 'input_too_large', 'reply_too_long', 'one_shot_failed']) assert.equal(isTransientAiCode(code), false, code)
+})
+
+test('mock host: refuses what Core 1.7.15 refuses (strict complete schema, input/system limits, session_limit, grant) with the real error codes — and never view_not_visible', async () => {
+  const { mock } = portSetup()
+  const code = async (promise) => (await rejection(promise)).code
+  const base = { system: 'S', text: 'hello' }
+  assert.equal(await code(mock.ai.complete({ ...base, bogus: 1 })), 'plugin_host_request_invalid')
+  assert.equal(await code(mock.ai.complete({ text: 'x' })), 'plugin_host_request_invalid', 'a fresh completion needs system')
+  assert.equal(await code(mock.ai.complete({ ...base, text: 'x'.repeat(CONTRACT.limits.inputChars + 1) })), 'plugin_host_request_invalid')
+  assert.equal(await code(mock.ai.complete({ ...base, system: 'x'.repeat(CONTRACT.limits.systemChars + 1) })), 'plugin_host_request_invalid')
+  assert.equal(await code(mock.ai.complete({ ...base, effort: 'extreme' })), 'plugin_host_request_invalid')
+  assert.equal(await code(mock.ai.complete({ ...base, sessionId: '1' })), 'plugin_host_request_invalid', 'an existing Session owns its provider context: no system')
+  assert.equal(await code(mock.ai.complete({ ...base, modelId: 'nope' })), 'model_unavailable')
+  assert.equal(await code(mock.ai.complete({ ...base, providerId: 'other' })), 'provider_not_found')
+  const held = await mock.ai.openSession({ system: 'S' })
+  assert.equal(await code(mock.ai.complete(base)), 'session_limit', 'one Session per plugin: an open Session blocks complete')
+  await held.close()
+  assert.equal((await mock.ai.complete(base)).text.length > 0, true)
+  mock.control.set({ providerState: 'not_logged_in' })
+  assert.equal(await code(mock.ai.complete(base)), 'provider_not_ready')
+  mock.control.set({ providerState: 'ready' })
+  mock.control.revoke()
+  assert.equal(await code(mock.ai.complete(base)), 'not_granted')
+  assert.equal(await code(mock.ai.getOptions()), 'not_granted')
+  assert.equal(mock.stats.errors.view_not_visible, 0, 'backend calls are always visible')
+  assert.equal(mock.control.liveSessions(), 0)
+})
+
+// ───────────── (a)/(c) provider selection ─────────────
+
 test('explicit unavailable provider, model or effort never silently uses another model', async () => {
-  for (const [config, reason] of [
-    [{ providerId: 'removed-provider' }, 'provider_not_found'],
-    [{ providerId: 'codex', modelId: 'removed-model' }, 'model_unavailable'],
+  for (const [selection, reason] of [
+    [{ providerId: 'removed-provider', modelId: null, effort: null }, 'provider_not_found'],
+    [{ providerId: 'codex', modelId: 'removed-model', effort: null }, 'model_unavailable'],
     [{ providerId: 'codex', modelId: 'gpt-5-codex', effort: 'xhigh' }, 'effort_unavailable']
   ]) {
-    const ctx = setup({ config })
-    try {
-      ctx.orch.start()
-      await ctx.settle()
-      assert.equal(ctx.orch.status().reason, reason)
-      assert.equal(ctx.orch.connected(), false)
-      assert.equal(ctx.mock.stats.openSession, 0)
-      assert.equal(ctx.chans.store.pulls, 0)
-      ctx.orch.configure({ providerId: null, modelId: null, effort: null })
-      await ctx.settle()
-      assert.equal(ctx.orch.connected(), true)
-      assert.equal(ctx.chans.store.commits[0].ok, true)
-    } finally { await ctx.orch.stop() }
+    const ctx = portSetup({ selection })
+    const error = await rejection(ctx.port.complete(userAction()))
+    assert.ok(error instanceof AiPortError, reason)
+    assert.equal(error.code, reason === 'provider_not_found' ? 'provider_unavailable' : 'model_unavailable', reason)
+    assert.equal(ctx.mock.stats.completes, 0, `${reason}: the host was never asked to complete with a different model`)
+    assert.equal(ctx.port.status().state, 'unavailable')
+    assert.equal(ctx.port.status().reason, reason)
+    assert.equal(await ctx.port.ready(), false)
   }
+  // a saved selection reaches the host call; changing it takes effect on the next call without a restart
+  const ctx = portSetup({ selection: { providerId: 'codex', modelId: 'gpt-5-codex', effort: 'high' } })
+  await ctx.port.complete(userAction())
+  assert.deepEqual([ctx.mock.stats.turns[0].modelId, ctx.mock.stats.turns[0].effort], ['gpt-5-codex', 'high'])
+  ctx.state.selection = { providerId: 'codex', modelId: 'gpt-5-codex', effort: 'low' }
+  await ctx.port.complete(userAction())
+  assert.equal(ctx.mock.stats.turns[1].effort, 'low')
+  ctx.state.selection = { providerId: 'codex', modelId: 'removed-model', effort: null }
+  assert.equal((await rejection(ctx.port.complete(userAction()))).code, 'model_unavailable')
+  assert.equal(ctx.mock.stats.completes, 2)
 })
 
-// ───────────── contract drift guard ─────────────
+// ───────────── (b) quota ─────────────
 
-test('contract: the mock host and the orchestrator constants match the 1.6.8 ai:chat contract fixture (aiChatContracts.ts @ b8b96cb3)', () => {
-  assert.equal(CONTRACT.source.commit, 'b8b96cb3')
-  const L = CONTRACT.limits
-  assert.deepEqual(
-    { systemChars: AI_CHAT_REFERENCE.systemChars, inputChars: AI_CHAT_REFERENCE.inputChars, turnsPerMinute: AI_CHAT_REFERENCE.turnsPerMinute, turnsPerHour: AI_CHAT_REFERENCE.turnsPerHour, replyChars: AI_CHAT_REFERENCE.replyChars, turnTimeoutMs: AI_CHAT_REFERENCE.turnTimeoutMs },
-    { systemChars: L.systemChars, inputChars: L.inputChars, turnsPerMinute: L.turnsPerMinute, turnsPerHour: L.turnsPerHour, replyChars: L.replyChars, turnTimeoutMs: L.turnTimeoutMs },
-    'orchestrator reference limits = contract limits'
-  )
-  assert.equal(ORCHESTRATOR_DEFAULTS.perMinute, L.turnsPerMinute)
-  assert.equal(ORCHESTRATOR_DEFAULTS.perHour, L.turnsPerHour)
-  assert.ok(ORCHESTRATOR_DEFAULTS.turnTimeoutMs < L.turnTimeoutMs, 'we give up before Core does, so we can interrupt the turn ourselves')
-  assert.equal(L.sessionsPerPlugin, 1, 'one session per plugin: the orchestrator serialises all AI work')
-  assert.ok(ORCHESTRATOR_DEFAULTS.extractReserve < L.turnsPerMinute)
-  // every error code the mock can throw is a real 1.6.8 code; failure events use the real failure codes
-  assert.deepEqual(CONTRACT.errorCodes.length, 16)
-  assert.ok(CONTRACT.errorCodes.includes('view_not_visible') && CONTRACT.errorCodes.includes('turn_in_progress') && CONTRACT.errorCodes.includes('rate_limited'))
-  assert.ok(CONTRACT.failureCodes.includes('access_revoked') && CONTRACT.failureCodes.includes('empty_reply') && CONTRACT.failureCodes.includes('reply_too_long'))
-  assert.deepEqual([...CONTRACT.eventKinds].sort(), ['completed', 'failed', 'interrupted', 'started', 'textDelta'])
-  // the extraction system prompt fits (design v2 §7 Phase 4: 4,759 chars <= 16,000)
-  assert.ok(EXTRACT_SYSTEM_PROMPT.length <= L.systemChars, `system prompt ${EXTRACT_SYSTEM_PROMPT.length} chars`)
-})
-
-test('mock host: refuses what 1.6.8 refuses (strict request schema, input/system limits, session_limit, view_not_visible, grant) with the real error codes', async () => {
-  const { ai, control, stats } = createMockTuqAi({ reply: () => '{}' })
-  const session = await ai.openSession({ system: 'S' })
-  await assert.rejects(ai.openSession({ system: 'S' }), /^Error: session_limit$/)
-  await assert.rejects(session.send({ text: 'x'.repeat(8001) }), /^Error: request_invalid$/, 'inputChars 8000 is part of the strict schema')
-  await assert.rejects(session.send({ text: '   ' }), /^Error: request_invalid$/)
-  await assert.rejects(session.send({ text: 'x', extra: 1 }), /^Error: request_invalid$/)
-  await session.close()
-  await assert.rejects(ai.openSession({ system: 'x'.repeat(16_001) }), /^Error: request_invalid$/)
-  await assert.rejects(ai.openSession({ system: 'S', providerId: 'nope' }), /^Error: provider_not_found$/)
-  await assert.rejects(ai.openSession({ system: 'S', modelId: 'other' }), /^Error: model_unavailable$/)
-  await assert.rejects(ai.openSession({ system: 'S', cwd: '/' }), /^Error: request_invalid$/, 'no path / sandbox / tool fields can be smuggled in')
-  control.visible = false
-  await assert.rejects(ai.openSession({ system: 'S' }), /^Error: view_not_visible$/)
-  assert.equal((await ai.getOptions()).limits.turnsPerMinute, 20, 'getOptions works while hidden (aiChatService only gates open/send)')
-  control.visible = true
-  control.providerState = 'not_logged_in'
-  await assert.rejects(ai.openSession({ system: 'S' }), /^Error: provider_not_ready$/)
-  control.granted = false
-  await assert.rejects(ai.getOptions(), /^Error: not_granted$/)
-  assert.ok(stats.errors.session_limit >= 1 && stats.errors.view_not_visible === 1)
-  for (const code of Object.keys(stats.errors)) assert.ok(CONTRACT.errorCodes.includes(code))
-})
-
-// ───────────── (a) quota ─────────────
-
-test('(a) quota: a sliding window of 20 turns/min — never more, never a host rate_limited, the 21st waits for the first to leave the window', async () => {
-  const ctx = setup({ items: 45, config: { extractReserve: 0 } })
-  ctx.orch.start()
+test('(b) quota: a sliding window of 20 turns/min — never more, never a host rate_limited; background extraction stops at 18 per minute', async () => {
+  const ctx = portSetup()
+  const jobs = Array.from({ length: 40 }, () => ctx.port.complete(background()))
+  const outcomes = jobs.map((job) => job.then(() => 'ok', (error) => error.code))
   await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 20, '20 turns go out at once')
-  await ctx.clock.advance(60_200)
-  assert.equal(ctx.mock.stats.sends, 20, 'the window (60 s + margin) has not slid yet')
-  await ctx.clock.advance(100)
-  assert.equal(ctx.mock.stats.sends, 40)
-  await ctx.clock.advance(60_300)
-  assert.equal(ctx.mock.stats.sends, 45, 'all items done')
-  assert.equal(ctx.mock.stats.errors.rate_limited, 0, 'the host never had to refuse')
-  const times = ctx.mock.stats.turns.map((t) => t.at)
-  for (let i = 0; i < times.length; i += 1) {
-    const inWindow = times.filter((t, j) => j <= i && times[i] - t <= 60_000).length
-    assert.ok(inWindow <= 20, `turn ${i}: ${inWindow} sends within 60 s`)
-  }
-  assert.equal(ctx.chans.itemStates().filter((s) => s === 'done').length, 45)
+  await ctx.clock.advance(5 * 60_000)
+  assert.deepEqual([...new Set(await Promise.all(outcomes))], ['ok'], 'every request completes — waiting for a slot is not a failure')
+  const times = ctx.mock.stats.turns.map((turn) => turn.at)
+  assert.equal(times.length, 40)
+  assert.ok(maxPerMinute(times) <= 18, `at most 18 background turns in any minute, saw ${maxPerMinute(times)}`)
+  assert.equal(ctx.mock.stats.errors.rate_limited, 0, 'the host never had to say rate_limited')
+  assert.equal(ctx.mock.stats.maxConcurrentCompletes, 1, 'one complete at a time (one Session per plugin)')
+  assert.equal(ctx.mock.stats.openSessions, ctx.mock.stats.sessionsClosed, 'every Session the host opened for a complete() was closed')
   assert.equal(ctx.mock.control.liveSessions(), 0)
-  await ctx.orch.stop()
 })
 
-test('(a) quota: background extraction keeps 2 turns/min for user actions — extraction stops at 18, a user action still gets through', async () => {
-  const ctx = setup({ items: 30 })
-  ctx.orch.start()
+test('(b) quota: a user action gets through while background extraction is waiting for the window, and before queued background work', async () => {
+  const ctx = portSetup()
+  const jobs = Array.from({ length: 25 }, () => ctx.port.complete(background()))
+  const done = jobs.map((job) => job.then(() => true))
   await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 18, 'extraction is capped at 20 - 2')
-  ctx.chans.addTask({ kind: 'draftReply', system: 'DRAFT_SYSTEM', user: '{"todo":1}' })
-  ctx.chans.announce()
+  assert.equal(ctx.mock.stats.completes, 18, 'extraction stopped at 18 in the minute (2 turns kept for the user)')
+  const draft = ctx.port.complete(userAction({ system: 'DRAFT' }))
   await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 19, 'the user action used a reserved slot')
-  assert.equal(ctx.chans.store.taskCommits.length, 1)
-  assert.equal(ctx.chans.store.taskCommits[0].ok, true)
+  assert.equal((await draft).text.length > 0, true, 'the user action was answered without waiting for the minute to pass')
+  assert.equal(ctx.mock.stats.completes, 19)
+  assert.equal(ctx.mock.stats.turns.at(-1).system, 'DRAFT')
   assert.equal(ctx.mock.stats.errors.rate_limited, 0)
-  await ctx.orch.stop()
+  await ctx.clock.advance(5 * 60_000)
+  assert.equal((await Promise.all(done)).length, 25)
+  assert.ok(maxPerMinute(ctx.mock.stats.turns.map((turn) => turn.at)) <= 20)
 })
 
-test('(a) quota: TurnWindow reproduces aiChatService\'s window (60 s inclusive, 1 h) and the hourly cap of 400', () => {
-  const w = new TurnWindow(20, 400, 0)
-  for (let i = 0; i < 20; i += 1) w.record(1000)
-  assert.equal(w.delay(1000), 60_001, 'host: count of turns with (now - t) <= 60000 is >= 20 -> refused; allowed from t + 60001')
-  assert.equal(w.delay(61_000), 1, 'exactly 60 s later the host still refuses (<= 60000)')
-  assert.equal(w.delay(61_001), 0)
-  assert.equal(w.delay(1000, 2), 60_001, 'a reserve of 2 leaves 18')
-  const h = new TurnWindow(20, 400, 0)
-  for (let k = 0; k < 400; k += 1) h.record(k * 8000) // 400 turns, 8 s apart (<= 20 per minute, so only the hourly cap bites)
-  const last = 399 * 8000
-  assert.equal(h.delay(last), 0 + 3_600_001 - last, 'the 400th turn in the hour: wait until the first one is > 1 h old')
-  assert.equal(h.delay(3_600_001), 0, 'once the first turn is older than 1 h there is room again')
-  const partial = new TurnWindow(20, 400, 0)
-  for (let i = 0; i < 399; i += 1) partial.record(i * 5000)
-  assert.equal(partial.delay(399 * 5000), 0, '399 turns in the hour: one more is fine')
+test('(b) quota: TurnWindow reproduces aiChatService\'s window (60 s inclusive, 1 h) and the hourly cap of 400', () => {
+  const w = new TurnWindow(20, 400)
+  for (let i = 0; i < 20; i += 1) w.record(1000 + i)
+  assert.equal(w.delay(1019), 60_000 + 1000 - 1019 + 1, 'the 21st turn waits until the first leaves the 60 s window (inclusive boundary)')
+  assert.equal(w.delay(1019, 2), 60_000 + 1002 - 1019 + 1, 'with 2 reserved: waits for the 3rd-oldest')
+  assert.equal(w.delay(1000 + 60_001 + 19), 0)
+  const hour = new TurnWindow(20, 400)
+  for (let i = 0; i < 400; i += 1) hour.record(i * 8_000)
+  assert.ok(hour.delay(400 * 8_000) > 0, 'the hourly cap holds back even when the minute window is empty')
+  const t = new TurnWindow(20, 400)
+  t.record(5)
+  t.unrecord(5)
+  assert.equal(t.count(6), 0, 'a turn the host never accepted is taken back')
 })
 
-test('(a) quota: the per-minute limit follows getOptions().limits.turnsPerMinute when it is lower', async () => {
-  const ctx = setup({ items: 10, config: { extractReserve: 0, perMinute: 2 } })
-  ctx.orch.start()
+test('(b) quota: the per-minute limit follows getOptions().limits.turnsPerMinute when it is lower than the reference', async () => {
+  const ctx = portSetup()
+  const original = ctx.mock.ai.getOptions
+  const lowered = { ...ctx.mock.ai, getOptions: async () => ({ ...(await original()), limits: { ...(await original()).limits, turnsPerMinute: 5 } }) }
+  const port = createHostAiPort({ ai: lowered, clock: ctx.clock, config: { extractReserve: 0 } })
+  const jobs = Array.from({ length: 8 }, () => port.complete(background()))
   await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 2)
-  await ctx.orch.stop()
-})
-
-// ───────────── (b) visibility ─────────────
-
-test('(b) visibility: a hidden view pauses extraction (nothing pulled, nothing opened, no ai:chat call at all); visible again resumes — not a failure', async () => {
-  const ctx = setup({ items: 2, visible: false })
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.chans.store.pulls, 0)
-  assert.equal(ctx.mock.stats.getOptions + ctx.mock.stats.openSession + ctx.mock.stats.sends, 0)
-  assert.equal(ctx.orch.status().state, 'paused')
-  assert.equal(ctx.orch.status().reason, 'view_hidden')
-  assert.match(describeStatus(ctx.orch.status()), /看板在背景/)
-  assert.equal(ctx.orch.connected(), false, 'a hidden initial view has not loaded the model options yet')
-  ctx.chans.announce() // a pending event while hidden changes nothing
-  await ctx.settle()
-  assert.equal(ctx.chans.store.pulls, 0)
-  ctx.visibility.set(true)
-  await ctx.settle()
-  assert.equal(ctx.orch.status().state, 'running')
-  assert.deepEqual(ctx.chans.itemStates(), ['done', 'done'])
-  assert.equal(ctx.mock.stats.sends, 2)
-  assert.equal(ctx.chans.store.commits.every((c) => c.ok), true)
-  await ctx.orch.stop()
-})
-
-test('(b) visibility: hidden in the middle of the queue — the turn in flight finishes and is committed; nothing new starts until visible', async () => {
-  let release
-  const gate = new Promise((resolve) => { release = resolve })
-  const ctx = setup({ items: 3, reply: ({ sessionIndex }) => (sessionIndex === 1 ? { text: goodText, delay: () => gate } : goodText) })
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 1)
-  ctx.visibility.set(false)
-  release()
-  await ctx.settle()
-  assert.deepEqual(ctx.chans.itemStates(), ['done', 'pending', 'pending'], 'item 1 committed, the rest wait')
-  assert.equal(ctx.mock.stats.sends, 1)
-  ctx.visibility.set(true)
-  await ctx.settle()
-  assert.deepEqual(ctx.chans.itemStates(), ['done', 'done', 'done'])
-  await ctx.orch.stop()
-})
-
-test('(b) visibility: the host says view_not_visible although the page looks visible (placement hidden / occluded) — the lease is released (no failure, no per-chat backoff), then it probes and continues', async () => {
-  const ctx = setup({ items: 1 })
-  ctx.mock.control.visible = false
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.mock.stats.errors.view_not_visible, 1)
-  assert.equal(ctx.chans.store.releases.length, 1, 'released')
-  assert.equal(ctx.chans.store.commits.length, 0, 'not committed as a failure')
-  assert.equal(ctx.chans.store.items[0].attempts, 0, 'the chat is not penalised')
-  assert.equal(ctx.chans.store.items[0].notBefore, 0)
-  assert.equal(ctx.orch.status().reason, 'view_not_visible')
-  assert.equal(ctx.orch.status().state, 'paused')
-  assert.equal(ctx.mock.control.liveSessions(), 0)
-  ctx.mock.control.visible = true
-  await ctx.clock.advance(ORCHESTRATOR_DEFAULTS.hiddenProbeMs + 50)
-  assert.deepEqual(ctx.chans.itemStates(), ['done'])
-  assert.equal(ctx.orch.status().state, 'running')
-  await ctx.orch.stop()
-})
-
-test('(b) visibility: createVisibilitySource combines page visibility with TeamUQ presentation.visible (the "after" phase) and unsubscribes cleanly', async () => {
-  const doc = { visibilityState: 'visible', handlers: new Set(), addEventListener(type, cb) { assert.equal(type, 'visibilitychange'); this.handlers.add(cb) }, removeEventListener(type, cb) { this.handlers.delete(cb) }, fire() { for (const cb of [...this.handlers]) cb() } }
-  const presentation = { listeners: new Set(), get: async () => ({ visible: true }), onChange(cb) { this.listeners.add(cb); return () => this.listeners.delete(cb) } }
-  const source = createVisibilitySource({ document: doc, presentation })
-  const seen = []
-  source.subscribe((v) => seen.push(v))
-  await flush(2)
-  assert.equal(source.isVisible(), true)
-  doc.visibilityState = 'hidden'; doc.fire()
-  assert.deepEqual(seen, [false])
-  doc.visibilityState = 'visible'; doc.fire()
-  assert.deepEqual(seen, [false, true])
-  for (const cb of presentation.listeners) cb({ phase: 'before', visible: false })
-  assert.equal(source.isVisible(), true, 'the "before" phase of a presentation change is ignored')
-  for (const cb of presentation.listeners) cb({ phase: 'after', visible: false })
-  assert.equal(source.isVisible(), false)
-  assert.deepEqual(seen, [false, true, false])
-  source.dispose()
-  assert.equal(doc.handlers.size, 0)
-  assert.equal(presentation.listeners.size, 0)
-  const initiallyHidden = createVisibilitySource({ document: doc, presentation: { get: async () => ({ visible: false }), onChange: () => () => {} } })
-  await flush(2)
-  assert.equal(initiallyHidden.isVisible(), false)
-  initiallyHidden.dispose()
+  assert.equal(port.status().turnsPerMinute, 5)
+  assert.equal(ctx.mock.stats.completes, 5, 'only 5 in the first minute')
+  await ctx.clock.advance(120_000)
+  await Promise.all(jobs)
+  assert.equal(ctx.mock.stats.completes, 8)
 })
 
 // ───────────── (c) retries and backoff ─────────────
 
-test('(c) turn_in_progress: send is retried (6 x 250 ms, like ai-lover ai-port.js); the item still completes', async () => {
-  const ctx = setup({ items: 1 })
-  ctx.mock.control.turnInProgressFor = 3
-  ctx.orch.start()
+test('(c) busy / session_limit while the host finishes the previous turn: retried (6 x 250 ms) and the call still completes', async () => {
+  const ctx = portSetup()
+  ctx.mock.control.set({ busyFor: 3, busyCode: 'session_limit' })
+  const job = ctx.port.complete(userAction())
   await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 0)
-  await ctx.clock.advance(250 * 3)
-  assert.equal(ctx.mock.stats.errors.turn_in_progress, 3)
-  assert.equal(ctx.mock.stats.sends, 1)
-  assert.deepEqual(ctx.chans.itemStates(), ['done'])
-  assert.equal(ctx.chans.store.releases.length, 0)
-  await ctx.orch.stop()
+  await ctx.clock.advance(1_000)
+  assert.equal((await job).text.length > 0, true)
+  assert.equal(ctx.mock.stats.errors.session_limit, 3)
+  assert.equal(ctx.mock.stats.turns.length, 1)
+  assert.equal(ctx.port.status().state, 'running', 'transient host busyness is not an outage')
 })
 
-test('(c) turn_in_progress that never clears: after 6 retries the item is released (not failed) and the orchestrator backs off briefly', async () => {
-  const ctx = setup({ items: 1 })
-  ctx.mock.control.turnInProgressFor = 100
-  ctx.orch.start()
+test('(c) busy that never clears: after the retries the call fails with `busy` (transient) and the port backs off briefly instead of hammering the host', async () => {
+  const ctx = portSetup()
+  ctx.mock.control.set({ busyFor: 100, busyCode: 'busy' })
+  const first = ctx.port.complete(background())
+  const outcome = first.then(() => null, (error) => error)
   await ctx.settle()
-  await ctx.clock.advance(250 * 6)
-  assert.equal(ctx.mock.stats.errors.turn_in_progress, 7, 'first attempt + 6 retries')
-  assert.equal(ctx.chans.store.releases.length, 1)
-  assert.equal(ctx.chans.store.commits.length, 0)
-  assert.equal(ctx.mock.control.liveSessions(), 0, 'the session is closed even though nothing was sent')
-  assert.equal(ctx.orch.status().state, 'paused')
-  await ctx.orch.stop()
+  await ctx.clock.advance(3_000)
+  const error = await outcome
+  assert.equal(error.code, 'busy')
+  assert.equal(isTransientAiCode(error.code), true)
+  assert.equal(ctx.mock.stats.errors.busy, HOST_AI_DEFAULTS.busyRetries + 1)
+  const calls = ctx.mock.stats.errors.busy
+  ctx.mock.control.set({ busyFor: 0 })
+  const second = ctx.port.complete(userAction())
+  await ctx.settle()
+  await ctx.clock.advance(HOST_AI_DEFAULTS.busyBackoffMs + 100)
+  assert.equal((await second).text.length > 0, true)
+  assert.equal(ctx.mock.stats.errors.busy, calls)
 })
 
-test('(c) rate_limited from the host (turns the orchestrator cannot see) backs off exponentially, re-queues without failing the chat, and succeeds once the window frees', async () => {
-  const ctx = setup({ items: 1 })
-  ctx.mock.control.consumeTurns(20) // someone else filled this plugin\'s window at t0
-  const t0 = ctx.clock.now()
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.mock.stats.errors.rate_limited, 1)
-  assert.equal(ctx.orch.status().reason, 'rate_limited')
-  assert.match(describeStatus(ctx.orch.status(), ctx.clock.now()), /每分鐘 20 次/)
-  await ctx.clock.advance(5000)
-  assert.equal(ctx.mock.stats.errors.rate_limited, 2)
-  await ctx.clock.advance(10_000)
-  assert.equal(ctx.mock.stats.errors.rate_limited, 3)
-  await ctx.clock.advance(20_000)
-  assert.equal(ctx.mock.stats.errors.rate_limited, 4)
-  await ctx.clock.advance(40_000) // t0 + 75 s: the consumed turns left the window at t0 + 60.001 s
-  assert.deepEqual(ctx.mock.stats.refused.filter((r) => r.code === 'rate_limited').map((r) => r.at - t0), [0, 5000, 15_000, 35_000], 'backoff 5 s, 10 s, 20 s')
-  assert.deepEqual(ctx.chans.itemStates(), ['done'])
-  assert.equal(ctx.chans.store.commits.every((c) => c.ok), true, 'never committed as a failure')
-  assert.equal(ctx.chans.store.items[0].attempts, 0)
-  await ctx.orch.stop()
+test('(c) rate_limited from the host (turns the port cannot see) backs off exponentially, fails fast during the backoff, and succeeds once the window frees', async () => {
+  const ctx = portSetup()
+  ctx.mock.control.consumeTurns(20)
+  const first = await rejection(ctx.port.complete(userAction()))
+  assert.equal(first.code, 'rate_limited')
+  assert.equal(first.retryAfterMs, HOST_AI_DEFAULTS.rateBackoffBaseMs)
+  assert.equal(ctx.port.status().state, 'paused')
+  assert.equal(ctx.port.status().reason, 'rate_limited')
+  assert.ok(ctx.port.blockedFor() > 0)
+  const hostCalls = ctx.mock.stats.refused.length
+  const during = await rejection(ctx.port.complete(userAction()))
+  assert.equal(during.code, 'rate_limited')
+  assert.equal(ctx.mock.stats.refused.length, hostCalls, 'during the backoff the host is not asked at all')
+  await ctx.clock.advance(HOST_AI_DEFAULTS.rateBackoffBaseMs + 1)
+  const second = await rejection(ctx.port.complete(userAction()))
+  assert.equal(second.retryAfterMs, HOST_AI_DEFAULTS.rateBackoffBaseMs * 2, 'the second consecutive rate_limited doubles the wait')
+  await ctx.clock.advance(61_000)
+  assert.equal((await ctx.port.complete(userAction())).text.length > 0, true, 'works again once the foreign turns left the window')
+  assert.equal(ctx.port.status().state, 'running')
+  assert.equal(ctx.mock.stats.turns.length, 1, 'rejected requests never counted as our turns')
 })
 
-test('(c) quota_exhausted (failed event): the item is re-queued, nothing more is sent during Core\'s cooldown, and work resumes afterwards', async () => {
-  let first = true
-  const ctx = setup({ items: 2, reply: () => { if (first) { first = false; return { fail: 'quota_exhausted' } } return goodText } })
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 1)
-  assert.equal(ctx.chans.store.releases.length, 1, 'released, not failed')
-  assert.equal(ctx.chans.store.commits.length, 0)
-  assert.equal(ctx.orch.status().state, 'paused')
-  assert.equal(ctx.orch.status().reason, 'quota_exhausted')
-  assert.ok(ctx.orch.status().resumeAt > ctx.clock.now() + 4 * 60_000, 'waits for the cooldown reported by getOptions().quota.retryAfterMs')
-  assert.match(describeStatus(ctx.orch.status(), ctx.clock.now()), /額度已用完/)
-  ctx.chans.announce(); ctx.orch.kick()
-  await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 1, 'a kick during the cooldown sends nothing')
-  await ctx.clock.advance(5 * 60_000 + 500)
-  assert.deepEqual(ctx.chans.itemStates(), ['done', 'done'])
-  assert.equal(ctx.mock.stats.errors.quota_exhausted, 0, 'the orchestrator never hit the host\'s quota refusal itself')
-  await ctx.orch.stop()
+test('(c) quota_exhausted: the call fails with the host\'s retryAfterMs, nothing more is sent during Core\'s cooldown, and work resumes afterwards', async () => {
+  const ctx = portSetup({ reply: (c) => (c.turn === 0 ? { fail: 'quota_exhausted' } : goodText) })
+  const error = await rejection(ctx.port.complete(background()))
+  assert.equal(error.code, 'quota_exhausted')
+  assert.ok(error.retryAfterMs > 4 * 60_000 && error.retryAfterMs <= CONTRACT.limits.quotaCooldownMs, `retryAfterMs ${error.retryAfterMs} comes from getOptions().quota`)
+  assert.equal(ctx.port.status().reason, 'quota_exhausted')
+  assert.ok(ctx.port.status().resumeAt > ctx.clock.now())
+  const asked = ctx.mock.stats.completes
+  assert.equal((await rejection(ctx.port.complete(userAction()))).code, 'quota_exhausted', 'a user action is answered at once, not queued')
+  assert.equal(ctx.mock.stats.completes, asked, 'no host call during the cooldown')
+  await ctx.clock.advance(CONTRACT.limits.quotaCooldownMs + 1_000)
+  assert.equal((await ctx.port.complete(background())).value.importance, 'action')
+  assert.equal(ctx.port.status().state, 'running')
 })
 
-test('(c) quota already exhausted when we look (getOptions): extraction does not even pull; a user action is answered at once with quota_exhausted + retryAfterMs instead of waiting', async () => {
-  const ctx = setup({ items: 1, tasks: [{ kind: 'draftReply' }] })
-  ctx.mock.control.exhaustQuota(120_000)
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.chans.store.pulls, 0, 'no extraction lease while blocked')
-  assert.equal(ctx.mock.stats.openSession, 0)
-  assert.equal(ctx.chans.store.taskCommits.length, 1)
-  assert.equal(ctx.chans.store.taskCommits[0].ok, false)
-  assert.equal(ctx.chans.store.taskCommits[0].failCode, 'quota_exhausted')
-  assert.ok(ctx.chans.store.taskCommits[0].retryAfterMs > 100_000)
-  ctx.mock.control.quotaUntil = 0
-  await ctx.clock.advance(121_000)
-  assert.deepEqual(ctx.chans.itemStates(), ['done'])
-  await ctx.orch.stop()
+test('(c) quota already exhausted when we look (getOptions): even the first call is refused with quota_exhausted + retryAfterMs, with no complete', async () => {
+  const ctx = portSetup()
+  ctx.mock.control.exhaustQuota(90_000)
+  const error = await rejection(ctx.port.complete(userAction()))
+  assert.equal(error.code, 'quota_exhausted')
+  assert.ok(Math.abs(error.retryAfterMs - 90_000) < 1_000)
+  assert.equal(ctx.mock.stats.completes, 0)
 })
 
-test('(c) provider_unavailable (failed event) re-queues and waits for the provider; a Codex that is not logged in is "unavailable" (not an error per chat) and queued user actions are answered at once', async () => {
-  let first = true
-  const a = setup({ items: 1, reply: () => { if (first) { first = false; return { fail: 'provider_unavailable' } } return goodText } })
-  a.orch.start()
-  await a.settle()
-  assert.equal(a.chans.store.releases.length, 1)
-  assert.equal(a.chans.store.commits.length, 0)
-  assert.equal(a.orch.status().reason, 'provider_unavailable')
-  await a.clock.advance(ORCHESTRATOR_DEFAULTS.providerRetryMs + 500)
-  assert.deepEqual(a.chans.itemStates(), ['done'])
-  await a.orch.stop()
-
-  const b = setup({ items: 1, tasks: [{ kind: 'draftReply' }] })
-  b.mock.control.providerState = 'not_logged_in'
-  b.orch.start()
-  await b.settle()
-  assert.equal(b.orch.status().state, 'unavailable')
-  assert.equal(b.orch.status().reason, 'provider_not_logged_in')
-  assert.equal(b.orch.connected(), false)
-  assert.match(b.orch.note(), /所選 AI 尚未登入/)
-  assert.equal(b.chans.store.pulls, 0)
-  assert.equal(b.chans.store.taskCommits[0].failCode, 'provider_unavailable', 'the user is told at once')
-  b.mock.control.providerState = 'ready'
-  await b.clock.advance(ORCHESTRATOR_DEFAULTS.providerRetryMs + 1000)
-  assert.equal(b.orch.status().state, 'running')
-  assert.equal(b.orch.connected(), true)
-  assert.deepEqual(b.chans.itemStates(), ['done'])
-  await b.orch.stop()
+test('(c) provider not ready (Codex not logged in) is "unavailable", not an error per item; it is re-checked after the retry interval and recovers', async () => {
+  const ctx = portSetup()
+  ctx.mock.control.set({ providerState: 'not_logged_in' })
+  const error = await rejection(ctx.port.complete(userAction()))
+  assert.equal(error.code, 'provider_unavailable')
+  assert.equal(ctx.port.status().state, 'unavailable')
+  assert.equal(ctx.port.status().reason, 'provider_not_logged_in')
+  assert.match(describeStatus(ctx.port.status()), /尚未登入/)
+  assert.equal(await ctx.port.ready(), false)
+  assert.equal(ctx.mock.stats.completes, 0)
+  ctx.mock.control.set({ providerState: 'ready' })
+  await ctx.clock.advance(HOST_AI_DEFAULTS.providerRetryMs + 100)
+  assert.equal(await ctx.port.ready(), true)
+  assert.equal((await ctx.port.complete(userAction())).text.length > 0, true)
+  assert.equal(ctx.port.status().state, 'running')
 })
 
-test('(c) failures that ARE the chat\'s: empty_reply / reply_too_long / provider_error / turn_timeout are committed as failures (messages stay unprocessed, the queue backs the chat off), nothing is released', async () => {
-  for (const [name, script, code] of [
-    ['empty_reply', { empty: true }, 'empty_reply'],
-    ['reply_too_long', { chunks: ['x'.repeat(20_000), 'y'.repeat(20_000)] }, 'reply_too_long'],
-    ['provider_error', { fail: 'provider_error' }, 'provider_error'],
-    ['stalled', { fail: 'stalled' }, 'stalled']
-  ]) {
-    const ctx = setup({ items: 1, reply: () => script })
-    ctx.orch.start()
-    await ctx.settle()
-    assert.equal(ctx.chans.store.commits.length, 1, name)
-    assert.deepEqual({ ok: ctx.chans.store.commits[0].ok, failCode: ctx.chans.store.commits[0].failCode }, { ok: false, failCode: code }, name)
-    assert.equal(ctx.chans.store.releases.length, 0, name)
-    assert.equal(ctx.orch.status().counters.failed, 1)
-    assert.equal(ctx.mock.control.liveSessions(), 0)
-    await ctx.orch.stop()
+test('(c) failures that ARE the item\'s: empty_reply / provider_error / turn_timeout come back as non-transient errors with their code (the caller records a failure)', async () => {
+  for (const fail of ['provider_error', 'one_shot_failed', 'response_too_large']) {
+    const ctx = portSetup({ reply: () => ({ fail }) })
+    const error = await rejection(ctx.port.complete(userAction()))
+    assert.equal(error.code, fail)
+    assert.equal(isTransientAiCode(error.code), false, fail)
+    assert.equal(ctx.port.status().state, 'running', `${fail} does not put the whole port in an error state`)
   }
-  // a turn that hangs: the orchestrator gives up before Core's 300 s, interrupts it, and reports turn_timeout
-  const hung = setup({ items: 1, reply: () => ({ hang: true }) })
-  hung.orch.start()
+  const empty = portSetup({ reply: () => ({ empty: true }) })
+  assert.equal((await rejection(empty.port.complete(userAction()))).code, 'empty_reply')
+  assert.equal(empty.mock.control.liveSessions(), 0, 'the Session is closed on the failure path too')
+  // the host never answers: our own guard ends the wait, the Session slot is the host\'s problem and shows up as busy (transient)
+  const hung = portSetup({ reply: () => ({ hang: true }), config: { completeGuardMs: 10_000 } })
+  const pending = rejection(hung.port.complete(userAction()))
   await hung.settle()
-  assert.equal(hung.chans.store.commits.length, 0)
-  await hung.clock.advance(ORCHESTRATOR_DEFAULTS.turnTimeoutMs + 100)
-  assert.equal(hung.mock.stats.interrupts, 1)
-  assert.equal(hung.chans.store.commits[0].failCode, 'turn_timeout')
-  assert.equal(hung.mock.control.liveSessions(), 0)
-  await hung.orch.stop()
+  await hung.clock.advance(10_001)
+  assert.equal((await pending).code, 'turn_timeout')
 })
 
-test('(c) access_revoked: a running turn that fails with access_revoked stops the orchestrator — the lease is returned, nothing more is sent, the user is told how to fix it', async () => {
-  const ctx = setup({ items: 3, tasks: [], reply: () => ({ hang: true }) })
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 1)
+test('(c) access: not_granted on the first call is `revoked` at once; the port probes every 30 s and recovers when the permission is allowed again', async () => {
+  const ctx = portSetup()
   ctx.mock.control.revoke()
-  await ctx.settle()
-  assert.equal(ctx.orch.status().state, 'revoked')
-  assert.equal(ctx.orch.connected(), false)
-  assert.match(ctx.orch.note(), /ai:chat/)
-  assert.equal(ctx.chans.store.releases.length, 1, 'released, not failed')
-  assert.equal(ctx.chans.store.commits.length, 0)
-  const sends = ctx.mock.stats.sends
-  ctx.chans.announce(); ctx.orch.kick(); ctx.visibility.set(false); ctx.visibility.set(true)
-  await ctx.clock.advance(120_000)
-  assert.equal(ctx.mock.stats.sends, sends, 'stopped for good')
-  assert.equal(ctx.mock.control.liveSessions(), 0)
-  await ctx.orch.stop()
+  const error = await rejection(ctx.port.complete(userAction()))
+  assert.equal(error.code, 'access_revoked')
+  const status = ctx.port.status()
+  assert.equal(status.state, 'revoked')
+  assert.equal(describeStatus(status), EXPECTED_AI_CHAT_REVOKED_TEXT, 'word for word (0.1.3 r1)')
+  assert.equal(await ctx.port.ready(), false)
+  const probes = ctx.mock.stats.getOptions
+  await ctx.clock.advance(10_000)
+  assert.equal(await ctx.port.ready(), false)
+  assert.equal(ctx.mock.stats.getOptions, probes, 'no probing inside the 30 s interval')
+  ctx.mock.control.grant()
+  await ctx.clock.advance(HOST_AI_DEFAULTS.revokedProbeMs)
+  assert.equal(await ctx.port.ready(), true, 'the permission is back: the probe gets through')
+  assert.equal((await ctx.port.complete(userAction())).text.length > 0, true)
+  assert.equal(ctx.port.status().state, 'running')
 })
 
-test('(c) access_revoked before the first call (getOptions -> not_granted): revoked at once, queued user actions fail with access_revoked', async () => {
-  const ctx = setup({ items: 2, tasks: [{ kind: 'draftReply' }] })
-  ctx.mock.control.granted = false
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.orch.status().state, 'revoked')
-  assert.equal(ctx.chans.store.pulls, 0)
-  assert.equal(ctx.chans.store.taskCommits[0].failCode, 'access_revoked')
-  await ctx.orch.stop()
-})
-
-test('(c) session_limit / busy / session_not_found are transient: released, brief backoff, no failure', async () => {
-  const ctx = setup({ items: 1 })
-  ctx.mock.control.otherActiveTurns = 4 // Core-wide concurrentTurnsTotal = 4 used by other plugins -> send is refused with `busy`
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.mock.stats.errors.busy, 1)
-  assert.equal(ctx.chans.store.releases.length, 1)
-  assert.equal(ctx.chans.store.commits.length, 0)
-  ctx.mock.control.otherActiveTurns = 0
-  await ctx.clock.advance(ORCHESTRATOR_DEFAULTS.busyBackoffMs + 100)
-  assert.deepEqual(ctx.chans.itemStates(), ['done'])
-  await ctx.orch.stop()
+test('(c) access: a turn cancelled by the host because the permission was switched off (`interrupted`) is transient; the next call is `revoked`', async () => {
+  const ctx = portSetup({ reply: () => ({ delay: async () => { ctx.mock.control.revoke() }, text: goodText }) })
+  const first = await rejection(ctx.port.complete(background()))
+  assert.equal(first.code, 'interrupted')
+  assert.equal(isTransientAiCode('interrupted'), true)
+  assert.equal((await rejection(ctx.port.complete(background()))).code, 'access_revoked')
+  assert.equal(ctx.port.status().state, 'revoked')
 })
 
 // ───────────── (d) JSON ─────────────
 
-test('(d) parseModelJson: plain, ```json fenced, bare fence, prose around the object, BOM, braces inside strings — and the failures', () => {
-  const value = { a: 1, s: '含有 } 與 { 的字串' }
-  const json = JSON.stringify(value)
-  for (const [name, raw] of [
-    ['plain', json], ['padded', `\n  ${json}\n`], ['fenced json', '```json\n' + json + '\n```'], ['fenced JSON caps', '```JSON\n' + json + '\n```'],
-    ['bare fence', '```\n' + json + '\n```'], ['prose before and after', `好的，結果如下：\n${json}\n希望有幫助`], ['fence with prose', '以下是結果：\n```json\n' + json + '\n```\n以上'],
-    ['BOM', '﻿' + json]
-  ]) {
-    const parsed = parseModelJson(raw)
-    assert.equal(parsed.ok, true, name)
-    assert.deepEqual(parsed.value, value, name)
-  }
-  for (const bad of ['', '   ', '沒有 JSON', '{"a": 1,}', '{"a": ', '```json\n{bad\n```', 'null?']) assert.equal(parseModelJson(bad).ok, false, JSON.stringify(bad))
-  assert.equal(parseModelJson('[1,2]').ok, true, 'any JSON value parses; the schema check decides')
+test('(d) a reply wrapped in ```json fences and surrounding prose is parsed and passes zod: the value is the validated, normalised ExtractResult (detail/dueAt -> null)', async () => {
+  const sloppy = { importance: 'action', newTodos: [{ bucket: 'todo', title: '回覆報價單', priority: 2, confidence: 0.9, sourceMsgIds: ['m1'] }], resolved: [], updates: [] }
+  const ctx = portSetup({ reply: () => `好的，整理如下：\n\`\`\`json\n${JSON.stringify(sloppy, null, 2)}\n\`\`\`\n希望有幫助。` })
+  const result = await ctx.port.complete(background())
+  assert.equal(result.value.newTodos[0].detail, null)
+  assert.equal(result.value.newTodos[0].dueAt, null)
+  assert.deepEqual(JSON.parse(result.text), result.value)
+  assert.equal(result.model, 'gpt-5-codex')
+  assert.equal(ctx.mock.stats.completes, 1)
 })
 
-test('(d) a reply wrapped in ```json fences is parsed and passes zod: the committed result is the validated, normalised ExtractResult (detail/dueAt -> null)', async () => {
-  const sloppy = { importance: 'action', newTodos: [{ bucket: 'waiting', title: '等客戶回覆', priority: 1, confidence: 0.8, sourceMsgIds: ['m1'] }], resolved: [] }
-  const ctx = setup({ items: 1, reply: () => ({ chunks: ['好的，以下是結果：\n```js', 'on\n', JSON.stringify(sloppy), '\n```'] }) })
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.chans.store.commits.length, 1)
-  const committed = ctx.chans.store.commits[0]
-  assert.equal(committed.ok, true)
-  assert.deepEqual(committed.result, { importance: 'action', newTodos: [{ bucket: 'waiting', title: '等客戶回覆', detail: null, priority: 1, dueAt: null, confidence: 0.8, sourceMsgIds: ['m1'] }], resolved: [], updates: [] })
-  assert.equal(ctx.mock.stats.sends, 1, 'no repair turn needed')
-  await ctx.orch.stop()
+test('(d) bad JSON: one repair turn that replays the question and the bad answer as transcript (costs one more quota turn); if it is still bad the call fails with invalid_json', async () => {
+  const ctx = portSetup({ reply: (c) => (c.repair ? goodText : '抱歉，我整理好了但是忘了用 JSON') })
+  const repaired = await ctx.port.complete(background())
+  assert.equal(repaired.value.importance, 'action')
+  assert.equal(ctx.mock.stats.completes, 2, 'one repair turn')
+  const [first, second] = ctx.mock.stats.turns
+  assert.deepEqual(first.transcript, [])
+  assert.deepEqual(second.transcript, [{ role: 'user', text: first.text }, { role: 'assistant', text: '抱歉，我整理好了但是忘了用 JSON' }])
+  assert.match(second.text, /無法使用/)
+  assert.equal(second.system, first.system)
+  assert.equal(ctx.port.status().counters.repairs, 1)
+  assert.equal(ctx.port.status().counters.turns, 2)
+  assert.equal(ctx.mock.control.liveSessions(), 0)
+
+  const bad = portSetup({ reply: () => 'not json at all' })
+  const error = await rejection(bad.port.complete(background()))
+  assert.equal(error.code, 'invalid_json')
+  assert.equal(bad.mock.stats.completes, 2, 'exactly one repair, then the item fails')
+  assert.equal(isTransientAiCode(error.code), false)
 })
 
-test('(d) bad JSON: one repair turn in the SAME session (costs one more quota turn); if it is still bad the chat fails with invalid_json and its messages stay unprocessed', async () => {
-  const ok = setup({ items: 1, reply: ({ repair }) => (repair ? '```json\n' + goodText + '\n```' : '當然！我會整理成 JSON：{"importance": "action", ') })
-  ok.orch.start()
-  await ok.settle()
-  assert.equal(ok.mock.stats.sends, 2)
-  assert.equal(ok.mock.stats.turns[0].sessionIndex, ok.mock.stats.turns[1].sessionIndex, 'repair happens in the same session')
-  assert.match(ok.mock.stats.turns[1].text, /不是合法的 JSON/)
-  assert.deepEqual(ok.chans.store.commits[0].result.newTodos[0].title, '回覆報價單')
-  assert.equal(ok.orch.status().counters.repairs, 1)
-  await ok.orch.stop()
-
-  const bad = setup({ items: 1, reply: () => '我不太確定，請問你要整理哪一段？' })
-  bad.orch.start()
-  await bad.settle()
-  assert.equal(bad.mock.stats.sends, 2, 'one repair attempt at most — no quota burning')
-  assert.deepEqual({ ok: bad.chans.store.commits[0].ok, failCode: bad.chans.store.commits[0].failCode }, { ok: false, failCode: 'invalid_json' })
-  assert.equal(bad.chans.store.items[0].state, 'pending', 'unprocessed: it will be extracted again after the queue\'s backoff')
-  assert.equal(bad.mock.control.liveSessions(), 0)
-  await bad.orch.stop()
-
-  const noRepair = setup({ items: 1, config: { maxRepairs: 0 }, reply: () => 'nope' })
-  noRepair.orch.start()
-  await noRepair.settle()
-  assert.equal(noRepair.mock.stats.sends, 1)
-  await noRepair.orch.stop()
+test('(d) valid JSON that fails the zod schema is invalid_result — an unvalidated object is never returned as ok', async () => {
+  const ctx = portSetup({ reply: () => JSON.stringify({ importance: 'urgent', newTodos: [{ title: 5 }] }) })
+  const error = await rejection(ctx.port.complete(background()))
+  assert.equal(error.code, 'invalid_result')
+  assert.equal(ctx.mock.stats.completes, 2)
+  // …and the repair can fix it
+  const fixed = portSetup({ reply: (c) => (c.repair ? goodText : JSON.stringify({ importance: 'urgent', newTodos: [] })) })
+  assert.equal((await fixed.port.complete(background())).value.importance, 'action')
 })
 
-test('(d) valid JSON that fails the zod schema is a failed chat (invalid_result) — an unvalidated object is never committed as ok', async () => {
-  for (const wrong of [
-    { importance: 'urgent', newTodos: [], resolved: [], updates: [] },
-    { importance: 'action', newTodos: [{ bucket: 'todo', title: 123, priority: 2, confidence: 0.5, sourceMsgIds: ['m1'] }], resolved: [], updates: [] },
-    { importance: 'action', newTodos: [{ bucket: 'todo', title: 'x', priority: 9, confidence: 0.5, sourceMsgIds: [] }], resolved: [], updates: [] },
-    { newTodos: [] },
-    []
-  ]) {
-    const ctx = setup({ items: 1, reply: () => JSON.stringify(wrong) })
-    ctx.orch.start()
-    await ctx.settle()
-    assert.equal(ctx.mock.stats.sends, 2, 'a repair turn that names the problem')
-    assert.match(ctx.mock.stats.turns[1].text, /importance|newTodos|Required|Expected|Invalid|invalid/)
-    assert.deepEqual({ ok: ctx.chans.store.commits[0].ok, failCode: ctx.chans.store.commits[0].failCode }, { ok: false, failCode: 'invalid_result' }, JSON.stringify(wrong))
-    assert.equal(ctx.chans.store.commits.filter((c) => c.ok).length, 0)
-    await ctx.orch.stop()
-  }
+test('(d) plain-text actions come back trimmed; the repair is skipped when the action does not expect JSON', async () => {
+  const ctx = portSetup({ reply: () => '  好的，我今天處理。\n' })
+  const result = await ctx.port.complete(userAction())
+  assert.equal(result.text, '好的，我今天處理。')
+  assert.equal(result.value, undefined)
+  assert.equal(ctx.mock.stats.completes, 1)
 })
 
 // ───────────── limits ─────────────
 
-test('limits: the system prompt goes out as system + output format, within 16,000; an input over 8,000 chars is failed BEFORE a session is opened', async () => {
-  const ctx = setup({ items: 1 })
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(ctx.mock.stats.turns[0].system, 'SYSTEM_PROMPT_TEXT\n\nOUTPUT_FORMAT_TEXT', 'extract.system() + format, nothing else')
-  assert.ok(ctx.mock.stats.turns[0].text.length <= CONTRACT.limits.inputChars)
-  await ctx.orch.stop()
-
-  const big = setup({ items: 0 })
-  big.chans.addItem({ chatId: 'huge', user: 'x'.repeat(8001) })
-  big.orch.start()
-  await big.settle()
-  assert.equal(big.mock.stats.openSession, 0)
-  assert.equal(big.chans.store.commits[0].failCode, 'input_too_large')
-  await big.orch.stop()
-
-  const longSystem = setup({ items: 1, channels: { system: 'S'.repeat(16_001), format: '' } })
-  longSystem.orch.start()
-  await longSystem.settle()
-  assert.equal(longSystem.mock.stats.openSession, 0)
-  assert.equal(longSystem.chans.store.commits[0].failCode, 'system_too_large')
-  await longSystem.orch.stop()
+test('limits: a system prompt over 16,000 chars or an input over 8,000 chars is refused BEFORE the host is called', async () => {
+  const ctx = portSetup()
+  assert.equal((await rejection(ctx.port.complete(userAction({ user: 'x'.repeat(8_001) })))).code, 'input_too_large')
+  assert.equal((await rejection(ctx.port.complete(userAction({ system: 'x'.repeat(16_001) })))).code, 'system_too_large')
+  assert.equal(ctx.mock.stats.completes, 0)
+  assert.equal(ctx.mock.stats.getOptions, 1, 'only the options lookup reached the host')
+  const ok = await ctx.port.complete(userAction({ user: 'x'.repeat(8_000), system: 'y'.repeat(16_000) }))
+  assert.equal(ok.text.length > 0, true)
 })
 
-// ───────────── sessions, shutdown ─────────────
-
-test('sessions: one fresh session per item (no context leaks between chats), at most one alive, always closed — also when send fails', async () => {
-  const ctx = setup({ items: 4 })
-  ctx.orch.start()
+test('sessions: every call is a fresh Session (no context leaks between chats), at most one alive, always closed — also when the host fails', async () => {
+  let n = 0
+  const ctx = portSetup({ reply: () => { n += 1; return n === 2 ? { fail: 'provider_error' } : goodText } })
+  const outcomes = await Promise.allSettled([ctx.port.complete(background()), ctx.port.complete(background()), ctx.port.complete(background())])
   await ctx.settle()
-  assert.equal(ctx.mock.stats.openSession, 4)
-  assert.equal(ctx.mock.stats.sessionsClosed, 4)
-  assert.equal(ctx.mock.stats.maxLiveSessions, 1, 'sessionsPerPlugin = 1')
+  assert.deepEqual(outcomes.map((o) => o.status), ['fulfilled', 'rejected', 'fulfilled'])
+  assert.equal(ctx.mock.stats.openSessions, 3)
+  assert.equal(ctx.mock.stats.sessionsClosed, 3)
+  assert.equal(ctx.mock.stats.maxLiveSessions, 1)
+  assert.equal(new Set(ctx.mock.stats.turns.map((turn) => turn.sessionId)).size, 3)
+})
+
+// ───────────── (e) contentSaved ─────────────
+
+test('(e) contentSaved (new turn event in 1.7.15): a turn whose event stream carries it completes normally — nothing in line-todo reacts to turn events', async () => {
+  const ctx = portSetup({ reply: () => ({ text: goodText, events: ['contentSaved', 'contentSaved'] }) })
+  const result = await ctx.port.complete(background())
+  assert.equal(result.value.importance, 'action')
+  const kinds = ctx.mock.stats.droppedEvents.map((entry) => entry.event.kind)
+  assert.ok(kinds.includes('contentSaved'), 'the host really emitted contentSaved for this turn')
+  assert.ok(kinds.includes('started') && kinds.includes('completed'))
+  assert.equal(ctx.port.status().counters.turns, 1)
+  assert.equal(ctx.port.status().state, 'running')
+  // the same events on an open Session reach a listener; the listener here is a test one — line-todo has none (checked below), and a listener that ignores kinds it does not know is the contract
+  const session = await ctx.mock.ai.openSession({ system: 'S' })
+  const seen = []
+  session.onEvent((event) => seen.push(event.kind))
+  ctx.mock.control.set({})
+  await session.send({ text: 'hi' })
+  await session.close()
   assert.equal(ctx.mock.stats.errors.session_limit, 0)
-  assert.equal(new Set(ctx.mock.stats.turns.map((t) => t.sessionIndex)).size, 4)
-  await ctx.orch.stop()
+  assert.ok(Array.isArray(seen))
 })
 
-test('stop(): interrupts the turn in flight, returns the lease, closes the session, and leaves no timer or subscription behind', async () => {
-  const ctx = setup({ items: 2, reply: () => ({ hang: true }) })
-  ctx.orch.start()
+test('(e) line-todo does not subscribe to AI turn events anywhere, and nothing in the view or the board calls window.tuqPlugin.ai', () => {
+  const offenders = []
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name)
+      if (statSync(full).isDirectory()) { if (name !== 'sdk' && name !== 'node_modules') walk(full); continue }
+      if (!/\.(ts|tsx)$/.test(name)) continue
+      const text = readFileSync(full, 'utf8')
+      const where = relative(ROOT, full).split('\\').join('/')
+      if (/tuqPlugin\??\.ai\b/.test(text.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''))) offenders.push(`${where}: window.tuqPlugin.ai`)
+      const code = text.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')
+      if (/\.onEvent\(/.test(code)) offenders.push(`${where}: onEvent (turn event stream)`)
+      if (/\bai\??\.openSession\(/.test(code)) offenders.push(`${where}: host.ai.openSession`)
+    }
+  }
+  walk(join(ROOT, 'src'))
+  assert.deepEqual(offenders, [], 'only host.ai.complete is used (one turn, no event stream), so contentSaved can never reach line-todo code')
+})
+
+// ───────────── port lifecycle ─────────────
+
+test('stop(): queued calls fail with backend_stopped, sleeping calls wake up, and no timer is left behind', async () => {
+  const ctx = portSetup()
+  const jobs = Array.from({ length: 25 }, () => ctx.port.complete(background()).then(() => 'ok', (error) => error.code))
   await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 1)
-  assert.equal(ctx.mock.control.liveSessions(), 1)
-  await ctx.orch.stop()
-  assert.equal(ctx.mock.stats.interrupts, 1)
+  assert.ok(ctx.clock.timers.size > 0, 'a background call is waiting for a window slot')
+  ctx.port.stop()
+  await ctx.settle()
+  const results = await Promise.all(jobs)
+  assert.equal(results.filter((r) => r === 'ok').length, 18)
+  assert.ok(results.filter((r) => r === 'backend_stopped').length >= 1)
+  assert.equal(ctx.clock.timers.size, 0, 'no timer left')
+  assert.equal(ctx.port.status().state, 'stopped')
+  assert.equal((await rejection(ctx.port.complete(userAction()))).code, 'backend_stopped')
+})
+
+// ───────────── the background worker ─────────────
+
+/** The ExtractQueue protocol (leases, commit statuses, release, touch) with the pieces the worker uses. */
+function makeQueue(clock, { items = 1 } = {}) {
+  const store = { items: [], leases: new Map(), commits: [], releases: [], pulls: 0, touches: 0, counter: 0 }
+  const add = (item) => store.items.push({ chatId: 'c1', user: JSON.stringify({ chat: { chatId: item.chatId ?? 'c1' }, newMessages: [{ msgId: 'm1', text: '請幫我寄報價單' }] }), attempts: 0, notBefore: 0, state: 'pending', ...item })
+  Array.from({ length: items }, (_, i) => add({ chatId: `c${i + 1}` }))
+  const queue = {
+    touch: () => { store.touches += 1 },
+    hasPending: () => store.items.some((item) => item.state === 'pending'),
+    pull: ({ max = 1 } = {}) => {
+      store.pulls += 1
+      const out = []
+      let soonest = null
+      for (const item of store.items) {
+        if (item.state !== 'pending') continue
+        if (item.notBefore > clock.now()) { soonest = soonest === null ? item.notBefore : Math.min(soonest, item.notBefore); continue }
+        if (out.length >= max) break
+        item.state = 'leased'
+        item.leaseId = `lease-${++store.counter}`
+        store.leases.set(item.leaseId, item)
+        out.push({ itemId: item.leaseId, chatId: item.chatId, user: item.user, userChars: item.user.length, attempts: item.attempts })
+      }
+      return { ok: true, items: out, pending: 0, leased: 0, retryAfterMs: out.length === 0 && soonest !== null ? soonest - clock.now() : null }
+    },
+    commit: ({ results }) => ({
+      ok: true,
+      results: results.map((r) => {
+        const item = store.leases.get(r.itemId)
+        store.commits.push(r)
+        if (!item) return { itemId: r.itemId, status: 'unknown_item' }
+        store.leases.delete(r.itemId)
+        if (r.ok) { item.state = 'done'; item.result = r.result; return { itemId: r.itemId, status: 'applied' } }
+        item.state = 'pending'; item.attempts += 1; item.notBefore = clock.now() + 30_000 * 2 ** (item.attempts - 1)
+        return { itemId: r.itemId, status: 'failed_recorded', code: r.failCode }
+      })
+    }),
+    release: ({ itemIds }) => {
+      store.releases.push(...itemIds)
+      for (const id of itemIds) { const item = store.leases.get(id); if (item) { store.leases.delete(id); item.state = 'pending' } }
+      return { ok: true, released: itemIds.length, unknown: [] }
+    }
+  }
+  return { store, queue, add, states: () => store.items.map((i) => i.state) }
+}
+
+function workerSetup({ items = 1, reply = () => goodText, config = {}, workerConfig = {} } = {}) {
+  const clock = new FakeClock()
+  const mock = createMockTuqAi({ now: clock.now, reply })
+  const port = createHostAiPort({ ai: mock.ai, clock, config })
+  const q = makeQueue(clock, { items })
+  const logs = []
+  const worker = createExtractWorker({ queue: q.queue, port, system: () => 'SYSTEM+FORMAT', clock, config: { pollIntervalMs: 15_000, ...workerConfig }, log: (event, detail) => logs.push([event, detail]) })
+  return { clock, mock, port, q, worker, logs, settle: () => flush() }
+}
+
+test('(a) worker: pending items are drained in the backend through host.ai.complete — no view, no visibility, no RPC; every item is committed once with the validated value', async () => {
+  const ctx = workerSetup({ items: 3 })
+  ctx.worker.start()
+  await ctx.settle()
+  assert.deepEqual(ctx.q.states(), ['done', 'done', 'done'])
+  assert.equal(ctx.q.store.commits.length, 3)
+  assert.ok(ctx.q.store.commits.every((c) => c.ok === true && c.result.importance === 'action'))
+  assert.equal(ctx.mock.stats.completes, 3)
+  assert.ok(ctx.mock.stats.turns.every((turn) => turn.system === 'SYSTEM+FORMAT'), 'the system prompt (with the output format) is what the worker was given')
+  assert.ok(ctx.mock.stats.turns.every((turn) => turn.transcript.length === 0))
+  assert.deepEqual(ctx.worker.counters(), { extracted: 3, rejected: 0, failed: 0, released: 0 })
+  assert.ok(ctx.q.store.touches >= 3, 'the queue is told its consumer is alive')
   assert.equal(ctx.mock.control.liveSessions(), 0)
-  assert.equal(ctx.chans.store.releases.length, 1)
-  assert.equal(ctx.chans.store.commits.length, 0)
-  assert.equal(ctx.clock.timers.size, 0, 'no timers left')
-  assert.equal(ctx.chans.store.listeners.size, 0, 'unsubscribed from extract-pending')
-  assert.equal(ctx.orch.status().state, 'stopped')
-  assert.equal(ctx.orch.connected(), false)
-  ctx.chans.announce(); ctx.orch.kick()
-  await ctx.settle()
-  assert.equal(ctx.mock.stats.sends, 1, 'nothing happens after stop')
+  ctx.worker.stop()
 })
 
-test('scheduling: an extract-pending event starts work at once; idle polling is the fallback; the pull hint (retryAfterMs) schedules the next look', async () => {
-  const ctx = setup({ items: 0 })
-  ctx.orch.start()
+test('(a) worker: kick() starts work at once; the poll interval is only the fallback; the pull hint (retryAfterMs) schedules the next look', async () => {
+  const ctx = workerSetup({ items: 0 })
+  ctx.worker.start()
   await ctx.settle()
-  assert.equal(ctx.chans.store.pulls, 1, 'looked once, found nothing')
-  ctx.chans.addItem({ chatId: 'late' })
-  ctx.chans.announce()
+  const pulls = ctx.q.store.pulls
+  ctx.q.add({ chatId: 'c9' })
+  ctx.worker.kick()
   await ctx.settle()
-  assert.deepEqual(ctx.chans.itemStates(), ['done'], 'the event woke it up')
-  ctx.chans.addItem({ chatId: 'quiet' }) // no event: only the idle poll can find it
-  await ctx.clock.advance(ORCHESTRATOR_DEFAULTS.pollIntervalMs + 100)
-  assert.deepEqual(ctx.chans.itemStates(), ['done', 'done'])
-  await ctx.orch.stop()
+  assert.equal(ctx.q.states()[0], 'done', 'kick -> done without advancing time')
+  ctx.q.add({ chatId: 'c10' })
+  await ctx.clock.advance(14_000)
+  assert.equal(ctx.q.states()[1], 'pending', 'before the poll interval nothing looks')
+  await ctx.clock.advance(1_500)
+  assert.equal(ctx.q.states()[1], 'done', 'the idle poll finds it')
+  assert.ok(ctx.q.store.pulls > pulls)
+  // an item that is backing off: the worker wakes when the queue says it will be due
+  ctx.q.add({ chatId: 'c11', notBefore: ctx.clock.now() + 20_000 })
+  ctx.worker.kick()
+  await ctx.settle()
+  assert.equal(ctx.q.states()[2], 'pending')
+  await ctx.clock.advance(20_100)
+  assert.equal(ctx.q.states()[2], 'done')
+  ctx.worker.stop()
 })
 
-// ───────────── user actions (draftReply / analyzeNotMine / groupTopics) ─────────────
-
-test('user actions: served before background extraction; plain text comes back trimmed with the model that answered; JSON actions are validated and normalised', async () => {
-  const ctx = setup({
-    items: 2,
-    tasks: [{ kind: 'draftReply', system: 'DRAFT_SYSTEM', user: '{"todo":"x"}' }, { kind: 'analyzeNotMine', system: 'ANALYZE_SYSTEM', user: '{"evidence":[]}', expectJson: true }],
-    reply: ({ system }) => (system === 'DRAFT_SYSTEM' ? '  好的，我明天下午回覆您。\n' : system === 'ANALYZE_SYSTEM' ? '```json\n{"summary": "只是公告", "inferredCauseCode": "general_announcement"}\n```' : goodText)
-  })
-  ctx.orch.start()
+test('(b)(c) worker: the quota is exhausted mid-queue — the item in hand goes back (released, not failed), nothing is lost, and the queue is finished after the cooldown', async () => {
+  const ctx = workerSetup({ items: 4, reply: (c) => (c.turn === 1 ? { fail: 'quota_exhausted' } : goodText) })
+  ctx.worker.start()
   await ctx.settle()
-  assert.deepEqual(ctx.mock.stats.turns.map((t) => t.system), ['DRAFT_SYSTEM', 'ANALYZE_SYSTEM', 'SYSTEM_PROMPT_TEXT\n\nOUTPUT_FORMAT_TEXT', 'SYSTEM_PROMPT_TEXT\n\nOUTPUT_FORMAT_TEXT'])
-  const [draft, analyze] = ctx.chans.store.taskCommits
-  assert.deepEqual({ ok: draft.ok, text: draft.text, model: draft.model }, { ok: true, text: '好的，我明天下午回覆您。', model: 'gpt-5-codex' })
-  assert.equal(analyze.ok, true)
-  assert.deepEqual(JSON.parse(analyze.text), { summary: '只是公告', inferredCauseCode: 'general_announcement' }, 'fences stripped; the backend gets plain JSON text')
-  await ctx.orch.stop()
+  assert.deepEqual(ctx.q.states(), ['done', 'pending', 'pending', 'pending'], 'item 2 hit the quota: back in the queue, 3 and 4 not even started')
+  assert.deepEqual(ctx.q.store.releases.length, 1, 'released')
+  assert.equal(ctx.q.store.commits.filter((c) => !c.ok).length, 0, 'a quota error is not a failure of the chat (no backoff recorded)')
+  assert.equal(ctx.q.store.items[1].attempts, 0)
+  const completes = ctx.mock.stats.completes
+  await ctx.clock.advance(60_000)
+  assert.equal(ctx.mock.stats.completes, completes, 'nothing is sent during Core\'s cooldown')
+  assert.equal(ctx.port.status().reason, 'quota_exhausted')
+  await ctx.clock.advance(CONTRACT.limits.quotaCooldownMs)
+  assert.deepEqual(ctx.q.states(), ['done', 'done', 'done', 'done'], 'every item is processed after the cooldown')
+  assert.equal(ctx.worker.counters().released, 1)
+  assert.equal(ctx.worker.counters().failed, 0)
+  ctx.worker.stop()
 })
 
-test('user actions: JSON that cannot be repaired fails with invalid_json; an empty draft fails with empty_reply; a window wait over 30 s is refused at once, a shorter one is waited out', async () => {
-  const badJson = setup({ items: 0, tasks: [{ kind: 'groupTopics', expectJson: true }], reply: () => '不是 JSON' })
-  badJson.orch.start()
-  await badJson.settle()
-  assert.equal(badJson.chans.store.taskCommits[0].failCode, 'invalid_json')
-  assert.equal(badJson.mock.stats.sends, 2)
-  await badJson.orch.stop()
+test('(b)(c) worker: rate_limited and a provider that is not ready keep every pending item; they are processed once the host allows it', async () => {
+  const ctx = workerSetup({ items: 3 })
+  ctx.mock.control.consumeTurns(20)
+  ctx.worker.start()
+  await ctx.settle()
+  assert.deepEqual(ctx.q.states(), ['pending', 'pending', 'pending'], 'the host says rate_limited: the first item is released, the others are not touched')
+  assert.equal(ctx.q.store.items.every((item) => item.attempts === 0), true)
+  await ctx.clock.advance(100_000) // the foreign turns leave the window after 60 s; the backoff doubles 5 -> 10 -> 20 -> 40 s meanwhile
+  assert.deepEqual(ctx.q.states(), ['done', 'done', 'done'])
+  assert.equal(ctx.q.store.items.every((item) => item.attempts === 0), true, 'never counted as the chats\' failure')
+  // provider not ready
+  const down = workerSetup({ items: 2 })
+  down.mock.control.set({ providerState: 'not_logged_in' })
+  down.worker.start()
+  await down.settle()
+  assert.deepEqual(down.q.states(), ['pending', 'pending'])
+  assert.equal(down.q.store.pulls, 0, 'with no usable provider the worker does not even lease items')
+  assert.equal(down.port.status().state, 'unavailable')
+  down.mock.control.set({ providerState: 'ready' })
+  await down.clock.advance(HOST_AI_DEFAULTS.providerRetryMs + 6_000)
+  assert.deepEqual(down.q.states(), ['done', 'done'])
+  ctx.worker.stop()
+  down.worker.stop()
+})
 
-  const empty = setup({ items: 0, tasks: [{ kind: 'draftReply' }], reply: () => ({ empty: true }) })
-  empty.orch.start()
-  await empty.settle()
-  assert.equal(empty.chans.store.taskCommits[0].failCode, 'empty_reply')
-  await empty.orch.stop()
+test('(c) worker: failures that ARE the chat\'s are committed as failures with their code (the queue backs the chat off, the messages stay unprocessed); the other chats go on', async () => {
+  const codes = ['empty_reply', 'provider_error']
+  let n = -1
+  const ctx = workerSetup({ items: 3, reply: () => { n += 1; return n < 2 ? (n === 0 ? { empty: true } : { fail: 'provider_error' }) : goodText } })
+  ctx.worker.start()
+  await ctx.settle()
+  const failed = ctx.q.store.commits.filter((c) => !c.ok)
+  assert.deepEqual(failed.map((c) => c.failCode), codes)
+  assert.deepEqual(ctx.q.states(), ['pending', 'pending', 'done'])
+  assert.equal(ctx.q.store.releases.length, 0, 'nothing released — these are failures')
+  assert.deepEqual(ctx.worker.counters(), { extracted: 1, rejected: 0, failed: 2, released: 0 })
+  assert.deepEqual(ctx.q.store.items.slice(0, 2).map((i) => i.attempts), [1, 1])
+  // the queue\'s own backoff (30 s) then brings them back
+  await ctx.clock.advance(31_000)
+  assert.deepEqual(ctx.q.states(), ['done', 'done', 'done'])
+  ctx.worker.stop()
+})
 
-  // 2 turns per minute: two user actions fill the window, the third must wait for the first to leave it
-  const rate = setup({ items: 0, tasks: [{ kind: 'draftReply' }, { kind: 'draftReply' }], config: { perMinute: 2 }, reply: () => '草稿' })
-  rate.orch.start()
-  await rate.settle()
-  assert.equal(rate.chans.store.taskCommits.length, 2)
-  await rate.clock.advance(40_000)
-  rate.chans.addTask({ kind: 'draftReply' }); rate.chans.announce()
-  await rate.settle()
-  assert.equal(rate.chans.store.taskCommits.length, 2, 'waiting for a slot (about 20 s)')
-  await rate.clock.advance(20_400)
-  assert.equal(rate.chans.store.taskCommits.length, 3)
-  assert.equal(rate.chans.store.taskCommits[2].ok, true)
-  assert.equal(rate.mock.stats.errors.rate_limited, 0)
-  rate.chans.addTask({ kind: 'draftReply' }); rate.chans.addTask({ kind: 'draftReply' }); rate.chans.announce()
-  await rate.settle()
-  const refused = rate.chans.store.taskCommits.slice(3).filter((c) => !c.ok)
-  assert.ok(refused.length >= 1, 'the window is full again and the next slot is more than 30 s away: answer rate_limited now')
-  assert.equal(refused[0].failCode, 'rate_limited')
-  assert.ok(refused[0].retryAfterMs > 30_000)
-  await rate.orch.stop()
+test('(c) worker: access revoked — the lease is returned, nothing more is sent, the status says how to fix it; the worker probes and continues when the permission is back', async () => {
+  const ctx = workerSetup({ items: 2 })
+  ctx.mock.control.revoke()
+  ctx.worker.start()
+  await ctx.settle()
+  assert.deepEqual(ctx.q.states(), ['pending', 'pending'])
+  assert.equal(ctx.port.status().state, 'revoked')
+  assert.equal(ctx.mock.stats.completes, 0)
+  await ctx.clock.advance(HOST_AI_DEFAULTS.revokedProbeMs * 2)
+  assert.deepEqual(ctx.q.states(), ['pending', 'pending'], 'still revoked: still waiting')
+  ctx.mock.control.grant()
+  await ctx.clock.advance(HOST_AI_DEFAULTS.revokedProbeMs + 1_000)
+  assert.deepEqual(ctx.q.states(), ['done', 'done'])
+  ctx.worker.stop()
+})
+
+test('worker: stop() ends the loop; a host call that was already in flight is not committed after the stop (the message stays unprocessed for the next start)', async () => {
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const ctx = workerSetup({ items: 2, reply: () => ({ delay: () => gate, text: goodText }) })
+  ctx.worker.start()
+  await ctx.settle()
+  assert.equal(ctx.q.states()[0], 'leased')
+  ctx.worker.stop()
+  ctx.port.stop()
+  release()
+  await ctx.settle()
+  assert.equal(ctx.q.store.commits.length, 0, 'nothing committed after stop')
+  assert.equal(ctx.worker.running(), false)
+  const pulls = ctx.q.store.pulls
+  ctx.worker.kick()
+  await ctx.clock.advance(60_000)
+  assert.equal(ctx.q.store.pulls, pulls, 'a stopped worker never pulls again')
+  assert.equal(ctx.clock.timers.size, 0)
 })
 
 // ───────────── status text ─────────────
 
-test('describeStatus: every state has a user-facing sentence; the "foreground only" rule is stated', () => {
+test('describeStatus: every state has a user-facing sentence; AI runs in the backend, so nothing is said about the board having to be in front', () => {
   const base = { busy: false, provider: null, counters: {}, resumeAt: null }
-  const text = (state, reason, extra = {}) => describeStatus({ ...base, state, reason, ...extra }, 1_000_000)
-  assert.match(text('running', null), /看板在前景時才會整理新訊息/)
+  const text = (state, reason, extra = {}) => describeBoardStatus({ ...base, state, reason, ...extra }, 1_000_000)
+  assert.match(text('running', null), /看板不需要開著/)
+  assert.doesNotMatch(text('running', null), /前景/)
   assert.match(text('running', null, { busy: true }), /正在整理/)
-  assert.match(text('paused', 'view_hidden'), /前景/)
   assert.match(text('paused', 'rate_limited', { resumeAt: 1_030_000 }), /30 秒後/)
   assert.match(text('paused', 'quota_exhausted', { resumeAt: 1_000_000 + 5 * 60_000 }), /5 分鐘後/)
   assert.match(text('unavailable', 'provider_not_installed'), /所選 AI 尚未安裝/)
@@ -797,115 +731,235 @@ test('describeStatus: every state has a user-facing sentence; the "foreground on
   assert.ok(text('revoked', 'access_revoked').includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，在「${CORE_PERMISSIONS_SECTION_TITLE}」裡允許「${CORE_AI_CHAT_TITLE}」`), 'r1: the ai:chat switch by its title on TeamUQ\'s plugin page')
   assert.equal(namesVersionSpecificPlace(text('revoked', 'access_revoked')), false, 'r1: no place that only one TeamUQ version has')
   assert.match(text('stopped', null), /尚未啟動/)
+  // the backend-side wording (used for notes returned to the user, e.g. a review that cannot start) is the same sentences minus the two board-only reasons
+  assert.equal(describeStatus({ ...base, state: 'revoked', reason: 'access_revoked' }), EXPECTED_AI_CHAT_REVOKED_TEXT)
 })
 
 test('G-10: the rate-limit sentence uses the limit the host reported (getOptions().limits.turnsPerMinute), not a hard-coded 20', async () => {
   const base = { busy: false, provider: null, counters: {}, resumeAt: 1_030_000 }
   assert.match(describeStatus({ ...base, state: 'paused', reason: 'rate_limited', turnsPerMinute: 7 }, 1_000_000), /每分鐘 7 次/)
   assert.doesNotMatch(describeStatus({ ...base, state: 'paused', reason: 'rate_limited' }, 1_000_000), /每分鐘 \d+ 次/, 'unknown limit: no number at all')
-  // the orchestrator's status carries the live per-minute limit (the window follows getOptions().limits — see the "(a) quota" test above)
-  const ctx = setup({ items: 0 })
-  ctx.orch.start()
-  await ctx.settle()
-  assert.equal(typeof ctx.orch.status().turnsPerMinute, 'number')
-  assert.ok(ctx.orch.status().turnsPerMinute <= AI_CHAT_REFERENCE.turnsPerMinute)
-  await ctx.orch.stop()
+  const ctx = portSetup()
+  await ctx.port.ready()
+  assert.equal(typeof ctx.port.status().turnsPerMinute, 'number')
+  assert.ok(ctx.port.status().turnsPerMinute <= AI_CHAT_REFERENCE.turnsPerMinute)
 })
 
-test('G-03 / B1: Core fencing backend:invoke (plugin_permission_denied, then plugin_disabled for every probe — also after the permission is allowed again) is its own paused reason — not "暫時中斷", no promise of resuming by itself — probed every 30 s; work resumes only once Core lets calls through again (activate)', async () => {
-  const ctx = setup({ items: 1 })
-  // Core 1.7.1 (backendInvokeGate.ts): the call at the fence gets the reason, every later call plugin_disabled until activate()
-  let fence = 'plugin_permission_denied'
-  const realPull = ctx.chans.extract.pull
-  let pulls = 0
-  const codes = []
-  ctx.chans.extract.pull = async (options) => {
-    pulls += 1
-    if (fence) {
-      const code = fence
-      fence = 'plugin_disabled'
-      codes.push(code)
-      throw Object.assign(new Error(code), { code })
-    }
-    return realPull(options)
-  }
-  ctx.orch.start()
-  await ctx.settle()
-  const status = ctx.orch.status()
-  assert.equal(status.state, 'paused')
-  assert.equal(status.reason, 'backend_revoked')
-  const sentence = describeStatus(status, ctx.clock.now())
-  assert.match(sentence, /TeamUQ 目前不讓這個外掛呼叫後端/)
-  assert.ok(sentence.includes(`「${CORE_BACKEND_INVOKE_TITLE}」權限被關閉、外掛被停用，或後端太久沒有回應而被隔離`), sentence)
-  assert.equal(sentence, EXPECTED_AI_FENCED_TEXT)
-  assert.doesNotMatch(sentence, VERSION_SPECIFIC_PLACE, '0.1.3: no place that only one TeamUQ version has')
-  assert.match(sentence, /停用再啟用，或重新啟動 TeamUQ/)
-  assert.doesNotMatch(sentence, /自動繼續|自動恢復/, 'Core 1.7.1 does not lift the fence when the permission is allowed again')
-  const afterFirst = pulls
-  await ctx.clock.advance(20_000)
-  assert.equal(pulls, afterFirst, 'no hammering: nothing within the 30 s probe interval')
-  // the user allows the permission again: Core still fences → the 30 s probe gets plugin_disabled and the reason stays
-  await ctx.clock.advance(15_000)
-  await ctx.settle()
-  assert.ok(pulls > afterFirst, 'probed again after 30 s')
-  assert.deepEqual(codes.slice(0, 2), ['plugin_permission_denied', 'plugin_disabled'])
-  assert.equal(ctx.orch.status().reason, 'backend_revoked', 'plugin_disabled keeps the same reason')
-  assert.equal(ctx.chans.itemStates()[0] === 'done', false)
-  // disable → enable the plugin (activate): the next probe gets through
-  fence = null
-  await ctx.clock.advance(31_000)
-  await ctx.settle()
-  assert.equal(ctx.chans.itemStates()[0], 'done', 'the item is processed once Core lets calls through again')
-  assert.notEqual(ctx.orch.status().reason, 'backend_revoked')
-  // a timeout fences too (timeoutPlugin): same paused reason, not the short "暫時中斷" backoff
-  const realPull3 = ctx.chans.extract.pull
-  ctx.chans.extract.pull = async () => { throw Object.assign(new Error('backend_invoke_timeout'), { code: 'backend_invoke_timeout' }) }
-  ctx.chans.addItem({ chatId: 'c8' })
-  ctx.chans.announce()
-  await ctx.settle()
-  assert.equal(ctx.orch.status().reason, 'backend_revoked')
-  ctx.chans.extract.pull = realPull3
-  // an ordinary backend failure (not fenced) keeps the short backoff and the old wording
-  const realPull2 = ctx.chans.extract.pull
-  ctx.chans.extract.pull = async () => { throw Object.assign(new Error('plugin_backend_unavailable'), { code: 'plugin_backend_unavailable' }) }
-  ctx.chans.addItem({ chatId: 'c9' })
-  ctx.chans.announce()
-  await ctx.clock.advance(31_000) // the next 30 s probe
-  await ctx.settle()
-  assert.equal(ctx.orch.status().reason, 'backend')
-  ctx.chans.extract.pull = realPull2
-  await ctx.orch.stop()
+test('codeOf: the host\'s Error carries `.code`; wrapped messages and unknown shapes degrade to `unavailable` without leaking text', () => {
+  assert.equal(codeOf(Object.assign(new Error('host request failed: rate_limited'), { code: 'rate_limited' })), 'rate_limited')
+  assert.equal(codeOf(new Error('host request failed: quota_exhausted')), 'quota_exhausted')
+  assert.equal(codeOf(new AiPortError('busy')), 'busy')
+  assert.equal(codeOf(new Error('Something with a secret: abc')), 'unavailable')
+  assert.equal(codeOf(null), 'unavailable')
 })
 
 // ───────────── the status line the board shows ─────────────
 
-test('AiStatusBar: the board shows one plain-text line with the AI state (foreground-only rule, pause reason, unavailable / revoked) and nothing at all without an orchestrator', async () => {
+test('AiStatusBar: the board shows one plain-text line with the AI state (runs without the board, pause reason, unavailable / revoked, backend fenced) and nothing before the first status', async () => {
   const { build } = await import('esbuild')
   const { mkdtempSync, rmSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
-  const { join, resolve, dirname } = await import('node:path')
-  const { fileURLToPath, pathToFileURL } = await import('node:url')
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+  const { pathToFileURL } = await import('node:url')
   const work = mkdtempSync(join(tmpdir(), 'ai-status-bar-'))
   try {
     const outfile = join(work, 'bar.mjs')
     await build({
-      stdin: { contents: "import { renderToStaticMarkup } from 'react-dom/server'\nimport { AiStatusBar } from './src/plugin/ui/AiStatusBar'\nexport const render = (orchestrator) => renderToStaticMarkup(<AiStatusBar orchestrator={orchestrator} />)\n", resolveDir: root, loader: 'tsx', sourcefile: 'bar-entry.tsx' },
-      outfile, bundle: true, format: 'esm', platform: 'node', target: 'node24', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' }, logLevel: 'error', absWorkingDir: root,
+      stdin: { contents: "import { renderToStaticMarkup } from 'react-dom/server'\nimport { AiStatusBar } from './src/plugin/ui/AiStatusBar'\nexport const render = (source) => renderToStaticMarkup(<AiStatusBar source={source} />)\n", resolveDir: ROOT, loader: 'tsx', sourcefile: 'bar-entry.tsx' },
+      outfile, bundle: true, format: 'esm', platform: 'node', target: 'node24', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' }, logLevel: 'error', absWorkingDir: ROOT,
       banner: { js: "import { createRequire as __r } from 'node:module'; const require = __r(import.meta.url);" }
     })
     const { render } = await import(pathToFileURL(outfile).href)
-    const html = (status) => render({ status: () => status, onStatus: () => () => {} })
+    const noop = () => () => undefined
+    const source = (status, link = { state: 'ok' }) => ({ snapshot: () => status, aiStatus: async () => status, onAiStatus: noop, backendLink: () => link, onBackendLink: noop })
     const base = { busy: false, provider: null, counters: {}, resumeAt: null }
-    assert.equal(render(null), '', 'no orchestrator (TeamUQ without ai:chat): nothing is drawn')
-    const running = html({ ...base, state: 'running', reason: null })
+    assert.equal(render(source(null)), '', 'before the first status: nothing is drawn')
+    const running = render(source({ ...base, state: 'running', reason: null }))
     assert.match(running, /role="status"/)
     assert.match(running, /data-ai-state="running"/)
-    assert.match(running, /看板在前景時才會整理新訊息/)
-    assert.match(html({ ...base, state: 'running', reason: null, busy: true }), /正在整理新訊息/)
-    assert.match(html({ ...base, state: 'paused', reason: 'view_hidden' }), /data-ai-reason="view_hidden"[^>]*>[^<]*看板在背景/)
-    assert.match(html({ ...base, state: 'unavailable', reason: 'provider_not_logged_in' }), /所選 AI 尚未登入/)
-    assert.match(html({ ...base, state: 'revoked', reason: 'access_revoked' }), /ai:chat/)
+    assert.match(running, /看板不需要開著/)
+    assert.match(render(source({ ...base, state: 'running', reason: null, busy: true })), /正在整理新訊息/)
+    assert.match(render(source({ ...base, state: 'paused', reason: 'rate_limited', resumeAt: Date.now() + 30_000, turnsPerMinute: 20 })), /每分鐘 20 次/)
+    assert.match(render(source({ ...base, state: 'unavailable', reason: 'provider_not_logged_in' })), /所選 AI 尚未登入/)
+    assert.match(render(source({ ...base, state: 'revoked', reason: 'access_revoked' })), /ai:chat/)
+    assert.match(render(source({ ...base, state: 'running', reason: null, provider: { providerId: 'codex', modelId: 'gpt-5-codex' } })), /gpt-5-codex/)
+    // the board cannot reach the backend: the backend cannot report, so the board says so (and the fenced sentence stays locked word for word)
+    assert.match(render(source({ ...base, state: 'running', reason: null }, { state: 'unavailable', code: 'plugin_backend_unavailable' })), /data-ai-reason="backend"[^>]*>[^<]*暫時中斷/)
+    assert.ok(render(source({ ...base, state: 'running', reason: null }, { state: 'revoked', code: 'plugin_permission_denied' })).includes('TeamUQ 目前不讓這個外掛呼叫後端'))
     assert.doesNotMatch(running, /<(?:script|iframe|img|a)\b|on[a-z]+=/i, 'text only: nothing that could load or run anything')
   } finally { rmSync(work, { recursive: true, force: true }) }
+})
+
+// ───────────── review / test-report fixes (step-fix): F1 F2 F3 F4 F5 F6 F7 F9 ─────────────
+
+test('F1 port: a getOptions that never answers is given up after optionsGuardMs (far below the host\'s 30 s), one probe at a time; the status says the host does not answer — not "no provider" — and the port recovers by itself', async () => {
+  const clock = new FakeClock()
+  const mock = createMockTuqAi({ now: clock.now, reply: () => goodText })
+  let hang = true
+  let probes = 0
+  const ai = { ...mock.ai, getOptions: () => { probes += 1; return hang ? new Promise(() => undefined) : mock.ai.getOptions() } }
+  const port = createHostAiPort({ ai, clock })
+  assert.ok(HOST_AI_DEFAULTS.optionsGuardMs <= 15_000, 'well below the host\'s 30 s: a call that lasts 30 s gets the whole backend isolated')
+  const first = port.ready()
+  const second = port.ready()
+  await flush()
+  assert.equal(probes, 1, 'two callers share one probe')
+  await clock.advance(HOST_AI_DEFAULTS.optionsGuardMs - 1_000)
+  assert.equal(port.status().state, 'unavailable')
+  assert.equal(port.status().reason, 'loading_models', 'still waiting inside the guard time')
+  await clock.advance(1_001)
+  assert.deepEqual([await first, await second], [false, false])
+  assert.deepEqual({ state: port.status().state, reason: port.status().reason }, { state: 'unavailable', reason: 'host_unavailable' })
+  assert.match(describeStatus(port.status(), clock.now()), /暫時沒有回應/)
+  assert.equal(await port.ready(), false)
+  assert.equal(probes, 1, 'no new probe before the (short) retry time')
+  // the host answers again: the next probe comes after optionsRetryMs — not after the 60 s a "no provider" would cost — and everything works
+  hang = false
+  await clock.advance(HOST_AI_DEFAULTS.optionsRetryMs + 100)
+  assert.equal(await port.ready(), true)
+  assert.equal(port.status().state, 'running')
+  assert.equal(clock.timers.size, 0, 'the guard timer is gone')
+  // port.options() (the settings screen) is bounded the same way
+  hang = true
+  const options = rejection(port.options())
+  await clock.advance(HOST_AI_DEFAULTS.optionsGuardMs + 100)
+  assert.equal((await options).code, 'plugin_host_timeout')
+})
+
+test('F2 worker: an empty queue never asks the host (no getOptions every 30 s for nothing); an item that arrives is picked up at once and then the host is asked', async () => {
+  const ctx = workerSetup({ items: 0 })
+  ctx.worker.start()
+  await ctx.settle()
+  await ctx.clock.advance(5 * 60_000)
+  assert.equal(ctx.mock.stats.getOptions, 0, 'idle for five minutes: not one host call')
+  assert.ok(ctx.q.store.touches >= 20, 'the worker is alive and looking (queue is told)')
+  ctx.q.add({ chatId: 'c1' })
+  ctx.worker.kick()
+  await ctx.settle()
+  assert.equal(ctx.q.states()[0], 'done')
+  assert.equal(ctx.mock.stats.getOptions, 1)
+  ctx.worker.stop()
+})
+
+test('F3: the extraction lease outlives the slowest an item can take in the port (wait for the window, read the options, two host calls) — an expired lease throws the answer away and burns the quota twice', () => {
+  const worst = worstCaseItemMs(HOST_AI_DEFAULTS)
+  assert.ok(worst > 12 * 60_000 && worst < 15 * 60_000, `the worst case is about 13 minutes, saw ${worst} ms`)
+  assert.ok(EXTRACT_WORKER_DEFAULTS.leaseMs > worst, `lease ${EXTRACT_WORKER_DEFAULTS.leaseMs} ms must exceed ${worst} ms`)
+  const slower = { ...HOST_AI_DEFAULTS, completeGuardMs: HOST_AI_DEFAULTS.completeGuardMs + 60_000 }
+  assert.ok(worstCaseItemMs(slower) > worstCaseItemMs(HOST_AI_DEFAULTS), 'the figure follows the port\'s own constants')
+})
+
+test('F4: a user action that arrives while a background item is still reading the host\'s options goes first — it does not queue behind the background item', async () => {
+  const clock = new FakeClock()
+  const mock = createMockTuqAi({ now: clock.now, reply: () => goodText })
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const ai = { ...mock.ai, getOptions: async () => { await gate; return mock.ai.getOptions() } }
+  const port = createHostAiPort({ ai, clock })
+  const bg = port.complete(background({ system: 'BACKGROUND' }))
+  await flush()
+  const user = port.complete(userAction({ system: 'USER' }))
+  await flush()
+  release()
+  await flush()
+  await Promise.all([bg, user])
+  assert.deepEqual(mock.stats.turns.map((turn) => turn.system), ['USER', 'BACKGROUND'])
+})
+
+test('F5: the hourly budget keeps extractHourReserve turns for the user — background stops short of the 400/h cap, the user\'s draft is still answered at once (and Core never says rate_limited)', async () => {
+  // the window: 380 background turns spread over the last hour leave the minute window empty and the hour window at 380/400
+  const w = new TurnWindow(20, 400)
+  for (let i = 0; i < 380; i += 1) w.record(1_000 + i * 9_000)
+  const now = 1_000 + 380 * 9_000
+  assert.equal(w.wait(now, 2, 20).scope, 'hour')
+  assert.ok(w.delay(now, 2, 20) > 0, 'background waits')
+  assert.equal(w.delay(now, 0, 0), 0, 'a user action may still send')
+  assert.equal(w.delay(now, 2), w.delay(now, 2, 2), 'a single reserve applies to both windows when no hour reserve is given')
+  assert.equal(HOST_AI_DEFAULTS.extractHourReserve >= 10, true)
+  // the port: a small hourly budget (30, 5 kept) so the test runs in milliseconds
+  const ctx = portSetup({ config: { perHour: 30, extractHourReserve: 5 } })
+  const jobs = Array.from({ length: 40 }, () => ctx.port.complete(background()).then(() => 'ok', (error) => error))
+  await ctx.settle()
+  await ctx.clock.advance(5 * 60_000)
+  const results = await Promise.all(jobs)
+  assert.equal(results.filter((r) => r === 'ok').length, 25, 'background used 30 - 5 turns of the hour')
+  const refused = results.filter((r) => r !== 'ok')
+  assert.equal(refused.length, 15)
+  assert.ok(refused.every((error) => error.code === 'rate_limited' && error.scope === 'hour'), 'refused because the HOUR is full, and it says so')
+  assert.equal(ctx.port.windowWait('background')?.scope, 'hour', 'the status line can say "hourly limit"')
+  assert.equal(ctx.port.windowWait('user'), null)
+  const draft = ctx.port.complete(userAction({ system: 'DRAFT' }))
+  await ctx.settle()
+  assert.equal((await draft).text.length > 0, true, 'the reserved turns are the user\'s')
+  assert.equal(ctx.mock.stats.completes, 26)
+  assert.equal(ctx.mock.stats.errors.rate_limited, 0)
+})
+
+test('F6: a JSON repair that cannot get a quota slot is a transient rate_limited (the item goes back), not an invalid_json that backs the chat off', async () => {
+  const ctx = portSetup({ reply: () => '這不是 JSON', config: { perMinute: 1, extractReserve: 0, backgroundMaxWaitMs: 1_000 } })
+  const error = await rejection(ctx.port.complete(background()))
+  assert.equal(error.code, 'rate_limited')
+  assert.equal(error.scope, 'minute')
+  assert.equal(isTransientAiCode(error.code), true)
+  assert.equal(ctx.mock.stats.completes, 1, 'only the first ask was sent')
+  // with room for the repair the same reply is the item's own failure
+  const roomy = portSetup({ reply: () => '這不是 JSON' })
+  assert.equal((await rejection(roomy.port.complete(background()))).code, 'invalid_json')
+})
+
+test('F7: a host that does not answer is a short, transient pause with its own sentence — not "no provider" for a minute; a host that says the provider is down still waits the long retry', async () => {
+  // getOptions fails with a timeout code
+  const clock = new FakeClock()
+  const mock = createMockTuqAi({ now: clock.now, reply: () => goodText })
+  let code = 'plugin_host_timeout'
+  const ai = { ...mock.ai, getOptions: async () => { if (code) throw Object.assign(new Error(`host request failed: ${code}`), { code }); return mock.ai.getOptions() } }
+  const port = createHostAiPort({ ai, clock })
+  const refused = await rejection(port.complete(background()))
+  assert.equal(refused.code, 'plugin_host_unavailable')
+  assert.equal(isTransientAiCode(refused.code), true)
+  assert.ok(refused.retryAfterMs <= HOST_AI_DEFAULTS.optionsRetryMs, `short retry, saw ${refused.retryAfterMs} ms`)
+  assert.deepEqual({ state: port.status().state, reason: port.status().reason }, { state: 'unavailable', reason: 'host_unavailable' })
+  assert.notEqual(port.status().reason, 'no_provider')
+  code = null
+  await clock.advance(HOST_AI_DEFAULTS.optionsRetryMs + 100)
+  assert.equal((await port.complete(background())).value.importance, 'action', 'asked again after the short retry, not after providerRetryMs')
+  // a complete() that fails because the host cannot be reached: transient, global short backoff, same sentence
+  const down = portSetup({ reply: () => ({ fail: 'plugin_host_unavailable' }) })
+  const failed = await rejection(down.port.complete(background()))
+  assert.equal(failed.code, 'plugin_host_unavailable')
+  assert.equal(isTransientAiCode('plugin_host_unavailable'), true)
+  assert.equal(failed.retryAfterMs, HOST_AI_DEFAULTS.hostRetryMs)
+  assert.equal(down.port.status().reason, 'host_unavailable')
+  // plugin_host_timeout from a complete() is the item's own failure on purpose: a chat that always wedges the model must back off, not be re-queued at the head forever
+  assert.equal(isTransientAiCode('plugin_host_timeout'), false)
+  // the host says the provider is down: the long retry
+  const provider = portSetup()
+  provider.mock.control.set({ providerState: 'not_logged_in' })
+  await rejection(provider.port.complete(background()))
+  assert.equal(provider.port.status().reason, 'provider_not_logged_in')
+})
+
+test('F9: the status line names the limit that is actually reached (minute or hour); the host-reported limits are used', () => {
+  const base = { busy: false, provider: null, counters: {}, resumeAt: 1_000_000 + 12 * 60_000 }
+  assert.match(describeStatus({ ...base, state: 'paused', reason: 'rate_limited_hour', turnsPerHour: 400 }, 1_000_000), /每小時 400 次.*約 12 分鐘後繼續/)
+  assert.doesNotMatch(describeStatus({ ...base, state: 'paused', reason: 'rate_limited_hour' }, 1_000_000), /每小時 \d+ 次|每分鐘/, 'unknown limit: no number, no wrong window')
+  assert.match(describeStatus({ ...base, state: 'paused', reason: 'rate_limited', turnsPerMinute: 20, resumeAt: 1_030_000 }, 1_000_000), /每分鐘 20 次/)
+  assert.match(describeBoardStatus({ ...base, state: 'paused', reason: 'rate_limited_hour', turnsPerHour: 400 }, 1_000_000), /每小時 400 次/)
+  assert.match(describeStatus({ ...base, state: 'unavailable', reason: 'host_unavailable' }), /暫時沒有回應/)
+})
+
+test('F3 (test report): while Core still remembers turns this backend does not know about, the probes thin out — a rate_limited the window cannot explain backs off to 5 minutes, items are released (never failed), and everything finishes when the window frees', async () => {
+  const ctx = workerSetup({ items: 2 })
+  ctx.mock.control.consumeTurns(400) // used by the previous life of the backend: Core remembers, a new TurnWindow starts empty, getOptions does not say
+  ctx.worker.start()
+  await ctx.settle()
+  await ctx.clock.advance(30 * 60_000)
+  const probes = ctx.mock.stats.errors.rate_limited
+  assert.ok(probes >= 5 && probes <= 12, `30 minutes of being blocked cost ${probes} refused probes (a 60 s cap would be ~33)`)
+  assert.deepEqual(ctx.q.states(), ['pending', 'pending'])
+  assert.ok(ctx.q.store.items.every((item) => item.attempts === 0), 'never counted as the chats\' failure')
+  assert.equal(ctx.port.status().state, 'paused')
+  await ctx.clock.advance(31 * 60_000) // the foreign turns leave the hour
+  await ctx.clock.advance(6 * 60_000)
+  assert.deepEqual(ctx.q.states(), ['done', 'done'])
+  ctx.worker.stop()
 })

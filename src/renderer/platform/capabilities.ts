@@ -25,7 +25,7 @@ export interface HostCapabilities {
   openAtLogin: boolean
   /** 看板內的「設定」分頁（外掛版沿用共用設定面板；TeamUQ 專屬設定入口也保留）。 */
   settingsTab: boolean
-  /** 「抽取並發數」：只對 http provider 有意義（外掛版的抽取由 UI 端的 ai:chat 編排）。 */
+  /** 「抽取並發數」：只對 http provider 有意義（外掛版的抽取由 backend 的 ExtractWorker 經 host.ai.complete 完成，節奏由 TeamUQ 的配額決定）。 */
   extractConcurrency: boolean
 }
 

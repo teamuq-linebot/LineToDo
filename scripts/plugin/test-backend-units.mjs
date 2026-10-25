@@ -1,6 +1,6 @@
 // Phase 2 — unit tests for the plugin backend building blocks, run on plain Node 24 with the node:sqlite test adapter
 // (the real better-sqlite3 13.0.2 / WASM / koffi / 1.6.8-permission path is exercised by test-backend-contract.mjs):
-//   * ExtractQueue + runOnce(extractSink): supply (outbox) and receive (inbox), parity with the standalone apply path
+//   * ExtractQueue + runOnce(extractSink): supply (outbox) and receive (inbox), parity with the standalone apply path (0.2.0: the consumer is the in-process ExtractWorker; here the tests act as the consumer on the queue directly)
 //   * EventHub: seq/replay/gap/long-poll/capability session
 //   * Dispatcher: allow-list routing, unsupported paths, 64 KiB chunking, soft-deadline jobs
 //   * createPluginBackend: the whole assembly on a fake LINE port (no koffi, no WASM)
@@ -23,6 +23,7 @@ import { EVENTS_CAPABILITY, EventHub, compactPayload } from '../../src/plugin/ba
 import { EXTRACT_SYSTEM_SHA256, ExtractQueue, partitionExtractInput } from '../../src/plugin/backend/extractQueue.ts'
 import { createPluginBackend } from '../../src/plugin/backend/assemble.ts'
 import { BACKEND_METHOD_GROUPS, backendMethodFor } from '../../src/shared/pluginWire.ts'
+import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
 
 // ───────────── helpers ─────────────
 
@@ -540,7 +541,7 @@ test('dispatcher (G-07): the method must be the method group of the path; driver
   assert.equal(new Set(BACKEND_METHOD_GROUPS).size, BACKEND_METHOD_GROUPS.length)
   for (const group of BACKEND_METHOD_GROUPS) assert.match(group, /^[A-Za-z0-9._@-]{1,64}$/)
   // every path the backend serves (and every path it refuses in-band) belongs to exactly one declared group
-  for (const path of [...SUPPORTED_API_PATHS, ...Object.keys(UNSUPPORTED_API_PATHS), 'backend.info', 'review.status', 'tasks.status', 'events.open', 'events.pull', 'events.close', 'extract.system', 'extract.pull', 'extract.commit', 'extract.release', 'extract.stats', 'ai.pull', 'ai.commit', 'ai.release', 'ai.run', 'media.prepare', 'result.chunk', 'job.poll']) {
+  for (const path of [...SUPPORTED_API_PATHS, ...Object.keys(UNSUPPORTED_API_PATHS), 'backend.info', 'review.status', 'tasks.status', 'events.open', 'events.pull', 'events.close', 'extract.stats', 'ai.status', 'ai.options', 'media.prepare', 'result.chunk', 'job.poll']) {
     assert.ok(BACKEND_METHOD_GROUPS.includes(backendMethodFor(path)), `${path} has a declared method group`)
   }
   assert.equal(backendMethodFor('db.todos.list'), 'db.todos')
@@ -556,18 +557,18 @@ test('dispatcher (G-07): the method must be the method group of the path; driver
   dispose()
 })
 
-test('dispatcher: CLI/AI provider and Electron-only paths answer unsupported_in_plugin (with the UI route where ai:chat takes over)', async () => {
+test('dispatcher: CLI/AI provider and Electron-only paths answer unsupported_in_plugin; the three AI features are NOT among them any more (they run in the backend)', async () => {
   const { d, dispose } = makeDispatcher(fakeApi({ driver: { postDraft: async () => { throw new Error('must not run') } } }))
   for (const [path, route] of [
     ['media.open', 'none'], ['media.saveAs', 'none'], ['app.openDataFolder', 'none'], ['db.chats.openOriginal', 'none'],
-    ['pipeline.testQwen', 'none'], ['pipeline.testAiProvider', 'none'], ['settings.setApiKey', 'none'], ['settings.clearApiKey', 'none'],
-    ['db.todos.draftReply', 'ui_ai_chat'], ['db.todos.analyzeNotMine', 'ui_ai_chat'], ['groupTopics.analyze', 'ui_ai_chat']
+    ['pipeline.testQwen', 'none'], ['pipeline.testAiProvider', 'none'], ['settings.setApiKey', 'none'], ['settings.clearApiKey', 'none']
   ]) {
     const r = await inv(d, path, 'x')
     assert.equal(r.ok, false, path)
     assert.equal(r.code, 'unsupported_in_plugin', path)
     assert.equal(r.route, route, path)
   }
+  for (const path of ['db.todos.draftReply', 'db.todos.analyzeNotMine', 'groupTopics.analyze']) assert.ok(SUPPORTED_API_PATHS.includes(path) && !UNSUPPORTED_API_PATHS[path], `${path} is served by the backend`)
   dispose()
 })
 
@@ -654,18 +655,15 @@ test('dispatcher: jobs are capped, expire after their ttl, and dispose releases 
   dispose()
 })
 
-test('dispatcher: backend.info, extract.* and events.* are reachable through their method groups and lift component errors into the envelope', async () => {
+test('dispatcher: backend.info, extract.stats and events.* are reachable through their method groups; the 0.1.x relay paths (extract.pull / commit / release / system) are gone', async () => {
   const { db } = freshDb()
   const { d, hub, queue, dispose } = (() => { const x = makeDispatcher(fakeApi()); return x })()
   assert.equal((await inv(d, 'backend.info')).value.ok, true)
-  const system = await inv(d, 'extract.system')
-  assert.equal(system.value.system, EXTRACT_SYSTEM_PROMPT)
-  assert.equal(system.value.sha256, EXTRACT_SYSTEM_SHA256)
-  assert.equal(system.value.ok, undefined, 'internal ok flags are not duplicated inside value')
-  assert.deepEqual((await inv(d, 'extract.pull', { max: 2 })).value.items, [])
-  assert.equal((await inv(d, 'extract.commit', {})).code, 'invalid_args')
-  assert.equal((await inv(d, 'extract.commit', { results: [] })).code, 'invalid_args')
-  assert.equal((await inv(d, 'extract.commit', { results: [{ itemId: 'zz', ok: true }] })).value.results[0].status, 'unknown_item')
+  assert.deepEqual(Object.keys((await inv(d, 'extract.stats')).value).sort(), ['awaiting', 'chatsBackingOff', 'gen', 'leased', 'pending'])
+  for (const path of ['extract.system', 'extract.pull', 'extract.commit', 'extract.release']) {
+    const r = await inv(d, path, { max: 2, results: [], itemIds: ['a'] })
+    assert.deepEqual({ ok: r.ok, code: r.code }, { ok: false, code: 'path_unknown' }, path)
+  }
   const opened = await inv(d, 'events.open', {})
   assert.equal(opened.ok, true)
   hub.publish('todos-changed', { createdIds: ['a'] })
@@ -700,11 +698,13 @@ function resourcesNow() {
   return counts
 }
 
-test('assembly: activate-like start, fake LINE message -> events + db, supply/receive through the method groups, dispose leaves nothing behind', async () => {
+test('assembly: activate-like start, fake LINE message -> events + db, the backend supplies and its worker receives through host.ai.complete, dispose leaves nothing behind', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'plugin-backend-unit-'))
   const baseline = resourcesNow()
   const line = fakeLine()
-  const backend = await createPluginBackend({ pluginId: 'tuqdev.line-todo', version: '9.9.9', dataDir, line: line.port, extract: { retryBaseMs: 50 } })
+  // the model: the first two answers (the original and its one repair) cannot pass the schema -> the chat fails and backs off; later answers are valid; a draft prompt gets a draft
+  const ai = createMockTuqAi({ reply: (ctx) => (ctx.system.includes('草擬') ? '好的，我處理。' : ctx.turn < 2 ? JSON.stringify({ importance: 'nope' }) : JSON.stringify(okResult([JSON.parse(ctx.user).newMessages[0].msgId]))) })
+  const backend = await createPluginBackend({ pluginId: 'tuqdev.line-todo', version: '9.9.9', dataDir, line: line.port, extract: { retryBaseMs: 50 }, hostAi: ai.ai, ai: { config: { optionsTtlMs: 20 }, worker: { pollIntervalMs: 40 } } })
   const call = async (path, ...args) => backend.call(backendMethodFor(path), { path, args })
   try {
     assert.equal((await call('ping')).value.version, '9.9.9')
@@ -726,36 +726,37 @@ test('assembly: activate-like start, fake LINE message -> events + db, supply/re
     assert.equal(messages.length, 2)
     assert.deepEqual((await call('db.todos.list')).value, [])
 
-    // supply: a pipeline run only collects
+    // supply: a pipeline run only collects; the backend's own worker then asks host.ai.complete (nobody pulls over the wire)
     const run = (await call('pipeline.runOnce')).value
     assert.equal(run.chatsSkipped, 1)
     assert.equal(run.todosCreated, 0)
-    const pulled = (await call('extract.pull', { max: 3 })).value
-    assert.equal(pulled.items.length, 1)
-    assert.equal(JSON.parse(pulled.items[0].user).newMessages.length, 2)
+    const until = async (probe, label) => { for (let i = 0; i < 300; i += 1) { const v = await probe(); if (v) return v; await new Promise((r) => setTimeout(r, 10)) } assert.fail(`timeout: ${label}`) }
+    await until(async () => (await call('extract.stats')).value.chatsBackingOff === 1, 'the first answer (and its repair) cannot pass the schema: the chat backs off')
+    assert.equal(ai.stats.completes, 2, 'the original turn and one repair turn')
+    assert.equal(JSON.parse(ai.stats.turns[0].text).newMessages.length, 2, 'both messages of the chat went into one turn')
+    assert.equal((await call('db.todos.list')).value.length, 0, 'a rejected result never marks messages processed or creates anything')
+    assert.equal((await call('ai.status')).value.counters.failed, 1)
 
-    // receive: invalid first, then valid
-    const bad = (await call('extract.commit', { results: [{ itemId: pulled.items[0].itemId, ok: true, result: { importance: 'nope' } }] })).value
-    assert.equal(bad.results[0].status, 'rejected')
+    // receive: after the chat backoff, the next cycle's supply is answered correctly
     await new Promise((r) => setTimeout(r, 60))
     await call('pipeline.runOnce')
-    const again = (await call('extract.pull')).value
-    assert.equal(again.items.length, 1)
-    const good = (await call('extract.commit', { results: [{ itemId: again.items[0].itemId, ok: true, result: okResult(['m1']) }] })).value
-    assert.equal(good.results[0].status, 'applied')
-    const todos = (await call('db.todos.list')).value
-    assert.equal(todos.length, 1)
+    const todos = await until(async () => { const list = (await call('db.todos.list')).value; return list.length === 1 ? list : null }, 'the valid answer becomes a todo')
     assert.equal(todos[0].title, '回覆報價單')
+    assert.equal((await call('ai.status')).value.counters.extracted, 1)
+    assert.equal(ai.control.liveSessions(), 0)
 
     const after = (await call('events.pull', { sessionId: session.sessionId, afterSeq: events.seq, waitMs: 0 })).value
     const todosChanged = after.events.find((e) => e.type === 'todos-changed')
     assert.deepEqual(todosChanged.payload.createdIds, [todos[0].id])
     assert.ok(after.events.some((e) => e.type === 'pipeline-run'))
-    assert.ok(after.events.some((e) => e.type === 'extract-pending'))
+    // the status event is throttled (at most one per second, trailing): wait for it
+    const withStatus = after.events.some((e) => e.type === 'ai-status') ? after : (await call('events.pull', { sessionId: session.sessionId, afterSeq: after.seq, waitMs: 2500 })).value
+    assert.ok(withStatus.events.some((e) => e.type === 'ai-status'), 'the AI status is published as an event')
+    assert.equal(after.events.some((e) => e.type === 'extract-pending'), false, 'there is no view-side consumer to wake up any more')
 
     // unsupported + AI paths
     assert.equal((await call('driver.postDraft')).code, 'method_unknown', 'driver is not a method group (G-07)')
-    assert.equal((await call('db.todos.draftReply', todos[0].id)).route, 'ui_ai_chat')
+    assert.deepEqual((await call('db.todos.draftReply', todos[0].id)).value, { draft: '好的，我處理。' }, 'the draft is produced in the backend')
     // settings never expose a key and the backend has no provider
     const settings = (await call('settings.get')).value
     assert.equal(settings.hasApiKey, true)
@@ -784,19 +785,18 @@ test('assembly: activate-like start, fake LINE message -> events + db, supply/re
   rmSync(dataDir, { recursive: true, force: true })
 })
 
-test('assembly: reviewLastDays-style synchronous extraction rides the same queue and a long call becomes a job', async () => {
+test('assembly: reviewLastDays-style synchronous extraction rides the same queue (answered by the worker) and a long call becomes a job', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'plugin-backend-unit-'))
   const line = fakeLine()
   const sinceWindow = [raw(1, { text: '提醒我週五前交付報告', ts: Date.now() - 1000 }), raw(2, { text: '另外發票也要開', ts: Date.now() - 500 })]
   line.port.getMessagesSince = async () => sinceWindow
-  const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir, line: line.port, dispatcher: { softDeadlineMs: 30, maxJobWaitMs: 300 } })
+  // the model takes ~100 ms, longer than the 30 ms soft deadline: the long call turns into a job
+  const ai = createMockTuqAi({ reply: (ctx) => ({ text: JSON.stringify(okResult([JSON.parse(ctx.user).newMessages[0].msgId], '交付週五報告')), delay: () => new Promise((r) => setTimeout(r, 100)) }) })
+  const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir, line: line.port, dispatcher: { softDeadlineMs: 30, maxJobWaitMs: 300 }, hostAi: ai.ai, ai: { config: { optionsTtlMs: 20 }, worker: { pollIntervalMs: 40 } } })
   const call = (path, ...args) => backend.call(backendMethodFor(path), { path, args })
   try {
     const started = await call('pipeline.reviewLastDays', 7)
-    assert.equal(started.pending, true, 'the review waits for the UI, so it is a job (not a blocked invoke)')
-    const pulled = (await call('extract.pull')).value
-    assert.equal(pulled.items.length, 1)
-    assert.equal((await call('extract.commit', { results: [{ itemId: pulled.items[0].itemId, ok: true, result: okResult(['m1'], '交付週五報告') }] })).value.results[0].status, 'accepted')
+    assert.equal(started.pending, true, 'the review takes longer than the soft deadline, so it is a job (not a blocked invoke)')
     let result = null
     for (let i = 0; i < 20 && !result; i += 1) {
       const poll = await call('job.poll', { jobId: started.jobId, waitMs: 100 })
@@ -812,16 +812,19 @@ test('assembly: reviewLastDays-style synchronous extraction rides the same queue
   }
 })
 
-test('assembly: dispose while a synchronous extraction and a long poll are outstanding does not hang', async () => {
+test('assembly: dispose while a synchronous extraction (host call that never answers) and a long poll are outstanding does not hang', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'plugin-backend-unit-'))
   const line = fakeLine()
   line.port.getMessagesSince = async () => [raw(1, { ts: Date.now() - 1000 })]
-  const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir, line: line.port, dispatcher: { softDeadlineMs: 20 } })
+  const ai = createMockTuqAi({ reply: () => ({ hang: true }) })
+  const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir, line: line.port, dispatcher: { softDeadlineMs: 20 }, hostAi: ai.ai, ai: { config: { optionsTtlMs: 20 }, worker: { pollIntervalMs: 40 } } })
   const call = (path, ...args) => backend.call(backendMethodFor(path), { path, args })
   const review = await call('pipeline.reviewLastDays', 1)
   const session = (await call('events.open', {})).value
   const poll = call('events.pull', { sessionId: session.sessionId, afterSeq: session.seq, waitMs: 4000 })
   assert.equal(review.pending, true)
+  await new Promise((r) => setTimeout(r, 80))
+  assert.equal(ai.stats.completes, 1, 'the worker is inside a host call that will never be answered')
   const t0 = Date.now()
   await Promise.race([backend.dispose(), new Promise((_, reject) => setTimeout(() => reject(new Error('dispose hung')), 5000))])
   assert.ok(Date.now() - t0 < 2000)

@@ -19,7 +19,10 @@
  * `activateAt(context, location)` 是測試入口：契約測試以假 LINE 資料夾執行「打包後的 backend」時用它指定位置，TeamUQ 只會呼叫 `activate`。
  * 它和 `activate` 走同一條組裝路徑，只差 LINE 位置與輪詢參數不是由本機推得。
  *
- * 不 import electron、不 import child_process／worker_threads、不做網路 I/O、不呼叫 LLM。
+ * AI（0.2.0）：唯一的出口是 `context.host.ai`（TeamUQ 的 `ai:chat`；`complete` 需要 Core >=1.7.13，manifest 的 minCoreVersion 同步提高）。
+ * 抽取、草擬回覆、誤判分析、群組議題分析、prompt 修正都在 backend 經它完成（assemble.ts 建立 AI port），所以看板不需要開著。
+ *
+ * 不 import electron、不 import child_process／worker_threads、不做網路 I/O、不直接呼叫任何 LLM 服務。
  */
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -65,6 +68,10 @@ export async function activateAt(context: PluginBackendContext, location: LineLo
     pluginId: context.pluginId,
     version: PLUGIN_VERSION,
     dataDir: context.dataDir,
+    // `host` only exists in Core >= 1.7.12 (manifest minCoreVersion keeps older Cores from installing this); without it the AI features report "not started" instead of the backend failing to activate
+    hostAi: context.host?.ai,
+    // `context.residency` (background:resident) only exists in a Core that has the feature; a Core without it leaves this undefined and the backend behaves as before
+    residency: context.residency,
     linePorts: { fs, sqlite, dbDir: location.lineDbDir },
     media: { cacheDir: location.lineCacheDir },
     watcher: {

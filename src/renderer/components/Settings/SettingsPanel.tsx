@@ -330,7 +330,8 @@ export function SettingsPanel({ initialView, initialLoadError, initialActionErro
           <div className="set-section-title">AI 判斷引擎</div>
           <div className="set-msg muted" data-testid="ai-by-host">
             新訊息的代辦抽取與「草擬回覆」由 TeamUQ 內建的 AI 對話（Codex）提供：不需要在這裡填金鑰或選引擎，也不使用自訂端點或 CLI。
-            AI 只在 line-todo 看板顯示在前景時整理新訊息；其他時候訊息會先存起來，回到看板後再補整理。
+            AI 由外掛的背景程式執行，看板不需要開著；TeamUQ 閒置停止背景程式期間收到的訊息，會在下次開啟看板後補整理。
+            AI 整理過的對話會記錄在 TeamUQ 的 AI 歷史。
           </div>
         </div>
       )}

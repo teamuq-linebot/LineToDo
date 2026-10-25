@@ -15,6 +15,11 @@ export const PLUGIN_PAGE_PLACE = 'TeamUQ 管理外掛的「外掛」頁'
 export const PERMISSIONS_SECTION_TITLE = '它可以做的事'
 /** `ai:chat` 權限開關在 TeamUQ 上的標題（`pluginText.ts` PERMISSION_TEXT["ai:chat"].title，1.6.8 `:112`、1.7.1 `:118`）。 */
 export const AI_CHAT_TOGGLE_TITLE = '用你的 AI 對話額度回答你'
+/**
+ * `background:resident` 權限開關在 TeamUQ 上的標題（teamuq-electron `pluginText.ts` PERMISSION_TEXT[BACKGROUND_RESIDENT_PERMISSION].title，Core 設計 D:324-326）。
+ * 這句話出現在畫面文字裡，所以逐字鎖定（scripts/plugin/lib/fenced-text.mjs）；`check:core-gate-conformance` 尚未核對它（等含此開關的 Core 發版後擴充）。
+ */
+export const RESIDENT_TOGGLE_TITLE = '關閉畫面後繼續在背景執行'
 /** 打開外掛後顯示本外掛設定 view 的分頁名稱。 */
 export const PLUGIN_SETTINGS_TAB_LABEL = '設定'
 /** 看板 view 在 TeamUQ 側邊欄的標籤＝manifest `contributes.views[board].title`（scripts/plugin/lib/manifest.mjs；測試核對兩者相同）。 */
@@ -25,6 +30,13 @@ export const PLUGIN_SETTINGS_PLACE = `${PLUGIN_PAGE_PLACE}打開這個外掛後�
 
 /** 要使用者重新允許 `ai:chat` 時的做法（看板狀態列與 backend 的錯誤訊息共用）。 */
 export const AI_CHAT_ALLOW_STEPS = `請到 ${PLUGIN_PAGE_PLACE}打開這個外掛，在「${PERMISSIONS_SECTION_TITLE}」裡允許「${AI_CHAT_TOGGLE_TITLE}」`
+
+/** 要使用者打開背景執行時的做法（看板狀態列與設定頁共用）。 */
+export const RESIDENT_ALLOW_STEPS = `請到 ${PLUGIN_PAGE_PLACE}打開這個外掛，在「${PERMISSIONS_SECTION_TITLE}」裡打開「${RESIDENT_TOGGLE_TITLE}」`
+/** 要使用者關閉背景執行時的做法。 */
+export const RESIDENT_STOP_STEPS = `想停止時，請到 ${PLUGIN_PAGE_PLACE}打開這個外掛，在「${PERMISSIONS_SECTION_TITLE}」裡關閉「${RESIDENT_TOGGLE_TITLE}」`
+/** 背景執行被 TeamUQ 停止後的做法（崩潰、啟動失敗：Core 的文字是「停用再啟用這個外掛就會再試」）。 */
+export const RESIDENT_RETRY_STEPS = `請到 ${PLUGIN_PAGE_PLACE}把這個外掛停用再啟用，TeamUQ 就會再試`
 
 /** 不在 TeamUQ 裡開啟（找不到 `window.tuqPlugin`）時顯示的說明。看板與設定兩個 view 共用。 */
 export const NOT_IN_HOST_TEXT = `這個頁面要在 TeamUQ 裡開啟：看板在 TeamUQ 側邊欄的「${BOARD_VIEW_TITLE}」；外掛的選項在 ${PLUGIN_SETTINGS_PLACE}。找不到 TeamUQ 提供的外掛橋接（window.tuqPlugin）。`

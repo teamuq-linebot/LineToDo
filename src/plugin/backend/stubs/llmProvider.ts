@@ -10,7 +10,7 @@ import type { LlmProvider, ProviderHealth } from '../../../main/llm/provider/typ
 
 export { LlmProviderError } from '../../../main/llm/provider/types'
 
-/** 外掛 backend 沒有 provider（抽取由 UI 端經 ai:chat 完成，結果走 ExtractQueue）。 */
+/** 外掛 backend 沒有這種 provider（AI 由組裝根注入的 AI port provider 提供，經 context.host.ai.complete；見 aiProvider.ts）。 */
 export function resolveProvider(): LlmProvider | null {
   return null
 }
@@ -19,7 +19,7 @@ export function unconfiguredHealth(): ProviderHealth {
   return {
     ok: false,
     code: 'invalid_config',
-    summary: '外掛版的 AI 由 TeamUQ 的 ai:chat 提供，backend 不直接呼叫任何 AI 引擎',
+    summary: '外掛版的 AI 由 TeamUQ 的 ai:chat 提供（backend 經 host.ai.complete 呼叫），不直接使用任何 AI 引擎',
     details: {}
   }
 }

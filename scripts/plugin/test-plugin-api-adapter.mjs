@@ -20,8 +20,9 @@ import { Dispatcher } from '../../src/plugin/backend/dispatcher.ts'
 import { EventHub } from '../../src/plugin/backend/eventHub.ts'
 import { CAPABILITY_API_PATHS, PLUGIN_CAPABILITIES, STANDALONE_CAPABILITIES } from '../../src/renderer/platform/capabilities.ts'
 import {
-  PLUGIN_AI_NOT_CONNECTED, PluginApiError, PluginBackendError, PluginUnsupportedError, createPluginLineTodoApi
+  PluginApiError, PluginBackendError, PluginUnsupportedError, createPluginLineTodoApi
 } from '../../src/renderer/platform/pluginApi.ts'
+import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
 import { Limiter, toWire } from '../../src/renderer/platform/pluginTransport.ts'
 import { RESOURCES } from './lib/manifest.mjs'
 import { backendMethodFor } from '../../src/shared/pluginWire.ts'
@@ -114,14 +115,32 @@ const okResult = (msgIds, title = '回覆報價單') => ({
   resolved: [], updates: []
 })
 
-/** Real backend + adapter. */
+const fenced = (value) => '```json\n' + JSON.stringify(value) + '\n```'
+/** The model: an extraction prompt gets one todo citing the first message of the payload; a draft prompt gets a draft. */
+const defaultReply = (ctx) => (ctx.system.includes('草擬') ? '好的，我明天回覆您' : fenced(okResult([JSON.parse(ctx.user).newMessages[0].msgId])))
+const asyncUntil = async (probe, { timeout = 4000, step = 10, message = 'condition' } = {}) => {
+  const t0 = Date.now()
+  for (;;) {
+    const value = await probe()
+    if (value) return value
+    if (Date.now() - t0 > timeout) assert.fail(`timed out waiting for ${message}`)
+    await sleep(step)
+  }
+}
+
+/** Real backend (with a mock `context.host.ai` — the backend answers its own extraction since 0.2.0) + adapter. */
 async function withBackend(options, body) {
   const dataDir = mkdtempSync(join(tmpdir(), 'plugin-adapter-'))
   const line = fakeLine()
-  const backend = await createPluginBackend({ pluginId: 'tuqdev.line-todo', version: '7.7.7', dataDir, line: line.port, extract: { retryBaseMs: 20 }, ...options.backend })
+  const ai = createMockTuqAi({ reply: options.reply ?? defaultReply })
+  options.setup?.(ai)
+  const backend = await createPluginBackend({
+    pluginId: 'tuqdev.line-todo', version: '7.7.7', dataDir, line: line.port, extract: { retryBaseMs: 20 },
+    hostAi: ai.ai, ai: { config: { optionsTtlMs: 20, providerRetryMs: 100 }, worker: { pollIntervalMs: 40, unavailableRetryMs: 30 } }, ...options.backend
+  })
   const mock = makeHost({ target: backend, ...options.host })
   const api = createPluginLineTodoApi({ host: mock.host, events: FAST_EVENTS, ...options.api })
-  try { await body({ api, backend, line, mock, dataDir }) } finally {
+  try { await body({ api, backend, line, mock, dataDir, ai }) } finally {
     api.dispose()
     await backend.dispose()
     rmSync(dataDir, { recursive: true, force: true })
@@ -131,7 +150,7 @@ async function withBackend(options, body) {
 // ───────────── adapter returns correct values ─────────────
 
 test('adapter: request/response methods reach the backend and return its values (messages, chats, todos, settings, pipeline, ping)', async () => {
-  await withBackend({}, async ({ api, line }) => {
+  await withBackend({}, async ({ api, line, mock }) => {
     assert.equal((await api.ping()).version, '7.7.7')
     assert.equal((await api.line.status()).state, 'running')
     line.emit(raw(1, { text: '請幫我寄報價單給客戶' }))
@@ -150,17 +169,13 @@ test('adapter: request/response methods reach the backend and return its values 
     assert.equal((await api.db.messages.recentByChat('u-alice', 1)).length, 1)
     assert.deepEqual(await api.db.todos.list(), [])
 
-    // the AI-extraction loop through the adapter's extract channel (what the Phase 4 orchestrator will drive)
+    // the AI extraction loop: the pipeline supplies, the backend's own worker answers through host.ai.complete (the view only reads)
     const status = await api.pipeline.runOnce()
     assert.equal(status.todosCreated, 0)
-    const system = await api.plugin.extract.system()
-    assert.ok(system.chars > 1000 && /^[0-9a-f]{64}$/.test(system.sha256))
-    const pulled = await api.plugin.extract.pull({ max: 3 })
-    assert.equal(pulled.items.length, 1)
-    const committed = await api.plugin.extract.commit([{ itemId: pulled.items[0].itemId, ok: true, result: okResult(['m1']) }])
-    assert.equal(committed.results[0].status, 'applied')
-    const todos = await api.db.todos.list()
-    assert.equal(todos.length, 1)
+    const todos = await asyncUntil(async () => { const list = await api.db.todos.list(); return list.length === 1 ? list : null }, { message: 'the worker to create the todo' })
+    assert.equal((await api.plugin.extract.stats()).pending, 0)
+    assert.equal((await api.plugin.aiStatus()).counters.extracted, 1)
+    assert.equal(mock.count('extract.pull') + mock.count('extract.commit') + mock.count('extract.system'), 0, 'no extraction RPC from the view')
     assert.equal(todos[0].title, '回覆報價單')
     assert.equal((await api.db.todos.updateStatus(todos[0].id, 'done')).status, 'done')
     assert.equal((await api.db.todos.moveColumn(todos[0].id, 'todo')).status, 'pending')
@@ -222,12 +237,12 @@ test('adapter: wire format — trailing undefined dropped, JSON round trip, size
 
 // ───────────── review F1: the UI never exceeds the manifest's maxSessions; a busy answer is retried with backoff ─────────────
 
-/** What a board view does when it opens (status, settings, lists) plus 10 images and the orchestrator's pulls — all at once, with the event long poll running. */
+/** What a board view does when it opens (status, settings, lists, AI status) plus 10 images — all at once, with the event long poll running. */
 async function loadBoardLikeBurst(api) {
   const media = Array.from({ length: 10 }, (_, i) => api.media.assetUrl(`i:m${i}`))
   return Promise.all([
     api.pipeline.status(), api.settings.get(), api.db.todos.list(), api.db.chats.list(), api.line.status(), api.pipeline.loadStats(),
-    api.plugin.extract.system(), api.plugin.extract.pull({ max: 1 }), api.plugin.aiTasks.pull({ max: 1 }), api.plugin.reviewStatus(), api.plugin.info(),
+    api.plugin.extract.stats(), api.plugin.aiStatus({ refresh: true }), api.plugin.reviewStatus(), api.plugin.info(),
     ...media
   ])
 }
@@ -380,7 +395,7 @@ test('adapter: a result above the 64 KiB response limit comes back in chunks and
 // ───────────── on* subscriptions receive long-poll events ─────────────
 
 test('events: on* subscriptions receive the backend events through the long poll (in order, once, no key material); one session serves every subscriber', async () => {
-  await withBackend({}, async ({ api, line, mock }) => {
+  await withBackend({}, async ({ api, line, mock, ai }) => {
     const seen = { message: [], persisted: [], run: [], todos: [], status: [], pipelineStatus: [] }
     const offs = [
       api.line.onMessage((m) => seen.message.push(m)),
@@ -400,20 +415,18 @@ test('events: on* subscriptions receive the backend events through the long poll
     assert.ok(seen.message.every((m) => !('keyMaterial' in m)))
     assert.equal(seen.persisted.reduce((n, e) => n + e.inserted, 0), 2)
 
-    // a run + an inbox commit produce pipeline-run and todos-changed
+    // a run (the backend's worker answers the supply) produces pipeline-run and todos-changed
     await api.pipeline.runOnce()
-    const pulled = await api.plugin.extract.pull({})
-    await api.plugin.extract.commit([{ itemId: pulled.items[0].itemId, ok: true, result: okResult(['m1']) }])
     await until(() => seen.todos.some((e) => e.createdIds.length === 1) && seen.run.length >= 2, { message: 'todos-changed and pipeline-run' })
     const created = (await api.db.todos.list()).map((t) => t.id)
     assert.deepEqual(seen.todos.find((e) => e.createdIds.length === 1).createdIds, created)
-    // the extract-pending event reaches the orchestrator hook as well
-    const pending = []
-    const offPending = api.plugin.extract.onPending((info) => pending.push(info))
-    line.emit(raw(3, { chatId: 'u-bob', chat: 'Bob', text: '週五前交付設計稿' }))
-    await api.pipeline.runOnce()
-    await until(() => pending.length >= 1, { message: 'extract-pending' })
-    offPending()
+    // the AI status is an event too (the board's status line)
+    const aiEvents = []
+    const offAi = api.plugin.onAiStatus((status) => aiEvents.push(status.state))
+    ai.control.set({ providerState: 'not_logged_in' })
+    await api.plugin.aiStatus({ refresh: true })
+    await until(() => aiEvents.includes('unavailable'), { message: 'ai-status event' })
+    offAi()
 
     assert.equal(mock.count('events.open'), 1, 'one long-poll session for all subscribers')
     assert.equal(api.plugin.eventsStats().listeners, 7, 'listener bookkeeping')
@@ -567,11 +580,12 @@ test('unsupported: driver is absent; CLI / endpoint / key / saveAs / open / data
     // the secret key never reached the backend as anything but a refused call (the backend ignores it)
     assert.equal((await api.settings.get()).apiKeySource, 'none')
 
-    // the raw channel throws a typed error; AI paths say that ui_ai_chat takes over
+    // the raw channel throws a typed error
     // G-07: driver is not a backend method group: the view refuses the path itself (it never reaches the host; Core would refuse it as backend_method_not_allowed)
     await assert.rejects(api.plugin.invoke('driver.postDraft', [{ todoId: 'x', text: 'y' }]), (e) => e instanceof PluginApiError && !(e instanceof PluginUnsupportedError) && e.code === 'path_unknown')
-    await assert.rejects(api.plugin.invoke('db.todos.draftReply', ['t1']), (e) => e instanceof PluginUnsupportedError && e.route === 'ui_ai_chat')
-    await assert.rejects(api.plugin.invoke('groupTopics.analyze', ['c1']), (e) => e instanceof PluginUnsupportedError && e.route === 'ui_ai_chat')
+    // the AI features are NOT unsupported any more: they run in the backend (host.ai.complete)
+    await assert.doesNotReject(api.plugin.invoke('db.todos.draftReply', ['t1']))
+    await assert.doesNotReject(api.plugin.invoke('groupTopics.analyze', ['c1']))
 
     // every capability that the plugin turns off maps to API paths the backend refuses (or to `driver`, which the adapter omits)
     const off = Object.entries(PLUGIN_CAPABILITIES).filter(([key, value]) => key !== 'host' && value === false).map(([key]) => key)
@@ -589,24 +603,26 @@ test('unsupported: driver is absent; CLI / endpoint / key / saveAs / open / data
   })
 })
 
-test('AI seam: without an ai:chat port draftReply / analyzeNotMine / group analysis fail explicitly (never fake success); a Phase 4 port plugs in', async () => {
-  await withBackend({}, async ({ api, mock }) => {
-    assert.deepEqual(await api.db.todos.draftReply('t1'), { error: PLUGIN_AI_NOT_CONNECTED })
+test('AI seam: draftReply / analyzeNotMine / group analysis are plain backend calls; when the AI cannot work they fail explicitly in the shape of their own result type (never fake success)', async () => {
+  await withBackend({ setup: (ai) => ai.control.set({ providerState: 'not_logged_in' }) }, async ({ api, mock, ai }) => {
+    // a todo that does not exist: the backend says so before any AI is needed
+    assert.deepEqual(await api.db.todos.draftReply('t1'), { error: '找不到該代辦' })
     assert.equal((await api.db.todos.analyzeNotMine('f1')).ok, false)
     assert.equal((await api.groupTopics.analyze('c1')).ok, false)
-    assert.equal(mock.count('db.todos.draftReply'), 0, 'AI work is not sent to a backend that has no LLM')
+    assert.equal(mock.count('db.todos.draftReply'), 1, 'the call really went to the backend: the view has no AI of its own')
+    assert.equal(ai.stats.completes, 0)
+    assert.equal(ai.control.liveSessions(), 0)
   })
-  const calls = []
-  const ai = {
-    draftReply: async (id) => { calls.push(['draft', id]); return { draft: '好的，我明天回覆您' } },
-    analyzeNotMine: async (id) => { calls.push(['not-mine', id]); return { ok: true, summary: 's' } },
-    analyzeGroupTopics: async (id) => { calls.push(['topics', id]); return { ok: true, count: 1, analyzedCount: 1 } }
-  }
-  await withBackend({ api: { ai } }, async ({ api }) => {
-    assert.equal((await api.db.todos.draftReply('t1')).draft, '好的，我明天回覆您')
-    assert.equal((await api.db.todos.analyzeNotMine('f1')).ok, true)
-    assert.equal((await api.groupTopics.analyze('c1')).count, 1)
-    assert.deepEqual(calls, [['draft', 't1'], ['not-mine', 'f1'], ['topics', 'c1']])
+  await withBackend({}, async ({ api, line, ai }) => {
+    line.emit(raw(1, { text: '請幫我寄報價單給客戶' }))
+    await api.pipeline.runOnce()
+    const todo = (await asyncUntil(async () => { const list = await api.db.todos.list(); return list.length === 1 ? list : null }, { message: 'a todo' }))[0]
+    assert.equal((await api.db.todos.draftReply(todo.id)).draft, '好的，我明天回覆您')
+    ai.control.set({ providerState: 'not_logged_in' })
+    await api.plugin.aiStatus({ refresh: true })
+    const failed = await api.db.todos.draftReply(todo.id)
+    assert.equal(failed.draft, undefined)
+    assert.match(failed.error, /Codex 目前無法使用/)
   })
 })
 
@@ -642,34 +658,27 @@ test('media: assetUrl() asks the backend to decrypt into dataDir and returns the
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
-test('review: without a UI extraction orchestrator reviewLastDays answers "not connected" at once (it would otherwise wait 15 minutes for results nobody sends); with one it rides the job + extract channel to the end', async () => {
-  await withBackend({}, async ({ api, mock }) => {
+test('review: when the AI cannot work reviewLastDays answers "not connected" at once with the reason (it would otherwise wait 15 minutes for results nobody delivers); otherwise it rides the job channel while the backend worker answers', async () => {
+  await withBackend({ setup: (ai) => ai.control.set({ providerState: 'not_logged_in' }) }, async ({ api, mock }) => {
     const t0 = Date.now()
     const review = await api.pipeline.reviewLastDays(3)
-    assert.ok(Date.now() - t0 < 200)
+    assert.ok(Date.now() - t0 < 500)
     assert.equal(review.ok, false)
     assert.equal(review.hasApiKey, true, 'the UI must not tell the user to enter an API key')
     assert.equal(review.days, 3)
-    assert.equal(review.note, PLUGIN_AI_NOT_CONNECTED)
-    assert.equal(mock.count('pipeline.reviewLastDays'), 0, 'the backend was not asked')
+    assert.match(review.note, /尚未登入/)
+    assert.equal(mock.count('pipeline.reviewLastDays'), 1, 'the backend was asked and refused')
   })
   const dataDir = mkdtempSync(join(tmpdir(), 'plugin-adapter-review-'))
   const line = fakeLine()
   line.port.getMessagesSince = async () => [raw(1, { text: '提醒我週五前交付報告', ts: Date.now() - 1000 }), raw(2, { text: '另外發票也要開', ts: Date.now() - 500 })]
-  const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir, line: line.port, dispatcher: { softDeadlineMs: 30, maxJobWaitMs: 200 } })
+  // the model takes ~100 ms, slower than the backend's 30 ms soft deadline, so the call turns into a job
+  const ai = createMockTuqAi({ reply: (ctx) => ({ text: fenced(okResult([JSON.parse(ctx.user).newMessages[0].msgId], '交付週五報告')), delay: () => sleep(100) }) })
+  const backend = await createPluginBackend({ pluginId: 'p', version: '1', dataDir, line: line.port, dispatcher: { softDeadlineMs: 30, maxJobWaitMs: 200 }, hostAi: ai.ai, ai: { config: { optionsTtlMs: 20 }, worker: { pollIntervalMs: 40 } } })
   const mock = makeHost({ target: backend })
-  const api = createPluginLineTodoApi({ host: mock.host, extractionConnected: true, jobPollWaitMs: 100, events: FAST_EVENTS })
+  const api = createPluginLineTodoApi({ host: mock.host, jobPollWaitMs: 100, events: FAST_EVENTS })
   try {
-    let result = null
-    const review = api.pipeline.reviewLastDays(7).then((r) => { result = r })
-    // what the Phase 4 orchestrator will do: pull work, answer with validated JSON, until the review is done
-    await sleep(90) // the UI is slower than the backend's 30 ms soft deadline, so the call turns into a job
-    for (let i = 0; i < 100 && !result; i += 1) {
-      const pulled = await api.plugin.extract.pull({})
-      for (const item of pulled.items) await api.plugin.extract.commit([{ itemId: item.itemId, ok: true, result: okResult(['m1'], '交付週五報告') }])
-      await sleep(20)
-    }
-    await review
+    const result = await api.pipeline.reviewLastDays(7)
     assert.equal(result.ok, true)
     assert.equal(result.todosCreated, 1)
     assert.ok(mock.count('job.poll') >= 1, 'the long review became a job')

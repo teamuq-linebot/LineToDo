@@ -531,68 +531,6 @@ export interface DriverApi {
   onProgress(cb: (p: DriverPostProgress) => void): () => void
 }
 
-// ── 用 Chrome 的 LINE 外掛發送（chromeLine）：外掛版 backend 經 CDP 操作 LINE 背景 Chrome（headless，127.0.0.1:19223）裡的 LINE Chrome 外掛 ──
-
-export type ChromeLineErrorCode =
-  | 'busy'
-  | 'invalid_request'
-  | 'todo_not_found'
-  /** LINE 桌面版 DB 沒有這個聊天室的名稱（要靠名稱在 Chrome 外掛裡找聊天室）。 */
-  | 'chat_name_missing'
-  /** LINE 背景 Chrome 的 CDP（127.0.0.1:19223）連不上。 */
-  | 'browser_unreachable'
-  /** LINE 背景 Chrome 沒有 LINE 外掛分頁，也開不出來。 */
-  | 'line_tab_unavailable'
-  /** LINE 外掛沒登入或畫面還沒好。 */
-  | 'line_not_ready'
-  | 'chat_not_found'
-  /** 同名聊天室不只一個，不猜。 */
-  | 'chat_ambiguous'
-  /** 開啟後的聊天室 ID 或名稱對不上。 */
-  | 'open_failed'
-  /** 輸入框已經有文字，不覆蓋使用者的草稿。 */
-  | 'draft_present'
-  | 'fill_failed'
-  /** 按了 Enter 但沒看到 LINE 的 sendMessage 成功回應。 */
-  | 'send_unconfirmed'
-  /** sendMessage 回應不是 200，或收件對象對不上。 */
-  | 'send_failed'
-  | 'internal'
-
-export type ChromeLineStage = 'preflight' | 'connect' | 'locate' | 'open' | 'fill' | 'send'
-
-export interface ChromeLineStatus {
-  ready: boolean
-  code: ChromeLineErrorCode | null
-  message: string | null
-}
-
-export interface ChromeLineSendRequest {
-  todoId: string
-  text: string
-}
-
-export type ChromeLineSendResult =
-  | { ok: true; chatName: string; chatMid: string }
-  | {
-      ok: false
-      code: ChromeLineErrorCode
-      message: string
-      stage: ChromeLineStage
-      chatName: string | null
-      /** 'no'＝確定沒送出；'unknown'＝按過 Enter，送出與否無法確認（請到 LINE 確認）。 */
-      sent: 'no' | 'unknown'
-    }
-
-/**
- * 用 Chrome 的 LINE 外掛發送（`api.chromeLine`）。外掛版 backend 提供；standalone 省略它，renderer 就不顯示「用 Chrome 發送」。
- * 以聊天室名稱在 Chrome 外掛裡找聊天室（兩邊的聊天室 ID 格式不同，無法直接對應），核對 ID 與名稱後才送出。
- */
-export interface ChromeLineApi {
-  status(): Promise<ChromeLineStatus>
-  send(req: ChromeLineSendRequest): Promise<ChromeLineSendResult>
-}
-
 /** todos:draftReply 結果（只草擬不送出）。 */
 export interface DraftReplyResult {
   draft?: string
@@ -682,8 +620,6 @@ export interface LineTodoApi {
   }
   /** 主機能力（選填）：Electron preload 提供；core application 不實作。 */
   driver?: DriverApi
-  /** 主機能力（選填）：外掛版 backend 提供（用 Chrome 的 LINE 外掛發送）；core application 不實作。 */
-  chromeLine?: ChromeLineApi
 }
 export type Api = LineTodoApi
 

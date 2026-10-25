@@ -61,7 +61,7 @@ const FORBIDDEN_JS = [
   [/require\(\s*["'](?:electron|node:|fs|path|child_process)/, 'node/electron require'],
 ]
 
-// Phase 4: 'node_modules/zod/' — the AI orchestrator validates model replies with the same zod schema the backend uses (src/shared/extractResult.ts: pure, imports only zod).
+// 'node_modules/zod/' — src/shared/extractResult.ts (pure, imports only zod) may be imported by the UI. Since 0.2.0 the AI runs in the backend; the view validates nothing from the model.
 const ALLOWED_INPUT_ROOTS = ['src/renderer/', 'src/shared/', 'src/plugin/ui/', 'node_modules/react/', 'node_modules/react-dom/', 'node_modules/scheduler/', 'node_modules/zod/']
 const FORBIDDEN_INPUTS = [
   [/^src\/main\//, 'main-process code'],

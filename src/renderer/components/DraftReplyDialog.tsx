@@ -1,6 +1,5 @@
 import { useLineTodoApi } from '../platform/LineTodoApi'
 import { REPLY_DRAFT_MAX_AGE_MS, parseText, useUiState } from '../lib/uiState'
-import { ChromeSendPanel } from './ChromeSendPanel'
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react'
 import type {
   DriverFollowUpAction,
@@ -25,9 +24,6 @@ import type {
  *   - 成功：切到 LINE／從 LINE 清除這段草稿／關閉；成功後在對話框按 Enter＝按「切到 LINE」（ui-decisions 第 2 點，不會送出）。
  *     review F1：放開 Enter 才觸發、自動重複的 Enter 不觸發、連按只觸發一次；helper 另外在切前景前守門。
  *   - 失敗：訊息本文與副作用列都來自 main 的 messages.ts（result.body／result.tail），「複製」任何時候都可以用
- *
- * 外掛版另有「用 Chrome 發送」（`api.chromeLine`，ChromeSendPanel）：經背景的 LINE（Chrome 外掛）**直接送出**，先確認才送；
- * 發送中不可關閉、編輯或重新產生。
  */
 
 interface Props {
@@ -135,13 +131,6 @@ const parseReplyDraft = parseText(16 * 1024)
 export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Element {
   const api = useLineTodoApi()
   const driverApi = api.driver
-  const chromeApi = api.chromeLine
-  const [chromeBusy, setChromeBusy] = useState(false)
-  const chromeBusyRef = useRef(false)
-  const onChromeBusy = useCallback((busy: boolean) => {
-    chromeBusyRef.current = busy
-    setChromeBusy(busy)
-  }, [])
   const uid = useId()
   // G-04：上次的草稿（外掛版存在 UI 狀態；standalone 不保存）。有就直接用，不再花一次 AI 呼叫；「重新產生」仍可要新的。
   const ui = useUiState()
@@ -393,7 +382,7 @@ export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Elemen
   }
 
   function close(): void {
-    if (runningRef.current || chromeBusyRef.current) return
+    if (runningRef.current) return
     // 使用者自己關閉＝這份草稿用完了：從 UI 狀態刪掉（review N1）。畫面被重建（不是關閉）時不會走到這裡，草稿照 G-04 保留。
     ui.remove(replyDraftKey)
     onClose()
@@ -467,11 +456,7 @@ export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Elemen
 
   if (phase.kind === 'idle') {
     if (!driverOn) {
-      note = chromeApi ? (
-        <>
-          複製後自行貼到 LINE，或用下方的「用 Chrome 發送」<strong>直接送出</strong>。
-        </>
-      ) : (
+      note = (
         <>
           只草擬，<strong>不會送出</strong>。複製後請自行貼到 LINE。
         </>
@@ -568,14 +553,14 @@ export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Elemen
         aria-modal="true"
         aria-labelledby={ids.title}
         aria-describedby={ids.sub}
-        aria-busy={running || chromeBusy || undefined}
+        aria-busy={running || undefined}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}
       >
         <div className="modal-head">
           <strong id={ids.title}>草擬回覆</strong>
-          <button type="button" className="ghost" onClick={close} disabled={running || chromeBusy} aria-label="關閉對話框">
+          <button type="button" className="ghost" onClick={close} disabled={running} aria-label="關閉對話框">
             ✕
           </button>
         </div>
@@ -595,27 +580,21 @@ export function DraftReplyDialog({ todo, chatName, onClose }: Props): JSX.Elemen
             onChange={(e) => setDraft(e.target.value)}
             rows={5}
             spellCheck={false}
-            readOnly={running || chromeBusy}
-            aria-readonly={running || chromeBusy || undefined}
+            readOnly={running}
+            aria-readonly={running || undefined}
             aria-label="草稿內容（可編輯）"
           />
         )}
 
         {area && <div className="dp-area">{area}</div>}
 
-        {chromeApi && (
-          <div className="dp-area">
-            <ChromeSendPanel api={chromeApi} todoId={todo.id} chatName={x} draft={draft} draftReady={draftReady && !running} onBusyChange={onChromeBusy} />
-          </div>
-        )}
-
         <div className="modal-actions">
           <span className="muted draft-note">{note}</span>
           <span style={{ flex: 1 }} />
-          <button type="button" className="ghost" onClick={() => void generate()} disabled={loading || running || chromeBusy}>
+          <button type="button" className="ghost" onClick={() => void generate()} disabled={loading || running}>
             重新產生
           </button>
-          <button type="button" className={copyPrimary ? '' : 'ghost'} onClick={() => void copy()} disabled={loading || running || chromeBusy || !draft}>
+          <button type="button" className={copyPrimary ? '' : 'ghost'} onClick={() => void copy()} disabled={loading || running || !draft}>
             {copied ? '已複製 ✓' : '複製'}
           </button>
           {fillBtn}

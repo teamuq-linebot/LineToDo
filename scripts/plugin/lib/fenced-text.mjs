@@ -17,7 +17,7 @@ export const EXPECTED_FENCED_TEXT = 'TeamUQ 目前不讓這個外掛呼叫後端
 /** lib/backendError.ts backend_invoke_timeout */
 export const EXPECTED_TIMEOUT_TEXT = '外掛後端太久沒有回應，TeamUQ 已把它停止，並暫停這個外掛的後端呼叫；稍後再試也不會恢復。請到 TeamUQ 管理外掛的「外掛」頁打開這個外掛，把它停用再啟用，或重新啟動 TeamUQ。'
 
-/** plugin/ui/aiOrchestrator.ts describeStatus(paused, backend_revoked) */
+/** plugin/ui/aiStatusText.ts describeStatus(paused, backend_revoked) */
 export const EXPECTED_AI_FENCED_TEXT = 'TeamUQ 目前不讓這個外掛呼叫後端（「讓畫面和它的背景程式溝通」權限被關閉、外掛被停用，或後端太久沒有回應而被隔離），AI 整理暫停；請到 TeamUQ 管理外掛的「外掛」頁打開這個外掛，確認「它可以做的事」裡已允許「讓畫面和它的背景程式溝通」且外掛是啟用的，仍沒有恢復就把外掛停用再啟用，或重新啟動 TeamUQ'
 
 /**
@@ -57,15 +57,56 @@ export const CORE_PLUGIN_SETTINGS_TAB_LABEL = '設定'
 /** The sidebar label of the board view = the manifest's views[board].title (Core labels plugin tabs with view.title: pluginTabs.ts). */
 export const BOARD_VIEW_TITLE = 'LINE 待辦'
 
-/** plugin/ui/aiOrchestrator.ts describeStatus('revoked') — ai:chat switched off */
+/** shared/aiStatus.ts describeStatus('revoked') — ai:chat switched off */
 export const EXPECTED_AI_CHAT_REVOKED_TEXT = '已關閉此外掛的 AI 權限（ai:chat）；請到 TeamUQ 管理外掛的「外掛」頁打開這個外掛，在「它可以做的事」裡允許「用你的 AI 對話額度回答你」後，重新開啟看板'
-/** plugin/backend/aiTaskQueue.ts toProviderError(access_revoked / not_granted / plugin_not_active).userMessage */
+/** plugin/backend/aiProvider.ts toProviderError(access_revoked / not_granted / plugin_not_active).userMessage */
 export const EXPECTED_AI_CHAT_REVOKED_TASK_TEXT = '此外掛的 AI 權限（ai:chat）已被關閉，請到 TeamUQ 管理外掛的「外掛」頁打開這個外掛，在「它可以做的事」裡允許「用你的 AI 對話額度回答你」'
 /** plugin/ui/host.ts renderNotInHost (board and settings views opened outside TeamUQ) */
 export const EXPECTED_NOT_IN_HOST_TEXT = '這個頁面要在 TeamUQ 裡開啟：看板在 TeamUQ 側邊欄的「LINE 待辦」；外掛的選項在 TeamUQ 管理外掛的「外掛」頁打開這個外掛後的「設定」分頁。找不到 TeamUQ 提供的外掛橋接（window.tuqPlugin）。'
 /** renderer/components/Board/TodoCard.tsx (block chat / ignore by keyword): where to undo it — plugin host, then standalone (unchanged) */
 export const EXPECTED_UNDO_HINT_PLUGIN = '（可到 TeamUQ 管理外掛的「外掛」頁打開這個外掛後的「設定」分頁解除）'
 export const EXPECTED_UNDO_HINT_STANDALONE = '（可到設定頁解除）'
+
+// ── background execution (background:resident, 0.2.0+): src/shared/residency.ts + src/shared/teamuqPlaces.ts ──
+// Locked word for word like the sentences above. The switch title is Core's own (teamuq-electron pluginText.ts PERMISSION_TEXT[BACKGROUND_RESIDENT_PERMISSION].title,
+// read at Core HEAD 0e46b155a); `check:core-gate-conformance` does not re-read it yet (it needs a released Core that has the switch: remaining step after the Core release).
+
+/** The title of the background-execution switch in the plugin's 「總覽」 → 「它可以做的事」. */
+export const CORE_RESIDENT_TOGGLE_TITLE = '關閉畫面後繼續在背景執行'
+const PLACE = 'TeamUQ 管理外掛的「外掛」頁'
+const TO_THE_SWITCH = `${PLACE}打開這個外掛，在「${CORE_PERMISSIONS_SECTION_TITLE}」裡`
+export const EXPECTED_RESIDENCY_ALLOW_STEPS = `請到 ${TO_THE_SWITCH}打開「${CORE_RESIDENT_TOGGLE_TITLE}」`
+export const EXPECTED_RESIDENCY_STOP_STEPS = `想停止時，請到 ${TO_THE_SWITCH}關閉「${CORE_RESIDENT_TOGGLE_TITLE}」`
+export const EXPECTED_RESIDENCY_RETRY_STEPS = `請到 ${PLACE}把這個外掛停用再啟用，TeamUQ 就會再試`
+
+/** What each state says: `bar` is the board's status line ('' = not shown), `detail` the settings page's paragraph. */
+export const EXPECTED_RESIDENCY_TEXT = Object.freeze({
+  notRequested: { bar: '', detail: '背景執行：這個版本沒有要求在背景持續執行。TeamUQ 會在外掛閒置一段時間後停止背景程式，之後開啟看板會補整理新訊息' },
+  resident: {
+    bar: '背景執行中：關閉看板後，LINE 待辦仍會在背景整理新訊息（只要 TeamUQ 還開著）',
+    detail: `背景執行中：關閉看板後，LINE 待辦仍會在背景整理新訊息（只要 TeamUQ 還開著）。${EXPECTED_RESIDENCY_STOP_STEPS}`,
+  },
+  resident_not_granted: {
+    bar: '背景執行尚未開啟：關閉看板一段時間後，TeamUQ 會停止背景程式，下次開啟看板時才會補整理新訊息',
+    detail: `背景執行尚未開啟：關閉看板一段時間後，TeamUQ 會停止背景程式，下次開啟看板時才會補整理新訊息。${EXPECTED_RESIDENCY_ALLOW_STEPS}`,
+  },
+  resident_inactive: { bar: '沒有在背景執行：這個外掛目前沒有啟用', detail: `沒有在背景執行：這個外掛目前沒有啟用。請到 ${PLACE}把這個外掛啟用` },
+  resident_budget_exceeded: {
+    bar: '沒有在背景執行：TeamUQ 同時能在背景執行的外掛已達上限，名額先到先得',
+    detail: `沒有在背景執行：TeamUQ 同時能在背景執行的外掛已達上限，名額先到先得。可以到 ${PLACE}關閉其他外掛的「${CORE_RESIDENT_TOGGLE_TITLE}」，空出名額後 TeamUQ 會再試`,
+  },
+  resident_crash_budget_exhausted: { bar: '背景執行已停止：背景程式連續當掉', detail: `背景執行已停止：背景程式連續當掉。${EXPECTED_RESIDENCY_RETRY_STEPS}` },
+  resident_boot_failed: { bar: '背景執行已停止：背景程式連續啟動失敗', detail: `背景執行已停止：背景程式連續啟動失敗。${EXPECTED_RESIDENCY_RETRY_STEPS}` },
+  resident_artifact_revoked: { bar: '背景執行已停止：這個版本的外掛已被外掛商店撤銷', detail: `背景執行已停止：這個版本的外掛已被外掛商店撤銷。請到 ${PLACE}更新這個外掛` },
+  resident_revalidation_failed: { bar: '背景執行已停止：TeamUQ 重新檢查外掛檔案沒有通過', detail: `背景執行已停止：TeamUQ 重新檢查外掛檔案沒有通過。請到 ${PLACE}更新或重新安裝這個外掛` },
+  resident_policy_error: { bar: '沒有在背景執行：TeamUQ 暫時無法決定背景執行，稍後會再試', detail: '沒有在背景執行：TeamUQ 暫時無法決定背景執行，稍後會再試。不需要做任何事；如果一直沒有恢復，請重新啟動 TeamUQ' },
+})
+/** A reason code Core may add later, and the generic sentences it gets (the code is printed so it can be reported). */
+export const FUTURE_REASON_CODE = 'resident_future_new_reason'
+export const EXPECTED_RESIDENCY_UNKNOWN_REASON = Object.freeze({
+  bar: `沒有在背景執行（TeamUQ 回報的原因代碼：${FUTURE_REASON_CODE}）`,
+  detail: `沒有在背景執行（TeamUQ 回報的原因代碼：${FUTURE_REASON_CODE}）。請到 ${PLACE}打開這個外掛，查看「${CORE_RESIDENT_TOGGLE_TITLE}」的狀態`,
+})
 
 /** The r1 sentences, by where they live. */
 export const R1_PLACE_SENTENCES = Object.freeze({

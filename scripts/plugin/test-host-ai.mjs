@@ -36,10 +36,14 @@ test('the vendor pathname patch preserves relative, absolute, Unicode, percent-e
   }
 })
 
-test('the copied SDK declarations match their pinned Core 1.7.12 metadata', async () => {
+test('the copied SDK declarations match their pinned Core 1.7.15 metadata, and declare what the backend AI port uses (host.ai.complete, contentSaved)', async () => {
   const { createHash } = await import('node:crypto')
   const metadata = JSON.parse(readFileSync(new URL('../../src/plugin/sdk/tuq-plugin-sdk.version.json', import.meta.url), 'utf8'))
   const bytes = readFileSync(new URL('../../src/plugin/sdk/tuq-plugin-sdk.d.ts', import.meta.url))
-  assert.equal(metadata.coreVersion, '1.7.12')
+  assert.equal(metadata.coreVersion, '1.7.15')
   assert.equal(createHash('sha256').update(bytes).digest('hex'), metadata.sha256)
+  const text = bytes.toString('utf8')
+  assert.match(text, /complete\(input: PluginBackendAiCompleteInputV1\): Promise<PluginBackendAiCompleteResultV1>/)
+  assert.match(text, /kind: 'contentSaved';\s*sequenceNo: number;/)
+  assert.match(text, /readonly host: PluginHostApiV1;/)
 })

@@ -1,6 +1,9 @@
 // Builds the line-todo plugin package (.tuqplugin): a COMPOSED full-trust plugin (sandboxed board + settings views, own backend).
 //
 //   node scripts/plugin/build-plugin.mjs [--out <dir>] [--suffix name]        (default out: dist/plugin-package)
+//   node scripts/plugin/build-plugin.mjs --resident --resident-min-core ">=X.Y.Z" --out dist/plugin-package-resident --suffix resident
+//        the OFF-by-default resident option (lib/manifest.mjs): the manifest also declares background:resident, with the given minCoreVersion and the resident
+//        description. It needs a Core / author tool that knows the permission; with the vendored 1.7.15 tool `validate` answers permission_unknown and the build stops there.
 //
 // Chain (TeamUQ plugin developer guide, "快速開始"; G-08 / G-09):
 //   1. esbuild UI (build-ui.mjs, CSP-checked) + esbuild backend (build-backend.mjs, `koffi: 'inline'`: koffi's JS is bundled and loads ONLY
@@ -19,7 +22,7 @@ import { buildBackendBundle } from './build-backend.mjs'
 import { buildPluginUi, toLf } from './build-ui.mjs'
 import { DIST, ROOT, WORK } from './lib/paths.mjs'
 import { parseArgs, sha256Hex } from './lib/pack.mjs'
-import { BACKEND_METHODS, NATIVE_FILES, PERMISSIONS, PLUGIN_ID, RESOURCES, buildManifest } from './lib/manifest.mjs'
+import { BACKEND_METHODS, NATIVE_FILES, PLUGIN_ID, RESOURCES, buildManifest, resolveResidentOption } from './lib/manifest.mjs'
 import { TARGET, assertToolIntact, packUnsigned, validateStage } from './lib/tuqTool.mjs'
 
 /** Pinned native binaries: a different npm install cannot silently change what gets packed. */
@@ -115,11 +118,11 @@ const toolRun = (run) => ({ command: run.command, exit: run.exit, stdout: run.js
  * Builds the package into `outDir`: `<outDir>/stage/`, `<outDir>/overrides.json`, `<outDir>/<outName>`. Returns { file, zip, manifest, files, report, outName }.
  * Throws (after recording the tool output in `report`) when `validate` or `pack` does not exit 0.
  */
-export async function buildPackage({ outDir = DIST, workDir = path.join(WORK, 'bundle'), suffix = '' } = {}) {
+export async function buildPackage({ outDir = DIST, workDir = path.join(WORK, 'bundle'), suffix = '', resident = { enabled: false } } = {}) {
   const version = JSON.parse(read('package.json').toString('utf8')).version
   const tool = assertToolIntact()
   const { files, backendAnalysis, uiAnalysis } = await collectPackageFiles({ workDir })
-  const manifest = buildManifest({ version })
+  const manifest = buildManifest({ version, resident })
   const outName = `${PLUGIN_ID}-${version}-win${suffix}.tuqplugin`
   const stageDir = path.join(outDir, `stage${suffix}`)
   const overridesFile = path.join(outDir, `overrides${suffix}.json`)
@@ -139,7 +142,7 @@ export async function buildPackage({ outDir = DIST, workDir = path.join(WORK, 'b
     signer: 'unsigned',
     minCoreVersion: manifest.minCoreVersion,
     trustTier: manifest.trustTier,
-    permissions: [...PERMISSIONS],
+    permissions: [...manifest.permissions],
     backendMethods: [...BACKEND_METHODS],
     resources: { ...RESOURCES },
     nativeFiles: NATIVE_FILES.map((entry) => entry.path),
@@ -174,9 +177,10 @@ export async function buildPackage({ outDir = DIST, workDir = path.join(WORK, 'b
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = parseArgs(process.argv.slice(2))
   const outDir = path.resolve(ROOT, args.out ? String(args.out) : DIST)
+  const resident = resolveResidentOption({ args, env: process.env })
   let built
   try {
-    built = await buildPackage({ outDir, suffix: args.suffix ? `-${args.suffix}` : '' })
+    built = await buildPackage({ outDir, suffix: args.suffix ? `-${args.suffix}` : '', resident })
   } catch (error) {
     if (error.report) console.error(JSON.stringify({ validate: error.report.validate, pack: error.report.pack }, null, 2))
     throw error

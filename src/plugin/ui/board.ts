@@ -1,39 +1,18 @@
 /**
- * board.ts — 看板 view 的啟動：adapter（host.ts）＋ AI orchestrator（aiOrchestrator.ts）。
+ * board.ts — 看板 view 的啟動：只有 adapter（host.ts）。
  *
- * AI orchestrator 只在看板 view 啟動：1.6.8 對每個外掛只允許 1 個 ai:chat session，設定 view 是另一個 webContents，不能再開一個去搶；
- * 看板不在前景時 orchestrator 暫停（host 也只在 view 可見時讓 ai:chat 運作）。
- * pluginApi 的 `aiConnection` 指向 orchestrator 的即時狀態：連上時 `reviewLastDays`、草擬回覆、誤判分析、群組議題分析才會送去 backend，
- * 沒連上（Codex 未登入、授權被關、TeamUQ 沒有 ai:chat）就立刻回明確的原因，不空等。
+ * 0.2.0：AI 整理在 backend 經 `context.host.ai.complete` 執行（backend/hostAi.ts、extractWorker.ts），看板不再啟動任何 AI 編排，
+ * 也不再使用 TeamUQ 的 view 端 AI 橋接；看板沒開、不可見時照樣整理已收進來的訊息。看板開啟時只做一件事：請 backend 重新探測 TeamUQ 的 AI
+ * （授權或登入可能剛在 TeamUQ 那邊處理好），狀態列（AiStatusBar）顯示 backend 回報的 `ai.status`。
  */
-import { createAiOrchestrator, createVisibilitySource } from './aiOrchestrator'
-import type { AiOrchestrator } from './aiOrchestrator'
 import { bootPluginApi } from './host'
 import type { PluginHostBoot } from './host'
 
-export interface BoardBoot extends PluginHostBoot {
-  /** TeamUQ 提供 `ai:chat` 時才有。 */
-  orchestrator: AiOrchestrator | null
-}
-
-const AI_UNSUPPORTED_NOTE = 'unsupported_in_plugin: 這個 TeamUQ 版本沒有提供 ai:chat'
+export type BoardBoot = PluginHostBoot
 
 export function bootBoard(): BoardBoot | null {
-  let orchestrator: AiOrchestrator | null = null
-  let visibility: ReturnType<typeof createVisibilitySource> | null = null
-  let offSelection: (() => void) | null = null
-  const hostAi = window.tuqPlugin?.ai
-  const boot = bootPluginApi({
-    aiConnection: { connected: () => orchestrator?.connected() ?? false, note: () => (hostAi ? orchestrator?.note() : AI_UNSUPPORTED_NOTE) },
-    beforeDispose: async () => { try { offSelection?.(); await orchestrator?.stop() } finally { visibility?.dispose?.() } }
-  })
+  const boot = bootPluginApi()
   if (!boot) return null
-  if (boot.host.ai) {
-    visibility = createVisibilitySource({ document, presentation: boot.host.presentation })
-    orchestrator = createAiOrchestrator({ ai: boot.host.ai, extract: boot.api.plugin.extract, tasks: boot.api.plugin.aiTasks, visibility, selection: boot.api.hostAi?.getSelection })
-    offSelection = boot.api.hostAi?.onSelectionChanged((selection) => orchestrator?.configure(selection)) ?? null
-    // 排程：backend 依設定的 pollIntervalSec 供料並發 extract-pending 事件，orchestrator 由事件驅動（另有 15 秒的備援輪詢）。
-    orchestrator.start()
-  }
-  return { ...boot, orchestrator }
+  void boot.api.plugin.aiStatus({ refresh: true }).catch(() => undefined)
+  return boot
 }

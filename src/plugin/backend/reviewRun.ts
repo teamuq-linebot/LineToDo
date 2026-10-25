@@ -1,15 +1,15 @@
 /**
  * reviewRun.ts — 外掛版「回顧最近 N 天」（`pipeline.reviewLastDays`）的續跑與進度（Phase 4 repair）。
  *
- * 為什麼需要：外掛的 AI 在 UI 端（ai:chat，≤ 18 輪/分、看板要在前景）。回顧幾百個聊天室要跑幾十分鐘，
- * 中間看板被隱藏／關掉、Codex 掉線都可能發生。standalone 的 `reviewLastDays` 是「一次做完、失敗的聊天室下次整批重來」，
+ * 為什麼需要：外掛的 AI 經 TeamUQ 的 ai:chat（backend 的 host.ai.complete，≤ 18 輪/分給背景工作）。回顧幾百個聊天室要跑幾十分鐘，
+ * 中間 Codex 掉線／額度用完、後端被 TeamUQ 閒置卸載都可能發生。standalone 的 `reviewLastDays` 是「一次做完、失敗的聊天室下次整批重來」，
  * 照搬到外掛會變成：停了一次就整批失敗，再按一次又從頭把已經完成的聊天室重送一遍（再燒一次配額）。
  *
  * 做法（不動 core 的行為）：
  *   - 包住 core 呼叫的 extractFn（`wrapExtract`）：每個「日片段」成功拿到 AI 結果後，把片段的 msgId 記進帳本（ledger）；
  *     下一次回顧遇到「整片都已完成」的片段，直接回一個空結果（不送 AI、不花輪數），core 照常把該 chat 的訊息標 processed。
  *     已落庫的 todo 本來就在 DB 裡（回顧用 DB 的 openTodos 去重），所以空結果不會重複建立任何東西。
- *   - 佇列回報「UI 不見了」（`extract_ui_offline`／`extract_await_timeout`）＝暫停：之後的片段立刻失敗（不再各自等 15 分鐘），
+ *   - 佇列回報「沒人在領／領了也沒有進展」（`extract_ui_offline`／`extract_await_timeout`：AI 不可用、授權被關、額度用完太久）＝暫停：之後的片段立刻失敗（不再各自等 15 分鐘），
  *     core 很快收尾，結果標明「已完成 N/M，再按一次接續」。帳本保留 → 下一次回顧從沒做完的地方繼續。
  *   - 全部做完（沒有失敗）→ 帳本清掉；下一次回顧是一次全新的完整回顧（與 standalone 語意一致）。
  *   - 同時只跑一個回顧（single-flight）；重複呼叫共用同一個結果。
@@ -35,7 +35,7 @@ const FLUSH_EVERY_MS = 5_000
 
 const EMPTY_RESULT: ExtractResult = Object.freeze({ importance: 'noise', newTodos: [], resolved: [], updates: [] }) as unknown as ExtractResult
 
-/** 這些錯誤代表「UI 不見了」：整個回顧該暫停，而不是這個聊天室壞了。 */
+/** 這些錯誤代表「AI 整理停住了」（沒人領、或很久沒有結果交回）：整個回顧該暫停，而不是這個聊天室壞了。 */
 const PAUSE_ERRORS = new Set(['extract_ui_offline', 'extract_await_timeout'])
 
 export interface ReviewLedgerOptions {
@@ -113,7 +113,7 @@ export interface ReviewStatus {
   /** 現在有沒有回顧在跑。 */
   running: boolean
   /**
-   * `idle`＝從沒跑過；`running`；`done`＝上一次全部完成；`paused`＝UI 不見而暫停；`incomplete`＝有聊天室失敗、可再按一次接續；
+   * `idle`＝從沒跑過；`running`；`done`＝上一次全部完成；`paused`＝AI 不可用而暫停；`incomplete`＝有聊天室失敗、可再按一次接續；
    * `interrupted`＝上一次回顧進行中 backend 就重新啟動了（狀態檔讀回），可再按一次接續。
    */
   state: 'idle' | 'running' | 'done' | 'paused' | 'incomplete' | 'interrupted'
@@ -219,7 +219,7 @@ export class ReviewCoordinator {
     this.persistStatus()
   }
 
-  /** 包住 core 用的 extractFn：帳本略過、記錄、偵測 UI 不見。 */
+  /** 包住 core 用的 extractFn：帳本略過、記錄、偵測 AI 整理停住。 */
   wrapExtract(inner: (input: ChatExtractInput) => Promise<ExtractResult>): (input: ChatExtractInput) => Promise<ExtractResult> {
     return async (input) => {
       if (this.pausedReason) throw new Error(this.pausedReason)
@@ -300,7 +300,7 @@ export class ReviewCoordinator {
       return {
         ...result,
         ok: false,
-        note: `回顧暫停：已完成 ${done}/${result.chatsSeen} 個聊天（新增 ${result.todosCreated}、合併 ${result.todosMerged}）。AI 整理需要看板在前景且 Codex 可用；${resume}`
+        note: `回顧暫停：已完成 ${done}/${result.chatsSeen} 個聊天（新增 ${result.todosCreated}、合併 ${result.todosMerged}）。AI 整理需要 Codex 可用（已登入、授權未關閉），並且沒有用完 TeamUQ 的 AI 額度與呼叫上限；${resume}`
       }
     }
     return { ...result, note: `尚有 ${result.chatsFailed} 個聊天未完成（已完成 ${done}/${result.chatsSeen}）。${resume}` }
@@ -317,7 +317,7 @@ export class ReviewCoordinator {
         summary = this.phase === 'fetching' || this.chatsTotal === 0 ? '回顧進行中：撈取訊息…' : `回顧進行中：已處理 ${this.chatsDone}/${this.chatsTotal} 個聊天`
         break
       case 'done': summary = `回顧已完成：${this.chatsDone}/${this.chatsTotal} 個聊天`; break
-      case 'paused': summary = `回顧暫停：已完成 ${this.chatsDone}/${this.chatsTotal} 個聊天，看板回到前景後再按一次「回顧」即可接續`; break
+      case 'paused': summary = `回顧暫停：已完成 ${this.chatsDone}/${this.chatsTotal} 個聊天，AI 恢復後再按一次「回顧」即可接續`; break
       case 'incomplete': summary = `回顧未全部完成：已完成 ${this.chatsDone}/${this.chatsTotal} 個聊天，再按一次「回顧」即可接續`; break
       default: summary = resumable > 0 ? `上次回顧尚未做完（已記住 ${resumable} 則訊息），再按一次「回顧」即可接續` : '尚未回顧'
     }

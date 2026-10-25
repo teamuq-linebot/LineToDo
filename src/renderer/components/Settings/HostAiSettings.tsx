@@ -64,7 +64,8 @@ export function HostAiSettings({ control, selection, onSaved }: {
       <div className="set-section-title">AI 判斷引擎</div>
       <div className="set-msg muted" data-testid="ai-by-host">
         使用 TeamUQ 已登入的 AI。新訊息抽取、草擬回覆與群組議題分析都使用下面的模型設定。
-        AI 在 LINE 待辦看板顯示於前景時運作；背景期間的訊息會在回到看板後補整理。
+        AI 由外掛的背景程式執行，看板不需要開著；TeamUQ 會在外掛閒置一段時間後停止背景程式，那段期間收到的訊息會在下次開啟看板後補整理。
+        AI 整理過的對話會記錄在 TeamUQ 的 AI 歷史。
       </div>
       {error && <div className="set-msg err" role="alert">{error}</div>}
       {loading && <div className="set-msg muted" role="status">正在載入可用模型…</div>}

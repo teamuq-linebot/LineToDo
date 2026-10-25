@@ -1,189 +1,108 @@
-// Phase 4 — the backend half of the AI bridge (no LLM anywhere): AiTaskQueue (単次 AI 呼叫 的供料／收料), the UI-relay provider that replaces provider.complete(),
-// the failure-code -> LlmProviderError mapping, the groupTopics payload fitter, and the dispatcher paths ai.* / extract.release / extract.system.format.
+// 0.2.0 — the backend side of the single-shot AI features (草擬回覆／誤判分析／群組議題分析／prompt 修正): the provider that replaces provider.complete() and calls the AI port,
+// the failure-code -> LlmProviderError mapping, the groupTopics payload fitter, the output contract, and the dispatcher paths (db.todos.draftReply …, ai.status, ai.options,
+// the review gate). There is no AI relay any more: no ai.pull / ai.commit / ai.run, no extract.pull / extract.commit / extract.system — the backend calls host.ai.complete itself.
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { AiPortError } from '../../src/core/aiPort.ts'
 import { LlmProviderError } from '../../src/main/llm/provider/types.ts'
 import { EXTRACT_JSON_SCHEMA } from '../../src/main/llm/schema.ts'
 import { EXTRACT_OUTPUT_CONTRACT, outputContractFor } from '../../src/plugin/backend/aiOutputContract.ts'
-import {
-  AI_RUN_PATHS, AI_TASK_MAX_SYSTEM_CHARS, AI_TASK_MAX_USER_CHARS, AiTaskError, AiTaskQueue, createUiAiProvider, fitUserPayload, toProviderError
-} from '../../src/plugin/backend/aiTaskQueue.ts'
+import { AI_RUN_PATHS, AI_TASK_MAX_USER_CHARS, createPortAiProvider, fitUserPayload, runAs, toProviderError } from '../../src/plugin/backend/aiProvider.ts'
 import { Dispatcher, SUPPORTED_API_PATHS, UNSUPPORTED_API_PATHS } from '../../src/plugin/backend/dispatcher.ts'
 import { EventHub } from '../../src/plugin/backend/eventHub.ts'
-import { AI_COMMIT_TEXT_MAX_BYTES, MAX_REQUEST_BYTES, REPLY_TRUNCATED_MARK, fitReplyText, utf8Bytes } from '../../src/shared/pluginWire.ts'
-import { toWire } from '../../src/renderer/platform/pluginTransport.ts'
+import { createPromptService } from '../../src/plugin/backend/promptService.ts'
+import { BACKEND_METHOD_GROUPS, backendMethodFor } from '../../src/shared/pluginWire.ts'
 import { CONTRACT } from '../lib/mock-tuq-ai.mjs'
-import { backendMethodFor } from '../../src/shared/pluginWire.ts'
 import { EXPECTED_AI_CHAT_REVOKED_TASK_TEXT, namesVersionSpecificPlace } from './lib/fenced-text.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const rejection = (promise) => promise.then(() => { throw new Error('expected a rejection') }, (error) => error)
 
-function queue(options = {}) {
-  let time = 1_000_000
-  const events = []
-  const q = new AiTaskQueue({ now: () => time, onPending: (info) => events.push(info), ...options })
-  return { q, events, advance: (ms) => { time += ms }, now: () => time }
+/** A recording AI port: what the provider asked for, and what it answers. */
+function fakePort(answer = () => ({ text: 'ok', model: 'gpt-5-codex' })) {
+  const requests = []
+  return {
+    requests,
+    complete: async (request) => {
+      requests.push(request)
+      const result = await answer(request)
+      if (result instanceof Error) throw result
+      return result
+    }
+  }
 }
 
-// ───────────── AiTaskQueue ─────────────
+// ───────────── provider ─────────────
 
-test('AiTaskQueue: a request waits for a UI consumer, is leased, answered, and the caller gets the text + model; the consumer must have shown up first', async () => {
-  const { q, events } = queue()
-  const early = await rejection(q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false }))
-  assert.ok(early instanceof AiTaskError && early.code === 'ui_not_connected', 'no UI is polling: fail at once instead of waiting')
-  q.touch()
-  const pending = q.request({ kind: 'draftReply', system: 'SYS', user: 'USER', expectJson: false })
-  assert.deepEqual(events, [{ pending: 1, tasks: true }])
-  const pulled = q.pull({ max: 4 })
-  assert.equal(pulled.tasks.length, 1)
-  assert.deepEqual({ kind: pulled.tasks[0].kind, system: pulled.tasks[0].system, user: pulled.tasks[0].user, expectJson: pulled.tasks[0].expectJson }, { kind: 'draftReply', system: 'SYS', user: 'USER', expectJson: false })
-  assert.equal(q.pull().tasks.length, 0, 'leased: not handed out twice')
-  const [accepted] = q.commit({ results: [{ taskId: pulled.tasks[0].taskId, ok: true, text: '草稿', model: 'gpt-5-codex' }] }).results
-  assert.equal(accepted.status, 'accepted')
-  assert.deepEqual(await pending, { text: '草稿', model: 'gpt-5-codex' })
-  assert.deepEqual(q.stats(), { pending: 0, leased: 0, consumerActive: true })
-  assert.equal(q.commit({ results: [{ taskId: pulled.tasks[0].taskId, ok: true, text: 'again' }] }).results[0].status, 'unknown_task', 'a lease is single-use')
-})
-
-test('AiTaskQueue: failures from the UI reach the caller with their code (and retryAfterMs); malformed commits are refused; an empty text is not an answer', async () => {
-  const { q } = queue()
-  q.touch()
-  const failed = q.request({ kind: 'groupTopics', system: 'S', user: 'U', expectJson: true })
-  const { taskId } = q.pull().tasks[0]
-  assert.equal(q.commit({ results: [{ taskId, ok: false, failCode: 'quota_exhausted', retryAfterMs: 90_000 }] }).results[0].status, 'failed_recorded')
-  const error = await rejection(failed)
-  assert.deepEqual({ code: error.code, retryAfterMs: error.retryAfterMs }, { code: 'quota_exhausted', retryAfterMs: 90_000 })
-
-  const weird = q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
-  const t2 = q.pull().tasks[0].taskId
-  assert.equal(q.commit({ results: [{ taskId: t2, ok: false, failCode: '../../etc/passwd; DROP' }] }).results[0].status, 'failed_recorded')
-  assert.equal((await rejection(weird)).code, 'ai_failed', 'an unexpected failCode is normalised, never echoed')
-
-  const empty = q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
-  const t3 = q.pull().tasks[0].taskId
-  assert.equal(q.commit({ results: [{ taskId: t3, ok: true, text: '' }] }).results[0].status, 'bad_request')
-  assert.equal((await rejection(empty)).code, 'empty_reply')
-  assert.deepEqual(q.commit({ results: [{ taskId: '', ok: true }, { ok: 'yes' }] }).results.map((r) => r.status), ['bad_request', 'bad_request'])
-})
-
-test('AiTaskQueue: a lease that is never answered returns to the queue; release gives it back at once; a request nobody answers times out; limits and dispose', async () => {
-  const a = queue({ leaseMs: 5000 })
-  a.q.touch()
-  const p = a.q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
-  const lease1 = a.q.pull({ leaseMs: 5000 }).tasks[0].taskId
-  assert.equal(a.q.pull().tasks.length, 0)
-  a.advance(5001)
-  const lease2 = a.q.pull().tasks[0].taskId
-  assert.notEqual(lease1, lease2, 'expired lease: re-leased with a new id')
-  assert.equal(a.q.commit({ results: [{ taskId: lease1, ok: true, text: 'late' }] }).results[0].status, 'unknown_task', 'the stale lease is refused')
-  assert.equal(a.q.release({ taskIds: [lease2] }).released, 1)
-  const lease3 = a.q.pull().tasks[0].taskId
-  a.q.commit({ results: [{ taskId: lease3, ok: true, text: 'fine' }] })
-  assert.equal((await p).text, 'fine')
-
-  const b = queue({ timeoutMs: 30 })
-  b.q.touch()
-  assert.equal((await rejection(b.q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false }))).code, 'ai_task_timeout')
-  assert.equal(b.q.stats().pending, 0, 'timed-out task is gone')
-
-  const c = queue({ maxQueued: 2 })
-  c.q.touch()
-  const kept = [1, 2].map(() => c.q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false }))
-  assert.equal((await rejection(c.q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false }))).code, 'ai_queue_full')
-  assert.equal((await rejection(c.q.request({ kind: 'draftReply', system: 'S', user: 'x'.repeat(AI_TASK_MAX_USER_CHARS + 1), expectJson: false }))).code, 'input_too_large')
-  assert.equal((await rejection(c.q.request({ kind: 'draftReply', system: 'S'.repeat(AI_TASK_MAX_SYSTEM_CHARS + 1), user: 'U', expectJson: false }))).code, 'system_too_large')
-  c.q.dispose()
-  for (const promise of kept) assert.equal((await rejection(promise)).code, 'backend_stopped')
-  assert.equal((await rejection(c.q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false }))).code, 'backend_stopped')
-  assert.ok(AI_TASK_MAX_USER_CHARS <= CONTRACT.limits.inputChars && AI_TASK_MAX_SYSTEM_CHARS === CONTRACT.limits.systemChars, 'queue limits fit the ai:chat contract')
-
-  const d = queue({ consumerFreshMs: 1000 })
-  d.q.touch()
-  assert.equal(d.q.consumerActive(), true)
-  d.advance(1001)
-  assert.equal(d.q.consumerActive(), false, 'a UI that stopped polling (board hidden) stops counting as connected')
-})
-
-// ───────────── provider (the relay) ─────────────
-
-test('UI-relay provider: complete() queues the request (kind from the ai.run context, JSON expectation, schema appended to the system prompt) — it has no network, no process, no key', async () => {
-  const { q } = queue()
-  q.touch()
-  const provider = createUiAiProvider(q)
+test('port provider: complete() hands system/user to the AI port as a user-priority request (kind from the dispatcher context, JSON expectation, schema appended to the system prompt) — no network, no process, no key', async () => {
+  const port = fakePort(() => ({ text: '好的', model: 'gpt-5-codex' }))
+  const provider = createPortAiProvider(port)
   assert.deepEqual({ id: provider.id, kind: provider.kind }, { id: 'codexCli', kind: 'cli' })
 
-  const draft = q.runAs('draftReply', () => provider.complete({ system: 'DRAFT', user: '{"a":1}', temperature: 0.5 }))
-  let task = q.pull().tasks[0]
-  assert.deepEqual({ kind: task.kind, system: task.system, expectJson: task.expectJson }, { kind: 'draftReply', system: 'DRAFT', expectJson: false })
-  q.commit({ results: [{ taskId: task.taskId, ok: true, text: '好的', model: 'gpt-5-codex' }] })
-  const response = await draft
-  assert.equal(response.text, '好的')
-  assert.deepEqual({ provider: response.meta.provider, model: response.meta.model }, { provider: 'codexCli', model: 'gpt-5-codex' })
-  assert.equal(typeof response.meta.durationMs, 'number')
+  const draft = await runAs('draftReply', () => provider.complete({ system: 'DRAFT', user: '{"a":1}', temperature: 0.5 }))
+  assert.deepEqual(port.requests[0], { system: 'DRAFT', user: '{"a":1}', expectJson: false, priority: 'user' })
+  assert.equal(draft.text, '好的')
+  assert.deepEqual({ provider: draft.meta.provider, model: draft.meta.model }, { provider: 'codexCli', model: 'gpt-5-codex' })
+  assert.equal(typeof draft.meta.durationMs, 'number')
 
-  const notMine = q.runAs('analyzeNotMine', () => provider.complete({ system: 'ANALYZE', user: '{}' }))
-  task = q.pull().tasks[0]
-  assert.equal(task.expectJson, true, 'the analysis is JSON.parse\'d by core, so the UI must verify JSON even without a schema')
-  q.commit({ results: [{ taskId: task.taskId, ok: true, text: '{"summary":"s"}' }] })
-  await notMine
+  await runAs('analyzeNotMine', () => provider.complete({ system: 'ANALYZE', user: '{}' }))
+  assert.equal(port.requests[1].expectJson, true, 'the analysis is JSON.parse\'d by core, so the port must verify JSON even without a schema')
 
   const schema = { type: 'object', properties: { a: { type: 'string' } } }
-  const topics = q.runAs('groupTopics', () => provider.complete({ system: 'TOPICS', user: '{}', jsonSchema: { name: 'group_topics', schema } }))
-  task = q.pull().tasks[0]
-  assert.equal(task.system, `TOPICS\n\n${outputContractFor(schema)}`)
-  assert.ok(task.system.includes(JSON.stringify(schema)))
-  assert.equal(task.expectJson, true)
-  q.commit({ results: [{ taskId: task.taskId, ok: true, text: '{}' }] })
-  await topics
+  await runAs('groupTopics', () => provider.complete({ system: 'TOPICS', user: '{}', jsonSchema: { name: 'group_topics', schema } }))
+  assert.equal(port.requests[2].system, `TOPICS\n\n${outputContractFor(schema)}`)
+  assert.ok(port.requests[2].system.includes(JSON.stringify(schema)))
+  assert.equal(port.requests[2].expectJson, true)
 
-  const bare = provider.complete({ system: 'X', user: 'Y' })
-  task = q.pull().tasks[0]
-  assert.equal(task.kind, 'unknown', 'outside ai.run the kind is unknown (and no JSON is expected without a schema)')
-  assert.equal(task.expectJson, false)
-  q.commit({ results: [{ taskId: task.taskId, ok: true, text: 'ok' }] })
-  await bare
+  await provider.complete({ system: 'X', user: 'Y' })
+  assert.equal(port.requests[3].expectJson, false, 'outside a kind context and without a schema no JSON is expected')
+  assert.ok(port.requests.every((request) => request.priority === 'user'), 'user actions never queue behind background extraction')
 
   assert.equal((await provider.health()).ok, true)
-  const idle = createUiAiProvider(new AiTaskQueue())
-  assert.equal((await idle.health()).ok, false)
+  assert.equal((await createPortAiProvider(port, { usable: () => false }).health()).ok, false)
 })
 
-test('UI-relay provider: every failure arrives as the LlmProviderError core already understands (right class, code, and a message the user can act on)', async () => {
+test('port provider: every failure arrives as the LlmProviderError core already understands (right class, code, and a message the user can act on)', async () => {
   const cases = [
-    ['ui_not_connected', 'invalid_config', /看板不在前景/], ['view_not_visible', 'transport', /看板不在前景/], ['ai_task_timeout', 'timeout', /逾時/], ['turn_timeout', 'timeout', /逾時/],
-    ['rate_limited', 'rate_limited', /每分鐘上限/], ['quota_exhausted', 'quota_exceeded', /額度已用完/], ['provider_unavailable', 'invalid_config', /Codex/],
-    ['unsupported_version', 'invalid_config', /Codex/], ['access_revoked', 'invalid_config', /ai:chat/], ['not_granted', 'invalid_config', /ai:chat/],
+    ['ai_task_timeout', 'timeout', /逾時/], ['turn_timeout', 'timeout', /逾時/],
+    ['rate_limited', 'rate_limited', /TeamUQ 的 AI 呼叫上限/], ['quota_exhausted', 'quota_exceeded', /額度已用完/], ['provider_unavailable', 'invalid_config', /Codex/],
+    ['provider_not_ready', 'invalid_config', /Codex/], ['unsupported_version', 'invalid_config', /Codex/], ['model_unavailable', 'invalid_config', /Codex/],
+    ['access_revoked', 'invalid_config', /ai:chat/], ['not_granted', 'invalid_config', /ai:chat/],
     ['invalid_json', 'bad_output', /格式/], ['invalid_result', 'bad_output', /格式/], ['empty_reply', 'bad_output', /沒有回覆內容/], ['reply_too_long', 'bad_output', /過長/],
-    ['input_too_large', 'invalid_config', /8,000 字/], ['ai_queue_full', 'rate_limited', /排隊/], ['provider_error', 'unknown', /無法完成/], ['something_new', 'unknown', /無法完成/]
+    ['input_too_large', 'invalid_config', /8,000 字/], ['system_too_large', 'invalid_config', /8,000 字/], ['busy', 'rate_limited', /其他工作/], ['session_limit', 'rate_limited', /其他工作/],
+    ['plugin_host_unavailable', 'transport', /暫時沒有回應/], ['plugin_host_timeout', 'transport', /暫時沒有回應/], ['backend_stopped', 'transport', /停止/], ['provider_error', 'unknown', /無法完成/], ['something_new', 'unknown', /無法完成/]
   ]
   for (const [code, llm, message] of cases) {
-    const error = toProviderError(new AiTaskError(code))
+    const error = toProviderError(new AiPortError(code))
     assert.ok(error instanceof LlmProviderError, code)
     assert.equal(error.code, llm, code)
     assert.match(error.userMessage, message, code)
   }
-  assert.match(toProviderError(new AiTaskError('quota_exhausted', 95_000)).userMessage, /約 95 秒後/)
+  assert.match(toProviderError(new AiPortError('quota_exhausted', 95_000)).userMessage, /約 95 秒後/)
+  // review F9: the sentence names the window that is actually full — minute or hour — and does not claim "minute" when it does not know
+  assert.match(toProviderError(new AiPortError('rate_limited', 20_000, 'minute')).userMessage, /每分鐘上限/)
+  assert.match(toProviderError(new AiPortError('rate_limited', 1_200_000, 'hour')).userMessage, /每小時上限.*約 1200 秒後/)
+  assert.doesNotMatch(toProviderError(new AiPortError('rate_limited', 1_200_000, 'hour')).userMessage, /每分鐘/)
+  assert.doesNotMatch(toProviderError(new AiPortError('rate_limited', 20_000)).userMessage, /每分鐘|每小時/, 'a rate_limited from the host does not say which window')
   // 0.1.3 r1: ai:chat off — where to allow it again, word for word, in names both TeamUQ 1.6.8 and 1.7.1 show (was 「請在 TeamUQ 設定中重新允許」)
   for (const code of ['access_revoked', 'not_granted', 'plugin_not_active']) {
-    const message = toProviderError(new AiTaskError(code)).userMessage
+    const message = toProviderError(new AiPortError(code)).userMessage
     assert.equal(message, EXPECTED_AI_CHAT_REVOKED_TASK_TEXT, code)
     assert.equal(namesVersionSpecificPlace(message), false, code)
   }
-  assert.equal(toProviderError(new Error('boom')).code, 'unknown', 'a non-bridge error never leaks its message')
+  assert.equal(toProviderError(new Error('boom')).code, 'unknown', 'a non-port error never leaks its message')
   // end to end through complete()
-  const { q } = queue()
-  q.touch()
-  const provider = createUiAiProvider(q)
-  const call = provider.complete({ system: 'S', user: 'U' })
-  q.commit({ results: [{ taskId: q.pull().tasks[0].taskId, ok: false, failCode: 'rate_limited', retryAfterMs: 20_000 }] })
+  const call = createPortAiProvider(fakePort(() => new AiPortError('rate_limited', 20_000))).complete({ system: 'S', user: 'U' })
   const error = await rejection(call)
   assert.ok(error instanceof LlmProviderError)
   assert.equal(error.code, 'rate_limited')
   assert.match(error.userMessage, /約 20 秒後/)
-  const none = await rejection(createUiAiProvider(new AiTaskQueue()).complete({ system: 'S', user: 'U' }))
-  assert.equal(none.code, 'invalid_config')
+  // a payload over the limit never reaches the port
+  const port = fakePort()
+  const tooBig = await rejection(createPortAiProvider(port).complete({ system: 'S', user: 'x'.repeat(AI_TASK_MAX_USER_CHARS + 1) }))
+  assert.equal(tooBig.code, 'invalid_config')
+  assert.equal(port.requests.length, 0)
 })
 
 // ───────────── payload fitting (groupTopics) ─────────────
@@ -205,7 +124,7 @@ test('fitUserPayload: leaves small payloads alone; for a group payload drops the
   const shortened = JSON.parse(fitUserPayload(longMessages, 7500))
   assert.equal(shortened.messages.length, 20)
   assert.ok(shortened.messages.every((m) => m.text.length < 3000 && m.text.endsWith('…')))
-  assert.throws(() => fitUserPayload('x'.repeat(8000), 7500), (e) => e instanceof AiTaskError && e.code === 'input_too_large')
+  assert.throws(() => fitUserPayload('x'.repeat(8000), 7500), (e) => e instanceof AiPortError && e.code === 'input_too_large')
   assert.throws(() => fitUserPayload(JSON.stringify([1].concat(Array(9000).fill('y'))), 7500), (e) => e.code === 'input_too_large')
   assert.throws(() => fitUserPayload(JSON.stringify({ messages: Array.from({ length: 700 }, (_, i) => ({ msgId: `m${i}`, text: 'z' })) }), 7500), (e) => e.code === 'input_too_large', 'too many messages even at 20 chars each')
 })
@@ -219,152 +138,192 @@ test('output contract: the extraction schema is spelled out in the prompt text (
   assert.ok(EXTRACT_SYSTEM_PROMPT.length + 2 + EXTRACT_OUTPUT_CONTRACT.length <= CONTRACT.limits.systemChars, `${EXTRACT_SYSTEM_PROMPT.length} + ${EXTRACT_OUTPUT_CONTRACT.length}`)
 })
 
+// ───────────── prompt service (settings.prompt.refine) ─────────────
+
+test('prompt refinement goes through the AI port as a user action; a suggestion that is not the agreed shape gets the port\'s repair turn and is never applied; AI errors keep their code', async () => {
+  const stored = { pluginPrompt: null }
+  const settings = { get: () => stored, update: (patch) => Object.assign(stored, patch) }
+  const good = { prompt: '新的提示詞', changes: ['區分寒暄與任務'] }
+  const port = fakePort((request) => ({ text: JSON.stringify(good), value: good, model: 'gpt-5-codex' }))
+  const prompts = createPromptService(settings, port)
+  const suggestion = await prompts.refine({ prompt: prompts.state().activePrompt, goal: '避免把寒暄當成任務' })
+  assert.deepEqual(suggestion, { ...good, modelId: 'gpt-5-codex' })
+  assert.equal(port.requests[0].priority, 'user')
+  assert.equal(port.requests[0].expectJson, true)
+  assert.ok(port.requests[0].system.includes('提示詞編輯者') && port.requests[0].system.length <= CONTRACT.limits.systemChars)
+  assert.equal(port.requests[0].user, '避免把寒暄當成任務')
+  // the port is given a validator that rejects extra fields / bad changes (so its repair turn can fix them)
+  assert.equal(port.requests[0].validate(good).ok, true)
+  assert.equal(port.requests[0].validate({ ...good, extra: 1 }).ok, false)
+  assert.equal(port.requests[0].validate({ prompt: 'x', changes: [] }).ok, false)
+  assert.equal(stored.pluginPrompt, null, 'a suggestion is never written to the settings')
+  // the port gave up on the format: the settings screen gets the prompt-specific code
+  const invalid = createPromptService(settings, fakePort(() => new AiPortError('invalid_result')))
+  assert.equal((await rejection(invalid.refine({ prompt: invalid.state().activePrompt, goal: 'g' }))).code, 'prompt_suggestion_invalid')
+  // other AI errors keep the port's code (the settings screen maps quota_exhausted / provider_unavailable / busy …)
+  const quota = createPromptService(settings, fakePort(() => new AiPortError('quota_exhausted', 1000)))
+  assert.equal((await rejection(quota.refine({ prompt: quota.state().activePrompt, goal: 'g' }))).code, 'quota_exhausted')
+  // the extraction system the worker sends: the active prompt + the fixed output format
+  assert.equal(prompts.extractSystem(), `${prompts.state().activePrompt}\n\n${EXTRACT_OUTPUT_CONTRACT}`)
+  settings.update({ pluginPrompt: '自訂規則' })
+  assert.equal(prompts.extractSystem(), `自訂規則\n\n${EXTRACT_OUTPUT_CONTRACT}`, 'a saved prompt takes effect at the next item, no restart, no cache')
+})
+
 // ───────────── dispatcher ─────────────
 
-function dispatcherWith({ api = {}, aiTasks, queue: q } = {}) {
+function dispatcherWith({ api = {}, ai, review, aiDeadlineMs } = {}) {
   const hub = new EventHub()
   const dispatcher = new Dispatcher({
     getApi: () => api,
     hub,
-    queue: q ?? { stats: () => ({}), pull: () => ({ ok: true, items: [] }), release: (p) => ({ ok: true, released: p.itemIds.length, unknown: [] }) },
-    aiTasks,
+    queue: { stats: () => ({ pending: 2, leased: 1, awaiting: 0, chatsBackingOff: 0, gen: 1 }) },
+    ai,
+    review,
     info: () => ({}),
     softDeadlineMs: 30,
-    maxJobWaitMs: 50
+    maxJobWaitMs: 50,
+    ...(aiDeadlineMs !== undefined ? { aiDeadlineMs } : {})
   })
   return { dispatcher, hub, done: () => { dispatcher.dispose(); hub.dispose() } }
 }
 const invoke = (d, path, ...args) => d.call(backendMethodFor(path), { path, args })
 
-test('dispatcher: ai.run runs the core method (draftReply / analyzeNotMine / groupTopics) with the right arguments inside the AI context; bad kinds and arguments are refused', async () => {
-  const aiTasks = new AiTaskQueue()
+const BASE_STATUS = { state: 'running', reason: null, resumeAt: null, busy: false, provider: { providerId: 'codex', modelId: 'gpt-5-codex' }, counters: { turns: 0 } }
+function aiRuntime(overrides = {}) {
+  const calls = []
+  return {
+    calls,
+    ready: async () => { calls.push('ready'); return true },
+    status: () => ({ ...BASE_STATUS, ...overrides }),
+    options: async () => { calls.push('options'); return { providers: [], defaultProviderId: null } },
+    refresh: () => { calls.push('refresh') }
+  }
+}
+
+test('dispatcher: the three AI features are ordinary backend paths now — draftReply / analyzeNotMine / groupTopics.analyze run the core method with the right arguments inside their AI context', async () => {
   const seen = []
+  const port = fakePort(() => ({ text: '草稿', model: 'm' }))
+  const provider = createPortAiProvider(port)
   const api = {
-    db: { todos: { draftReply: async (id) => { seen.push(['draft', id]); return { draft: await createUiAiProvider(aiTasks).complete({ system: 'D', user: 'U' }).then((r) => r.text) } }, analyzeNotMine: async (id) => ({ ok: true, id }) } },
-    groupTopics: { analyze: async (chatId) => ({ ok: true, chatId }) }
+    db: { todos: { draftReply: async (id) => { seen.push(['draft', id]); return { draft: (await provider.complete({ system: 'D', user: 'U' })).text } }, analyzeNotMine: async (id) => { await provider.complete({ system: 'A', user: '{}' }); return { ok: true, id } } } },
+    groupTopics: { analyze: async (chatId) => { await provider.complete({ system: 'G', user: '{}' }); return { ok: true, chatId } } }
   }
-  const { dispatcher, done } = dispatcherWith({ api, aiTasks })
-  aiTasks.touch()
-  const run = invoke(dispatcher, 'ai.run', { kind: 'draftReply', args: ['todo-1'] })
-  await sleep(5)
-  const pulled = await invoke(dispatcher, 'ai.pull', { max: 1 })
-  assert.equal(pulled.ok, true)
-  assert.equal(pulled.value.tasks.length, 1)
-  assert.equal(pulled.value.tasks[0].kind, 'draftReply', 'the kind set by ai.run reaches the task')
-  const committed = await invoke(dispatcher, 'ai.commit', { results: [{ taskId: pulled.value.tasks[0].taskId, ok: true, text: '草稿', model: 'm' }] })
-  assert.equal(committed.value.results[0].status, 'accepted')
-  assert.deepEqual(await run, { ok: true, value: { draft: '草稿' } })
-  assert.deepEqual(seen, [['draft', 'todo-1']])
-  assert.deepEqual((await invoke(dispatcher, 'ai.run', { kind: 'analyzeNotMine', args: ['f1'] })).value, { ok: true, id: 'f1' })
-  assert.deepEqual((await invoke(dispatcher, 'ai.run', { kind: 'groupTopics', args: ['g1'] })).value, { ok: true, chatId: 'g1' })
-  for (const bad of [{ kind: 'extract' }, { kind: '__proto__' }, { kind: 'constructor' }, { kind: 'draftReply', args: 'x' }, { kind: 'draftReply', args: [1, 2, 3, 4, 5] }, 'draftReply', null, {}]) {
-    const result = await invoke(dispatcher, 'ai.run', bad)
-    assert.deepEqual({ ok: result.ok, code: result.code }, { ok: false, code: 'invalid_args' }, JSON.stringify(bad))
-  }
-  assert.equal((await invoke(dispatcher, 'ai.commit', { results: [] })).code, 'invalid_args')
-  assert.equal((await invoke(dispatcher, 'ai.commit', { results: Array(5).fill({}) })).code, 'invalid_args')
-  assert.equal((await invoke(dispatcher, 'ai.release', { taskIds: [1] })).code, 'invalid_args')
-  assert.equal((await invoke(dispatcher, 'ai.release', { taskIds: ['nope'] })).value.released, 0)
-  done()
-})
-
-test('dispatcher: without the bridge the ai.* paths say so; the three direct AI paths stay "unsupported_in_plugin" (UI goes through ai.run); extract.release validates; extract.system carries the output format', async () => {
-  const { dispatcher, done } = dispatcherWith({})
-  for (const path of ['ai.pull', 'ai.commit', 'ai.release', 'ai.run']) assert.equal((await invoke(dispatcher, path, { kind: 'draftReply', results: [{}], taskIds: ['a'] })).code, 'ai_bridge_unavailable', path)
+  const { dispatcher, done } = dispatcherWith({ api })
   for (const path of ['db.todos.draftReply', 'db.todos.analyzeNotMine', 'groupTopics.analyze']) {
-    const result = await invoke(dispatcher, path, 'x')
-    assert.deepEqual({ code: result.code, route: result.route }, { code: 'unsupported_in_plugin', route: 'ui_ai_chat' }, path)
-    assert.ok(UNSUPPORTED_API_PATHS[path] && !SUPPORTED_API_PATHS.includes(path))
+    assert.ok(SUPPORTED_API_PATHS.includes(path) && !UNSUPPORTED_API_PATHS[path], path)
   }
+  assert.deepEqual((await invoke(dispatcher, 'db.todos.draftReply', 'todo-1')).value, { draft: '草稿' })
+  assert.deepEqual(seen, [['draft', 'todo-1']])
+  assert.deepEqual((await invoke(dispatcher, 'db.todos.analyzeNotMine', 'f1')).value, { ok: true, id: 'f1' })
+  assert.deepEqual((await invoke(dispatcher, 'groupTopics.analyze', 'g1')).value, { ok: true, chatId: 'g1' })
+  assert.deepEqual(port.requests.map((request) => request.expectJson), [false, true, true], 'the kind decides whether JSON is expected: draft = text, analysis / topics = JSON')
   assert.deepEqual(Object.keys(AI_RUN_PATHS).sort(), ['analyzeNotMine', 'draftReply', 'groupTopics'])
-  assert.equal((await invoke(dispatcher, 'extract.release', { itemIds: [] })).code, 'invalid_args')
-  assert.equal((await invoke(dispatcher, 'extract.release', { itemIds: [1] })).code, 'invalid_args')
-  assert.equal((await invoke(dispatcher, 'extract.release', { itemIds: Array(17).fill('a') })).code, 'invalid_args')
-  assert.deepEqual((await invoke(dispatcher, 'extract.release', { itemIds: ['a', 'b'] })).value, { released: 2, unknown: [] })
-  const system = (await invoke(dispatcher, 'extract.system')).value
-  assert.equal(system.format, EXTRACT_OUTPUT_CONTRACT)
-  assert.ok(system.chars + 2 + system.format.length <= CONTRACT.limits.systemChars)
   done()
 })
 
-test('dispatcher: an extract.pull counts as the UI being present, so a user action asked right after it is accepted instead of failing with ui_not_connected', async () => {
-  const aiTasks = new AiTaskQueue({ consumerFreshMs: 10_000 })
-  const { dispatcher, done } = dispatcherWith({ aiTasks, api: { db: { todos: { draftReply: async () => ({ draft: await createUiAiProvider(aiTasks).complete({ system: 'S', user: 'U' }).then((r) => r.text, (e) => e.userMessage) }) } } } })
-  const before = await invoke(dispatcher, 'ai.run', { kind: 'draftReply', args: ['t'] })
-  assert.match(before.value.draft, /看板不在前景/, 'nobody is polling yet')
-  await invoke(dispatcher, 'extract.pull', {})
-  const run = invoke(dispatcher, 'ai.run', { kind: 'draftReply', args: ['t'] })
-  await sleep(5)
-  assert.equal(aiTasks.stats().pending, 1, 'queued for the UI')
-  const task = aiTasks.pull().tasks[0]
-  aiTasks.commit({ results: [{ taskId: task.taskId, ok: true, text: '好' }] })
-  assert.deepEqual((await run).value, { draft: '好' })
+test('dispatcher: the 0.1.x relay is gone — ai.pull / ai.commit / ai.release / ai.run and extract.pull / extract.commit / extract.release / extract.system are not paths any more; extract.stats stays', async () => {
+  const { dispatcher, done } = dispatcherWith({ ai: aiRuntime() })
+  for (const path of ['ai.pull', 'ai.commit', 'ai.release', 'ai.run', 'extract.pull', 'extract.commit', 'extract.release', 'extract.system']) {
+    const result = await invoke(dispatcher, path, { max: 1, results: [{}], itemIds: ['a'], taskIds: ['a'], kind: 'draftReply' })
+    assert.deepEqual({ ok: result.ok, code: result.code }, { ok: false, code: 'path_unknown' }, path)
+    assert.equal(SUPPORTED_API_PATHS.includes(path), false, path)
+  }
+  assert.deepEqual((await invoke(dispatcher, 'extract.stats')).value, { pending: 2, leased: 1, awaiting: 0, chatsBackingOff: 0, gen: 1 })
+  // nothing in the wire vocabulary lets a view lease or commit extraction work
+  assert.ok(BACKEND_METHOD_GROUPS.includes('ai') && BACKEND_METHOD_GROUPS.includes('extract'))
   done()
 })
 
-// ───────────── review F8: the commit text limit is in UTF-8 bytes, the same unit as the view's 60 KiB request limit ─────────────
+test('dispatcher: ai.status reports the backend\'s AI state (optionally re-probing first) and ai.options passes the host\'s model list; both say so when AI is not wired', async () => {
+  const ai = aiRuntime({ state: 'paused', reason: 'rate_limited', resumeAt: 123 })
+  const { dispatcher, done } = dispatcherWith({ ai })
+  const status = await invoke(dispatcher, 'ai.status', {})
+  assert.deepEqual({ ok: status.ok, state: status.value.state, reason: status.value.reason, resumeAt: status.value.resumeAt }, { ok: true, state: 'paused', reason: 'rate_limited', resumeAt: 123 })
+  assert.deepEqual(ai.calls, ['ready'])
+  await invoke(dispatcher, 'ai.status', { refresh: true })
+  assert.deepEqual(ai.calls, ['ready', 'refresh', 'ready'], 'refresh: true forgets the cache first, then re-probes')
+  assert.deepEqual((await invoke(dispatcher, 'ai.options')).value, { providers: [], defaultProviderId: null })
+  done()
 
-test('F8: ai.commit limits the text by UTF-8 bytes (not characters): a CJK reply that the view could never send is refused with reply_too_long, one at the byte limit is accepted', async () => {
-  assert.equal(AI_COMMIT_TEXT_MAX_BYTES, 48 * 1024)
-  assert.ok(AI_COMMIT_TEXT_MAX_BYTES < MAX_REQUEST_BYTES, 'the text limit leaves room for the request envelope')
-  const { q } = queue()
-  q.touch()
-  // exactly at the byte limit: 16,384 CJK characters x 3 bytes = 49,152 bytes (well under the old 64,000-character cap, which would have accepted one more)
-  const atLimit = '字'.repeat(AI_COMMIT_TEXT_MAX_BYTES / 3)
-  assert.equal(utf8Bytes(atLimit), AI_COMMIT_TEXT_MAX_BYTES)
-  const ok = q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
-  const t1 = q.pull().tasks[0].taskId
-  assert.equal(q.commit({ results: [{ taskId: t1, ok: true, text: atLimit }] }).results[0].status, 'accepted')
-  assert.equal((await ok).text.length, 16_384)
+  const failing = aiRuntime()
+  failing.options = async () => { throw Object.assign(new Error('host request failed: not_granted'), { code: 'not_granted' }) }
+  const second = dispatcherWith({ ai: failing })
+  const denied = await invoke(second.dispatcher, 'ai.options')
+  assert.deepEqual({ ok: denied.ok, code: denied.code }, { ok: false, code: 'not_granted' }, 'the settings screen decides the sentence from the host\'s code')
+  second.done()
 
-  // one more character: 49,155 bytes — 16,385 characters is far below the old 64,000-character cap, yet the request could not have been sent
-  const over = q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
-  const t2 = q.pull().tasks[0].taskId
-  assert.deepEqual(q.commit({ results: [{ taskId: t2, ok: true, text: atLimit + '字' }] }).results, [{ taskId: t2, status: 'bad_request', code: 'text_too_large' }])
-  assert.equal((await rejection(over)).code, 'reply_too_long')
-
-  // ASCII: 48 KiB is accepted, 48 KiB + 1 byte is not
-  const ascii = q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
-  const t3 = q.pull().tasks[0].taskId
-  assert.equal(q.commit({ results: [{ taskId: t3, ok: true, text: 'a'.repeat(AI_COMMIT_TEXT_MAX_BYTES) }] }).results[0].status, 'accepted')
-  assert.equal((await ascii).text.length, AI_COMMIT_TEXT_MAX_BYTES)
-  const asciiOver = q.request({ kind: 'draftReply', system: 'S', user: 'U', expectJson: false })
-  const t4 = q.pull().tasks[0].taskId
-  assert.equal(q.commit({ results: [{ taskId: t4, ok: true, text: 'a'.repeat(AI_COMMIT_TEXT_MAX_BYTES + 1) }] }).results[0].code, 'text_too_large')
-  assert.equal((await rejection(asciiOver)).code, 'reply_too_long')
+  const bare = dispatcherWith({})
+  assert.equal((await invoke(bare.dispatcher, 'ai.status')).code, 'ai_unavailable')
+  assert.equal((await invoke(bare.dispatcher, 'ai.options')).code, 'ai_unavailable')
+  bare.done()
 })
 
-test('F8: fitReplyText keeps what fits, truncates a plain-text draft at a character boundary with a visible mark, and refuses to cut JSON; whatever it returns can be sent as one request', () => {
-  const small = fitReplyText('好的，我今天處理。', true)
-  assert.deepEqual(small, { ok: true, text: '好的，我今天處理。', truncated: false })
+test('dispatcher (review F1): ai.status / ai.options never wait for a TeamUQ that does not answer — they give up before the 30 s host call limit (which would get the whole backend isolated), answering with the last known state', async () => {
+  const never = new Promise(() => undefined)
+  const hung = aiRuntime({ state: 'unavailable', reason: 'host_unavailable' })
+  hung.ready = () => { hung.calls.push('ready'); return never }
+  hung.options = () => { hung.calls.push('options'); return never }
+  const { dispatcher, done } = dispatcherWith({ ai: hung, aiDeadlineMs: 60 })
+  const raced = (promise) => Promise.race([promise, sleep(1500).then(() => ({ hung: true }))])
+  const t0 = Date.now()
+  const status = await raced(invoke(dispatcher, 'ai.status', {}))
+  assert.notEqual(status.hung, true, 'ai.status answered although ready() never resolves')
+  assert.deepEqual({ ok: status.ok, state: status.value.state, reason: status.value.reason }, { ok: true, state: 'unavailable', reason: 'host_unavailable' }, 'the last known status')
+  const options = await raced(invoke(dispatcher, 'ai.options'))
+  assert.notEqual(options.hung, true, 'ai.options answered although the host never does')
+  assert.deepEqual({ ok: options.ok, code: options.code }, { ok: false, code: 'plugin_host_timeout' })
+  assert.ok(Date.now() - t0 < 1200, 'both answered at their own deadline')
+  // a ready() that fails late must not become an unhandled rejection
+  const late = aiRuntime()
+  late.ready = () => new Promise((_, reject) => setTimeout(() => reject(new Error('late')), 120))
+  const lateDispatcher = dispatcherWith({ ai: late, aiDeadlineMs: 20 })
+  assert.equal((await invoke(lateDispatcher.dispatcher, 'ai.status', {})).ok, true)
+  await sleep(200)
+  lateDispatcher.done()
+  done()
+})
 
-  const cjk = '很長的草稿。'.repeat(8000) // 48,000 characters = 144,000 bytes
-  const cut = fitReplyText(cjk, true)
-  assert.equal(cut.ok, true)
-  assert.equal(cut.truncated, true)
-  assert.ok(cut.text.endsWith(REPLY_TRUNCATED_MARK))
-  assert.ok(cut.text.startsWith('很長的草稿。很長的草稿。'))
-  assert.ok(utf8Bytes(cut.text) <= AI_COMMIT_TEXT_MAX_BYTES, `kept ${utf8Bytes(cut.text)} bytes`)
-  assert.ok(utf8Bytes(cut.text) > AI_COMMIT_TEXT_MAX_BYTES - 6, 'the longest prefix that fits is kept (within one character)')
-  const wire = (text) => toWire('ai.commit', [{ results: [{ taskId: '00000000-0000-4000-8000-000000000000', ok: true, text, model: 'gpt-5-codex' }] }])
-  assert.doesNotThrow(() => wire(cut.text), 'the truncated reply is a valid request (what the old 64,000-character cap could not guarantee)')
-  assert.throws(() => wire(cjk), (e) => e.code === 'request_too_large')
+test('dispatcher: reviewLastDays does not start when the AI cannot work (not logged in, permission off, not wired) — an immediate, explained failure, not a 15-minute wait; a rate limit or quota pause still queues', async () => {
+  const ran = []
+  const review = { run: async (days, fn) => { ran.push(days); return fn() } }
+  const api = { pipeline: { reviewLastDays: async (days) => ({ ok: true, days }) } }
+  for (const [overrides, pattern] of [
+    [{ state: 'unavailable', reason: 'provider_not_logged_in' }, /尚未登入/],
+    [{ state: 'revoked', reason: 'access_revoked' }, /ai:chat/],
+    [{ state: 'stopped' }, /尚未啟動/]
+  ]) {
+    const { dispatcher, done } = dispatcherWith({ api, review, ai: aiRuntime(overrides) })
+    const result = (await invoke(dispatcher, 'pipeline.reviewLastDays', 3)).value
+    assert.equal(result.ok, false)
+    assert.equal(result.days, 3)
+    assert.match(result.note, pattern)
+    assert.equal(result.chatsSeen, 0)
+    done()
+  }
+  assert.deepEqual(ran, [], 'the review never started')
+  for (const overrides of [{ state: 'running' }, { state: 'paused', reason: 'rate_limited', resumeAt: 5 }, { state: 'paused', reason: 'quota_exhausted', resumeAt: 5 }]) {
+    const { dispatcher, done } = dispatcherWith({ api, review, ai: aiRuntime(overrides) })
+    assert.deepEqual((await invoke(dispatcher, 'pipeline.reviewLastDays', 2)).value, { ok: true, days: 2 })
+    done()
+  }
+  assert.deepEqual(ran, [2, 2, 2])
+})
 
-  // never splits a surrogate pair
-  const emoji = '😀'.repeat(20_000)
-  const cutEmoji = fitReplyText(emoji, true)
-  assert.equal(cutEmoji.ok, true)
-  assert.doesNotThrow(() => new TextEncoder().encode(cutEmoji.text))
-  assert.equal(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(cutEmoji.text), false, 'no lone surrogate')
+test('dispatcher: AI features that are slower than the soft deadline become jobs (a draft can take as long as the model needs); the result arrives through job.poll', async () => {
+  const api = { db: { todos: { draftReply: async () => { await sleep(80); return { draft: '慢慢寫好的草稿' } } } } }
+  const { dispatcher, done } = dispatcherWith({ api })
+  const first = await invoke(dispatcher, 'db.todos.draftReply', 't1')
+  assert.equal(first.pending, true)
+  let polled = await invoke(dispatcher, 'job.poll', { jobId: first.jobId, waitMs: 50 })
+  for (let i = 0; i < 20 && polled.pending; i += 1) polled = await invoke(dispatcher, 'job.poll', { jobId: first.jobId, waitMs: 50 })
+  assert.deepEqual(polled.value, { draft: '慢慢寫好的草稿' })
+  done()
+})
 
-  // JSON escaping can make a text bigger on the wire than its raw bytes: quotes and control characters count at their escaped size
-  const quotes = '"'.repeat(40_000) // 40,000 raw bytes (under the raw limit) but 80,000 bytes once escaped
-  assert.ok(utf8Bytes(quotes) < AI_COMMIT_TEXT_MAX_BYTES)
-  const cutQuotes = fitReplyText(quotes, true)
-  assert.equal(cutQuotes.ok && cutQuotes.truncated, true)
-  assert.doesNotThrow(() => wire(cutQuotes.text))
-
-  // a JSON answer is never truncated (it would no longer parse): the caller records reply_too_long instead
-  assert.deepEqual(fitReplyText(cjk, false), { ok: false, code: 'reply_too_long' })
-  assert.equal(fitReplyText('{"a":1}', false).ok, true)
+test('method groups: `ai` and `extract` are still declared (ai.status / ai.options / extract.stats), `driver` is not, and no path of the removed relay maps to a group', () => {
+  assert.equal(backendMethodFor('ai.status'), 'ai')
+  assert.equal(backendMethodFor('ai.options'), 'ai')
+  assert.equal(backendMethodFor('extract.stats'), 'extract')
+  assert.equal(backendMethodFor('driver.postDraft'), null)
+  assert.ok(BACKEND_METHOD_GROUPS.length <= 32, 'the manifest allows 32 backendMethods')
 })

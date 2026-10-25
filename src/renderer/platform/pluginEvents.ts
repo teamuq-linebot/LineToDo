@@ -25,7 +25,7 @@ import { ACCESS_HOST_CODES } from './pluginTransport'
 
 export const PLUGIN_EVENT_TYPES = [
   'line-message', 'line-status', 'messages-persisted', 'pipeline-run', 'pipeline-status',
-  'todos-changed', 'backfill-progress', 'reconcile-progress', 'extract-pending', 'ai-selection-changed'
+  'todos-changed', 'backfill-progress', 'reconcile-progress', 'ai-status', 'residency'
 ] as const
 export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number]
 

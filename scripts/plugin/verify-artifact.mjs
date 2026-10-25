@@ -1,8 +1,8 @@
 // Verifies a built .tuqplugin with the official author tool and audits its content (G-08: no teamuq-electron checkout, no pinned 1.6.8 validators,
 // no development key — the package is unsigned, G-09):
-//   1. `tuq-plugin-tool verify <file>` for TeamUQ 1.7.1 / win32-x64: the same reviewArtifact Core runs when the user picks the file
+//   1. `tuq-plugin-tool verify <file>` for the vendored tool's Core (1.7.15) / win32-x64: the same reviewArtifact Core runs when the user picks the file
 //      (zip structure, integrity.json coverage and hashes, manifest schema + support, native whitelist, icon). Expected signer: unsigned.
-//   2. negative controls with the same tool (the check is not vacuous): one flipped byte, an older Core (1.7.0) and another platform must be refused.
+//   2. negative controls with the same tool (the check is not vacuous): one flipped byte, an older Core (1.7.0, and 1.7.12 which has no host.ai.complete) and another platform must be refused.
 //   3. the content audit (lib/audit.mjs) on the unpacked zip: no .ps1 / line-driver, no better-sqlite3-multiple-ciphers, no key file or private-key
 //      marker, no standalone better-sqlite3 11.x, no node_modules, exactly the two pinned native modules, and no signature.json / delegation.json.
 //
@@ -73,6 +73,8 @@ export async function verifyArtifact({ file }) {
     const refusals = {
       tamperedByte: verifyPackage(tamperedFile),
       core170: verifyPackage(file, { ...TARGET, coreVersion: '1.7.0' }),
+      // 0.2.0: the backend needs context.host.ai.complete (Core >= 1.7.13); the previous devkit Core (1.7.12) must refuse the package
+      core1712: verifyPackage(file, { ...TARGET, coreVersion: '1.7.12' }),
       linuxPlatform: verifyPackage(file, { ...TARGET, platform: 'linux-x64', osVersion: '6.0' }),
     }
     result.steps.negative = Object.fromEntries(Object.entries(refusals).map(([label, run]) => [label, { refused: run.exit !== 0, exit: run.exit, stderr: run.stderr.trim().slice(0, 300) }]))

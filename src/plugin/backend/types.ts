@@ -7,7 +7,18 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
  * host 另外會帶 `settings`，但本外掛沒有 `settingsSchema` 也沒有 `settings:plugin`，那些值一律是空的（G-06），
  * 所以這裡刻意不宣告它：backend 讀 `context.settings` 會在型別檢查失敗。
  */
-export type PluginBackendContext = Pick<PluginBackendContextV1, 'pluginId' | 'dataDir' | 'assetPacks' | 'allowAddons'>
+export type PluginBackendContext = Pick<PluginBackendContextV1, 'pluginId' | 'dataDir' | 'assetPacks' | 'allowAddons'> & {
+  /**
+   * 0.2.0：宿主能力。本外掛只用 `host.ai`（`ai:chat`，Core >=1.7.13 才有 `complete`）；其餘（program、secrets、workRecords…）刻意不宣告，
+   * backend 讀它們會在型別檢查失敗。
+   */
+  host: { ai: PluginBackendContextV1['host']['ai'] }
+  /**
+   * 背景執行（`background:resident`）：Core 的 `context.residency`（`current()`／`onChange()`）。vendored 的 SDK（1.7.15）還沒有這個欄位，而且舊 Core 不會帶它，
+   * 所以是選用的、值當成不可信（backend/residency.ts 自己驗證）；沒有它時行為與之前完全相同。
+   */
+  residency?: unknown
+}
 
 export interface SessionInfo {
   readonly sessionId: string

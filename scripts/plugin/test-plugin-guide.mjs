@@ -120,7 +120,8 @@ test('G-07: the manifest allow-list is the method groups; every adapter call use
       await api.plugin.reviewStatus()
       await api.pipeline.longTaskStatus()
       await api.plugin.extract.stats()
-      await api.plugin.aiTasks.pull({ max: 1 })
+      await api.plugin.aiStatus()
+      await api.hostAi.getOptions().catch(() => undefined) // no host.ai in this backend: ai.options answers in-band
       assert.equal((await api.app.openDataFolder()).ok, false)
       const off = api.line.onStatus(() => undefined)
       await until(() => full.state.calls.some((c) => c.path === 'events.pull'), { message: 'the event long poll' })
@@ -422,7 +423,7 @@ test('G-05: a review whose backend restarts mid-run: the waiting call ends in jo
     backend: { call: async (method, params) => JSON.parse(JSON.stringify(await target.current.call(method, JSON.parse(JSON.stringify(params))))) },
     assets: { url: (p) => p }
   }
-  const api = createPluginLineTodoApi({ host, events: { enabled: false }, jobPollWaitMs: 20, extractionConnected: true })
+  const api = createPluginLineTodoApi({ host, events: { enabled: false }, jobPollWaitMs: 20 })
   let two = null
   try {
     const call = api.pipeline.reviewLastDays(2).then(() => null, (e) => e)

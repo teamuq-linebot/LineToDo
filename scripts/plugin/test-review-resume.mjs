@@ -1,12 +1,12 @@
-// Phase 4 repair — reviewLastDays in plugin mode with hundreds of chats under ai:chat's 18 turns/minute.
+// Phase 4 repair — reviewLastDays in plugin mode with hundreds of chats under ai:chat's 18 turns/minute (0.2.0: the AI runs in the backend).
 //
-// Everything runs on a FAKE clock (queue `now` + `schedule`, review ledger `now`, the simulated UI's quota window), so a 33-minute review takes a couple of seconds.
-// The "UI" here is a simulated orchestrator: pull one item, wait for a free slot in a sliding 60 s window of 18 turns, answer, commit — the same extract.pull/commit
-// channel the real orchestrator uses (its own behaviour is covered by test-ai-orchestrator / test-ai-e2e).
+// Everything runs on a FAKE clock shared by the queue (`now` + `schedule`), the review ledger, the backend's AI port and worker (`ai.clock`) and the mock `context.host.ai`
+// (scripts/lib/mock-tuq-ai.mjs: Core 1.7.15 semantics, 20/min window), so a 33-minute review takes a couple of seconds. The consumer of the queue is the REAL ExtractWorker + HostAiPort
+// inside the backend; the test only drives the fake clock and the event loop (`makeDriver`) and never touches the queue.
 //
-//   * ~300 chats, 2 day-slices each, 18 turns/min -> the review runs > 30 fake minutes and completes (no 15-minute wait cap kills it); progress is visible meanwhile
+//   * ~190 chats (380 turns, below Core's hard cap of 400 turns/hour), 2 day-slices each, 18 turns/min (20/min minus the 2 kept for user actions) -> the review runs > 15 fake minutes and completes (no 15-minute wait cap kills it); progress is visible meanwhile
 //   * one chat that alone needs > 15 fake minutes of turns completes (the wait cap is a *stall* cap, not a total-time cap)
-//   * the board goes away mid-review (UI offline) -> the review pauses (no mass failure, no 15-minutes-per-chat pile-up), finished chats are kept,
+//   * the AI goes away mid-review (Codex logged out) -> the review pauses (no mass failure, no 15-minutes-per-chat pile-up), finished chats are kept,
 //     "paused, N/M done" is reported; the next review continues and sends only what is left — also across a backend restart (ledger on disk)
 //   * ExtractQueue stall semantics, unit level
 import assert from 'node:assert/strict'
@@ -22,6 +22,7 @@ import { ExtractQueue } from '../../src/plugin/backend/extractQueue.ts'
 import { ReviewCoordinator, ReviewLedger } from '../../src/plugin/backend/reviewRun.ts'
 import { LongTaskTracker } from '../../src/plugin/backend/taskStatus.ts'
 import { backendMethodFor } from '../../src/shared/pluginWire.ts'
+import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
 
 const DAY = 24 * 60 * 60 * 1000
 const MIN = 60_000
@@ -35,7 +36,11 @@ function makeClock(start = 50_000_000) {
   const timers = new Map()
   const clock = {
     now: () => time,
-    schedule(fn, ms) { const id = seq++; timers.set(id, { at: time + ms, fn }); return () => { timers.delete(id) } },
+    /** the ExtractQueue's `schedule` (returns a canceller). */
+    schedule(fn, ms) { const id = seq++; timers.set(id, { at: time + ms, fn, tag: 'queue' }); return () => { timers.delete(id) } },
+    /** the AI port's / worker's Clock. */
+    setTimeout(fn, ms) { const id = seq++; timers.set(id, { at: time + Math.max(0, ms), fn, tag: 'ai' }); return id },
+    clearTimeout(id) { timers.delete(id) },
     advanceTo(target) {
       for (;;) {
         const due = [...timers.entries()].filter(([, t]) => t.at <= target).sort((a, b) => a[1].at - b[1].at)[0]
@@ -47,7 +52,9 @@ function makeClock(start = 50_000_000) {
       time = Math.max(time, target)
     },
     advance(ms) { clock.advanceTo(time + ms) },
-    timers: () => timers.size
+    /** when the next timer is due (null = none). */
+    nextAt() { const all = [...timers.values()].map((t) => t.at); return all.length === 0 ? null : Math.min(...all) },
+    timers: (tag) => (tag === undefined ? timers.size : [...timers.values()].filter((t) => t.tag === tag).length)
   }
   return clock
 }
@@ -55,7 +62,7 @@ function makeClock(start = 50_000_000) {
 const tick = () => new Promise((resolve) => setImmediate(resolve))
 const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-// ───────────── fake LINE + backend + simulated UI ─────────────
+// ───────────── fake LINE + backend + the mock host AI ─────────────
 
 function fakeLine(messages) {
   const listeners = new Set()
@@ -84,12 +91,32 @@ function reviewMessages({ chats, slices = 2, perSlice = 1, base = Date.now() }) 
   return out
 }
 
-async function startBackend({ dir, messages, clock, extract = {}, line }) {
+/** What a model would answer for a payload: one todo citing the first new message (the first part of a chat only, to keep the todo count small). */
+function modelReply(user) {
+  const payload = JSON.parse(user)
+  const first = payload.newMessages[0]
+  return { importance: 'action', newTodos: [{ bucket: 'todo', title: `處理${payload.chat.name}的報價問題 ${first.msgId}`, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], resolved: [], updates: [] }
+}
+const fyiReply = { importance: 'fyi', newTodos: [], resolved: [], updates: [] }
+const asReply = (value) => '```json\n' + JSON.stringify(value) + '\n```'
+
+/** A mock `context.host.ai` on the shared fake clock; `turns` = what reached the host, `maxInWindow` = the most turns in any 60 s window. */
+function makeHostAi(clock, { reply = (user) => modelReply(user) } = {}) {
+  const mock = createMockTuqAi({ now: clock.now, reply: (ctx) => asReply(reply(ctx.user, ctx)) })
+  return {
+    ...mock,
+    turns: () => mock.stats.turns.map((turn) => ({ at: turn.at, user: turn.text, chatId: JSON.parse(turn.text).chat.chatId, msgIds: JSON.parse(turn.text).newMessages.map((m) => m.msgId) })),
+    maxInWindow: () => { const at = mock.stats.turns.map((turn) => turn.at); return Math.max(0, ...at.map((start) => at.filter((t) => t >= start && t < start + MIN).length)) }
+  }
+}
+
+async function startBackend({ dir, messages, clock, extract = {}, line, host }) {
   return createPluginBackend({
     pluginId: 'tuqdev.line-todo', version: 'repair', dataDir: dir, line: line ?? fakeLine(messages),
     extract: { now: clock.now, schedule: clock.schedule, ...extract },
     review: { now: clock.now },
-    dispatcher: { softDeadlineMs: 3_600_000 } // the test awaits the review call itself (no job polling needed)
+    dispatcher: { softDeadlineMs: 3_600_000 }, // the test awaits the review call itself (no job polling needed)
+    ...(host ? { hostAi: host.ai, ai: { clock, worker: { pollIntervalMs: 15_000 } } } : {})
   })
 }
 
@@ -111,57 +138,30 @@ function invoker(backend) {
   }
 }
 
-/** What a model would answer for a payload: one todo citing the first new message (the first part of a chat only, to keep the todo count small). */
-function modelReply(user) {
-  const payload = JSON.parse(user)
-  const first = payload.newMessages[0]
-  return { importance: 'action', newTodos: [{ bucket: 'todo', title: `處理${payload.chat.name}的報價問題 ${first.msgId}`, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], resolved: [], updates: [] }
-}
-
-/** A simulated orchestrator: one turn at a time, at most `rate` turns inside any 60 s window of fake time, nothing at all while `hidden`. */
-function makeUi({ backend, clock, rate = TURNS_PER_MIN, reply = modelReply }) {
-  const call = invoker(backend)
-  const ui = {
-    hidden: false,
-    turns: [], // { at, chatId, msgIds, user }
-    maxInWindow: 0,
-    async step() {
-      if (ui.hidden) { clock.advance(30_000); await tick(); return 'hidden' }
-      const { items } = await call('extract.pull', { max: 1 })
-      if (items.length === 0) return 'empty'
-      const item = items[0]
-      // wait for a free slot of the sliding window (same rule as the host: >= rate turns in the last 60 s -> refuse)
-      for (;;) {
-        const recent = ui.turns.filter((t) => clock.now() - t.at <= MIN)
-        if (recent.length < rate) break
-        clock.advanceTo(recent[0].at + MIN + 1)
-      }
-      const at = clock.now()
-      ui.turns.push({ at, chatId: item.chatId, user: item.user, msgIds: JSON.parse(item.user).newMessages.map((m) => m.msgId) })
-      ui.maxInWindow = Math.max(ui.maxInWindow, ui.turns.filter((t) => at - t.at < MIN).length)
-      const committed = await call('extract.commit', { results: [{ itemId: item.itemId, ok: true, result: reply(item.user, item) }] })
-      assert.equal(committed.results[0].status === 'accepted' || committed.results[0].status === 'applied', true, JSON.stringify(committed.results[0]))
-      return 'turn'
-    },
-    /** Drive until `done()` — with a guard so a bug can only fail the test, never hang it. */
-    async drive(done, { maxSteps = 200_000, onStep } = {}) {
-      let empties = 0
+/**
+ * Drives the fake clock and the event loop for a backend whose ExtractWorker is the consumer: yields to the event loop so the worker, the AI port and the mock host run,
+ * and moves fake time to the next timer only when nothing has changed for a while (a window wait, a backoff, a stall timer). A guard makes a bug fail the test instead of hanging it.
+ */
+function makeDriver({ clock, backend, host }) {
+  const snapshot = () => `${host.stats.completes}|${host.stats.refused.length}|${JSON.stringify(backend.diagnostics().extract)}|${clock.timers()}`
+  return {
+    async drive(done, { maxSteps = 300_000, onStep } = {}) {
+      let idle = 0
+      let last = snapshot()
       for (let i = 0; i < maxSteps; i += 1) {
         if (await done()) return i
-        const what = await ui.step()
-        if (onStep) await onStep(what, i)
-        if (what === 'empty') {
-          empties += 1
-          await tick()
-          if (empties % 4 === 0) await realSleep(1) // let the review's own async work (DB, core) run
-          if (empties % 40 === 0) clock.advance(15_000) // the board's backup poll interval
-        } else empties = 0
-        if (what === 'turn') await tick()
+        await tick(); await tick(); await tick()
+        const now = snapshot()
+        if (now === last) {
+          idle += 1
+          if (idle % 3 === 0) await realSleep(1) // let the review's own async work (DB, core) run
+          if (idle >= 6) { const next = clock.nextAt(); clock.advanceTo(next ?? clock.now() + 15_000); idle = 0 }
+        } else { idle = 0; last = now }
+        if (onStep) await onStep(i)
       }
-      assert.fail('simulated UI did not reach the goal in time')
+      assert.fail('the clock driver did not reach the goal in time')
     }
   }
-  return ui
 }
 
 function trackSettled(promise) {
@@ -175,10 +175,11 @@ const reviewCall = (backend, days = 3) => backend.call('pipeline', { path: 'pipe
 async function withBackend(options, body) {
   const dir = mkdtempSync(join(tmpdir(), 'plugin-review-'))
   const clock = options.clock ?? makeClock()
+  const host = makeHostAi(clock, options.hostOptions)
   let backend = null
   try {
-    backend = await startBackend({ dir, clock, ...options })
-    await body({ backend, clock, dir, call: invoker(backend) })
+    backend = await startBackend({ dir, clock, ...options, host })
+    await body({ backend, clock, dir, host, call: invoker(backend), driver: makeDriver({ clock, backend, host }) })
   } finally {
     await backend?.dispose().catch(() => undefined)
     rmSync(dir, { recursive: true, force: true })
@@ -187,17 +188,16 @@ async function withBackend(options, body) {
 
 // ───────────── 300 chats at 18 turns/minute ─────────────
 
-test('review of 300 chats under 18 turns/minute: runs > 30 fake minutes, no wait-cap failure, finishes ok, progress visible while it runs, ledger cleared at the end', async () => {
-  const messages = reviewMessages({ chats: 300, slices: 2 })
-  await withBackend({ messages }, async ({ backend, clock, dir, call }) => {
-    const ui = makeUi({ backend, clock })
+test('review of 190 chats (380 turns) under 18 turns/minute: runs > 15 fake minutes, no wait-cap failure, finishes ok, progress visible while it runs, ledger cleared at the end', async () => {
+  const messages = reviewMessages({ chats: 190, slices: 2 })
+  await withBackend({ messages }, async ({ backend, clock, dir, host, call, driver }) => {
     const t0 = clock.now()
-    const reviewP = reviewCall(backend)
-    const review = trackSettled(reviewP)
+    const review = trackSettled(reviewCall(backend))
     const samples = []
-    await ui.drive(() => review.settled, {
-      onStep: async (what, i) => {
-        if (what === 'turn' && ui.turns.length % 100 === 0) samples.push({ turns: ui.turns.length, status: await call('review.status') })
+    await driver.drive(() => review.settled, {
+      onStep: async () => {
+        const turns = host.stats.completes
+        if (turns > 0 && turns % 50 === 0 && samples.at(-1)?.turns !== turns) samples.push({ turns, status: await call('review.status') })
       }
     })
     assert.equal(review.error, null)
@@ -205,61 +205,61 @@ test('review of 300 chats under 18 turns/minute: runs > 30 fake minutes, no wait
     assert.equal(env.ok, true, JSON.stringify(env).slice(0, 300))
     const result = env.value
     const elapsedMin = (clock.now() - t0) / MIN
-    assert.ok(elapsedMin > 30, `the review took ${elapsedMin.toFixed(1)} fake minutes (the old wait cap was 15)`)
-    assert.ok(ui.turns.length >= 600 && ui.turns.length <= 610, `${ui.turns.length} turns for 300 chats x 2 day-slices`)
-    assert.ok(ui.maxInWindow <= TURNS_PER_MIN, `never more than ${TURNS_PER_MIN} turns in 60 s (saw ${ui.maxInWindow})`)
+    assert.ok(elapsedMin > 15, `the review took ${elapsedMin.toFixed(1)} fake minutes (longer than the 15-minute stall cap)`)
+    assert.ok(host.stats.completes >= 380 && host.stats.completes <= 390, `${host.stats.completes} turns for 190 chats x 2 day-slices`)
+    assert.ok(host.maxInWindow() <= TURNS_PER_MIN, `never more than ${TURNS_PER_MIN} turns in 60 s (saw ${host.maxInWindow()})`)
+    assert.equal(host.stats.errors.rate_limited, 0, 'the host never had to refuse a turn')
     assert.equal(result.ok, true)
-    assert.equal(result.chatsSeen, 300)
-    assert.equal(result.chatsProcessed, 300, 'every chat completed')
+    assert.equal(result.chatsSeen, 190)
+    assert.equal(result.chatsProcessed, 190, 'every chat completed')
     assert.equal(result.chatsFailed, 0, 'no chat failed on a wait cap')
-    assert.equal(result.todosCreated + result.todosMerged, 600)
+    assert.equal(result.todosCreated + result.todosMerged, 380)
     // progress was reportable all along: running with N/M, then done
     assert.ok(samples.length >= 5)
     for (const sample of samples) {
       assert.equal(sample.status.running, true)
       assert.equal(sample.status.state, 'running')
-      assert.equal(sample.status.chatsTotal, 300)
-      assert.match(sample.status.summary, /回顧進行中：已處理 \d+\/300 個聊天/)
+      assert.equal(sample.status.chatsTotal, 190)
+      assert.match(sample.status.summary, /回顧進行中：已處理 \d+\/190 個聊天/)
     }
     assert.ok(samples.at(-1).status.chatsDone > samples[0].status.chatsDone, 'the done count grows')
     const final = await call('review.status')
     assert.equal(final.running, false)
     assert.equal(final.state, 'done')
-    assert.equal(final.chatsDone, 300)
-    assert.equal(final.chatsTotal, 300)
+    assert.equal(final.chatsDone, 190)
+    assert.equal(final.chatsTotal, 190)
     assert.equal(final.slicesFailed, 0)
     assert.equal(final.resumableMessages, 0, 'a completed review leaves no ledger behind')
     assert.equal(existsSync(join(dir, 'review-ledger.json')), false)
     assert.equal((await call('backend.info')).review.state, 'done')
-    assert.equal((await call('db.todos.list', {})).length >= 300, true)
-    assert.equal(clock.timers(), 0, 'no stall timer is left armed')
+    assert.equal((await call('db.todos.list', {})).length >= 190, true)
+    assert.equal(clock.timers('queue'), 0, 'no stall timer is left armed')
+    assert.equal(host.control.liveSessions(), 0)
   })
 })
 
 test('a second reviewLastDays call while one is running shares it (single flight): no second pass over the chats', async () => {
   const messages = reviewMessages({ chats: 20, slices: 2 })
-  await withBackend({ messages }, async ({ backend, clock }) => {
-    const ui = makeUi({ backend, clock })
+  await withBackend({ messages }, async ({ backend, host, driver }) => {
     const first = trackSettled(reviewCall(backend))
     await realSleep(20)
     const second = trackSettled(reviewCall(backend))
-    await ui.drive(() => first.settled && second.settled)
+    await driver.drive(() => first.settled && second.settled)
     assert.equal(first.value.ok, true)
     assert.deepEqual(second.value, first.value)
-    assert.equal(ui.turns.length, 40, 'each day-slice was sent once, not twice')
+    assert.equal(host.stats.completes, 40, 'each day-slice was sent once, not twice')
   })
 })
 
 test('one chat that alone needs more than 15 fake minutes of turns still completes: the wait cap is a stall cap, not a total-time cap', async () => {
   // maxUserChars 1500 -> about 7 messages per turn -> 2,300 messages = ~330 turns = ~18 minutes at 18/min for this ONE request
   const messages = reviewMessages({ chats: 1, slices: 1, perSlice: 2300 }).concat(reviewMessages({ chats: 3, slices: 2 }).map((m) => ({ ...m, chatId: `u-s${m.chatId}`, msgId: `s${m.msgId}`, chat: `小聊天${m.chat}` })))
-  await withBackend({ messages, extract: { maxUserChars: 1500 } }, async ({ backend, clock }) => {
-    const ui = makeUi({ backend, clock, reply: (user, item) => (item.part === 1 ? modelReply(user) : { importance: 'fyi', newTodos: [], resolved: [], updates: [] }) })
+  await withBackend({ messages, extract: { maxUserChars: 1500 }, hostOptions: { reply: (user) => (JSON.parse(user).newMessages[0].msgId.endsWith('k0') ? modelReply(user) : fyiReply) } }, async ({ backend, clock, host, driver }) => {
     const t0 = clock.now()
     const review = trackSettled(reviewCall(backend))
-    await ui.drive(() => review.settled)
+    await driver.drive(() => review.settled)
     const result = review.value.value
-    const bigTurns = ui.turns.filter((t) => t.chatId === 'u-1')
+    const bigTurns = host.turns().filter((t) => t.chatId === 'u-1')
     const elapsedMin = (clock.now() - t0) / MIN
     assert.ok(bigTurns.length > 270, `the big chat alone took ${bigTurns.length} turns`)
     assert.ok(elapsedMin > 15, `${elapsedMin.toFixed(1)} fake minutes in total`)
@@ -267,71 +267,76 @@ test('one chat that alone needs more than 15 fake minutes of turns still complet
     assert.equal(result.ok, true)
     assert.equal(result.chatsFailed, 0, 'a request that waits longer than 15 minutes in total is fine as long as the queue keeps moving')
     assert.equal(result.chatsProcessed, 4)
-    for (const turn of ui.turns) assert.ok(turn.user.length <= 1500)
+    for (const turn of host.turns()) assert.ok(turn.user.length <= 1500)
     const sent = bigTurns.flatMap((t) => t.msgIds)
     assert.equal(sent.length, 2300)
     assert.equal(new Set(sent).size, 2300, 'every message of the big chat exactly once')
   })
 })
 
-// ───────────── the board goes away mid-review ─────────────
+// ───────────── the AI goes away mid-review ─────────────
 
-test('UI offline mid-review: the review pauses (not a mass failure, not 15 minutes per chat), keeps what is finished, reports "paused N/M"; the next review sends only what is left', async () => {
-  const messages = reviewMessages({ chats: 300, slices: 2 })
-  await withBackend({ messages }, async ({ backend, clock, dir, call }) => {
-    const ui = makeUi({ backend, clock })
+test('AI unavailable mid-review (Codex logged out): the review pauses (not a mass failure, not 15 minutes per chat), keeps what is finished, reports "paused N/M"; the next review sends only what is left', async () => {
+  const messages = reviewMessages({ chats: 190, slices: 2 })
+  await withBackend({ messages }, async ({ backend, clock, dir, host, call, driver }) => {
     const t0 = clock.now()
     const first = trackSettled(reviewCall(backend))
-    // run normally until ~half of the turns are done, then the board disappears
-    await ui.drive(() => ui.turns.length >= 250 || first.settled)
+    // run normally until ~half of the turns are done, then Codex is logged out
+    await driver.drive(() => host.stats.completes >= 150 || first.settled)
     assert.equal(first.settled, false)
-    const turnsBeforeHide = ui.turns.length
-    ui.hidden = true
+    const turnsBeforeHide = host.stats.completes
+    host.control.set({ providerState: 'not_logged_in' })
     const hiddenAt = clock.now()
-    await ui.drive(() => first.settled)
+    await driver.drive(() => first.settled)
     const hiddenForMin = (clock.now() - hiddenAt) / MIN
 
     assert.equal(first.value.ok, true, 'the call itself returns an in-band result')
     const paused = first.value.value
     assert.equal(paused.ok, false, 'not finished: ok:false so the UI shows the note')
-    assert.match(paused.note, /^回顧暫停：已完成 \d+\/300 個聊天/)
-    assert.ok(hiddenForMin >= 14 && hiddenForMin < 20, `the review gave up after ${hiddenForMin.toFixed(1)} fake minutes without a UI (not 15 minutes per remaining chat)`)
+    assert.match(paused.note, /^回顧暫停：已完成 \d+\/190 個聊天/)
+    assert.ok(hiddenForMin >= 14 && hiddenForMin < 20, `the review gave up after ${hiddenForMin.toFixed(1)} fake minutes without an AI (not 15 minutes per remaining chat)`)
     assert.ok(clock.now() - t0 < 80 * MIN, 'and finished quickly after that')
     const doneChats = paused.chatsProcessed
-    assert.ok(doneChats >= 100 && doneChats < 300, `${doneChats} chats were completed before the pause`)
-    assert.ok(paused.chatsFailed >= 300 - doneChats - 4, `the rest failed fast (${paused.chatsFailed})`)
+    assert.ok(doneChats >= 60 && doneChats < 190, `${doneChats} chats were completed before the pause`)
+    assert.ok(paused.chatsFailed >= 190 - doneChats - 4, `the rest failed fast (${paused.chatsFailed})`)
     assert.ok(paused.todosCreated + paused.todosMerged >= turnsBeforeHide - 4, 'finished work is persisted (todos from the answered turns exist)')
     const todosAfterPause = (await call('db.todos.list', {})).length
-    assert.ok(todosAfterPause >= 100)
+    assert.ok(todosAfterPause >= 60)
 
     const status = await call('review.status')
     assert.equal(status.running, false)
     assert.equal(status.state, 'paused')
     assert.equal(status.chatsDone, doneChats)
-    assert.equal(status.chatsTotal, 300)
-    assert.match(status.summary, /^回顧暫停：已完成 \d+\/300 個聊天，看板回到前景後再按一次「回顧」即可接續/)
+    assert.equal(status.chatsTotal, 190)
+    assert.match(status.summary, /^回顧暫停：已完成 \d+\/190 個聊天，AI 恢復後再按一次「回顧」即可接續/)
     assert.ok(status.resumableMessages >= turnsBeforeHide - 4, `ledger remembers ${status.resumableMessages} messages`)
     assert.equal(existsSync(join(dir, 'review-ledger.json')), true, 'the ledger is on disk')
 
-    // the board is back: continue
-    ui.hidden = false
-    const turnsBefore = ui.turns.length
+    // while Codex is out, a new review does not even start (immediate, explained)
+    const refused = (await call('pipeline.reviewLastDays', 3))
+    assert.equal(refused.ok, false)
+    assert.match(refused.note, /尚未登入/)
+
+    // Codex is back: continue
+    host.control.set({ providerState: 'ready' })
+    const turnsBefore = host.stats.completes
     const second = trackSettled(reviewCall(backend))
-    await ui.drive(() => second.settled)
+    await driver.drive(() => second.settled)
     const resumed = second.value.value
     assert.equal(second.value.ok, true)
     assert.equal(resumed.ok, true, JSON.stringify(resumed).slice(0, 300))
-    assert.equal(resumed.chatsProcessed, 300)
+    assert.equal(resumed.chatsProcessed, 190)
     assert.equal(resumed.chatsFailed, 0)
-    const secondTurns = ui.turns.slice(turnsBefore)
-    assert.ok(secondTurns.length <= 600 - turnsBeforeHide + 6, `the second pass sent ${secondTurns.length} turns, only what was left (600 - ${turnsBeforeHide})`)
-    assert.ok(secondTurns.length >= 600 - ui.turns.slice(0, turnsBefore).length - 4)
-    // no message was answered twice, except the (<= 4) turns that were in flight when the board went away
+    const turns = host.turns()
+    const secondTurns = turns.slice(turnsBefore)
+    assert.ok(secondTurns.length <= 380 - turnsBeforeHide + 6, `the second pass sent ${secondTurns.length} turns, only what was left (380 - ${turnsBeforeHide})`)
+    assert.ok(secondTurns.length >= 380 - turns.slice(0, turnsBefore).length - 4)
+    // no message was answered twice, except the (<= 4) turns that were in flight when the AI went away
     const counts = new Map()
-    for (const turn of ui.turns) for (const id of turn.msgIds) counts.set(id, (counts.get(id) ?? 0) + 1)
+    for (const turn of turns) for (const id of turn.msgIds) counts.set(id, (counts.get(id) ?? 0) + 1)
     const repeated = [...counts.values()].filter((n) => n > 1).length
     assert.ok(repeated <= 4, `${repeated} messages were sent twice`)
-    assert.equal(counts.size, 600)
+    assert.equal(counts.size, 380)
     assert.ok((await call('db.todos.list', {})).length >= todosAfterPause, 'the first pass\'s todos are still there')
     const final = await call('review.status')
     assert.equal(final.state, 'done')
@@ -340,23 +345,56 @@ test('UI offline mid-review: the review pauses (not a mass failure, not 15 minut
   })
 })
 
+test('Core\'s hard cap of 400 turns per hour: a review that needs more never sends more than 400 in any hour (no host rate_limited), pauses with an explained note, and the next review after the window frees finishes only what is left', async () => {
+  const messages = reviewMessages({ chats: 250, slices: 2 }) // 500 turns
+  await withBackend({ messages }, async ({ backend, clock, host, call, driver }) => {
+    const first = trackSettled(reviewCall(backend))
+    await driver.drive(() => first.settled)
+    const paused = first.value.value
+    assert.equal(paused.ok, false)
+    assert.match(paused.note, /^回顧暫停：已完成 \d+\/250 個聊天/)
+    assert.match(paused.note, /呼叫上限/, 'the note names the limit as a possible reason, not only the login')
+    const sent = host.stats.completes
+    // 0.2.0 (review F5): background work keeps extractHourReserve (20) of the 400 turns an hour for the user's own actions
+    assert.ok(sent >= 375 && sent <= 380, `${sent} turns went out before the hourly cap (400 - 20 kept for the user) held the rest back`)
+    assert.equal(host.stats.errors.rate_limited, 0, 'the port never let the host refuse a turn')
+    assert.equal((await call('review.status')).state, 'paused')
+    // the hour passes (the first turns leave the window), the user presses 回顧 again
+    clock.advance(61 * MIN)
+    const second = trackSettled(reviewCall(backend))
+    await driver.drive(() => second.settled)
+    const resumed = second.value.value
+    assert.equal(resumed.ok, true, JSON.stringify(resumed).slice(0, 300))
+    assert.equal(resumed.chatsProcessed, 250)
+    assert.equal(host.stats.completes <= 506, true, `${host.stats.completes} turns in total — only what was left was sent`)
+    const times = host.stats.turns.map((turn) => turn.at)
+    const perHour = Math.max(...times.map((start) => times.filter((t) => t >= start && t < start + 60 * MIN).length))
+    assert.ok(perHour <= 400, `at most 400 turns in any hour (saw ${perHour})`)
+    assert.equal(host.stats.errors.rate_limited, 0)
+    assert.equal(new Set(host.turns().flatMap((t) => t.msgIds)).size, 500, 'every message was sent')
+  })
+})
+
 test('progress survives a backend restart: the ledger file is read again and the finished slices are not sent again', async () => {
   const messages = reviewMessages({ chats: 40, slices: 2 })
   const dir = mkdtempSync(join(tmpdir(), 'plugin-review-restart-'))
   const clock = makeClock()
-  let backend = await startBackend({ dir, messages, clock })
+  const host = makeHostAi(clock)
+  let backend = await startBackend({ dir, messages, clock, host })
   try {
-    const ui = makeUi({ backend, clock })
+    const driver = makeDriver({ clock, backend, host })
     const first = trackSettled(reviewCall(backend))
-    await ui.drive(() => ui.turns.length >= 30 || first.settled)
-    ui.hidden = true
-    await ui.drive(() => first.settled)
+    await driver.drive(() => host.stats.completes >= 30 || first.settled)
+    host.control.set({ providerState: 'not_logged_in' })
+    await driver.drive(() => first.settled)
     assert.equal(first.value.value.ok, false)
     assert.match(first.value.value.note, /^回顧暫停：已完成 \d+\/40 個聊天/)
-    const sentBefore = new Set(ui.turns.flatMap((t) => t.msgIds))
+    const sentBefore = new Set(host.turns().flatMap((t) => t.msgIds))
     await backend.dispose()
 
-    backend = await startBackend({ dir, messages, clock })
+    // TeamUQ starts the backend again (Codex works again, new mock host process)
+    const host2 = makeHostAi(clock)
+    backend = await startBackend({ dir, messages, clock, host: host2 })
     // G-05: a fresh process has no run in memory, but it reports what the previous backend persisted (paused, N/40, resumable) instead of a blank 'idle'
     const restarted = await invoker(backend)('review.status')
     assert.equal(restarted.running, false, 'a fresh process has no run in memory')
@@ -368,14 +406,14 @@ test('progress survives a backend restart: the ledger file is read again and the
     const tasks = await invoker(backend)('tasks.status')
     assert.equal(tasks.review.state, 'paused')
     assert.equal(tasks.mediaBackfill.state, 'idle')
-    const ui2 = makeUi({ backend, clock })
+    const driver2 = makeDriver({ clock, backend, host: host2 })
     const second = trackSettled(reviewCall(backend))
-    await ui2.drive(() => second.settled)
+    await driver2.drive(() => second.settled)
     const result = second.value.value
     assert.equal(result.ok, true)
     assert.equal(result.chatsProcessed, 40)
     assert.equal(result.chatsFailed, 0)
-    const sentAfter = ui2.turns.flatMap((t) => t.msgIds)
+    const sentAfter = host2.turns().flatMap((t) => t.msgIds)
     const resent = sentAfter.filter((id) => sentBefore.has(id))
     assert.ok(resent.length <= 4, `${resent.length} messages were sent again after the restart`)
     assert.equal(new Set([...sentBefore, ...sentAfter]).size, 80)

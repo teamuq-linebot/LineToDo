@@ -10,16 +10,15 @@
  *   | LINE fs / 引擎  | Node fs + better-sqlite3-mc         | koffi Win32LineFsPort + WASM SQLite3MC（Phase 1）      |
  *   | LINE 輪詢       | LineWatcher（fs.watch + interval）  | LineWatcher（只用 interval + drainBacklog，路徑在 dataDir）|
  *   | app DB          | better-sqlite3 11.10.0              | better-sqlite3 13.0.2（nativeBinding 固定在 installDir）|
- *   | AI              | provider（http／CLI）+ extractFn    | 無真 provider；ExtractQueue 供料/收料 + AiTaskQueue 中轉（UI 經 ai:chat）|
- *   | secrets         | Electron safeStorage                | 無（backend 不持有任何 AI 金鑰）                        |
+ *   | AI              | provider（http／CLI）+ extractFn    | AI port → context.host.ai.complete（hostAi.ts）；ExtractQueue 供料 + ExtractWorker 在 backend 領取、呼叫、落庫 |
+ *   | secrets         | Electron safeStorage                | 無（backend 不持有任何 AI 金鑰；AI 由 TeamUQ 代送）      |
  *   | media           | linemedia:// + shell／dialog        | media.prepare：解密寫進 dataDir/media-cache，UI 用 assets.url |
  *   | app/driver      | Electron shell／dialog／UIA         | unsupported_in_plugin                                 |
- *   | 送出訊息        | （無）                              | chromeLine：經 CDP 操作 LINE 背景 Chrome 的 LINE 外掛（chromeLineCdp.ts）|
  *   | 開機對帳／收回掃描| runReconcile／scanRecentUnsent（hook）| 同一份程式，進度改進 EventHub；snapshot 在 dataDir      |
  *   | participantIdentity | safeStorage 加密的 install secret | unknownIdentity（設計 v2 §5.2 首版降級）              |
  *   | 事件            | webContents.send                    | EventHub（長輪詢 + capability session）                |
  *
- * 本檔不 import electron、不 import child_process／worker_threads、不做網路 I/O（chromeLine 的連線在 chromeLineCdp.ts，只連 127.0.0.1:19223）。
+ * 本檔不 import electron、不 import child_process／worker_threads、不做網路 I/O。
  */
 import { basename, dirname, join } from 'node:path'
 import { createLineTodoApplication } from '../../core/application'
@@ -50,17 +49,20 @@ import type { ReconcileDeps } from '../../main/pipeline/reconcileRunner'
 import { LineWatcher } from '../../main/line/watcher'
 import { PipelineScheduler } from '../../main/pipeline/scheduler'
 import type { LineTodoApi } from '../../shared/api'
-import { AiTaskQueue, createUiAiProvider } from './aiTaskQueue'
-import type { AiTaskQueueOptions } from './aiTaskQueue'
-import { createChromeLineSender } from './chromeLine'
-import type { LinePageOpener } from './chromeLine'
-import { createCdpLinePageOpener } from './chromeLineCdp'
+import type { PluginBackendAiApiV1 } from '@teamuq/plugin-sdk'
+import { createPortAiProvider } from './aiProvider'
 import { Dispatcher } from './dispatcher'
-import type { DispatcherOptions } from './dispatcher'
+import type { AiRuntime, DispatcherOptions } from './dispatcher'
 import { EventHub } from './eventHub'
 import type { EventHubOptions } from './eventHub'
 import { ExtractQueue } from './extractQueue'
 import type { ExtractQueueOptions } from './extractQueue'
+import { createExtractWorker } from './extractWorker'
+import type { ExtractWorker, ExtractWorkerConfig } from './extractWorker'
+import { createHostAiPort, createNoHostAiPort } from './hostAi'
+import type { Clock, HostAiConfig, HostAiPort } from './hostAi'
+import type { AiStatus } from '../../shared/aiStatus'
+import { createResidencyTracker } from './residency'
 import { createPluginMedia } from './media'
 import type { MediaDb } from './media'
 import { ReviewCoordinator, ReviewLedger } from './reviewRun'
@@ -119,15 +121,23 @@ export interface PluginBackendOptions {
    * 傳物件＝強制接上並以物件覆寫 `ReconcileDeps`（測試注入假來源）；傳 false＝不接。
    */
   reconcile?: false | Partial<ReconcileDeps>
-  /** 用 Chrome 的 LINE 外掛發送：省略＝連 LINE 背景 Chrome（127.0.0.1:19223）；給 opener＝測試用假頁面；false＝不提供（chromeLine.* 回 chrome_line_unavailable）。 */
-  chromeLine?: false | LinePageOpener
   extract?: Partial<Omit<ExtractQueueOptions, 'db' | 'getConfig'>>
   /** 回顧的續跑帳本（預設 `<dataDir>/review-ledger.json`、24 小時過期）；`now` 供測試的假時鐘。 */
   review?: { ledgerFile?: string | null; ttlMs?: number; now?(): number }
-  /** UI 中轉的單次 AI 呼叫（草擬回覆／誤判分析／群組議題分析）。 */
-  aiTasks?: Omit<AiTaskQueueOptions, 'onPending'>
+  /**
+   * TeamUQ 的 AI（`context.host.ai`，Core >=1.7.13）。省略＝backend 沒有 AI（只有單元測試）：背景抽取不啟動，AI 功能以 provider_unavailable 失敗。
+   * 抽取、草擬回覆、誤判分析、群組議題分析、prompt 修正都經它完成（hostAi.ts 的 AI port），看板不需要開著。
+   */
+  hostAi?: PluginBackendAiApiV1
+  /**
+   * Core 的 `context.residency`（`background:resident`，residency.ts）。省略或形狀不對＝舊 Core：`backend.residency` 回 `supported:false`，不訂閱、不發 `residency` 事件。
+   * 只靠 `onChange` 更新，降級時不做任何保活動作。
+   */
+  residency?: unknown
+  /** AI port 與背景 worker 的參數／時鐘（測試用：假時鐘讓一分鐘的配額視窗跑得快）。 */
+  ai?: { clock?: Clock; config?: Partial<HostAiConfig>; worker?: Partial<ExtractWorkerConfig> }
   hub?: EventHubOptions
-  dispatcher?: Partial<Pick<DispatcherOptions, 'softDeadlineMs' | 'responseBudgetBytes' | 'resultTtlMs' | 'maxResults' | 'maxResultBytes' | 'jobTtlMs' | 'maxJobs' | 'maxJobWaitMs'>>
+  dispatcher?: Partial<Pick<DispatcherOptions, 'softDeadlineMs' | 'aiDeadlineMs' | 'responseBudgetBytes' | 'resultTtlMs' | 'maxResults' | 'maxResultBytes' | 'jobTtlMs' | 'maxJobs' | 'maxJobWaitMs'>>
   /** 啟動後不自動 `runtime.start()`（單元測試要自己控制時序時用）。 */
   autoStart?: boolean
 }
@@ -196,6 +206,10 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   const recentLog: string[] = []
   const log = (line: string): void => { recentLog.push(line.slice(0, 300)); if (recentLog.length > 40) recentLog.shift() }
 
+  // ── 背景執行（context.residency）：啟動時讀一次，之後只靠 onChange；變動時發 `residency` 事件給看板。降級時不做任何保活（residency.ts）。 ──
+  const residency = createResidencyTracker(options.residency, (event, detail) => log(`[residency] ${event} ${JSON.stringify(detail ?? {})}`))
+  const offResidency = residency.onChange((snapshot) => { hub.publish('residency', snapshot) })
+
   // ── LINE port ──
   // recoverGuard：金鑰擷取走協作式路徑（掃記憶體時讓出事件迴圈、single-flight、失敗退避、dispose 時取消）。cacheFile 一律明確指到 dataDir
   // （reconcile 的預設路徑也經由 keyOpts 帶進來，不再依賴 host 的 cwd 剛好是 dataDir；review F6）。
@@ -247,12 +261,50 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     interruptedSummary: '上次「補媒體金鑰」進行中外掛後端重新啟動，沒有做完；可以再按一次'
   })
 
-  // ── AI 供料/收料 + scheduler ──
+  // ── AI port（host.ai.complete）+ 供料佇列 + 背景 worker + scheduler ──
   let queue!: ExtractQueue
-  // 草擬回覆／誤判分析／群組議題分析：core 照 standalone 的邏輯跑，只有 provider.complete() 變成「排隊等 UI 用 ai:chat 完成」。
-  const aiTasks = new AiTaskQueue({ ...options.aiTasks, onPending: (info) => hub.publish('extract-pending', info) })
-  const prompts = createPromptService(settings, aiTasks)
-  const uiProvider = createUiAiProvider(aiTasks)
+  let worker = null as ExtractWorker | null
+  const aiPort: HostAiPort = options.hostAi
+    ? createHostAiPort({
+      ai: options.hostAi,
+      selection: () => settings.get().pluginAi,
+      ...(options.ai?.clock ? { clock: options.ai.clock } : {}),
+      ...(options.ai?.config ? { config: options.ai.config } : {}),
+      log: (event, detail) => log(`[ai] ${event} ${JSON.stringify(detail ?? {})}`)
+    })
+    : createNoHostAiPort()
+  const prompts = createPromptService(settings, aiPort)
+  // 草擬回覆／誤判分析／群組議題分析：core 照 standalone 的邏輯跑，provider.complete() 直接經 AI port 呼叫 host.ai.complete（使用者動作，排在背景抽取之前）。
+  const aiProvider = createPortAiProvider(aiPort, { usable: () => { const state = aiPort.status().state; return state !== 'unavailable' && state !== 'revoked' && state !== 'stopped' } })
+  // ai-status 事件：最多每秒一則（trailing）。每一輪 AI 呼叫都會讓 busy 翻兩次，不節流會擠掉與 line-message 共用的 512 則事件環。
+  let aiStatusTimer: ReturnType<typeof setTimeout> | null = null
+  let lastAiStatusAt = 0
+  const publishAiStatus = (): void => { aiStatusTimer = null; lastAiStatusAt = Date.now(); hub.publish('ai-status', aiStatus()) }
+  const offAiPortStatus = aiPort.onStatus(() => {
+    if (aiStatusTimer !== null) return
+    const wait = lastAiStatusAt + 1000 - Date.now()
+    if (wait <= 0) publishAiStatus()
+    else { aiStatusTimer = setTimeout(publishAiStatus, wait); aiStatusTimer.unref?.() }
+  })
+  const offAiStatus = (): void => { offAiPortStatus(); if (aiStatusTimer !== null) { clearTimeout(aiStatusTimer); aiStatusTimer = null } }
+  const aiStatus = (): AiStatus => {
+    const stats = queue?.stats()
+    const port = aiPort.status()
+    // 現在就能領的待抽取項目在等配額視窗（每分鐘保留輪數、每小時保留輪數之後的空檔）：port 本身沒有工作在睡，狀態會是「就緒」，這裡改說已達上限（review F9）。
+    const waiting = port.state === 'running' && !port.busy && queue !== undefined && queue.runnable() > 0 ? aiPort.windowWait('background') : null
+    return {
+      ...port,
+      ...(waiting ? { state: 'paused' as const, reason: waiting.scope === 'hour' ? 'rate_limited_hour' : 'rate_limited', resumeAt: waiting.resumeAt } : {}),
+      counters: { ...port.counters, ...(worker?.counters() ?? {}) },
+      ...(stats ? { queue: { pending: stats.pending, leased: stats.leased, awaiting: stats.awaiting } } : {})
+    }
+  }
+  const aiRuntime: AiRuntime = {
+    ready: (force) => aiPort.ready(force),
+    status: aiStatus,
+    options: () => aiPort.options(),
+    refresh: () => { aiPort.refresh(); worker?.kick() }
+  }
   let scheduler: PipelineScheduler | null = null
   let appDb: { prepare(sql: string): { get(): unknown } } | null = null
   const unsupported = async (): Promise<{ ok: false; error: string }> => ({ ok: false, error: 'unsupported_in_plugin' })
@@ -267,11 +319,11 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       participantIdentity: UNKNOWN_IDENTITY,
       settings,
       pipelineConfig: { getDefaults, getQwenConfig, isProviderConfigured: () => true },
-      providers: { resolveProvider: () => uiProvider },
+      providers: { resolveProvider: () => aiProvider },
       onSettingsChanged: () => {
         scheduler?.notifySettingsChanged()
-        const selected = settings.get().pluginAi
-        if (selected) hub.publish('ai-selection-changed', { ...selected })
+        // 選了別的供應者／模型／推理強度：port 下一次呼叫前會發現並重新讀 host 的選項；叫 worker 現在就看一次，不必等退避到期。
+        worker?.kick()
       },
       line,
       // 同步呼叫端（reviewLastDays 回顧）也走 ExtractQueue：同一個 pull/commit 通道，結果直接 resolve 給呼叫端。
@@ -283,13 +335,22 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
           getConfig: getDefaults,
           getSystemSha256: prompts.revision,
           onRun: (result) => scheduler?.recordExternalRun(result),
-          onPending: (info) => hub.publish('extract-pending', info)
+          onPending: () => worker?.kick(),
+          consumerOnline: () => worker?.running() === true
+        })
+        worker = createExtractWorker({
+          queue,
+          port: aiPort,
+          system: prompts.extractSystem,
+          ...(options.ai?.clock ? { clock: options.ai.clock } : {}),
+          ...(options.ai?.worker ? { config: options.ai.worker } : {}),
+          log: (event, detail) => log(`[extract] ${event} ${JSON.stringify(detail ?? {})}`)
         })
         scheduler = new PipelineScheduler({
           db,
           getDefaults,
           getLastRun: () => getLastRun(db),
-          isProviderConfigured: () => true, // 「AI 引擎已就緒」＝UI 端有 ai:chat；就緒與否由 UI 的 orchestrator 負責呈現
+          isProviderConfigured: () => true, // 「AI 引擎已就緒」＝backend 有 host.ai；就緒與否（登入、額度、授權）由 ExtractWorker／HostAiPort 處理並以 ai.status 呈現
           makeExtract: () => null,
           correctionsForChat: (chatId) => repos.notMine.corrections(chatId),
           onCorrectionsPayloadBuilt: (chatId, messageIds, rules) => rules.forEach((rule) => repos.notMine.effect(rule, chatId, messageIds, 'runOnce')),
@@ -352,17 +413,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     hub.publish(type, payload)
   }))
 
-  // 用 Chrome 的 LINE 外掛發送：以 todo 的聊天室名稱在 Chrome 外掛裡找聊天室（兩邊的聊天室 ID 格式不同）。
-  const chromeLine = options.chromeLine === false ? undefined : createChromeLineSender({
-    opener: options.chromeLine ?? createCdpLinePageOpener(),
-    resolveChatName: async (todoId) => {
-      const todo = await runtime.api.db.todos.get(todoId)
-      if (!todo) return undefined
-      return (await runtime.api.db.chats.get(todo.chatId))?.name ?? null
-    }
-  })
-
   let disposed = false
+  let workerStartTimer: ReturnType<typeof setTimeout> | null = null
   const dispatcher: Dispatcher = new Dispatcher({
     ...options.dispatcher,
     getApi: () => {
@@ -371,12 +423,12 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     },
     hub,
     queue,
-    aiTasks,
+    ai: aiRuntime,
+    residency: () => residency.snapshot(),
     prompts,
     media,
     review,
     mediaBackfill,
-    chromeLine,
     info: (): Record<string, JsonValue> => ({
       plugin: options.pluginId,
       version: options.version,
@@ -391,7 +443,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       appDb: appDbInfo(appDb),
       extract: queue.stats(),
       review: review.status() as unknown as JsonValue,
-      aiTasks: aiTasks.stats(),
+      ai: aiStatus() as unknown as JsonValue,
+      residency: residency.snapshot() as unknown as JsonValue,
       media: media.stats() as unknown as JsonValue,
       events: hub.stats(),
       dispatcher: dispatcher.stats(),
@@ -400,15 +453,30 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   })
 
   try {
-    if (options.autoStart !== false) await runtime.start()
+    if (options.autoStart !== false) {
+      await runtime.start()
+      // 背景抽取：backend 啟動後就開始（不等看板）。沒有 host.ai（單元測試）就不啟動，項目留在佇列。
+      // 真實 LINE 來源時與第一輪 poll 一樣延後到 activate() 回傳之後（boot-ack 先送出，host 才收得到我們對 host.ai 的第一個呼叫）。
+      if (options.hostAi) {
+        if (startupDelayMs > 0) {
+          workerStartTimer = setTimeout(() => { workerStartTimer = null; if (!disposed) worker?.start() }, startupDelayMs)
+          workerStartTimer.unref?.()
+        } else worker?.start()
+      }
+    }
   } catch (error) {
     disposed = true
     keyGuard.cancel()
     for (const off of unsubscribers) off()
+    offResidency()
+    residency.dispose()
     dispatcher.dispose()
     hub.dispose()
+    if (workerStartTimer) clearTimeout(workerStartTimer)
+    worker?.stop()
+    aiPort.stop()
+    offAiStatus()
     queue.dispose()
-    aiTasks.dispose()
     review.dispose()
     await runtime.dispose().catch(() => undefined)
     throw error
@@ -427,10 +495,16 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       keyGuard.cancel()
       // 順序：先關入口（新的 call 拿到 backend_stopped）、解除等待中的長輪詢／同步抽取，再停 runtime（waitForCalls 才不會卡住）。
       dispatcher.dispose()
+      offResidency()
+      residency.dispose()
       for (const off of unsubscribers) { try { off() } catch { /* 已解除 */ } }
+      // 先停 worker 與 AI port（佇列中的 AI 工作以 backend_stopped 失敗、等待中的睡眠醒來）；已送出的 host.ai.complete 無法中止，回來後結果被丟棄，訊息維持未處理。
+      if (workerStartTimer) { clearTimeout(workerStartTimer); workerStartTimer = null }
+      worker?.stop()
+      aiPort.stop()
+      offAiStatus()
       hub.dispose()
       queue.dispose()
-      aiTasks.dispose()
       review.dispose()
       await runtime.dispose()
       // 讓進行中的 poll／掃描收尾（刪掉暫存快照、關 handle）；等不到就放手，殘留的快照目錄會在下次啟動時清掉。

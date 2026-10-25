@@ -69,6 +69,7 @@ test('settings: the plugin host hides provider choice / CLI / custom endpoint / 
   // what stays
   for (const kept of ['輪詢頻率（秒）', '自我對帳', '降噪', '黑名單', '逐對話關鍵字忽略']) assert.ok(plugin.includes(kept), `plugin keeps: ${kept}`)
   assert.ok(plugin.includes('data-testid="ai-by-host"') && plugin.includes('TeamUQ'), 'plugin explains that AI comes from TeamUQ')
+  assert.ok(plugin.includes('TeamUQ 的 AI 歷史'), 'review F8: the conversations the AI organises are recorded in the TeamUQ AI history, and the settings page says so')
   assert.ok(!standalone.includes('ai-by-host'))
   // the same component with a CLI provider selected (standalone) shows the CLI fields, the plugin never does
   const cli = { ...VIEW, aiProvider: 'claudeCli' }

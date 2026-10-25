@@ -18,6 +18,7 @@ import test from 'node:test'
 
 import { analyzeBundle } from './build-backend.mjs'
 import { runPluginContract } from '../lib/plugin-contract-harness.mjs'
+import { DOWNGRADED_BUDGET, DOWNGRADED_FUTURE_REASON, DOWNGRADED_NOT_GRANTED, RESIDENT } from '../lib/residency-standin.mjs'
 import { ROOT, electronRunAsNode, findBsqliteMcDir, findElectron31, generateFixtures, makeTempRoot, rmQuiet } from '../lib/runtimes.mjs'
 
 let setup = null
@@ -100,7 +101,36 @@ ${gen.stdout}`)
   }
   return mediaSetup
 }
+// Background execution (context.residency, scripts/lib/residency-standin.mjs): a Core that has the feature, driven step by step while the backend runs under the 1.6.8 permission model
+let residencySetup = null
+function getResidencySetup() {
+  if (!residencySetup) {
+    residencySetup = (async () => {
+      const root = makeTempRoot('plugin-contract-residency-')
+      const linedir = join(root, 'linedir')
+      mkdirSync(linedir, { recursive: true })
+      const steps = [
+        { label: 'downgrade: the user turned the switch off', apply: DOWNGRADED_NOT_GRANTED },
+        { label: 'the same value again (Core drops it)', apply: DOWNGRADED_NOT_GRANTED, waitMs: 300 },
+        { label: 'downgrade: another plugin took the slot', apply: DOWNGRADED_BUDGET },
+        { label: 'a reason code a later Core adds', push: DOWNGRADED_FUTURE_REASON },
+        { label: 'the switch is on again', apply: RESIDENT },
+        { label: 'downgrade once more (the last state before the quiet window)', apply: DOWNGRADED_NOT_GRANTED },
+      ]
+      const run = await runPluginContract({
+        workRoot: join(root, 'run'),
+        lineLocation: { lineDbDir: linedir, watcher: { intervalSec: 1, limit: 300 } },
+        preseed: ({ dataDir }) => writeFileSync(join(dataDir, 'settings.json'), JSON.stringify({ version: 1, reconcile: { enabled: false, scopeMonths: 0 } })),
+        scenario: { mode: 'residency', residency: { initial: RESIDENT, steps, quietMs: 1500 } },
+      })
+      return { root, run, steps }
+    })()
+  }
+  return residencySetup
+}
+
 test.after(async () => {
+  if (residencySetup) rmQuiet((await residencySetup).root)
   if (setup) rmQuiet((await setup).root)
   if (mediaSetup) rmQuiet((await mediaSetup).root)
   if (reconcileSetup) rmQuiet((await reconcileSetup).root)
@@ -193,47 +223,49 @@ test('event session: new LINE messages arrive as line-message / messages-persist
   assert.ok(r.capabilitySession.maxMessageBytes <= 16 * 1024)
 })
 
-test('ExtractQueue: supplies work, UI JSON results become todos, malformed results are rejected, failures back off', async () => {
+test('AI in the backend (0.2.0): the pipeline only supplies, the ExtractWorker answers through context.host.ai.complete — todos from valid results, a result that can never pass the schema fails (after one repair), a provider failure backs off; nothing is pulled over the view wire', async () => {
   const { run } = await getSetup()
   const e = run.result.extract
-  assert.equal(e.systemChars > 1000, true)
-  assert.match(e.systemSha, /^[0-9a-f]{64}$/)
   assert.ok(e.run.chatsSeen > 3 && e.run.chatsSkipped > 3, 'the run collected chats instead of extracting')
-  assert.equal(e.run.todosCreated, 0)
-  assert.equal(e.pulled, 6)
-  assert.ok(e.itemChars.every((n) => n <= 7500), 'every item fits the ai:chat input budget')
-  assert.equal(e.stats0.leased, 6)
-  assert.deepEqual(e.commitGood, ['applied', 'applied', 'applied'])
-  assert.equal(e.commitGoodRun.todosCreated, 3)
+  assert.equal(e.run.todosCreated, 0, 'the cycle itself did not call the AI')
+  assert.ok(e.hostCompletes >= 6, `${e.hostCompletes} host turns: three todos, the broken chat (twice: one repair), the failing chat, noise chats`)
+  assert.equal(e.repairTurns, 1, 'exactly one repair turn (for the chat whose answer never passes the schema)')
+  assert.ok(e.userChars.every((n) => n <= 7500), 'every item fits the ai:chat input budget')
+  assert.ok(e.systemChars.every((n) => n > 1000 && n <= 16000), 'system prompt + output format within the 16,000-char limit')
+  assert.deepEqual({ live: e.liveSessions, maxLive: e.maxLiveSessions, opened: e.openedSessions === e.closedSessions }, { live: 0, maxLive: 1, opened: true }, 'one Session at a time, always closed')
+  assert.deepEqual(e.hostErrors, { provider_error: 1 }, 'the only refusal is the deliberate provider failure: no rate_limited, no session_limit, no view_not_visible')
   assert.equal(e.todos.length, 3)
   assert.deepEqual(e.todos.map((t) => t.chatId).sort(), [...e.validChatIds].sort())
-  e.todos.forEach((t) => assert.ok(e.sourceIdsOfValid.some((id) => t.sourceMsgIds.includes(id))))
-  assert.equal(e.commitBad.status, 'rejected')
-  assert.equal(e.commitBad.code, 'invalid_result')
-  assert.ok(e.commitBad.issues.length > 0)
-  assert.equal(e.commitFail.status, 'failed_recorded')
-  assert.ok(e.commitFail.retryInMs >= 60_000)
-  assert.equal(e.commitUnknown.status, 'unknown_item')
+  e.todos.forEach((t) => assert.match(t.title, /^跟進 /))
   for (const processed of e.processed.valid) assert.ok(processed.every((p) => p === true), 'committed chats are marked processed')
-  assert.ok(e.processed.malformed.some((p) => p === false), 'a rejected result never marks messages processed')
-  assert.ok(e.processed.failed.some((p) => p === false))
-  assert.ok(e.todosChanged.some((t) => t.createdIds.length === 3), 'commit emitted todos-changed')
+  assert.ok(e.processed.malformed.some((p) => p === false), 'a result that fails the schema never marks messages processed')
+  assert.ok(e.processed.failed.some((p) => p === false), 'a provider failure leaves the messages unprocessed')
+  // review F9: 18 turns went out in the minute and the queue still holds hundreds of chats — the status line says the limit is reached (and when it ends), not "ready"
+  assert.deepEqual({ state: e.aiStatus.state, reason: e.aiStatus.reason, waiting: e.aiStatus.queue.pending > 100, resumeInFuture: e.aiStatus.resumeAt > Date.now() }, { state: 'paused', reason: 'rate_limited', waiting: true, resumeInFuture: true })
+  assert.equal(e.aiStatus.counters.failed, 2)
+  assert.ok(e.aiStatus.counters.extracted >= 4)
+  assert.equal(e.aiStatus.counters.released, 0, 'nothing was released: none of this was the fault of the host')
+  assert.deepEqual(e.aiStatus.provider, { providerId: 'codex', modelId: 'gpt-5-codex' })
   assert.equal(e.statsAfter.chatsBackingOff, 2)
+  assert.equal(e.statsAfter.leased, 0)
+  assert.equal(e.todosChanged.flatMap((t) => t.createdIds).length, 3, 'the commits emitted todos-changed')
+  for (const [path, result] of Object.entries(e.removedPaths)) assert.deepEqual({ ok: result.ok, code: result.code }, { ok: false, code: 'path_unknown' }, `extract.${path} is not a path any more`)
   const types = run.result.eventsAfterExtract
-  assert.ok(types.types.includes('todos-changed') && types.types.includes('pipeline-run') && types.types.includes('extract-pending'))
+  assert.ok(types.types.includes('todos-changed') && types.types.includes('pipeline-run') && types.types.includes('ai-status'))
+  assert.equal(types.extractPending, 0, 'no extract-pending event: there is no view-side consumer')
 })
 
-test('AI relay (Phase 4) under the real permission model: core draftReply -> relay provider -> ai.pull / ai.commit; extract.system carries the output format; bad kinds are refused', async () => {
+test('AI features are ordinary backend calls under the real permission model: core draftReply -> AI port provider -> context.host.ai.complete; the old relay paths are gone; ai.options passes the host model list', async () => {
   const { run } = await getSetup()
-  const a = run.result.aiRelay
-  assert.deepEqual(a.systemFormat, { isString: true, mentionsSchema: true, chars: a.systemFormat.chars })
-  assert.ok(a.systemFormat.chars > 500)
-  assert.deepEqual({ kind: a.task.kind, expectJson: a.task.expectJson, draftPrompt: a.task.draftPrompt, userMentionsTodo: a.task.userMentionsTodo }, { kind: 'draftReply', expectJson: false, draftPrompt: true, userMentionsTodo: true })
-  assert.ok(a.task.userChars > 20 && a.task.userChars <= 7500)
-  assert.equal(a.commit, 'accepted')
+  const a = run.result.aiDirect
+  assert.deepEqual({ kind: a.draft.kind, draftPrompt: a.draft.draftPrompt, userMentionsTodo: a.draft.userMentionsTodo, modelId: a.draft.modelId }, { kind: 'draftReply', draftPrompt: true, userMentionsTodo: true, modelId: 'gpt-5-codex' })
+  assert.ok(a.draft.userChars > 20 && a.draft.userChars <= 7500)
   assert.deepEqual(a.result, { ok: true, value: { draft: '好的，我今天處理。' } })
-  assert.deepEqual(a.badKind, { ok: false, code: 'invalid_args' })
-  assert.deepEqual(a.stats, { pending: 0, leased: 0, consumerActive: true })
+  for (const path of ['ai.run', 'ai.pull', 'ai.commit', 'ai.release']) assert.deepEqual(a.relayGone[path], { ok: false, code: 'path_unknown' }, path)
+  assert.deepEqual(a.options, { ok: true, providers: [{ id: 'codex', state: 'ready' }], turnsPerMinute: 20 })
+  assert.equal(a.status, 'paused', 'the background queue is still waiting for the minute window (F9: not "running" = ready)')
+  assert.equal(a.hostLive, 0)
+  assert.ok(a.info.turns >= 7 && a.info.tasksDone >= 1, 'backend.info carries the AI counters')
 })
 
 test('review tracking (Phase 4 repair) in the production bundle under the real permission model: review.status answers, an empty-window review completes and is single-flight bookkeeping-clean', async () => {
@@ -251,7 +283,7 @@ test('unsupported paths answer in-band; unknown paths, unknown methods and a pat
   const { run } = await getSetup()
   const x = run.result.refusals
   assert.equal(x.driver.code, 'method_unknown', 'driver is not a method group (G-07): not in backendMethods, refused by the backend too')
-  assert.equal(x.draft.route, 'ui_ai_chat')
+  assert.equal(x.openOriginal.route, 'none')
   assert.equal(x.proto.code, 'path_unknown')
   assert.equal(x.ctor.code, 'path_unknown')
   assert.equal(x.unknown.code, 'path_unknown')
@@ -406,4 +438,64 @@ test('reconcile: with the default settings the backend fills the months its firs
   assert.equal(c.status.lastError, null)
   const leaked = Object.entries(r.resourcesEnd).filter(([kind, n]) => n > (r.resourcesBaseline[kind] ?? 0))
   assert.deepEqual(leaked, [], 'no handle left after dispose')
+})
+
+// ───────────── background execution (context.residency) under the real permission model ─────────────
+
+test('residency, old Core: a context without residency changes nothing — backend.residency and backend.info say supported:false and no residency event or subscription exists (the whole main scenario above ran this way)', async () => {
+  const { run } = await getSetup()
+  const r = run.result
+  assert.equal(r.fatal, undefined, r.fatal)
+  assert.deepEqual(r.info.residency, { supported: false, requested: false, level: 'on-demand', reason: null })
+  assert.deepEqual(r.infoLate.residency, { supported: false, requested: false, level: 'on-demand', reason: null })
+  assert.ok(!r.eventsAfterExtract.types.includes('residency'), `events: ${r.eventsAfterExtract.types}`)
+  assert.equal(r.afterDispose.residencyStats.subscribes, 0)
+  assert.equal(r.afterDispose.residencyStats.currentCalls, 0, 'nothing was read from a context that has no residency')
+})
+
+test('residency, Core with the feature: the backend follows context.residency.onChange (resident, two downgrade reasons, an unknown reason code, back to resident) and publishes each real change once', async () => {
+  const { run, steps } = await getResidencySetup()
+  assert.equal(run.exitCode, 0, `exit code (stderr: ${run.stderr.slice(0, 800)})`)
+  const r = run.result
+  assert.ok(r, `RESULT present (stdout: ${run.stdout.slice(0, 800)})`)
+  assert.equal(r.fatal, undefined, r.fatal)
+  assertSelfCheckPassed('boot', r.selfCheckBoot)
+  assertSelfCheckPassed('afterActivate', r.selfCheckAfterActivate)
+  assertSelfCheckPassed('end', r.selfCheckEnd)
+  const x = r.residency
+  assert.deepEqual(x.initial, { supported: true, requested: true, level: 'resident', reason: null })
+  const level = (v) => `${v.level}/${v.reason}`
+  assert.deepEqual(x.results.map((s) => [s.label, s.changed, s.events.map(level), level(s.answer), level(s.info)]), [
+    [steps[0].label, true, ['on-demand/resident_not_granted'], 'on-demand/resident_not_granted', 'on-demand/resident_not_granted'],
+    [steps[1].label, false, [], 'on-demand/resident_not_granted', 'on-demand/resident_not_granted'],
+    [steps[2].label, true, ['on-demand/resident_budget_exceeded'], 'on-demand/resident_budget_exceeded', 'on-demand/resident_budget_exceeded'],
+    [steps[3].label, true, ['on-demand/resident_future_new_reason'], 'on-demand/resident_future_new_reason', 'on-demand/resident_future_new_reason'],
+    [steps[4].label, true, ['resident/null'], 'resident/null', 'resident/null'],
+    [steps[5].label, true, ['on-demand/resident_not_granted'], 'on-demand/resident_not_granted', 'on-demand/resident_not_granted'],
+  ])
+  assert.ok(x.results.every((s) => s.answer.supported === true && s.answer.requested === true))
+  assert.equal(x.ai.state !== 'revoked', true, 'a downgrade is not a revoke: ai:chat state is untouched')
+})
+
+test('residency, no keep-alive under the real permission model: after the last downgrade a quiet window passes with no host.ai call, no read of current(), no new subscription and no new handle', async () => {
+  const { run } = await getResidencySetup()
+  const q = run.result.residency.quiet
+  assert.ok(q.ms >= 1000)
+  assert.deepEqual(q.after, q.before, 'the backend asked nothing of the host while it was merely downgraded')
+  assert.equal(q.before.residencyCurrent, 1, 'current() was read once, at activate')
+  assert.deepEqual(q.events, [], 'and nothing was published')
+  for (const kind of Object.keys(q.resourcesAfter)) assert.ok(q.resourcesAfter[kind] <= (q.resourcesBefore[kind] ?? 0), `no new ${kind} handle: ${JSON.stringify(q.resourcesBefore)} -> ${JSON.stringify(q.resourcesAfter)}`)
+})
+
+test('residency, dispose: the backend unsubscribes from context.residency and leaves no handle', async () => {
+  const { run } = await getResidencySetup()
+  const r = run.result
+  assert.equal(r.residency.standin.listeners, 1, 'one subscription while running')
+  assert.equal(r.afterDispose.residencyListeners, 0, 'unsubscribed at dispose')
+  assert.equal(r.afterDispose.residencyStats.subscribes, 1)
+  assert.equal(r.afterDispose.residencyStats.unsubscribes, 1)
+  assert.equal(r.afterDispose.diagnostics.disposed, true)
+  assert.equal(r.afterDispose.ownerLock, false)
+  const leaked = Object.entries(r.resourcesEnd).filter(([kind, n]) => n > (r.resourcesBaseline[kind] ?? 0))
+  assert.deepEqual(leaked, [], `leaked handles (baseline ${JSON.stringify(r.resourcesBaseline)}, end ${JSON.stringify(r.resourcesEnd)})`)
 })

@@ -5,19 +5,20 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { createSettingsStore } from '../../src/main/config/settings.ts'
 import { createPromptService } from '../../src/plugin/backend/promptService.ts'
-import { createPromptRefiner } from '../../src/renderer/platform/promptRefiner.ts'
+import { createHostAiPort } from '../../src/plugin/backend/hostAi.ts'
 import { PROMPT_MAX_CHARS, promptRefinementInput, validatePromptSuggestion } from '../../src/shared/promptSettings.ts'
 import { EXTRACT_OUTPUT_CONTRACT } from '../../src/plugin/backend/aiOutputContract.ts'
 import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
 
 const noSecrets = { isEncryptionAvailable: () => false, encryptString: () => { throw new Error('unused') }, decryptString: () => { throw new Error('unused') } }
 const selection = { providerId: 'codex', modelId: 'gpt-5-codex', effort: 'high' }
+const unusedAi = { complete: async () => { throw new Error('unused') } }
 
 test('initial prompt, edits, conflict prevention, restart and restore all use the persisted extraction configuration', () => {
   const dir = mkdtempSync(join(tmpdir(), 'line-todo-prompt-'))
   try {
     const store = createSettingsStore({ userDataDir: dir, secrets: noSecrets })
-    const service = createPromptService(store, { request: async () => { throw new Error('unused') } })
+    const service = createPromptService(store, unusedAi)
     const initial = service.state()
     assert.equal(initial.customized, false)
     assert.equal(initial.activePrompt, initial.initialPrompt)
@@ -30,7 +31,7 @@ test('initial prompt, edits, conflict prevention, restart and restore all use th
     assert.throws(() => service.save('stale replacement', initial.revision), /prompt_conflict/)
     assert.throws(() => service.save(' ', saved.revision), /prompt_empty/)
     assert.throws(() => service.save('x'.repeat(PROMPT_MAX_CHARS + 1), saved.revision), /prompt_too_long/)
-    const restarted = createPromptService(createSettingsStore({ userDataDir: dir, secrets: noSecrets }), { request: async () => { throw new Error('unused') } })
+    const restarted = createPromptService(createSettingsStore({ userDataDir: dir, secrets: noSecrets }), unusedAi)
     assert.equal(restarted.state().activePrompt, custom)
     assert.equal(restarted.reset(saved.revision).activePrompt, initial.initialPrompt)
   } finally { rmSync(dir, { recursive: true, force: true }) }
@@ -40,14 +41,15 @@ test('AI refinement returns a reviewed suggestion with the model and never write
   const dir = mkdtempSync(join(tmpdir(), 'line-todo-prompt-refine-'))
   try {
     const requests = []
-    const service = createPromptService(createSettingsStore({ userDataDir: dir, secrets: noSecrets }), { request: async (request) => {
+    const service = createPromptService(createSettingsStore({ userDataDir: dir, secrets: noSecrets }), { complete: async (request) => {
       requests.push(request)
-      return { text: '```json\n' + JSON.stringify({ prompt: '改良後的完整提示詞', changes: ['明確區分任务與行程'] }) + '\n```', model: 'gpt-6-luna' }
+      const value = { prompt: '改良後的完整提示詞', changes: ['明確區分任务與行程'] }
+      return { text: JSON.stringify(value), value, model: 'gpt-6-luna' }
     } })
     const initial = service.state()
     const proposed = await service.refine({ prompt: initial.activePrompt, goal: '有截止日期的任務不可當成行程' })
     assert.equal(proposed.modelId, 'gpt-6-luna')
-    assert.equal(requests[0].kind, 'promptRefine')
+    assert.equal(requests[0].priority, 'user', 'a button the user pressed: ahead of background extraction')
     assert.equal(requests[0].expectJson, true)
     assert.ok(requests[0].system.includes(initial.activePrompt) && requests[0].system.includes(EXTRACT_OUTPUT_CONTRACT))
     assert.equal(requests[0].user, '有截止日期的任務不可當成行程')
@@ -73,25 +75,48 @@ test('prompt requests and suggestions reject empty, oversized and malformed outp
   for (const output of [{ prompt: 'rules', changes: [] }, { prompt: 'rules', changes: ['change'], extra: true }, { changes: ['change'] }]) assert.throws(() => validatePromptSuggestion(output, null))
 })
 
-test('the dedicated settings view uses the selected model and releases its AI session after success', async () => {
+test('prompt refinement runs in the backend with the selected model and releases its AI Session after success', async () => {
   const mock = createMockTuqAi({ reply: () => JSON.stringify({ prompt: '新的規則', changes: ['減少噪音'] }) })
-  const refiner = createPromptRefiner({ ai: mock.ai, state: async () => ({ outputFormat: 'fixed schema' }), selection: async () => selection })
-  const suggestion = await refiner.refine({ prompt: 'old rules', goal: '減少噪音' })
-  assert.equal(suggestion.prompt, '新的規則')
-  assert.deepEqual(mock.stats.openRequests[0], selection)
-  assert.equal(mock.control.liveSessions(), 0)
-  refiner.dispose()
+  const port = createHostAiPort({ ai: mock.ai, selection: () => selection })
+  const dir = mkdtempSync(join(tmpdir(), 'line-todo-prompt-model-'))
+  try {
+    const service = createPromptService(createSettingsStore({ userDataDir: dir, secrets: noSecrets }), port)
+    const suggestion = await service.refine({ prompt: 'old rules', goal: '減少噪音' })
+    assert.equal(suggestion.prompt, '新的規則')
+    assert.equal(suggestion.modelId, 'gpt-5-codex')
+    assert.deepEqual({ providerId: 'codex', modelId: mock.stats.turns[0].modelId, effort: mock.stats.turns[0].effort }, selection)
+    assert.equal(mock.control.liveSessions(), 0)
+    assert.equal(service.state().customized, false, 'a suggestion is never applied by itself')
+  } finally { port.stop(); rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('dedicated settings refinement timeout and disposal release the owned session', async () => {
-  for (const mode of ['timeout', 'dispose']) {
-    const mock = createMockTuqAi({ reply: () => ({ hang: true }) })
-    const refiner = createPromptRefiner({ ai: mock.ai, state: async () => ({ outputFormat: 'fixed schema' }), selection: async () => selection, timeoutMs: 30 })
-    const pending = refiner.refine({ prompt: 'old rules', goal: '改善' })
-    const result = assert.rejects(pending, mode === 'timeout' ? /turn_timeout/ : /prompt_cancelled/)
-    if (mode === 'dispose') { await new Promise((resolve) => setTimeout(resolve, 10)); refiner.dispose() }
-    await result
-    assert.equal(mock.control.liveSessions(), 0)
-    refiner.dispose()
-  }
+test('prompt refinement failures keep their code and leave no Session open: a hung host call ends with turn_timeout, a stopped backend with backend_stopped, an unusable answer with prompt_suggestion_invalid', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'line-todo-prompt-fail-'))
+  try {
+    const store = createSettingsStore({ userDataDir: dir, secrets: noSecrets })
+    // the host never answers: the port's own guard ends the wait
+    const hung = createMockTuqAi({ reply: () => ({ hang: true }) })
+    const hungPort = createHostAiPort({ ai: hung.ai, selection: () => selection, config: { completeGuardMs: 40 } })
+    await assert.rejects(createPromptService(store, hungPort).refine({ prompt: 'old rules', goal: '改善' }), /turn_timeout/)
+    hungPort.stop()
+    // the backend stops while the request waits behind another one
+    const slow = createMockTuqAi({ reply: () => ({ text: '{}', delay: () => new Promise((resolve) => setTimeout(resolve, 30)) }) })
+    const stopPort = createHostAiPort({ ai: slow.ai, selection: () => selection })
+    const first = stopPort.complete({ system: 'S', user: 'U', expectJson: false, priority: 'user' })
+    const queued = createPromptService(store, stopPort).refine({ prompt: 'old rules', goal: '改善' })
+    const outcome = assert.rejects(queued, /backend_stopped/)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    stopPort.stop()
+    await outcome
+    await first.catch(() => undefined)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    assert.equal(slow.control.liveSessions(), 0)
+    // an answer that is JSON but not the agreed shape is repaired once, then reported with the prompt-specific code
+    const bad = createMockTuqAi({ reply: () => JSON.stringify({ prompt: 'x', changes: [] }) })
+    const badPort = createHostAiPort({ ai: bad.ai, selection: () => selection })
+    await assert.rejects(createPromptService(store, badPort).refine({ prompt: 'old rules', goal: '改善' }), /prompt_suggestion_invalid/)
+    assert.equal(bad.stats.completes, 2, 'one repair turn')
+    assert.equal(bad.control.liveSessions(), 0)
+    badPort.stop()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })

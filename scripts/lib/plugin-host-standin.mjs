@@ -1,11 +1,14 @@
-// Stand-in for the TeamUQ 1.6.8 plugin host + the plugin's view, used by test-backend-contract.mjs.
+// Stand-in for the TeamUQ plugin host (1.6.8 permission model; since 0.2.0 also Core 1.7.15's `context.host.ai`) + the plugin's view, used by test-backend-contract.mjs.
 //
 // It is the *bootstrap file* of the backend process (the single file outside installDir that the 1.6.8 permission flags let the process
 // read). Bundled by esbuild into one file, it behaves like apps/plugin-host/src/external/index.ts @ b8b96cb3:
 //   1. runs runPermissionSelfCheck (verbatim copy, ./teamuq-contract.mjs) at boot;
 //   2. import()s the plugin's backend entry (<installDir>/backend/index.mjs, the production bundle) and calls activate with
-//      the same frozen context the host builds ({pluginId, dataDir, assetPacks, allowAddons, settings:{all,get,onChange}}). The settings are
+//      the same frozen context the host builds ({pluginId, dataDir, assetPacks, allowAddons, host:{ai}, settings:{all,get,onChange}}). `host.ai` is the mock of
+//      Core 1.7.15's backend ai:chat (scripts/lib/mock-tuq-ai-core.mjs, contract fixture bundled in): the backend calls `host.ai.complete` itself. The settings are
 //      always EMPTY, as the host gives a plugin without settingsSchema / settings:plugin (G-06): nothing is injected through them.
+//      `residency` (background:resident, Core HEAD 0e46b155a) is simulated by ./residency-standin.mjs: absent for an old Core (every scenario except 'residency', so they
+//      all prove the backend behaves as before without it), or present with `cfg.residency` (initial value; scenario 'residency' drives it step by step).
 //      The fake LINE folder is passed to the bundle's test entry `activateAt(context, lineLocation)` (init.lineLocation) — the one difference
 //      from the host, which calls `activate(context)` and lets the backend find LINE by itself; without init.lineLocation `activate` is called;
 //   3. serves handler.call(method, params) with the host's wire semantics (params/result are JSON, <= 64 KiB each way, 30 s limit),
@@ -22,6 +25,9 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { runPermissionSelfCheck } from './teamuq-contract.mjs'
+import { createMockTuqAiFor } from './mock-tuq-ai-core.mjs'
+import { createResidencyStandin } from './residency-standin.mjs'
+import CONTRACT from '../plugin/fixtures/ai-chat-contract-bf4801ecc.json'
 import { backendMethodFor } from '../../src/shared/pluginWire.ts'
 
 /** the view's wire (pluginTransport.ts): backend.call(<method group of the path>, { path, args }) */
@@ -56,11 +62,32 @@ try {
   // the host's context for a plugin without settingsSchema / settings:plugin: the settings are empty (backendRuntime.ts effectiveBackendSettings)
   const settingsValues = Object.freeze({})
   const settingsReads = []
+  // Core 1.7.15's context.host.ai (backend side of ai:chat). The "model": the first 3 chats it is asked about get a todo, the 4th an answer that can never pass the schema
+  // (also not after the one repair turn), the 5th a provider failure, every other chat a "noise" answer; a draft prompt gets a draft.
+  const chatsAsked = []
+  const aiHost = createMockTuqAiFor(CONTRACT, {
+    reply: (ctx) => {
+      if (ctx.system.includes('草擬')) return '好的，我今天處理。'
+      const payload = JSON.parse(ctx.repair ? ctx.transcript[0].text : ctx.user) // a repair turn replays the first question as transcript[0]
+      const chatId = payload.chat.chatId
+      if (!chatsAsked.includes(chatId)) chatsAsked.push(chatId)
+      const rank = chatsAsked.indexOf(chatId)
+      const first = payload.newMessages[0]
+      if (rank < 3) return JSON.stringify({ importance: 'action', newTodos: [{ bucket: 'todo', title: `跟進 ${payload.chat.name ?? chatId}`, detail: null, priority: 2, dueAt: null, confidence: 0.8, sourceMsgIds: [first.msgId] }], resolved: [], updates: [] })
+      if (rank === 3) return JSON.stringify({ importance: 'urgent', newTodos: [{ title: 5 }] })
+      if (rank === 4) return { fail: 'provider_error' }
+      return JSON.stringify({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
+    }
+  })
+  // an old Core has no context.residency; cfg.residency makes it a Core that has the feature (scenario 'residency' below)
+  const residencyStandin = createResidencyStandin({ mode: cfg.residency ? 'present' : 'absent', initial: cfg.residency?.initial })
   const context = Object.freeze({
+    ...residencyStandin.contextPart(),
     pluginId: init.pluginId,
     dataDir: init.dataDir,
     assetPacks: Object.freeze({ ...init.assetPacks }),
     allowAddons: init.allowAddons,
+    host: Object.freeze({ ai: aiHost.ai }),
     settings: Object.freeze({ all: () => { settingsReads.push('*'); return settingsValues }, get: (key) => { settingsReads.push(String(key)); return settingsValues[key] }, onChange: () => () => undefined }),
   })
   const t0 = performance.now()
@@ -207,6 +234,37 @@ try {
     await must('events.close', { sessionId: probe.sessionId })
   }
 
+  // ── residency scenario (cfg.mode === 'residency'): Core's context.residency, driven step by step through apply() (Core's ext-residency) and push() (a later Core's new reason code) ──
+  // Every step is observed the way the board does: the `residency` event on the long poll, and the `backend.residency` / `backend.info` answers. `hostCalls` counts what the
+  // backend asked of the host (context.host.ai: complete / getOptions / sessions) and of context.residency.current(): after a downgrade nothing may grow, since Core only restarts its
+  // idle timer and a backend must not keep itself alive by calling the host.
+  async function residencyScenario() {
+    const hostCalls = () => ({ aiCompletes: aiHost.stats.completes, aiOptions: aiHost.stats.getOptions, aiSessions: aiHost.stats.openSessions, residencyCurrent: residencyStandin.stats.currentCalls })
+    const events = await must('events.open', {})
+    let after = events.seq
+    const collect = async (waitMs) => {
+      const pulled = await must('events.pull', { sessionId: events.sessionId, afterSeq: after, waitMs })
+      after = pulled.seq
+      return pulled.events.filter((e) => e.type === 'residency').map((e) => e.payload)
+    }
+    const initial = await must('backend.residency')
+    const results = []
+    for (const stepSpec of cfg.residency.steps) {
+      const changed = stepSpec.push !== undefined ? residencyStandin.push(stepSpec.push) : residencyStandin.apply(stepSpec.apply)
+      const eventPayloads = await collect(stepSpec.waitMs ?? 700)
+      results.push({ label: stepSpec.label, changed, events: eventPayloads, answer: await must('backend.residency'), info: (await must('backend.info')).residency, hostCalls: hostCalls() })
+    }
+    const beforeQuiet = hostCalls()
+    const resourcesBeforeQuiet = resourceCounts()
+    await sleep(cfg.residency.quietMs ?? 1500)
+    const lateEvents = await collect(0)
+    step('residency', {
+      initial, results, quiet: { ms: cfg.residency.quietMs ?? 1500, before: beforeQuiet, after: hostCalls(), events: lateEvents, resourcesBefore: resourcesBeforeQuiet, resourcesAfter: resourceCounts() },
+      standin: { ...residencyStandin.stats, listeners: residencyStandin.listeners() }, ai: await must('ai.status'),
+    })
+    await must('events.close', { sessionId: events.sessionId })
+  }
+
   // ── scenario ──
   out.info = await must('backend.info')
   let session = null
@@ -217,6 +275,8 @@ try {
     await mediaScenario()
   } else if (cfg.mode === 'reconcile') {
     await reconcileScenario()
+  } else if (cfg.mode === 'residency') {
+    await residencyScenario()
   } else {
   // 1. fake LINE (fixture DB outside dataDir, read through koffi copy + WASM) -> app DB
   const base = await waitFor('base import', async () => ((await must('db.messages.count')) >= cfg.expected.baseCount ? await must('db.messages.count') : 0))
@@ -276,55 +336,48 @@ try {
   const capEvents = capSent.filter((m) => m.type === 'events').flatMap((m) => m.events)
   step('capabilitySession', { messages: capSent.length, events: capEvents.length, types: [...new Set(capEvents.map((e) => e.type))].sort(), maxMessageBytes: Math.max(0, ...capSent.map((m) => JSON.stringify(m).length)) })
 
-  // 4. supply / receive
-  const system = await must('extract.system')
+  // 4. AI in the backend (0.2.0): supply -> ExtractWorker -> context.host.ai.complete -> receive. Nothing is pulled or committed over the view wire.
   const run = await must('pipeline.runOnce')
-  const pulledItems = []
-  for (let i = 0; i < 6 && pulledItems.length < 6; i += 1) {
-    const pulled = await must('extract.pull', { max: 2 })
-    if (pulled.items.length === 0) break
-    pulledItems.push(...pulled.items)
-  }
-  const stats0 = await must('extract.stats')
-  const firstMsgId = (item) => JSON.parse(item.user).newMessages[0].msgId
-  const valid = pulledItems.slice(0, 3)
-  const [malformed, failed] = [pulledItems[3], pulledItems[4]]
-  const goodResults = valid.map((item) => ({
-    itemId: item.itemId, ok: true,
-    result: { importance: 'action', newTodos: [{ bucket: 'todo', title: `跟進 ${item.chatName ?? item.chatId}`, detail: null, priority: 2, dueAt: null, confidence: 0.8, sourceMsgIds: [firstMsgId(item)] }], resolved: [], updates: [] },
-  }))
-  const commitGood = await must('extract.commit', { results: goodResults })
-  const commitBad = await must('extract.commit', { results: [{ itemId: malformed.itemId, ok: true, result: { importance: 'urgent', newTodos: [{ title: 5 }] } }] })
-  const commitFail = await must('extract.commit', { results: [{ itemId: failed.itemId, ok: false, failCode: 'rate_limited', retryAfterMs: 60000 }] })
-  const commitUnknown = await must('extract.commit', { results: [{ itemId: 'does-not-exist', ok: true, result: {} }] })
-  await drainEvents(300)
-  const todos = await must('db.todos.list')
-  const processedOf = async (item) => (await must('db.messages.list', { chatId: item.chatId, limit: 5 })).map((m) => m.processed)
-  step('extract', {
-    systemSha: system.sha256, systemChars: system.chars, run: { chatsSeen: run.chatsSeen, chatsSkipped: run.chatsSkipped, todosCreated: run.todosCreated, llmStatus: run.llmStatus },
-    pulled: pulledItems.length, itemChars: pulledItems.map((i) => i.userChars), stats0, validChatIds: valid.map((i) => i.chatId),
-    commitGood: commitGood.results.map((r) => r.status), commitGoodRun: commitGood.run, commitBad: commitBad.results[0], commitFail: commitFail.results[0], commitUnknown: commitUnknown.results[0],
-    todos: todos.map((t) => ({ id: t.id, chatId: t.chatId, title: t.title, status: t.status, sourceMsgIds: t.sourceMsgIds })),
-    processed: { valid: await Promise.all(valid.map(processedOf)), malformed: await processedOf(malformed), failed: await processedOf(failed) },
-    todosChanged: seen.filter((e) => e.type === 'todos-changed').map((e) => e.payload), statsAfter: await must('extract.stats'),
-    sourceIdsOfValid: valid.map(firstMsgId),
+  const settled = await waitFor('the worker to settle every offered chat', async () => {
+    const st = await must('extract.stats')
+    const ai = await must('ai.status')
+    // 3 todos + 2 failed chats backing off; everything else answered with "noise"
+    return st.leased === 0 && st.chatsBackingOff === 2 && st.pending >= 2 && ai.counters.failed === 2 && ai.counters.extracted >= 4 && !ai.busy ? { st, ai } : 0
   })
-  step('eventsAfterExtract', { types: [...new Set(seen.map((e) => e.type))].sort(), pipelineRun: seen.filter((e) => e.type === 'pipeline-run').length, extractPending: seen.filter((e) => e.type === 'extract-pending').length })
+  await sleep(300)
+  await drainEvents(300)
+  const aiStatusAfter = await must('ai.status')
+  const todos = await must('db.todos.list')
+  const processedOf = async (chatId) => (await must('db.messages.list', { chatId, limit: 5 })).map((m) => m.processed)
+  const [validChatIds, malformedChatId, failedChatId] = [chatsAsked.slice(0, 3), chatsAsked[3], chatsAsked[4]]
+  step('extract', {
+    run: { chatsSeen: run.chatsSeen, chatsSkipped: run.chatsSkipped, todosCreated: run.todosCreated, llmStatus: run.llmStatus },
+    hostTurns: aiHost.stats.turns.length, hostCompletes: aiHost.stats.completes, userChars: aiHost.stats.turns.map((t) => t.text.length), systemChars: aiHost.stats.turns.map((t) => t.system.length),
+    liveSessions: aiHost.control.liveSessions(), openedSessions: aiHost.stats.openSessions, closedSessions: aiHost.stats.sessionsClosed, maxLiveSessions: aiHost.stats.maxLiveSessions,
+    hostErrors: Object.fromEntries(Object.entries(aiHost.stats.errors).filter(([, n]) => n > 0)),
+    repairTurns: aiHost.stats.turns.filter((t) => t.transcript.length > 0).length,
+    settledStats: settled.value.st, aiStatus: { state: aiStatusAfter.state, reason: aiStatusAfter.reason, resumeAt: aiStatusAfter.resumeAt, counters: aiStatusAfter.counters, provider: aiStatusAfter.provider, queue: aiStatusAfter.queue },
+    validChatIds, malformedChatId, failedChatId,
+    todos: todos.map((t) => ({ id: t.id, chatId: t.chatId, title: t.title, status: t.status, sourceMsgIds: t.sourceMsgIds })),
+    processed: { valid: await Promise.all(validChatIds.map(processedOf)), malformed: await processedOf(malformedChatId), failed: await processedOf(failedChatId) },
+    todosChanged: seen.filter((e) => e.type === 'todos-changed').map((e) => e.payload), statsAfter: await must('extract.stats'),
+    removedPaths: { pull: await invoke('extract.pull', {}), commit: await invoke('extract.commit', { results: [] }), system: await invoke('extract.system') },
+  })
+  step('eventsAfterExtract', { types: [...new Set(seen.map((e) => e.type))].sort(), pipelineRun: seen.filter((e) => e.type === 'pipeline-run').length, extractPending: seen.filter((e) => e.type === 'extract-pending').length, aiStatus: seen.filter((e) => e.type === 'ai-status').length })
 
-  // 4b. AI relay (Phase 4), under the real permission model: core's draftReply -> UI-relay provider (AiTaskQueue, AsyncLocalStorage) -> ai.pull / ai.commit.
-  // The backend never calls an LLM: the "model" here is this host stand-in playing the UI orchestrator.
-  const relayTodo = todos[0]
-  const relayCall = invoke('ai.run', { kind: 'draftReply', args: [relayTodo.id] })
-  const relayPulled = await waitFor('an ai task for the UI', async () => { const p = await must('ai.pull', { max: 1 }); return p.tasks.length > 0 ? p : 0 })
-  const relayTask = relayPulled.value.tasks[0]
-  const relayCommit = await must('ai.commit', { results: [{ taskId: relayTask.taskId, ok: true, text: '好的，我今天處理。', model: 'gpt-5-codex' }] })
-  const relayResult = await relayCall
-  const relayBad = await invoke('ai.run', { kind: 'extract', args: [] })
-  step('aiRelay', {
-    systemFormat: { isString: typeof system.format === 'string', mentionsSchema: String(system.format).includes('JSON Schema'), chars: String(system.format).length },
-    task: { kind: relayTask.kind, expectJson: relayTask.expectJson, draftPrompt: relayTask.system.includes('草擬'), userChars: relayTask.userChars, userMentionsTodo: relayTask.user.includes(relayTodo.title) },
-    commit: relayCommit.results[0].status, result: relayResult, badKind: { ok: relayBad.ok, code: relayBad.code },
-    stats: (await must('backend.info')).aiTasks
+  // 4b. The user actions are ordinary backend calls (0.2.0): core's draftReply -> AI port provider -> context.host.ai.complete. No relay, no ai.pull / ai.commit / ai.run.
+  const draftTodo = todos[0]
+  const turnsBeforeDraft = aiHost.stats.turns.length
+  const draftResult = await invoke('db.todos.draftReply', draftTodo.id)
+  const draftTurn = aiHost.stats.turns[turnsBeforeDraft]
+  const relayGone = {}
+  for (const path of ['ai.run', 'ai.pull', 'ai.commit', 'ai.release']) { const r = await invoke(path, { kind: 'draftReply', args: [draftTodo.id] }); relayGone[path] = { ok: r.ok, code: r.code } }
+  const aiOptions = await invoke('ai.options')
+  step('aiDirect', {
+    draft: { kind: 'draftReply', draftPrompt: draftTurn?.system.includes('草擬') === true, userChars: draftTurn?.text.length ?? 0, userMentionsTodo: draftTurn?.text.includes(draftTodo.title) === true, modelId: draftTurn?.modelId ?? null },
+    result: draftResult, relayGone,
+    options: { ok: aiOptions.ok, providers: aiOptions.value?.providers?.map((p) => ({ id: p.id, state: p.state })), turnsPerMinute: aiOptions.value?.limits?.turnsPerMinute },
+    status: (await must('ai.status')).state, hostLive: aiHost.control.liveSessions(), info: (await must('backend.info')).ai?.counters ?? null,
   })
 
   // 4c. review tracking (Phase 4 repair): the status route and backend.info.review exist in the production bundle; an empty window review (no messages that recent) completes at once
@@ -336,7 +389,7 @@ try {
   // 5. refusals
   step('refusals', {
     // G-07: 'driver' is not a method group (Core's allowlist never lets it through; the backend refuses it too); a path sent under another group is refused
-    driver: await hostCall('driver', { path: 'driver.postDraft', args: [{}] }), draft: await invoke('db.todos.draftReply', 'x'),
+    driver: await hostCall('driver', { path: 'driver.postDraft', args: [{}] }), openOriginal: await invoke('db.chats.openOriginal', 'x'),
     proto: await hostCall('db.todos', { path: '__proto__', args: [] }), ctor: await hostCall('ping', { path: 'constructor', args: [] }),
     unknown: await hostCall('db.todos', { path: 'db.nope.list', args: [] }), badMethod: await hostCall('shell.exec', { cmd: 'whoami' }),
     mismatch: await hostCall('db.todos', { path: 'settings.update', args: [{}] }), legacyMethod: await hostCall('api.invoke', { path: 'ping', args: [] }),
@@ -360,6 +413,8 @@ try {
     dataDir: fs.readdirSync(init.dataDir).sort(),
     lineEngineDir: fs.existsSync(join(init.dataDir, 'line-engine')) ? fs.readdirSync(join(init.dataDir, 'line-engine')) : null,
     ownerLock: fs.existsSync(join(init.dataDir, '.line-todo-owner.lock')),
+    residencyListeners: residencyStandin.listeners(),
+    residencyStats: { ...residencyStandin.stats },
   }
   await sleep(100)
   await new Promise((resolve) => setImmediate(resolve))

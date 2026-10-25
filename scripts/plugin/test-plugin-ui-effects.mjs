@@ -54,11 +54,18 @@ function scriptedBackend(handlers) {
   }
 }
 
-function plugin(handlers, ai) {
+function plugin(handlers) {
   const backend = scriptedBackend(handlers)
   const core = createCoreGateStandin(backend, { methods: [...ui.BACKEND_METHOD_GROUPS] })
-  const api = ui.createPluginLineTodoApi({ host: { ...core.host, ...(ai ? { ai } : {}) }, events: { enabled: false }, busyRetry: { attempts: 0 } })
+  // 0.2.0: the view has no window.tuqPlugin.ai at all; AI features are backend calls (here: scripted handlers that talk to a mock context.host.ai)
+  const api = ui.createPluginLineTodoApi({ host: { ...core.host }, events: { enabled: false }, busyRetry: { attempts: 0 } })
   return { backend, core, api }
+}
+
+/** What the backend's prompt service does for settings.prompt.refine, against a mock context.host.ai: one complete(), the model's JSON becomes the suggestion. */
+const refineThrough = (mock) => async (request) => {
+  const reply = await mock.ai.complete({ system: '你是提示詞編輯者。', text: request.goal })
+  return { ...JSON.parse(reply.text), modelId: 'gpt-5-codex' }
 }
 
 /** unhandled rejections while `body` runs (a catch that rethrows from an effect ends up here) */
@@ -94,6 +101,7 @@ test('prompt settings show the initial prompt, restore drafts, generate a propos
   const mock = createMockTuqAi({ reply: () => JSON.stringify({ prompt: 'AI 修正：只將有明確行動與證據的事項當成待辦。', changes: ['排除一般寒暄'] }) })
   const { api } = plugin(settingsHandlers({
     'settings.prompt.get': () => promptState,
+    'settings.prompt.refine': refineThrough(mock),
     'settings.prompt.save': ({ prompt, expectedRevision }) => {
       assert.equal(expectedRevision, promptState.revision)
       saves += 1
@@ -105,7 +113,7 @@ test('prompt settings show the initial prompt, restore drafts, generate a propos
       promptState = { ...promptState, activePrompt: promptState.initialPrompt, customized: false, revision: 'initial' }
       return promptState
     }
-  }), mock.ai)
+  }))
   const data = new Map()
   const storage = { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value), removeItem: (key) => data.delete(key) }
   let scene = ui.mount(ui.settingsDraftScene(api, storage))
@@ -123,11 +131,11 @@ test('prompt settings show the initial prompt, restore drafts, generate a propos
     await until(() => field('prompt-suggestion'), { message: 'AI proposal rendered' })
     assert.equal(saves, 0, 'generating a proposal does not save')
     assert.ok(field('prompt-suggestion').textContent.includes('排除一般寒暄'))
-    assert.equal(mock.control.liveSessions(), 0, 'the settings AI session was closed')
+    assert.equal(mock.control.liveSessions(), 0, 'the AI Session was closed')
     scene.unmount()
     scene = ui.mount(ui.settingsDraftScene(api, storage))
     await until(() => field('prompt-suggestion') && field('apply-prompt-suggestion'), { message: 'AI proposal restored' })
-    assert.equal(mock.stats.sends, 1, 'restoring a proposal does not invoke AI again')
+    assert.equal(mock.stats.completes, 1, 'restoring a proposal does not invoke AI again')
     reactProps(field('apply-prompt-suggestion')).onClick()
     await until(() => saves === 1 && promptState.activePrompt.startsWith('AI 修正'), { message: 'proposal explicitly adopted' })
     await until(() => field('reset-prompt') && !reactProps(field('reset-prompt')).disabled, { message: 'save finished' })
@@ -140,13 +148,13 @@ test('editing the prompt while AI is replying makes the old proposal ineligible 
   let release
   const hold = new Promise((resolve) => { release = resolve })
   const mock = createMockTuqAi({ reply: () => ({ text: JSON.stringify({ prompt: 'AI 提出的新規則', changes: ['分類更清楚'] }), delay: () => hold }) })
-  const { api } = plugin(settingsHandlers(), mock.ai)
+  const { api } = plugin(settingsHandlers({ 'settings.prompt.refine': refineThrough(mock) }))
   const scene = ui.mount(ui.settingsScene(api))
   const field = (name) => byAttr(scene.container, 'data-testid', name)
   try {
     await until(() => field('refine-prompt') && !reactProps(field('refine-prompt')).disabled, { message: 'prompt loaded' })
     reactProps(field('refine-prompt')).onClick()
-    await until(() => mock.stats.sends === 1, { message: 'AI request started' })
+    await until(() => mock.stats.completes === 1, { message: 'AI request started' })
     reactProps(field('active-extract-prompt')).onChange({ target: { value: '使用者後來改成的內容' } })
     release()
     await until(() => field('apply-prompt-suggestion'), { message: 'proposal arrived' })
@@ -159,7 +167,7 @@ test('an AI proposal arriving after leaving the settings tab is restored into th
   let release
   const hold = new Promise((resolve) => { release = resolve })
   const mock = createMockTuqAi({ reply: () => ({ text: JSON.stringify({ prompt: '離開設定期間產生的建議', changes: ['保留使用者要求的判斷規則'] }), delay: () => hold }) })
-  const { api } = plugin(settingsHandlers(), mock.ai)
+  const { api } = plugin(settingsHandlers({ 'settings.prompt.refine': refineThrough(mock) }))
   const data = new Map()
   const storage = { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value), removeItem: (key) => data.delete(key) }
   let scene = ui.mount(ui.settingsDraftScene(api, storage))
@@ -167,14 +175,14 @@ test('an AI proposal arriving after leaving the settings tab is restored into th
   try {
     await until(() => field('refine-prompt') && !reactProps(field('refine-prompt')).disabled, { message: 'editor loaded' })
     reactProps(field('refine-prompt')).onClick()
-    await until(() => mock.stats.sends === 1, { message: 'AI request in progress' })
+    await until(() => mock.stats.completes === 1, { message: 'AI request in progress' })
     scene.unmount()
     scene = ui.mount(ui.settingsDraftScene(api, storage))
     await until(() => field('active-extract-prompt'), { message: 'editor reopened during AI work' })
     release()
     await until(() => field('prompt-suggestion'), { message: 'late AI proposal restored' })
     assert.ok(field('prompt-suggestion').textContent.includes('離開設定期間') || walk(field('prompt-suggestion')).some((element) => reactProps(element)?.value === '離開設定期間產生的建議'))
-    assert.equal(mock.stats.sends, 1)
+    assert.equal(mock.stats.completes, 1)
     assert.equal(mock.control.liveSessions(), 0)
   } finally { release(); scene.unmount(); api.dispose() }
 })
@@ -182,16 +190,17 @@ test('an AI proposal arriving after leaving the settings tab is restored into th
 test('TeamUQ AI controls load models, save provider/model/effort and restore them when settings reopen', async () => {
   let savedView = { ...VIEW }
   const patches = []
-  const ai = { getOptions: async () => ({
+  const options = async () => ({
     providers: [{ id: 'codex', label: 'Codex', state: 'ready', models: [
       { id: 'default-model', label: '預設模型', efforts: ['low', 'medium'], defaultEffort: 'medium', supportsImages: false, isDefault: true },
       { id: 'gpt-6-luna', label: 'GPT-6 Luna', efforts: ['low', 'high'], defaultEffort: 'low', supportsImages: false, isDefault: false }
     ] }], defaultProviderId: 'codex', limits: { systemChars: 16000, transcriptLines: 40, transcriptChars: 60000, inputChars: 8000, imageBytes: 2097152, turnsPerMinute: 20 }, quota: { state: 'ok', retryAfterMs: null }
-  }) }
+  })
   const { api } = plugin({ ...settingsHandlers(),
+    'ai.options': options, // the backend's context.host.ai.getOptions()
     'settings.get': () => savedView,
     'settings.update': (patch) => { patches.push(patch); savedView = { ...savedView, ...patch }; return savedView }
-  }, ai)
+  })
   let scene = ui.mount(ui.settingsScene(api))
   const field = (id) => byAttr(scene.container, 'data-testid', id)
   const change = async (id, value, expected) => {
@@ -215,7 +224,8 @@ test('TeamUQ AI controls load models, save provider/model/effort and restore the
 })
 
 test('denied TeamUQ AI access is explained in settings without an unhandled rejection', async () => {
-  const { api } = plugin(settingsHandlers(), { getOptions: async () => { throw new Error('not_granted') } })
+  // the backend answers ai.options with the host's code (no message): the settings screen decides the sentence
+  const { api } = plugin(settingsHandlers({ 'ai.options': () => { throw Object.assign(new Error(''), { code: 'not_granted' }) } }))
   let scene
   const errors = await collectingUnhandled(async () => {
     scene = ui.mount(ui.settingsScene(api))
