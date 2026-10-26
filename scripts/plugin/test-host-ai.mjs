@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { createSettingsStore } from '../../src/main/config/settings.ts'
 import { DEFAULT_HOST_AI_SELECTION, normalizeHostAiSelection } from '../../src/shared/hostAi.ts'
+import { buildManifest } from './lib/manifest.mjs'
+import { createTestHost } from './vendor/testing/tuq-plugin-test-host.mjs'
 
 const noSecrets = { isEncryptionAvailable: () => false, encryptString: () => { throw new Error('unused') }, decryptString: () => { throw new Error('unused') } }
 
@@ -49,99 +52,134 @@ test('the copied SDK declarations match their pinned Core 1.7.15 metadata, and d
 })
 
 // ───────────── 0.2.1: every AI turn is filed under the plugin's own TeamUQ Task (src/plugin/backend/teamuqTask.ts) ─────────────
+// Program and host.ai rules come from the vendored devkit test host (scripts/plugin/vendor/testing), pinned by sha256 below.
 
-function fakeProgram() {
-  const state = { projects: new Set(), tasks: new Map(), next: 100, calls: [], fail: null }
-  const ok = (operation, result) => ({ apiVersion: 1, requestId: 'r', operation, ok: true, result })
-  const failed = (operation, code) => ({ apiVersion: 1, requestId: 'r', operation, ok: false, error: { code, message: code } })
-  const program = {
-    call: async (operation, input) => {
-      state.calls.push(operation)
-      if (state.fail !== null) return failed(operation, state.fail)
-      const id = String(state.next++)
-      if (operation === 'data.projects.create') { state.projects.add(id); return ok(operation, { id, name: input.name }) }
-      if (operation === 'data.tasks.create') {
-        if (!state.projects.has(input.projectId)) return failed(operation, 'not_found')
-        state.tasks.set(id, input)
-        return ok(operation, { id, name: input.name, projectId: input.projectId })
-      }
-      return failed(operation, 'operation_not_supported')
-    }
-  }
-  return { state, program }
+const TEST_HOST_SHA256 = '01ba78a1a51b98a9248d8d67e1784f7a8a24ebb4b3b1595896ed6a22f1aed850'
+const PLUGIN_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version
+
+const newHost = () => createTestHost({ manifest: buildManifest({ version: PLUGIN_VERSION }) })
+const aiTaskIds = (host) => host.calls('backend:ai.complete').map((call) => call.args.taskId ?? null)
+const taskRevision = (host, taskId) => host.calls('program.call:data.tasks.create').map((call) => call.reply.value?.result).find((task) => task?.id === taskId).authoredRevision
+const deleteTask = async (host, taskId) => {
+  const reply = await host.backend.host.program.call('data.tasks.delete', { taskId, expectedAuthoredRevision: taskRevision(host, taskId) })
+  assert.equal(reply.ok, true, JSON.stringify(reply))
 }
 
-test('the TeamUQ Task binding creates the Project「LINE 待辦」and the Task「AI 整理 LINE 訊息」once and keeps them across restarts', async () => {
+test('the vendored devkit test host is the pinned artifact and matches the kit version.json', () => {
+  const bytes = readFileSync(new URL('./vendor/testing/tuq-plugin-test-host.mjs', import.meta.url))
+  const meta = JSON.parse(readFileSync(new URL('./vendor/testing/tuq-plugin-test-host.version.json', import.meta.url), 'utf8'))
+  assert.equal(meta.file, 'tuq-plugin-test-host.mjs')
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), TEST_HOST_SHA256)
+  assert.equal(meta.sha256, TEST_HOST_SHA256)
+})
+
+test('the TeamUQ Task binding creates the Project and the Task once and keeps them across restarts', async () => {
   const { createTeamuqTaskBinding, TEAMUQ_PROJECT_NAME, TEAMUQ_TASK_NAME } = await import('../../src/plugin/backend/teamuqTask.ts')
   const dir = mkdtempSync(join(tmpdir(), 'line-todo-teamuq-task-'))
+  const host = newHost()
   try {
-    const { state, program } = fakeProgram()
+    const { program } = host.backend.host
     const file = join(dir, 'teamuq-task.json')
     const first = createTeamuqTaskBinding({ program, file })
     const [a, b] = await Promise.all([first.resolve(), first.resolve()])
+    assert.ok(a !== null)
     assert.equal(a, b, 'concurrent turns share one creation')
-    assert.deepEqual(state.calls, ['data.projects.create', 'data.tasks.create'])
-    assert.equal([...state.tasks.values()][0].name, TEAMUQ_TASK_NAME)
-    assert.equal(typeof TEAMUQ_PROJECT_NAME, 'string')
+    assert.deepEqual(host.calls().map((call) => call.id), ['program.call:data.projects.create', 'program.call:data.tasks.create'])
+    const [projectCall, taskCall] = host.calls()
+    assert.equal(projectCall.args.input.name, TEAMUQ_PROJECT_NAME)
+    assert.equal(taskCall.args.input.name, TEAMUQ_TASK_NAME)
+    assert.equal(taskCall.args.input.projectId, projectCall.reply.value.result.id)
     assert.equal(await createTeamuqTaskBinding({ program, file }).resolve(), a, 'a restarted backend reuses the stored Task')
-    assert.equal(state.calls.length, 2)
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+    assert.equal(host.calls().length, 2)
+  } finally {
+    host.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
-test('a deleted Task is recreated under the same Project; a deleted Project is recreated too', async () => {
+test('a Task deleted in the host is recreated under the same Project; forgetting another id changes nothing', async () => {
   const { createTeamuqTaskBinding } = await import('../../src/plugin/backend/teamuqTask.ts')
-  const { state, program } = fakeProgram()
-  const binding = createTeamuqTaskBinding({ program, file: null })
-  const first = await binding.resolve()
-  binding.forget('999')
-  assert.equal(await binding.resolve(), first, 'forgetting another id changes nothing')
-  binding.forget(first)
-  const second = await binding.resolve()
-  assert.notEqual(second, first)
-  assert.deepEqual(state.calls, ['data.projects.create', 'data.tasks.create', 'data.tasks.create'], 'the Project is reused')
-  state.projects.clear()
-  binding.forget(second)
-  const third = await binding.resolve()
-  assert.ok(third !== null && third !== second)
-  assert.deepEqual(state.calls.slice(3), ['data.tasks.create', 'data.projects.create', 'data.tasks.create'])
+  const host = newHost()
+  try {
+    const { program } = host.backend.host
+    const binding = createTeamuqTaskBinding({ program, file: null })
+    const first = await binding.resolve()
+    binding.forget('999')
+    assert.equal(await binding.resolve(), first, 'forgetting another id changes nothing')
+    await deleteTask(host, first)
+    binding.forget(first)
+    const second = await binding.resolve()
+    assert.notEqual(second, first)
+    assert.deepEqual(host.calls().map((call) => call.id), ['program.call:data.projects.create', 'program.call:data.tasks.create', 'program.call:data.tasks.delete', 'program.call:data.tasks.create'], 'the Project is reused')
+    assert.equal(host.calls().at(-1).args.input.projectId, host.calls()[0].reply.value.result.id)
+  } finally { host.close() }
+})
+
+test('a deleted Project is recreated too (the devkit host does not model Core not_found yet, so only this branch uses a stub)', async () => {
+  const { createTeamuqTaskBinding } = await import('../../src/plugin/backend/teamuqTask.ts')
+  const dir = mkdtempSync(join(tmpdir(), 'line-todo-teamuq-project-'))
+  try {
+    const file = join(dir, 'teamuq-task.json')
+    writeFileSync(file, JSON.stringify({ projectId: '101', taskId: null }))
+    const operations = []
+    const program = {
+      call: async (operation, input) => {
+        operations.push(operation)
+        if (operation === 'data.tasks.create' && input.projectId === '101') return { apiVersion: 1, requestId: 'r', operation, ok: false, error: { code: 'not_found', message: 'not_found' } }
+        return { apiVersion: 1, requestId: 'r', operation, ok: true, result: { id: operation === 'data.projects.create' ? '102' : '200' } }
+      }
+    }
+    assert.equal(await createTeamuqTaskBinding({ program, file }).resolve(), '200')
+    assert.deepEqual(operations, ['data.tasks.create', 'data.projects.create', 'data.tasks.create'])
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('without the Program API or its permissions the turns go out without a taskId, and creation is retried later', async () => {
   const { createTeamuqTaskBinding } = await import('../../src/plugin/backend/teamuqTask.ts')
   assert.equal(await createTeamuqTaskBinding({ file: null }).resolve(), null, 'an older Core without context.host.program')
-  const { state, program } = fakeProgram()
-  let now = 0
-  state.fail = 'forbidden'
-  const binding = createTeamuqTaskBinding({ program, file: null, now: () => now, retryMs: 60_000 })
-  assert.equal(await binding.resolve(), null)
-  assert.equal(await binding.resolve(), null)
-  assert.equal(state.calls.length, 1, 'no second try inside the retry window')
-  state.fail = null
-  now = 60_000
-  assert.notEqual(await binding.resolve(), null, 'the permission was allowed later')
+  const host = newHost()
+  try {
+    const { program } = host.backend.host
+    let now = 0
+    await host.revoke('program:data:tasks:write')
+    const binding = createTeamuqTaskBinding({ program, file: null, now: () => now, retryMs: 60_000 })
+    assert.equal(await binding.resolve(), null)
+    assert.equal(await binding.resolve(), null)
+    assert.deepEqual(host.calls().map((call) => call.id), ['program.call:data.projects.create', 'program.call:data.tasks.create'], 'no second try inside the retry window')
+    assert.equal(host.calls()[1].reply.value.error.code, 'forbidden')
+    await host.grant('program:data:tasks:write')
+    now = 60_000
+    assert.notEqual(await binding.resolve(), null, 'the permission was allowed later')
+    assert.equal(host.calls().at(-1).id, 'program.call:data.tasks.create')
+  } finally { host.close() }
 })
 
 test('the AI port sends every turn (repair turns too) with the Task, and recreates a Task the user deleted', async () => {
   const { createTeamuqTaskBinding } = await import('../../src/plugin/backend/teamuqTask.ts')
   const { createHostAiPort } = await import('../../src/plugin/backend/hostAi.ts')
-  const { createMockTuqAi } = await import('../lib/mock-tuq-ai.mjs')
-  const { program } = fakeProgram()
-  let turn = 0
-  const mock = createMockTuqAi({ reply: () => (turn++ === 0 ? 'not json' : '{"ok":true}') })
-  const task = createTeamuqTaskBinding({ program, file: null })
-  const port = createHostAiPort({ ai: mock.ai, task })
-  const json = await port.complete({ system: 'S', user: 'u', expectJson: true, priority: 'user' })
-  assert.deepEqual(json.value, { ok: true })
-  const taskId = await task.resolve()
-  assert.deepEqual(mock.stats.turns.map((t) => t.taskId), [taskId, taskId], 'the first turn and its repair turn')
-  mock.control.deletedTasks.add(taskId)
-  const after = await port.complete({ system: 'S', user: 'u', expectJson: false, priority: 'user' })
-  assert.equal(after.text, '{"ok":true}')
-  const recreated = await task.resolve()
-  assert.notEqual(recreated, taskId)
-  assert.equal(mock.stats.errors.task_not_found, 1)
-  assert.equal(mock.stats.turns.at(-1).taskId, recreated)
-  const bare = createMockTuqAi({ reply: () => 'x' })
-  await createHostAiPort({ ai: bare.ai }).complete({ system: 'S', user: 'u', expectJson: false, priority: 'user' })
-  assert.equal(bare.stats.turns[0].taskId, null, 'no binding: no taskId')
+  const host = newHost()
+  try {
+    host.ai.next({ events: [{ textDelta: 'not json' }, 'completed'] })
+    host.ai.next({ events: [{ textDelta: '{"ok":true}' }, 'completed'] })
+    const task = createTeamuqTaskBinding({ program: host.backend.host.program, file: null })
+    const port = createHostAiPort({ ai: host.backend.host.ai, task })
+    const json = await port.complete({ system: 'S', user: 'u', expectJson: true, priority: 'user' })
+    assert.deepEqual(json.value, { ok: true })
+    const taskId = await task.resolve()
+    assert.deepEqual(aiTaskIds(host), [taskId, taskId], 'the first turn and its repair turn')
+    await deleteTask(host, taskId)
+    host.ai.next({ events: [{ textDelta: '{"ok":true}' }, 'completed'] })
+    const after = await port.complete({ system: 'S', user: 'u', expectJson: false, priority: 'user' })
+    assert.equal(after.text, '{"ok":true}')
+    const recreated = await task.resolve()
+    assert.notEqual(recreated, taskId)
+    assert.ok(host.calls('backend:ai.complete').some((call) => call.reply.ok === false && call.reply.error === 'task_not_found'))
+    assert.deepEqual(aiTaskIds(host).slice(2), [taskId, recreated], 'the turn that hit task_not_found, then the retry on the new Task')
+    const bare = newHost()
+    try {
+      bare.ai.next({ events: [{ textDelta: 'x' }, 'completed'] })
+      await createHostAiPort({ ai: bare.backend.host.ai }).complete({ system: 'S', user: 'u', expectJson: false, priority: 'user' })
+      assert.deepEqual(aiTaskIds(bare), [null], 'no binding: no taskId')
+    } finally { bare.close() }
+  } finally { host.close() }
 })

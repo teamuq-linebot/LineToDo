@@ -3,3 +3,4 @@
 vendor/sqlite3mc-wasm/* -text
 # Vendored TeamUQ author tool (tuq-plugin-tool.mjs, G-08): keep byte-for-byte so its sha256 in tuq-plugin-tool.json keeps matching.
 scripts/plugin/vendor/tuq-plugin-tool.mjs -text
+scripts/plugin/vendor/testing/* -text
