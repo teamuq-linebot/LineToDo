@@ -402,12 +402,22 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
           if (signal.aborted || Date.now() - lastUnsentScan < UNSENT_SCAN_MIN_INTERVAL_MS) return
           lastUnsentScan = Date.now()
           const importReady = isLineImportSchemaReady(db)
-          await scanRecentUnsent(3, {
+          const scan = await scanRecentUnsent(3, {
             db, signal,
             fetchWindow: async (sinceMs) => ({ messages: await line!.getMessagesSince(sinceMs, { limit: 5000 }) }),
             fetchImportBatch: importReady ? line!.getLineImportBatch : undefined,
             commitImportBatch: importReady ? (batch) => commitLineImportBatch(db, batch, UNKNOWN_IDENTITY) : undefined
-          }).catch((error) => log(`[unsent-scan] failed: ${error instanceof Error ? error.name : 'unknown'}`))
+          }).catch((error) => {
+            log(`[unsent-scan] failed: ${error instanceof Error ? error.name : 'unknown'}`)
+            return null
+          })
+          if (scan && (scan.unsentMarked || scan.unsentInserted)) {
+            hub.publish('messages-persisted', {
+              chatIds: scan.unsentChatIds,
+              inserted: scan.unsentInserted,
+              updated: scan.unsentMarked
+            })
+          }
         })
       },
       app: {

@@ -83,8 +83,8 @@ test('board: plugin and standalone both expose the shared settings tab; standalo
   // App reads the theme from the DOM on first render; a server render has no DOM
   globalThis.document = { documentElement: { dataset: {} } }
   try {
-    assert.deepEqual(tabs(renderApp(STANDALONE)), ['看板', '即時訊息流', '群組議題', '設定'])
-    assert.deepEqual(tabs(renderApp(PLUGIN)), ['看板', '即時訊息流', '群組議題', '設定'])
+    assert.deepEqual(tabs(renderApp(STANDALONE)), ['彙整', '聊天', '群組議題', '設定'])
+    assert.deepEqual(tabs(renderApp(PLUGIN)), ['彙整', '聊天', '群組議題', '設定'])
   } finally { delete globalThis.document }
 })
 
@@ -150,7 +150,7 @@ test('G-03 / B1: the backend status line, when Core fences the plugin, names the
 test('G-04: a re-created plugin view restores the tab, the sort / filters and grouping from its saved UI state; standalone (no store) starts fresh as before', async () => {
   const { renderAppWithState, PLUGIN, STANDALONE } = await renderer()
   const active = (html) => html.match(/<button class="tab active">([^<]+)<\/button>/)?.[1]
-  assert.equal(active(renderAppWithState(PLUGIN, null)), '看板')
+  assert.equal(active(renderAppWithState(PLUGIN, null)), '彙整')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'topics' })), '群組議題')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'settings' })), '設定')
   assert.equal(active(renderAppWithState(STANDALONE, { 'app.tab': 'settings' })), '設定')

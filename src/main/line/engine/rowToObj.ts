@@ -239,9 +239,13 @@ export function rowToObj(row: MessageRow, ctx: RowContext): RawLineMessage {
   }
   let body: string
   if (ct === 6) {
-    body = callLabel(row.contentMetadata) || (text ? text : ctLabel())
+    body = callLabel(row.contentMetadata) || (text !== null && text !== '' ? text : ctLabel())
+  } else if (ct === 0 && (text === null || text === '')) {
+    // Keep empty text empty so persistence can distinguish a newly observed empty row
+    // from a literal legacy value such as "[type=0]" without adding a schema field.
+    body = ''
   } else {
-    body = text ? text : ctLabel()
+    body = text !== null && text !== '' ? text : ctLabel()
   }
   const direction: 'in' | 'out' = row.from === ctx.myMid ? 'out' : 'in'
   const media = mediaFields(row.contentMetadata, row.contentInfo, ct, text)

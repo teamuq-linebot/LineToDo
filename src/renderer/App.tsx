@@ -8,9 +8,9 @@ import { parseOneOf, usePersistentState } from './lib/uiState'
 
 /**
  * App（M3：代辦看板）。
- * 頂部分頁切換：看板 / 即時訊息流 / 設定。
- *   - 看板：四欄（待辦 / 等回覆 / 行程 / 已完成）+ 今日摘要。
- *   - 即時訊息流：M1 的 LINE 原始訊息流（保留作觀測 / 除錯）。
+ * 頂部分頁切換：彙整 / 聊天 / 群組議題 / 設定。
+ *   - 彙整：四欄（待辦 / 等回覆 / 行程 / 已完成）+ 今日摘要。
+ *   - 聊天：LINE 聊天室、訊息與對話內群組議題。
  *   - 設定：輪詢頻率、降噪黑名單、AI 判斷引擎（API 金鑰 + AI 端點）。
  *
  * 主題：外掛版跟隨 TeamUQ 宿主外觀（Electron nativeTheme → prefers-color-scheme）；standalone 保留本機切換與深色預設。
@@ -37,13 +37,13 @@ function App(): JSX.Element {
             className={`tab ${tab === 'board' ? 'active' : ''}`}
             onClick={() => setTab('board')}
           >
-            看板
+            彙整
           </button>
           <button
             className={`tab ${tab === 'stream' ? 'active' : ''}`}
             onClick={() => setTab('stream')}
           >
-            即時訊息流
+            聊天
           </button>
           <button
             className={`tab ${tab === 'topics' ? 'active' : ''}`}

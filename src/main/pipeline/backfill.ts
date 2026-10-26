@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { getDb } from '../db/database'
 import type { MessageDTO, TodoDTO } from '../db/dto'
+import { deriveMsgId } from '../db/schema'
 import {
   insertMessages,
   getByChatSince,
@@ -565,6 +566,10 @@ export interface ScanRecentUnsentResult {
   scanned: number
   /** 既有列被補標已收回（unsent 0→1）的筆數（取自 insertMessages 回傳的守衛式 UPDATE 計數）。 */
   unsentMarked: number
+  /** 新插入且已帶收回旗標的列數。 */
+  unsentInserted: number
+  /** 本窗口中帶有收回旗標的聊天室；供已開啟的聊天畫面重新查詢持久化列。 */
+  unsentChatIds: string[]
 }
 
 export interface ScanRecentUnsentDeps {
@@ -611,13 +616,19 @@ export async function scanRecentUnsent(
   } else {
     win = await fetchWindow(sinceMs)
   }
-  if (deps.signal?.aborted) return { scanned: 0, unsentMarked: 0 }
+  if (deps.signal?.aborted) return { scanned: 0, unsentMarked: 0, unsentInserted: 0, unsentChatIds: [] }
   if (win.error) {
     throw new Error(`撈窗口訊息失敗: ${win.error}`)
   }
 
   const ins = importWindow
-    ? { unsentMarked: importWindow.commits.reduce((sum, commit) => sum + commit.unsentMarked, 0) }
+    ? {
+        unsentMarked: importWindow.commits.reduce((sum, commit) => sum + commit.unsentMarked, 0),
+        insertedMsgIds: importWindow.commits.flatMap((commit) => commit.insertedMsgIds)
+      }
     : insertMessages(win.messages, db)
-  return { scanned: win.messages.length, unsentMarked: ins.unsentMarked ?? 0 }
+  const unsentIds = new Set(win.messages.filter((message) => message.unsent === true).map(deriveMsgId))
+  const unsentInserted = ins.insertedMsgIds.filter((msgId) => unsentIds.has(msgId)).length
+  const unsentChatIds = [...new Set(win.messages.filter((message) => message.unsent === true).map((message) => message.chatId))]
+  return { scanned: win.messages.length, unsentMarked: ins.unsentMarked ?? 0, unsentInserted, unsentChatIds }
 }

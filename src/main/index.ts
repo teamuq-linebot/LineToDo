@@ -192,12 +192,22 @@ app.whenReady().then(async () => {
               if (Date.now() - lastUnsentScan < 5 * 60 * 1000) return
               lastUnsentScan = Date.now()
               const importReady = isLineImportSchemaReady(db)
-              await scanRecentUnsent(3, { db, signal,
+              const scan = await scanRecentUnsent(3, { db, signal,
                 fetchWindow: async (sinceMs) => ({ messages: await linePort.getMessagesSince(sinceMs, { limit: 5000 }) }),
                 fetchImportBatch: importReady ? linePort.getLineImportBatch : undefined,
                 commitImportBatch: importReady ? (batch) => commitLineImportBatch(db, batch, participantIdentity) : undefined
               })
-                .catch((error) => console.warn('[unsent-scan] failed:', (error as Error).name))
+                .catch((error) => {
+                  console.warn('[unsent-scan] failed:', (error as Error).name)
+                  return null
+                })
+              if (scan && (scan.unsentMarked || scan.unsentInserted)) {
+                pushToRenderer('evt:messages-persisted', {
+                  chatIds: scan.unsentChatIds,
+                  inserted: scan.unsentInserted,
+                  updated: scan.unsentMarked
+                })
+              }
             })
           },
           afterStart: (db, schedule) => {

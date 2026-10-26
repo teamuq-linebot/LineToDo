@@ -7,7 +7,7 @@
 //         says running makes the state known again (tester r1 §3.1)
 //   N1    closing the draft-reply dialog deletes the saved reply draft (LINE-derived text)
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -93,6 +93,227 @@ const settingsHandlers = (extra = {}) => ({
   'db.chats.list': () => [],
   'pipeline.status': () => ({ hasApiKey: true, running: true, busy: false, intervalSec: 30, lastRunAt: null, lineBridge: 'ok' }),
   ...extra
+})
+
+test('chat search finds senders and older messages that are loaded in the selected conversation without searching unloaded history', async () => {
+  const bni = { chatId: 'bni', name: 'BNI 商會', isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(1700000000000).toISOString(), lastSeenAt: new Date(1700000003000).toISOString() }
+  const family = { chatId: 'family', name: '家庭群', isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(1699999000000).toISOString(), lastSeenAt: new Date(1699999000000).toISOString() }
+  const message = (chatId, ts, sender, text) => ({
+    msgId: `i:${chatId}:${ts}`, chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender, text,
+    contentType: 0, processed: false, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: false
+  })
+  const older = message('bni', 1700000001000, '王志明', '明天中午前請大家回覆是否出席，也記得帶名片。')
+  const latest = message('bni', 1700000003000, '李麗華', '收到，謝謝提醒。')
+  const listQueries = []
+  const historyQueries = []
+  const { api } = plugin({
+    'db.chats.list': () => [bni, family],
+    'db.messages.list': (query) => { listQueries.push(query); return [] },
+    'db.messages.recentByChat': (chatId, limit) => {
+      historyQueries.push({ chatId, limit })
+      return chatId === 'bni' ? [latest, older] : []
+    },
+    'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 })
+  })
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    const hasClass = (element, name) => (element.getAttribute('class') ?? '').split(/\s+/).includes(name)
+    const chatButton = (name) => walk(scene.container).find((element) => hasClass(element, 'chat-list-item') && element.textContent.includes(name))
+    const searchInput = () => walk(scene.container).find((element) => element.localName === 'input' && element.getAttribute('type') === 'search')
+    await until(() => chatButton('BNI 商會') && scene.container.textContent.includes(older.text), { message: 'BNI history loaded and displayed' })
+    assert.ok(scene.container.textContent.includes('搜尋範圍：目前已載入的聊天室名稱、訊息與發話者，不含完整歷史。'))
+    assert.equal(chatButton('BNI 商會').getAttribute('aria-pressed'), 'true')
+    const marker = walk(scene.container).find((element) => hasClass(element, 'chat-selection-marker'))
+    assert.equal(marker?.textContent, '✓', 'selected chat has a visible non-color check marker')
+    assert.equal(marker?.getAttribute('aria-hidden'), 'true')
+
+    const search = searchInput()
+    assert.ok(search)
+    reactProps(search).onChange({ target: { value: '王志明' } })
+    await until(() => search.value === '王志明' && chatButton('BNI 商會') && !chatButton('家庭群'), { message: 'sender search returns the loaded BNI conversation' })
+    reactProps(search).onChange({ target: { value: '回覆是否出席' } })
+    await until(() => search.value === '回覆是否出席' && chatButton('BNI 商會') && !chatButton('家庭群'), { message: 'older loaded message search returns the BNI conversation' })
+    reactProps(search).onChange({ target: { value: '尚未載入的完整歷史內容' } })
+    await until(() => search.value === '尚未載入的完整歷史內容' && !chatButton('BNI 商會') && !chatButton('家庭群') && scene.container.textContent.includes('找不到符合的聊天室'), { message: 'unloaded history is not searched' })
+    assert.deepEqual(listQueries, [{ limit: 1000 }], 'search does not add a backend or full-history query')
+    assert.deepEqual(historyQueries, [{ chatId: 'bni', limit: 100 }], 'only the visible selected chat history is loaded')
+
+    const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
+    assert.match(css, /\.chat-selection-marker\s*\{[^}]*border:\s*1px solid var\(--accent\)[^}]*color:\s*var\(--accent\)/s)
+    assert.match(css, /\.chat-list-item:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/s, 'keyboard focus-visible outline remains available')
+    assert.match(css, /\[data-theme="light"\][\s\S]*?--accent:\s*#[\da-f]{6}/i, 'the selection marker follows the light theme accent')
+  } finally {
+    scene?.unmount()
+    api.dispose()
+  }
+})
+
+test('recalled persistence refresh covers all 1001 loaded rows with bounded pages and keeps late updates inside their chat', async () => {
+  const ts0 = Date.UTC(2026, 9, 26, 3, 0, 0)
+  const chatId = 'c-f1-history-fixture'
+  const chat = { chatId, name: 'F1 歷史測試群組', isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(ts0).toISOString(), lastSeenAt: new Date(ts0 + 1_000_000).toISOString() }
+  const rows = Array.from({ length: 1001 }, (_, index) => ({
+    msgId: `i:history-${String(index + 1).padStart(4, '0')}`,
+    chatId,
+    ts: ts0 + index * 1000,
+    timeIso: new Date(ts0 + index * 1000).toISOString(),
+    direction: 'in',
+    sender: '舊歷史測試成員',
+    text: index === 0 ? '第 1001 筆已保存原文' : `訊息 ${index + 1}`,
+    contentType: 0,
+    processed: false,
+    ingestedAt: new Date(ts0 + index * 1000).toISOString(),
+    origFilename: null,
+    fileSize: null,
+    unsent: false
+  }))
+  const cloneRows = (items) => items.map((row) => ({ ...row }))
+  const persisted = new Set()
+  const refreshQueries = []
+  let recentByChatCalls = 0
+  const api = {
+    db: {
+      chats: { list: async () => [chat], setBlocked: async () => chat },
+      messages: {
+        list: async (query = {}) => {
+          if (query.chatId) refreshQueries.push({ ...query })
+          const selected = query.beforeTs == null
+            ? rows.slice(-Math.min(query.limit ?? 1000, 1000))
+            : rows.filter((row) => row.ts < query.beforeTs).slice(-Math.min(query.limit ?? 100, 1000))
+          return cloneRows(selected)
+        },
+        recentByChat: async (_chatId, limit) => {
+          recentByChatCalls += 1
+          return cloneRows(rows.slice(-limit))
+        }
+      },
+      onMessagesPersisted: (callback) => { persisted.add(callback); return () => persisted.delete(callback) }
+    },
+    messages: { recent: async () => [] },
+    line: {
+      status: async () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+      onMessage: () => () => undefined,
+      onStatus: () => () => undefined
+    }
+  }
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    const hasClass = (element, name) => (element.getAttribute('class') ?? '').split(/\s+/).includes(name)
+    const target = rows[0]
+    const rowForTarget = () => walk(scene.container).find((element) => hasClass(element, 'chat-message') && element.textContent.includes(target.text))
+    const hasRecalledBadge = (row) => walk(row).some((element) => hasClass(element, 'unsent-badge'))
+    await until(() => recentByChatCalls >= 1 && persisted.size > 0 && walk(scene.container).some((element) => element.localName === 'button' && element.textContent === '載入較早訊息'), { message: 'initial history and persistence listener are ready' })
+    reactProps(walk(scene.container).find((element) => element.localName === 'button' && element.textContent === '載入較早訊息')).onClick()
+    await until(() => rowForTarget(), { message: 'the 1001st already-loaded row is rendered' })
+    assert.equal(walk(scene.container).filter((element) => hasClass(element, 'chat-message')).length, 1001)
+    assert.equal(hasRecalledBadge(rowForTarget()), false)
+
+    const queriesBeforePersistedEvent = refreshQueries.length
+    target.unsent = true
+    for (const listener of persisted) listener({ chatIds: [chatId], inserted: 0, updated: 1 })
+    await until(() => hasRecalledBadge(rowForTarget()), { timeout: 7000, message: 'persisted event refreshes the oldest loaded row' })
+
+    assert.equal(rowForTarget().textContent.includes(target.text), true, 'the saved original text remains rendered')
+    assert.equal(recentByChatCalls, 1, 'event refresh does not requery only the latest history page')
+    const eventQueries = refreshQueries.slice(queriesBeforePersistedEvent)
+    assert.equal(eventQueries.length, 11, '1001 loaded rows were refreshed as 10 full pages and one final row')
+    assert.ok(eventQueries.every((query) => query.limit > 0 && query.limit <= 100), 'every event query stays within the existing 100-row UI page size')
+
+    // A delayed response for chat A must update only A's cache after the user switches to B.
+    const chatA = { ...chat, chatId: 'c-late-a', name: '延遲更新 A', firstSeenAt: new Date(ts0).toISOString(), lastSeenAt: new Date(ts0 + 5000).toISOString() }
+    const chatB = { ...chat, chatId: 'c-late-b', name: '目前聊天室 B', firstSeenAt: new Date(ts0).toISOString(), lastSeenAt: new Date(ts0 + 4000).toISOString() }
+    const msgA = { ...rows[0], msgId: 'i:late-a', chatId: chatA.chatId, ts: ts0 + 5000, timeIso: new Date(ts0 + 5000).toISOString(), text: 'A 的已載入原文', unsent: false }
+    const msgB = { ...rows[1], msgId: 'i:late-b', chatId: chatB.chatId, ts: ts0 + 4000, timeIso: new Date(ts0 + 4000).toISOString(), text: 'B 的訊息', unsent: false }
+    const lateListeners = new Set()
+    let lateRefreshQueries = 0
+    let releaseLate
+    let holdLateA = false
+    const lateApi = {
+      ...api,
+      db: {
+        ...api.db,
+        chats: { ...api.db.chats, list: async () => [chatA, chatB] },
+        messages: {
+          ...api.db.messages,
+          list: async (query = {}) => {
+            if (query.chatId) lateRefreshQueries += 1
+            if (query.chatId === chatA.chatId && holdLateA) {
+              holdLateA = false
+              return await new Promise((resolve) => { releaseLate = () => resolve([{ ...msgA }]) })
+            }
+            if (query.chatId) return [query.chatId === chatA.chatId ? { ...msgA } : { ...msgB }]
+            return [msgA, msgB]
+          },
+          recentByChat: async (id) => [id === chatA.chatId ? { ...msgA } : { ...msgB }]
+        },
+        onMessagesPersisted: (callback) => { lateListeners.add(callback); return () => lateListeners.delete(callback) }
+      }
+    }
+    scene.unmount()
+    scene = ui.mount(ui.messageStreamScene(lateApi))
+    await until(() => scene.container.textContent.includes('A 的已載入原文') && lateListeners.size > 0, { message: 'controlled event listener and A history are ready' })
+    holdLateA = true
+    msgA.unsent = true
+    for (const listener of lateListeners) listener({ chatIds: [chatA.chatId], inserted: 0, updated: 1 })
+    await until(() => typeof releaseLate === 'function', { message: 'A refresh query is pending' })
+    const buttonB = walk(scene.container).find((element) => hasClass(element, 'chat-list-item') && element.textContent.includes(chatB.name))
+    assert.ok(buttonB)
+    reactProps(buttonB).onClick()
+    await until(() => scene.container.textContent.includes('B 的訊息') && !scene.container.textContent.includes('A 的已載入原文'), { message: 'switch to chat B while A refresh is pending' })
+    releaseLate()
+    await until(() => scene.container.textContent.includes('B 的訊息'), { message: 'late A response completes without changing B view' })
+    assert.equal(walk(scene.container).some((element) => hasClass(element, 'unsent-badge')), false, 'A recalled badge does not leak into B')
+    for (const listener of lateListeners) listener({ chatIds: [chatA.chatId], inserted: 0, updated: 1 })
+    await until(() => lateRefreshQueries === 2, { message: 'a background-loaded A page still refreshes while B is selected' })
+    assert.equal(walk(scene.container).some((element) => hasClass(element, 'unsent-badge')), false, 'refreshing inactive A still leaves B untouched')
+    const buttonA = walk(scene.container).find((element) => hasClass(element, 'chat-list-item') && element.textContent.includes(chatA.name))
+    assert.ok(buttonA)
+    reactProps(buttonA).onClick()
+    await until(() => scene.container.textContent.includes('A 的已載入原文') && walk(scene.container).some((element) => hasClass(element, 'unsent-badge')), { message: 'A cache receives its own late recalled update' })
+  } finally {
+    scene?.unmount()
+  }
+})
+
+test('MessageStream renders definite missing, ambiguous legacy, and saved whitespace states separately', async () => {
+  const ts = Date.UTC(2026, 9, 26, 5, 0, 0)
+  const chat = { chatId: 'c-f2-ui', name: 'F2 來源測試群組', isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts + 2000).toISOString() }
+  const rows = [
+    { msgId: 'i:empty', chatId: chat.chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender: 'A', text: '', contentType: 0, processed: false, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: true },
+    { msgId: 'i:literal', chatId: chat.chatId, ts: ts + 1000, timeIso: new Date(ts + 1000).toISOString(), direction: 'in', sender: 'A', text: '[type=0]', contentType: 0, processed: false, ingestedAt: new Date(ts + 1000).toISOString(), origFilename: null, fileSize: null, unsent: true },
+    { msgId: 'i:whitespace', chatId: chat.chatId, ts: ts + 2000, timeIso: new Date(ts + 2000).toISOString(), direction: 'in', sender: 'A', text: '   \t', contentType: 0, processed: false, ingestedAt: new Date(ts + 2000).toISOString(), origFilename: null, fileSize: null, unsent: true }
+  ]
+  const api = {
+    db: {
+      chats: { list: async () => [chat], setBlocked: async () => chat },
+      messages: { list: async () => rows, recentByChat: async () => rows },
+      onMessagesPersisted: () => () => undefined
+    },
+    messages: { recent: async () => [] },
+    line: {
+      status: async () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+      onMessage: () => () => undefined,
+      onStatus: () => () => undefined
+    }
+  }
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => scene.container.textContent.includes('未保存收回前內容') && scene.container.textContent.includes('[type=0]') && scene.container.textContent.includes('原文已保存，但內容只有空白字元。'), { message: 'three provenance states render in the conversation' })
+
+    const hasClass = (element, name) => (element.getAttribute('class') ?? '').split(/\s+/).includes(name)
+    const literalRow = walk(scene.container).find((element) => hasClass(element, 'chat-message') && element.textContent.includes('[type=0]'))
+    const whitespaceRow = walk(scene.container).find((element) => hasClass(element, 'chat-message') && element.textContent.includes('原文已保存，但內容只有空白字元。'))
+    assert.ok(literalRow?.textContent.includes('原文無法判定'), 'a preserved literal-looking legacy value carries an uncertainty label')
+    assert.ok(!literalRow?.textContent.includes('未保存收回前內容'), 'the ambiguous legacy value is not labeled definitely missing')
+    assert.ok(whitespaceRow?.textContent.includes('   \t'), 'the actual whitespace value remains in the rendered text node')
+    assert.ok(whitespaceRow?.textContent.includes('原文已保存，但內容只有空白字元。'))
+  } finally {
+    scene?.unmount()
+  }
 })
 
 test('prompt settings show the initial prompt, restore drafts, generate a proposal and save it only after adoption', async () => {
@@ -267,8 +488,8 @@ test('settings entry interaction: plugin App opens the shared settings panel, re
     await until(() => savedView.pollIntervalSec === 45, { message: 'settings.update persisted the edit' })
     assert.ok(settingsCalls.some((entry) => Array.isArray(entry) && entry[0] === 'update' && entry[1].pollIntervalSec === 45), 'the existing settings.update API receives the patch')
 
-    reactProps(tab('看板')).onClick()
-    await until(() => !view.container.textContent.includes('輪詢頻率（秒）') && tab('看板'), { message: 'return to board' })
+    reactProps(tab('彙整')).onClick()
+    await until(() => !view.container.textContent.includes('輪詢頻率（秒）') && tab('彙整'), { message: 'return to board' })
     reactProps(tab('設定')).onClick()
     await until(() => view.container.textContent.includes('輪詢頻率（秒）') && pollInput() && reactProps(pollInput()).value === 45, { message: 'saved settings read back after reopening' })
     assert.ok(settingsCalls.filter((entry) => entry === 'get').length >= 2, 'reopening reads settings.get again')

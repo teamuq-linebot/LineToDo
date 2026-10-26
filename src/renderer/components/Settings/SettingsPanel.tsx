@@ -118,8 +118,12 @@ export function SettingsPanel({ initialView, initialLoadError, initialActionErro
 
   async function toggleChat(chatId: string, blocked: boolean): Promise<void> {
     try {
-      await api.db.chats.setBlocked(chatId, blocked, blocked ? 'manual' : undefined)
-      setActionError(null)
+      const updated = await api.db.chats.setBlocked(chatId, blocked, blocked ? 'manual' : undefined)
+      if (!updated || updated.chatId !== chatId || updated.blocked !== blocked) {
+        setActionError(`${blocked ? '封鎖' : '解除封鎖'}狀態沒有更新，請重試。`)
+      } else {
+        setActionError(null)
+      }
     } catch (error) {
       setActionError(backendErrorText(error, blocked ? '封鎖對話失敗' : '解除封鎖失敗'))
     }

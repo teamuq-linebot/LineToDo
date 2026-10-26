@@ -92,10 +92,12 @@ export interface NotMineAnalysisResult { ok: boolean; reason?: string; inferredC
 export type TodoSortBy = 'updatedAt' | 'createdAt' | 'dueAt' | 'priority'
 export type TodoSortDirection = 'asc' | 'desc'
 
-/** evt:messages-persisted push payload（DB 有新訊息落庫時）。 */
+/** evt:messages-persisted push payload（DB 新增或更新訊息時）。 */
 export interface MessagesPersistedEvent {
   chatIds: string[]
   inserted: number
+  /** 已存在訊息列的更新數；舊 producer 可省略。 */
+  updated?: number
 }
 
 /** qwen 抽取 pipeline 狀態（與 main/pipeline/scheduler.ts PipelineStatus 對齊）。 */

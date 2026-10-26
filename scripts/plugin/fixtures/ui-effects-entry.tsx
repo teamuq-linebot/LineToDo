@@ -9,6 +9,7 @@ import type { TodoDTO } from '../../../src/renderer/types/api'
 import { LineTodoApiProvider } from '../../../src/renderer/platform/LineTodoApi'
 import { PLUGIN_CAPABILITIES } from '../../../src/renderer/platform/capabilities'
 import { SettingsPanel } from '../../../src/renderer/components/Settings/SettingsPanel'
+import { MessageStream } from '../../../src/renderer/components/MessageStream'
 import App from '../../../src/renderer/App'
 import { useTodos } from '../../../src/renderer/store/useTodos'
 import { NotMineReviewPanel } from '../../../src/renderer/components/Board/NotMineReviewPanel'
@@ -38,6 +39,9 @@ function Host({ api, children }: { api: Api; children: ReactElement }): JSX.Elem
 /** the plugin's settings view (src/plugin/ui/settings.tsx without the status bar / theme follower) */
 export function settingsScene(api: Api): ReactElement {
   return <Host api={api}><SettingsPanel /></Host>
+}
+export function messageStreamScene(api: Api): ReactElement {
+  return <Host api={api}><MessageStream /></Host>
 }
 export function settingsDraftScene(api: Api, storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>): ReactElement {
   return <Host api={api}><UiStateProvider value={createLocalUiState(storage)}><SettingsPanel /></UiStateProvider></Host>
