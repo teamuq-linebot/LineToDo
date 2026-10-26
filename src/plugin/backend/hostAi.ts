@@ -22,6 +22,7 @@ import type { AiCounters, AiStatus } from '../../shared/aiStatus'
 import { normalizeHostAiSelection } from '../../shared/hostAi'
 import type { HostAiEffort } from '../../shared/hostAi'
 import { parseModelJson } from '../../shared/jsonReply'
+import type { TeamuqTaskBinding } from './teamuqTask'
 
 export interface Clock {
   now(): number
@@ -211,6 +212,8 @@ export interface HostAiPortOptions {
   ai: PluginBackendAiApiV1
   /** 目前存的 AI 選擇（設定的 `pluginAi`）；每次呼叫前讀，所以設定一改就生效。 */
   selection?: () => unknown
+  /** 每一輪掛在哪個 TeamUQ Task（teamuqTask.ts）；省略或回 null＝不帶 `taskId`。 */
+  task?: TeamuqTaskBinding
   clock?: Clock
   config?: Partial<HostAiConfig>
   /** 診斷輸出（測試／除錯）；不含訊息內容。 */
@@ -505,6 +508,19 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
     }
   }
 
+  /** 帶上 Task 呼叫 host；Task 被刪了（`task_not_found`）就忘掉它、重建後再送一次（`task_not_found` 不算進配額視窗）。 */
+  const callOnTask = async (input: Parameters<PluginBackendAiApiV1['complete']>[0]): Promise<string> => {
+    const taskId = await opts.task?.resolve() ?? null
+    try {
+      return await callHost(taskId === null ? input : { ...input, taskId })
+    } catch (error) {
+      if (taskId === null || codeOf(error) !== 'task_not_found') throw error
+      opts.task!.forget(taskId)
+      const next = await opts.task!.resolve()
+      return await callHost(next === null ? input : { ...input, taskId: next })
+    }
+  }
+
   // ── 一個工作 ──
   const run = async (job: Job): Promise<AiPortResult> => {
     const req = job.req
@@ -528,7 +544,7 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
 
     const base = { system: req.system, providerId: picked.providerId, ...(picked.modelId !== null ? { modelId: picked.modelId } : {}), ...(picked.effort !== null ? { effort: picked.effort } : {}) }
     const model = picked.modelId
-    const first = await callHost({ ...base, text: req.user })
+    const first = await callOnTask({ ...base, text: req.user })
     if (!req.expectJson) return { text: first.trim(), model }
 
     let reply = first
@@ -551,7 +567,7 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
       // 等不到配額就把 rate_limited 原樣交出去：那是暫時的（呼叫端放回租約、稍後整個項目重來），不是這一項的 invalid_json（review F6）。
       await waitForSlot(reserve, hourReserve, maxWait, false)
       const lineMax = AI_CHAT_REFERENCE.transcriptLineChars
-      reply = await callHost({
+      reply = await callOnTask({
         ...base,
         transcript: [{ role: 'user', text: req.user.slice(0, lineMax) }, { role: 'assistant', text: reply.slice(0, lineMax) }],
         text: repairPrompt(reason)

@@ -70,6 +70,8 @@ export async function activateAt(context: PluginBackendContext, location: LineLo
     dataDir: context.dataDir,
     // `host` only exists in Core >= 1.7.12 (manifest minCoreVersion keeps older Cores from installing this); without it the AI features report "not started" instead of the backend failing to activate
     hostAi: context.host?.ai,
+    // `host.program` (Program API) files every AI turn under the plugin's own TeamUQ Task (teamuqTask.ts); without it the turns go out without a taskId
+    hostProgram: context.host?.program,
     // `context.residency` (background:resident) only exists in a Core that has the feature; a Core without it leaves this undefined and the backend behaves as before
     residency: context.residency,
     linePorts: { fs, sqlite, dbDir: location.lineDbDir },

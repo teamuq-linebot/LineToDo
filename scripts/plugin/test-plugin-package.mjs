@@ -300,7 +300,7 @@ test('resident build option: off by default (permissions, minCoreVersion and des
   assert.deepEqual(buildManifest({ version: VERSION, resident: { enabled: false } }), off, 'an explicit "off" is the default')
   assert.equal(off.minCoreVersion, MIN_CORE_VERSION)
   assert.equal(off.minCoreVersion, '>=1.7.13')
-  assert.deepEqual(off.permissions, ['ui:view', 'backend:invoke', 'native:addons', 'ai:chat', 'assets:plugin-data'])
+  assert.deepEqual(off.permissions, ['ui:view', 'backend:invoke', 'native:addons', 'ai:chat', 'assets:plugin-data', 'program:data:projects:write', 'program:data:tasks:write'])
   assert.equal(off.description, DESCRIPTION)
   assert.equal(keysDeep(off).has('residency'), false)
   assert.equal(off.permissions.includes(RESIDENT_PERMISSION), false)

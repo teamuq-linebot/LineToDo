@@ -40,8 +40,11 @@ export const NATIVE_FILES = Object.freeze([
  *   ai:chat            the backend's AI (extraction, reply drafting, analyses, prompt refinement) through TeamUQ's built-in Codex: context.host.ai.complete
  *                      (already declared since 0.1.x for the view-side AI; 0.2.0 adds no permission — the view no longer calls window.tuqPlugin.ai)
  *   assets:plugin-data decrypted media from dataDir/media-cache via window.tuqPlugin.assets.url
+ *   program:data:projects:write, program:data:tasks:write
+ *                      (0.2.1) the backend creates its own Project「LINE 待辦」and Task「AI 整理 LINE 訊息」through context.host.program and sends every
+ *                      AI turn with that taskId, so TeamUQ files the conversations under a normal Task instead of a throwaway「系統對話」Task (teamuqTask.ts)
  */
-export const PERMISSIONS = Object.freeze(['ui:view', 'backend:invoke', 'native:addons', 'ai:chat', 'assets:plugin-data'])
+export const PERMISSIONS = Object.freeze(['ui:view', 'backend:invoke', 'native:addons', 'ai:chat', 'assets:plugin-data', 'program:data:projects:write', 'program:data:tasks:write'])
 
 /**
  * The backend method allow-list (G-07): one method per API namespace (src/shared/pluginWire.ts BACKEND_METHOD_GROUPS — db.todos, pipeline, events, …),

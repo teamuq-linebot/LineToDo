@@ -49,7 +49,7 @@ import type { ReconcileDeps } from '../../main/pipeline/reconcileRunner'
 import { LineWatcher } from '../../main/line/watcher'
 import { PipelineScheduler } from '../../main/pipeline/scheduler'
 import type { LineTodoApi } from '../../shared/api'
-import type { PluginBackendAiApiV1 } from '@teamuq/plugin-sdk'
+import type { PluginBackendAiApiV1, PluginProgramApiV1 } from '@teamuq/plugin-sdk'
 import { createPortAiProvider } from './aiProvider'
 import { Dispatcher } from './dispatcher'
 import type { AiRuntime, DispatcherOptions } from './dispatcher'
@@ -63,6 +63,7 @@ import { createHostAiPort, createNoHostAiPort } from './hostAi'
 import type { Clock, HostAiConfig, HostAiPort } from './hostAi'
 import type { AiStatus } from '../../shared/aiStatus'
 import { createResidencyTracker } from './residency'
+import { createTeamuqTaskBinding } from './teamuqTask'
 import { createPluginMedia } from './media'
 import type { MediaDb } from './media'
 import { ReviewCoordinator, ReviewLedger } from './reviewRun'
@@ -129,6 +130,10 @@ export interface PluginBackendOptions {
    * 抽取、草擬回覆、誤判分析、群組議題分析、prompt 修正都經它完成（hostAi.ts 的 AI port），看板不需要開著。
    */
   hostAi?: PluginBackendAiApiV1
+  /**
+   * TeamUQ 的 Program API（`context.host.program`）。AI 對話掛在外掛自己建的 Project／Task 上（teamuqTask.ts）；省略＝不帶 `taskId`（舊 Core 或測試）。
+   */
+  hostProgram?: Pick<PluginProgramApiV1, 'call'>
   /**
    * Core 的 `context.residency`（`background:resident`，residency.ts）。省略或形狀不對＝舊 Core：`backend.residency` 回 `supported:false`，不訂閱、不發 `residency` 事件。
    * 只靠 `onChange` 更新，降級時不做任何保活動作。
@@ -268,6 +273,12 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     ? createHostAiPort({
       ai: options.hostAi,
       selection: () => settings.get().pluginAi,
+      task: createTeamuqTaskBinding({
+        ...(options.hostProgram ? { program: options.hostProgram } : {}),
+        file: options.review?.ledgerFile === null ? null : join(dataDir, 'teamuq-task.json'),
+        ...(options.ai?.clock ? { now: () => options.ai!.clock!.now() } : {}),
+        log: (event, detail) => log(`[teamuq-task] ${event} ${JSON.stringify(detail ?? {})}`)
+      }),
       ...(options.ai?.clock ? { clock: options.ai.clock } : {}),
       ...(options.ai?.config ? { config: options.ai.config } : {}),
       log: (event, detail) => log(`[ai] ${event} ${JSON.stringify(detail ?? {})}`)

@@ -41,14 +41,16 @@ export function createMockTuqAiFor(CONTRACT, options = {}) {
     busyFor: 0,
     busyCode: 'busy',
     /** how long (in real ms) a completed request takes to be answered — 0 = next tick. */
-    latencyMs: 0
+    latencyMs: 0,
+    /** Task ids the user deleted in TeamUQ: a turn sent with one of them is refused with task_not_found (createConversationExecution.ts task lookup). */
+    deletedTasks: new Set()
   }
   const stats = {
     getOptions: 0, completes: 0, openSessions: 0, sessionsClosed: 0,
     errors: Object.fromEntries(CONTRACT.errorCodes.map((code) => [code, 0])),
     /** hostServices.ts `receiveAiEvent`: events for a Session nobody listens to (every complete() Session) are dropped, returning true. */
     droppedEvents: [],
-    /** every accepted request: { at, kind: 'complete'|'send', system, text, transcript, modelId, effort, sessionId, requestId } */
+    /** every accepted request: { at, kind: 'complete'|'send', system, text, transcript, modelId, effort, sessionId, requestId, taskId } */
     turns: [],
     /** every request that was refused: { op, code, at } */
     refused: [],
@@ -131,6 +133,7 @@ export function createMockTuqAiFor(CONTRACT, options = {}) {
     authorize(op)
     const fresh = input.sessionId === undefined
     if (!fresh) refuse(op, 'session_not_found') // a complete() Session is closed when it ends; no open Session exists in the line-todo flows
+    if (input.taskId !== undefined && control.deletedTasks.has(input.taskId)) refuse(op, 'task_not_found')
     if ((input.providerId ?? 'codex') !== 'codex') refuse(op, 'provider_not_found')
     if (control.providerState !== 'ready') refuse(op, 'provider_not_ready')
     if (input.modelId !== undefined && input.modelId !== MODEL) refuse(op, 'model_unavailable')
@@ -157,7 +160,7 @@ export function createMockTuqAiFor(CONTRACT, options = {}) {
     const at = now()
     turnTimes.push(at) // acceptedTurn
     const requestId = `req-${requestCounter}`
-    stats.turns.push({ at, kind: 'complete', system: record.system, text: input.text, transcript: record.transcript, modelId: record.modelId, effort: input.effort ?? null, sessionId: record.id, requestId })
+    stats.turns.push({ at, kind: 'complete', system: record.system, text: input.text, transcript: record.transcript, modelId: record.modelId, effort: input.effort ?? null, sessionId: record.id, requestId, taskId: input.taskId ?? null })
     const drop = (event) => stats.droppedEvents.push({ sessionId: record.id, event })
     try {
       await immediate()
