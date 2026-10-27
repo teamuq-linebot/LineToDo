@@ -21,6 +21,7 @@ import type { Database } from 'better-sqlite3'
 import type { PipelineDefaults } from '../../main/config/defaults'
 import type { MessageDTO } from '../../main/db/dto'
 import { finishRun, startRun } from '../../main/db/pipeline.repo'
+import { getOpenTodosByChat } from '../../main/db/todos.repo'
 import { EXTRACT_SYSTEM_PROMPT, buildUserPayload } from '../../main/llm/extractPrompt'
 import { validateExtractResult } from '../../main/llm/schema'
 import type { ExtractResult } from '../../main/llm/schema'
@@ -436,10 +437,44 @@ export class ExtractQueue implements ExtractSink {
     const items: PullItem[] = []
     let bytes = 0
     let soonest: number | null = null
-    for (const e of this.entries.values()) {
+    for (const e of [...this.entries.values()]) {
       if (e.state !== 'pending') continue
       if (e.notBefore > now) { soonest = soonest === null ? e.notBefore : Math.min(soonest, e.notBefore); continue }
       if (busyChats.has(e.chatId)) continue // 同一個 chat 一次只領一片，後面的片段等前一片回來
+      if (e.mode === 'apply') {
+        const latestOpenTodos = getOpenTodosByChat(e.chatId, this.opts.db)
+        const refreshedParts = partitionExtractInput({ ...e.input, openTodos: latestOpenTodos }, { maxChars: this.maxChars, contextLimit: this.opts.getConfig().recentContextLimit })
+        if (refreshedParts.length === 0) continue
+        if (refreshedParts.length > 1) {
+          const additionalParts = refreshedParts.length - 1
+          const nextPartCount = e.partCount + additionalParts
+          const entries = [...this.entries.entries()]
+          const entryIndex = entries.findIndex(([id]) => id === e.id)
+          for (const sibling of this.entries.values()) {
+            if (sibling.id === e.id || sibling.chatId !== e.chatId || sibling.mode !== 'apply' || sibling.state !== 'pending' || sibling.gen !== e.gen) continue
+            if (sibling.partIndex > e.partIndex) sibling.partIndex += additionalParts
+            sibling.partCount = nextPartCount
+          }
+          const replacements = refreshedParts.map((part, index): [string, Entry] => {
+            const id = index === 0 ? e.id : randomUUID()
+            return [id, {
+              ...e, id, msgIds: part.msgIds, input: part.input, user: part.user, truncated: part.truncated,
+              partIndex: e.partIndex + index, partCount: nextPartCount, itemId: null, leaseUntil: 0
+            }]
+          })
+          this.entries.clear()
+          const before = entryIndex < 0 ? entries : entries.slice(0, entryIndex)
+          const after = entryIndex < 0 ? [] : entries.slice(entryIndex + 1)
+          for (const [id, entry] of [...before, ...replacements, ...after]) this.entries.set(id, entry)
+          busyChats.add(e.chatId)
+          soonest = soonest === null ? now : Math.min(soonest, now)
+          continue
+        }
+        e.msgIds = refreshedParts[0].msgIds
+        e.input = refreshedParts[0].input
+        e.user = refreshedParts[0].user
+        e.truncated = refreshedParts[0].truncated
+      }
       const item: PullItem = {
         itemId: randomUUID(), chatId: e.chatId, chatName: e.chatName, user: e.user, userChars: e.user.length, messageCount: e.msgIds.length,
         attempts: e.attempts, part: e.partIndex + 1, parts: e.partCount, truncatedMessages: e.truncated

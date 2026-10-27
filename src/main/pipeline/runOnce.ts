@@ -162,6 +162,8 @@ export function applyChatExtract(
 ): void {
   const { db, cfg, now } = ctx
   const openTodos = getOpenTodosByChat(chatId, db)
+  // 同批後續結果也要比對本輪已建立的 todo；保留 openTodos 原快照給 resolved/updates 使用。
+  const dedupTodos = [...openTodos]
 
   // importance==='noise' → 不產 todo（第二道降噪，§7.1）。
   if (extract.importance !== 'noise') {
@@ -169,7 +171,7 @@ export function applyChatExtract(
     for (const nt of extract.newTodos) {
       // 逐對話關鍵字忽略（第二層 per-chat 忽略）：命中就不建立此代辦。
       if (matchesChatIgnoreKeyword(nt, ignoreKw)) continue
-      const dup = findDuplicateOpenTodo(nt.title, openTodos)
+      const dup = findDuplicateOpenTodo(nt.title, dedupTodos)
       if (dup) {
         // 近似去重命中 → 更新既有 todo 的來源，不新增。
         const merged = mergeSources(dup.id, nt.sourceMsgIds, db)
@@ -195,6 +197,7 @@ export function applyChatExtract(
       )
       result.todosCreated += 1
       result.createdIds.push(created.id)
+      dedupTodos.push(created)
     }
   }
 

@@ -5,6 +5,7 @@
 //   * Dispatcher: allow-list routing, unsupported paths, 64 KiB chunking, soft-deadline jobs
 //   * createPluginBackend: the whole assembly on a fake LINE port (no koffi, no WASM)
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -14,7 +15,7 @@ import { DEFAULTS } from '../../src/main/config/defaults.ts'
 import { openDatabase } from '../../src/main/db/database.ts'
 import { getUnprocessedForPipeline, insertMessages } from '../../src/main/db/messages.repo.ts'
 import { getLastRun } from '../../src/main/db/pipeline.repo.ts'
-import { listTodos } from '../../src/main/db/todos.repo.ts'
+import { createTodo, listTodos } from '../../src/main/db/todos.repo.ts'
 import { EXTRACT_SYSTEM_PROMPT, buildUserPayload } from '../../src/main/llm/extractPrompt.ts'
 import { runOnce } from '../../src/main/pipeline/runOnce.ts'
 import { fixedWatchSource } from '../../src/main/pipeline/scheduler.ts'
@@ -22,6 +23,9 @@ import { Dispatcher, SUPPORTED_API_PATHS, UNSUPPORTED_API_PATHS } from '../../sr
 import { EVENTS_CAPABILITY, EventHub, compactPayload } from '../../src/plugin/backend/eventHub.ts'
 import { EXTRACT_SYSTEM_SHA256, ExtractQueue, partitionExtractInput } from '../../src/plugin/backend/extractQueue.ts'
 import { createPluginBackend } from '../../src/plugin/backend/assemble.ts'
+import { AI_SESSION_MAP_KEY_PREFIX, AiSessionMapStoreError, createAiSessionMapStore } from '../../src/plugin/backend/aiSessionMapStore.ts'
+import { createExtractWorker } from '../../src/plugin/backend/extractWorker.ts'
+import { createHostAiPort } from '../../src/plugin/backend/hostAi.ts'
 import { BACKEND_METHOD_GROUPS, backendMethodFor } from '../../src/shared/pluginWire.ts'
 import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
 
@@ -61,6 +65,29 @@ const okResult = (msgIds, title = '回覆報價單') => ({
 })
 
 const stable = (todos) => todos.map((t) => ({ chatId: t.chatId, bucket: t.bucket, status: t.status, title: t.title, priority: t.priority, sourceMsgIds: t.sourceMsgIds })).sort((a, b) => (a.title + a.chatId).localeCompare(b.title + b.chatId))
+
+test('AI session map uses hashed chat keys in existing app_settings and survives a new store adapter', async () => {
+  const { db } = freshDb()
+  const first = createAiSessionMapStore({ getDatabase: () => db })
+  const chatId = 'u-alice'
+  const record = { chatId, hostSessionId: '42', effective: { providerId: 'codex', modelId: 'gpt-6-luna', effort: 'medium' }, continuityFingerprint: 'a'.repeat(64) }
+  try {
+    await first.put(record)
+    const key = `${AI_SESSION_MAP_KEY_PREFIX}${createHash('sha256').update(chatId, 'utf8').digest('hex')}`
+    const row = db.prepare('SELECT key, value FROM app_settings WHERE key = ?').get(key)
+    assert.equal(row.key, key)
+    assert.deepEqual(JSON.parse(row.value), { schemaVersion: 1, ...record })
+    assert.deepEqual(await createAiSessionMapStore({ getDatabase: () => db }).get(chatId), record)
+    await first.put({ ...record, hostSessionId: '43' })
+    assert.equal((await first.get(chatId)).hostSessionId, '43', 'upsert replaces only this chat mapping')
+    await first.remove(chatId)
+    assert.equal(await first.get(chatId), null)
+    db.prepare('INSERT INTO app_settings(key, value) VALUES (?, ?)').run(key, JSON.stringify({ schemaVersion: 1, ...record, chatId: 'u-bob' }))
+    await assert.rejects(first.get(chatId), (error) => error instanceof AiSessionMapStoreError && error.code === 'corrupt')
+  } finally {
+    db.close()
+  }
+})
 
 // ───────────── partitionExtractInput ─────────────
 
@@ -118,7 +145,87 @@ test('partition: open todos that would eat the budget are cut to a prefix', () =
   assert.deepEqual(kept.map((t) => t.todoId), openTodos.slice(0, kept.length).map((t) => t.id))
 })
 
+test('ExtractQueue rebuilds lease payload with the chat current open todos', async () => {
+  const { db } = freshDb()
+  const { queue } = makeQueue(db)
+  try {
+    await cycle(db, queue, [raw(901, { chatId: 'u-alice', text: '請處理這項新訊息' })])
+    const latest = createTodo({ chatId: 'u-alice', bucket: 'todo', status: 'pending', title: '供料後才新增的既有代辦', sourceMsgIds: [], confidence: 1 }, db)
+    const pulled = queue.pull({ max: 1 })
+    assert.equal(pulled.items.length, 1)
+    const item = pulled.items[0]
+    const payload = JSON.parse(item.user)
+    assert.equal(item.chatId, 'u-alice')
+    assert.equal(payload.openTodos.some((todo) => todo.todoId === latest.id && todo.title === latest.title), true)
+    assert.deepEqual(payload.newMessages.map((message) => message.msgId), [id(901)])
+    const committed = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: { importance: 'noise', newTodos: [], resolved: [], updates: [] } }] })
+    assert.equal(committed.results[0].status, 'applied')
+    assert.equal(queue.stats().leased, 0)
+  } finally {
+    queue.dispose()
+    db.close()
+  }
+})
+
 // ───────────── ExtractQueue + runOnce ─────────────
+
+test('runOnce: duplicate normalized titles in one extract create one todo and merge all sources', async () => {
+  const { db } = freshDb()
+  const newTodo = (title, sourceMsgIds) => ({
+    bucket: 'todo', title, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds
+  })
+  const firstMessages = [raw(101), raw(102), raw(103)]
+  const first = await runOnce({
+    db,
+    config,
+    watchSource: fixedWatchSource(firstMessages),
+    extractFn: async (input) => ({
+      importance: 'action',
+      newTodos: [
+        newTodo('回覆報價單', [input.newMessages[0].msgId]),
+        newTodo('回覆 報價單！', [input.newMessages[1].msgId]),
+        newTodo('更新週報', [input.newMessages[2].msgId])
+      ],
+      resolved: [],
+      updates: []
+    })
+  })
+
+  assert.equal(first.todosCreated, 2)
+  assert.equal(first.todosMerged, 1)
+  const initialTodos = listTodos({}, db)
+  assert.equal(initialTodos.length, 2)
+  const mergedTodo = initialTodos.find((todo) => todo.title === '回覆報價單')
+  const completionTarget = initialTodos.find((todo) => todo.title === '更新週報')
+  assert.ok(mergedTodo)
+  assert.ok(completionTarget)
+  assert.deepEqual(mergedTodo.sourceMsgIds, [id(101), id(102)])
+
+  const second = await runOnce({
+    db,
+    config,
+    watchSource: fixedWatchSource([raw(104)]),
+    extractFn: async (input) => ({
+      importance: 'action',
+      newTodos: [
+        newTodo('回覆報價單。', [input.newMessages[0].msgId]),
+        newTodo('通知團隊', [input.newMessages[0].msgId])
+      ],
+      resolved: [{ todoId: completionTarget.id, evidence: '已寄出' }],
+      updates: []
+    })
+  })
+
+  assert.equal(second.todosCreated, 1, 'a new distinct title is still created')
+  assert.equal(second.todosMerged, 1, 'an existing open todo still absorbs a matching result')
+  assert.equal(second.todosResolvedDone, 1, 'existing completion handling still applies')
+  const finalTodos = listTodos({}, db)
+  assert.equal(finalTodos.length, 3)
+  const updatedMergedTodo = finalTodos.find((todo) => todo.id === mergedTodo.id)
+  assert.deepEqual(updatedMergedTodo.sourceMsgIds, [id(101), id(102), id(104)])
+  assert.equal(finalTodos.find((todo) => todo.id === completionTarget.id).status, 'done')
+  assert.ok(finalTodos.some((todo) => todo.title === '通知團隊'))
+})
 
 test('supply: runOnce in sink mode stops before extractFn, keeps messages unprocessed, and offers one item per chat', async () => {
   const { db } = freshDb()
@@ -692,6 +799,212 @@ function fakeLine() {
   return { port, emit: (m) => messageListeners.forEach((cb) => cb(m)), listeners: () => messageListeners.size + statusListeners.size }
 }
 
+function hostFailure(code) { return Object.assign(new Error(code), { code }) }
+
+function makeSessionAwareHost(options = {}) {
+  const sessions = new Map()
+  const operations = []
+  const completeCalls = []
+  let nextSessionId = 0
+  let maxActive = 0
+  const effectiveFor = (selection = {}) => ({ providerId: selection.providerId ?? 'codex', modelId: selection.modelId ?? 'model-a', effort: selection.effort ?? 'medium' })
+  const activeCount = () => [...sessions.values()].filter((session) => session.active).length
+  const updateMaxActive = () => { maxActive = Math.max(maxActive, activeCount()) }
+  const api = {
+    async getOptions() {
+      const base = {
+        providers: [{ id: 'codex', label: 'Mock Codex', state: 'ready', models: [
+          { id: 'model-a', label: 'Model A', efforts: ['low', 'medium'], defaultEffort: 'medium', supportsImages: false, isDefault: true },
+          { id: 'model-b', label: 'Model B', efforts: ['low', 'medium'], defaultEffort: 'medium', supportsImages: false, isDefault: false },
+        ] }],
+        defaultProviderId: 'codex',
+        limits: { systemChars: 16_000, transcriptLines: 40, transcriptChars: 60_000, inputChars: 8_000, imageBytes: 2 * 1024 * 1024, turnsPerMinute: 20 },
+        quota: { state: 'ok', retryAfterMs: null },
+      }
+      return options.closedSessionResume === false ? base : { ...base, capabilities: { closedSessionResume: true } }
+    },
+    async complete(input) {
+      completeCalls.push(structuredClone(input))
+      const text = options.completeReply ?? '這是一般 fresh completion'
+      return { sessionId: '900', requestId: `plugin:900:complete-${completeCalls.length}`, providerTurnId: null, text, historySaved: 'saved' }
+    },
+    async openSession(input) {
+      if ('resume' in input) {
+        const id = input.resume
+        operations.push({ op: 'resume', id })
+        const existing = sessions.get(id)
+        if (existing === undefined || options.rejectResume?.(id) === true) throw hostFailure('session_not_found')
+        if (existing.active || activeCount() > 0) throw hostFailure('session_limit')
+        existing.active = true
+        updateMaxActive()
+        return sessionFor(existing)
+      }
+      if (activeCount() > 0) throw hostFailure('session_limit')
+      const id = String(++nextSessionId)
+      const row = { id, effective: effectiveFor(input), providerIdentity: `provider:${id}`, active: true, sends: [], nextTurn: 0, lastTurnId: null, lastOutput: null, lastInput: null }
+      sessions.set(id, row)
+      operations.push({ op: 'fresh', id, input: structuredClone(input) })
+      updateMaxActive()
+      return sessionFor(row)
+    },
+  }
+  function sessionFor(row) {
+    const listeners = new Set()
+    const publish = (event) => { for (const listener of [...listeners]) listener(event) }
+    return {
+      sessionId: row.id,
+      effective: row.effective,
+      turn: row.pendingTurn === true ? { turnId: 'a'.repeat(16), text: 'partial old turn', terminal: null } : null,
+      async send({ text }) {
+        if (!row.active) throw hostFailure('session_closed')
+        let parsed = null
+        try { parsed = JSON.parse(text) } catch { /* a repair prompt is plain text */ }
+        if (parsed !== null) row.lastInput = parsed
+        const turnId = (++row.nextTurn).toString(16).padStart(16, '0')
+        const output = options.reply === undefined ? JSON.stringify({ importance: 'noise', newTodos: [], resolved: [], updates: [] }) : options.reply({ row, text, parsed, sendIndex: row.sends.length })
+        row.sends.push({ sessionId: row.id, turnId, text, output, parsed })
+        if (row.lastTurnId !== null && options.replayPrevious !== false) {
+          publish({ turnId: row.lastTurnId, kind: 'textDelta', text: row.lastOutput })
+          publish({ turnId: row.lastTurnId, kind: 'completed' })
+        }
+        // Both replayed events and this turn's events are legal before send() resolves.
+        publish({ turnId, kind: 'textDelta', text: output })
+        publish({ turnId, kind: 'completed' })
+        row.lastTurnId = turnId
+        row.lastOutput = output
+        return { turnId }
+      },
+      onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+      async interrupt() { return undefined },
+      async close() {
+        row.active = false
+        operations.push({ op: 'close', id: row.id })
+      },
+    }
+  }
+  return { api, sessions, operations, completeCalls, get maxActive() { return maxActive }, deleteSession: (id) => sessions.delete(id) }
+}
+
+function memoryAiSessionMapStore() {
+  const records = new Map()
+  const operations = []
+  return {
+    records,
+    operations,
+    async get(chatId) { operations.push({ op: 'get', chatId }); return structuredClone(records.get(chatId) ?? null) },
+    async put(record) { operations.push({ op: 'put', chatId: record.chatId, hostSessionId: record.hostSessionId }); records.set(record.chatId, structuredClone(record)) },
+    async remove(chatId) { operations.push({ op: 'remove', chatId }); records.delete(chatId) },
+  }
+}
+
+test('HostAi old Host capability omission keeps the fresh complete path and does not touch session maps', async () => {
+  const host = makeSessionAwareHost({ closedSessionResume: false, completeReply: 'legacy response' })
+  let mapReads = 0
+  const port = createHostAiPort({
+    ai: host.api,
+    selection: () => ({ providerId: 'codex', modelId: 'model-a', effort: 'medium' }),
+    sessionMapStore: { get: async () => { mapReads += 1; return null }, put: async () => undefined, remove: async () => undefined },
+  })
+  try {
+    const result = await port.complete({ system: 'old host system', user: 'one shot', expectJson: false, priority: 'background', conversationScope: { kind: 'line-chat-extract', chatId: 'u-alice' } })
+    assert.equal(result.text, 'legacy response')
+    assert.equal(host.completeCalls.length, 1)
+    assert.deepEqual(host.operations, [])
+    assert.equal(mapReads, 0)
+  } finally { port.stop() }
+})
+
+test('HostAi keeps JSON repair in one session and resets only the chat whose system fingerprint changed', async () => {
+  const store = memoryAiSessionMapStore()
+  const host = makeSessionAwareHost({ reply: ({ row, text, sendIndex }) => {
+    if (row.id === '1' && sendIndex === 0) return '{invalid first response'
+    if (row.id === '1' && text.includes('你上一則回覆無法使用')) return JSON.stringify({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
+    return JSON.stringify({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
+  } })
+  const port = createHostAiPort({ ai: host.api, selection: () => ({ providerId: 'codex', modelId: 'model-a', effort: 'medium' }), sessionMapStore: store })
+  const request = (chatId, system) => ({ system, user: JSON.stringify({ chatId, newMessages: [] }), expectJson: true, validate: (value) => ({ ok: true, value }), priority: 'background', conversationScope: { kind: 'line-chat-extract', chatId } })
+  try {
+    const first = await port.complete(request('u-alice', 'system A v1'))
+    assert.equal(first.value.importance, 'noise')
+    assert.equal(host.sessions.get('1').sends.length, 2, 'the repair is a second turn in the same session')
+    assert.deepEqual(host.sessions.get('1').sends.map((turn) => turn.sessionId), ['1', '1'])
+    assert.equal(host.sessions.get('1').active, false, 'the session closes after the extraction item')
+
+    await port.complete(request('u-bob', 'system B'))
+    const bobBefore = store.records.get('u-bob').hostSessionId
+    const aliceBefore = store.records.get('u-alice').hostSessionId
+    await port.complete(request('u-alice', 'system A v2'))
+    await port.complete(request('u-bob', 'system B'))
+
+    assert.notEqual(store.records.get('u-alice').hostSessionId, aliceBefore, 'changed prompt fingerprint starts a new identity for A')
+    assert.equal(store.records.get('u-bob').hostSessionId, bobBefore, 'A reset leaves B mapping untouched until B settings are used')
+    assert.deepEqual(host.operations.filter((entry) => entry.op === 'fresh' || entry.op === 'resume').map(({ op, id }) => [op, id]), [
+      ['fresh', '1'], ['fresh', '2'], ['resume', '1'], ['fresh', '3'], ['resume', '2']
+    ])
+    assert.equal(host.maxActive, 1)
+  } finally { port.stop() }
+})
+
+test('HostAi clears an invalid mapped resume and fails this item without same-call fresh fallback', async () => {
+  const store = memoryAiSessionMapStore()
+  const host = makeSessionAwareHost()
+  const port = createHostAiPort({ ai: host.api, selection: () => ({ providerId: 'codex', modelId: 'model-a', effort: 'medium' }), sessionMapStore: store })
+  const request = { system: 'same system', user: '{}', expectJson: true, validate: (value) => ({ ok: true, value }), priority: 'background', conversationScope: { kind: 'line-chat-extract', chatId: 'u-alice' } }
+  try {
+    await port.complete(request)
+    host.deleteSession('1')
+    await assert.rejects(port.complete(request), (error) => error.code === 'continuity_lost')
+    assert.equal(store.records.has('u-alice'), false)
+    assert.deepEqual(host.operations.filter((entry) => entry.op === 'fresh' || entry.op === 'resume').map(({ op, id }) => [op, id]), [['fresh', '1'], ['resume', '1']])
+  } finally { port.stop() }
+})
+
+test('HostAi never sends a new batch over a resumed session with an unfinished prior turn', async () => {
+  const store = memoryAiSessionMapStore()
+  const host = makeSessionAwareHost()
+  const port = createHostAiPort({ ai: host.api, selection: () => ({ providerId: 'codex', modelId: 'model-a', effort: 'medium' }), sessionMapStore: store })
+  const request = { system: 'same system', user: '{}', expectJson: true, validate: (value) => ({ ok: true, value }), priority: 'background', conversationScope: { kind: 'line-chat-extract', chatId: 'u-alice' } }
+  try {
+    await port.complete(request)
+    const row = host.sessions.get('1')
+    const sentBefore = row.sends.length
+    row.pendingTurn = true
+    await assert.rejects(port.complete(request), (error) => error.code === 'busy')
+    assert.equal(row.sends.length, sentBefore, 'the new item does not inherit or overtake the prior unfinished turn')
+    assert.equal(row.active, false, 'the unique slot is released before the lease is retried')
+    assert.equal(store.records.get('u-alice').hostSessionId, '1', 'the durable mapping remains available for the next retry')
+    assert.equal(host.operations.filter((entry) => entry.op === 'fresh').length, 1)
+  } finally { port.stop() }
+})
+
+test('ExtractWorker releases a lease when the durable chat map is unavailable', async () => {
+  const { db } = freshDb()
+  const { queue } = makeQueue(db)
+  const host = makeSessionAwareHost()
+  const port = createHostAiPort({
+    ai: host.api,
+    selection: () => ({ providerId: 'codex', modelId: 'model-a', effort: 'medium' }),
+    sessionMapStore: { get: async () => { throw new AiSessionMapStoreError('unavailable') }, put: async () => undefined, remove: async () => undefined },
+  })
+  const worker = createExtractWorker({ queue, port, system: () => 'extract system', config: { pollIntervalMs: 60_000 } })
+  try {
+    await cycle(db, queue, [raw(990, { chatId: 'u-alice' })])
+    worker.start()
+    await worker.idle()
+    assert.equal(queue.stats().pending, 1)
+    assert.equal(queue.stats().leased, 0)
+    assert.equal(worker.counters().released, 1)
+    assert.equal(worker.counters().failed, 0)
+    assert.equal(getUnprocessedForPipeline(2000, db).length, 1, 'store unavailability does not commit or consume the source message')
+    assert.deepEqual(host.operations, [], 'no Host session is opened until a chat map can be read')
+  } finally {
+    worker.stop()
+    port.stop()
+    queue.dispose()
+    db.close()
+  }
+})
+
 function resourcesNow() {
   const counts = {}
   for (const name of process.getActiveResourcesInfo()) counts[name] = (counts[name] ?? 0) + 1
@@ -849,4 +1162,105 @@ test('LINE db dir: koffi asks Windows for LocalAppData; without koffi it falls b
   assert.equal(resolveLocalAppData(broken, { TEMP: `${local}\\Temp` }), local)
   assert.equal(resolveLocalAppData(broken, { TEMP: 'D:/scratch' }), null)
   assert.equal(resolveLineDbDir(broken, {}), null)
+})
+
+test('production assembly resumes each LINE chat across A→B→A and backend restart; repairs and replayed events stay on this item', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'line-todo-chat-session-'))
+  const line = fakeLine()
+  const host = makeSessionAwareHost({ reply: ({ row, text, sendIndex }) => {
+    if (row.id === '1' && sendIndex === 0) return '{invalid initial JSON'
+    if (row.id === '1' && text.includes('你上一則回覆無法使用')) {
+      const sourceMsgId = row.lastInput?.newMessages?.[0]?.msgId
+      return JSON.stringify({
+        importance: 'action',
+        newTodos: [{ bucket: 'todo', title: 'A 初始待辦', detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [sourceMsgId] }],
+        resolved: [], updates: []
+      })
+    }
+    return JSON.stringify({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
+  } })
+  const createBackend = () => createPluginBackend({
+    pluginId: 'tuqdev.line-todo', version: '9.9.9', dataDir, line: line.port,
+    extract: { retryBaseMs: 1000, retryMaxMs: 5000 },
+    hostAi: host.api,
+    ai: { config: { optionsTtlMs: 20 }, worker: { pollIntervalMs: 20 } },
+  })
+  const waitUntil = async (probe, label, max = 400) => {
+    for (let attempt = 0; attempt < max; attempt += 1) {
+      const value = await probe()
+      if (value) return value
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.fail(`timeout: ${label}`)
+  }
+  const extracted = async (backend) => (await backend.call(backendMethodFor('ai.status'), { path: 'ai.status', args: [] })).value.counters.extracted
+  let backend = null
+  try {
+    backend = await createBackend()
+    const firstCall = async (path, ...args) => backend.call(backendMethodFor(path), { path, args })
+    line.emit(raw(3101, { chatId: 'u-alice', chat: 'Alice', text: 'A 第一輪訊息' }))
+    await firstCall('pipeline.runOnce')
+    await waitUntil(async () => (await extracted(backend)) === 1, 'A initial extraction commits after its in-session JSON repair')
+    assert.equal(host.sessions.get('1').sends.length, 2)
+    assert.deepEqual(host.sessions.get('1').sends.map((turn) => turn.sessionId), ['1', '1'], 'repair uses the same Host session')
+    assert.equal(host.sessions.get('1').active, false, 'the extraction closes its single active Host slot')
+    await backend.dispose()
+    assert.equal(backend.diagnostics().appDbOpen, false)
+
+    backend = await createBackend()
+    const call = async (path, ...args) => backend.call(backendMethodFor(path), { path, args })
+    line.emit(raw(3201, { chatId: 'u-bob', chat: 'Bob', text: 'B 第一輪訊息' }))
+    await call('pipeline.runOnce')
+    await waitUntil(async () => (await extracted(backend)) === 1, 'B gets an independent session after backend restart')
+    line.emit(raw(3102, { chatId: 'u-alice', chat: 'Alice', text: 'A 第二輪訊息' }))
+    await call('pipeline.runOnce')
+    await waitUntil(async () => (await extracted(backend)) === 2, 'A resumes after B')
+
+    const activeTodos = (await call('db.todos.list')).value
+    const aliceTodo = activeTodos.find((todo) => todo.title === 'A 初始待辦')
+    assert.ok(aliceTodo)
+    assert.deepEqual(aliceTodo.sourceMsgIds, [id(3101)], 'replayed A1 completion was not committed for A2')
+    const a2 = host.sessions.get('1').sends.at(-1)
+    assert.deepEqual(a2.parsed.newMessages.map((message) => message.msgId), [id(3102)], 'the resumed turn carries only A2 current messages')
+    assert.ok(a2.parsed.openTodos.some((todo) => todo.todoId === aliceTodo.id), 'the resumed A turn receives the current open todo snapshot')
+    const b1 = host.sessions.get('2').sends[0]
+    assert.deepEqual(b1.parsed.newMessages.map((message) => message.msgId), [id(3201)])
+    assert.equal(b1.parsed.openTodos.some((todo) => todo.todoId === aliceTodo.id), false, 'B never receives A todo context')
+
+    const sessionOps = host.operations.filter((entry) => entry.op === 'fresh' || entry.op === 'resume')
+    assert.deepEqual(sessionOps.map(({ op, id: hostId }) => [op, hostId]), [['fresh', '1'], ['fresh', '2'], ['resume', '1']])
+    assert.equal(host.sessions.get('1').providerIdentity, 'provider:1')
+    assert.equal(host.sessions.get('2').providerIdentity, 'provider:2')
+    assert.notEqual(host.sessions.get('1').providerIdentity, host.sessions.get('2').providerIdentity)
+    assert.equal(host.maxActive, 1, 'the production caller never holds more than quota one')
+
+    const ordinary = await call('db.todos.draftReply', aliceTodo.id)
+    assert.equal(ordinary.ok, true)
+    assert.equal(host.completeCalls.length, 1, 'other HostAi callers still use complete() without a conversation key')
+    assert.equal(host.operations.filter((entry) => entry.op === 'fresh' || entry.op === 'resume').length, 3)
+
+    host.deleteSession('1')
+    line.emit(raw(3103, { chatId: 'u-alice', chat: 'Alice', text: 'A 的原 session 已失效' }))
+    await call('pipeline.runOnce')
+    await waitUntil(async () => (await call('extract.stats')).value.chatsBackingOff === 1, 'invalid mapped resume records a retry without committing')
+    assert.equal(await extracted(backend), 2, 'continuity_lost is not committed as an extraction result')
+    assert.equal(host.operations.filter((entry) => entry.op === 'fresh').length, 2, 'invalid resume does not silently open a replacement in the same attempt')
+    assert.deepEqual(host.operations.filter((entry) => entry.op === 'resume').map((entry) => entry.id), ['1', '1'])
+    await waitUntil(async () => (await extracted(backend)) === 3, 'the next leased retry creates a new identity after continuity_lost', 500)
+    assert.equal(host.operations.filter((entry) => entry.op === 'fresh').length, 3)
+    assert.equal(host.operations.at(-1).op, 'close')
+    assert.equal(host.maxActive, 1)
+  } finally {
+    await backend?.dispose()
+  }
+
+  const { db: persistedDb } = openDatabase({ dbPath: join(dataDir, 'line-todo.db') })
+  try {
+    const rows = persistedDb.prepare('SELECT key, value FROM app_settings WHERE key LIKE ?').all(`${AI_SESSION_MAP_KEY_PREFIX}%`)
+    const mappings = rows.map((row) => JSON.parse(row.value)).sort((left, right) => left.chatId.localeCompare(right.chatId))
+    assert.deepEqual(mappings.map((mapping) => [mapping.chatId, mapping.hostSessionId]), [['u-alice', '3'], ['u-bob', '2']])
+  } finally {
+    persistedDb.close()
+    rmSync(dataDir, { recursive: true, force: true })
+  }
 })

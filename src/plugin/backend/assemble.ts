@@ -61,6 +61,8 @@ import { createExtractWorker } from './extractWorker'
 import type { ExtractWorker, ExtractWorkerConfig } from './extractWorker'
 import { createHostAiPort, createNoHostAiPort } from './hostAi'
 import type { Clock, HostAiConfig, HostAiPort } from './hostAi'
+import { createAiSessionMapStore } from './aiSessionMapStore'
+import type { AiSessionMapDatabase } from './aiSessionMapStore'
 import type { AiStatus } from '../../shared/aiStatus'
 import { createResidencyTracker } from './residency'
 import { createTeamuqTaskBinding } from './teamuqTask'
@@ -267,6 +269,9 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   })
 
   // ── AI port（host.ai.complete）+ 供料佇列 + 背景 worker + scheduler ──
+  // HostAiPort 先於 app DB 組裝；session map store 延後讀取，只有 runtime 初始化完成後才碰 app_settings。
+  let appDb: AiSessionMapDatabase | null = null
+  const aiSessionMapStore = createAiSessionMapStore({ getDatabase: () => appDb })
   let queue!: ExtractQueue
   let worker = null as ExtractWorker | null
   const aiPort: HostAiPort = options.hostAi
@@ -281,6 +286,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       }),
       ...(options.ai?.clock ? { clock: options.ai.clock } : {}),
       ...(options.ai?.config ? { config: options.ai.config } : {}),
+      sessionMapStore: aiSessionMapStore,
       log: (event, detail) => log(`[ai] ${event} ${JSON.stringify(detail ?? {})}`)
     })
     : createNoHostAiPort()
@@ -317,7 +323,6 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     refresh: () => { aiPort.refresh(); worker?.kick() }
   }
   let scheduler: PipelineScheduler | null = null
-  let appDb: { prepare(sql: string): { get(): unknown } } | null = null
   const unsupported = async (): Promise<{ ok: false; error: string }> => ({ ok: false, error: 'unsupported_in_plugin' })
 
   const runtime = await createLineTodoRuntime({

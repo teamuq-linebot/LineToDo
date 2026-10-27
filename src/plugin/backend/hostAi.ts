@@ -14,7 +14,8 @@
  *
  * 不依賴 DOM／Electron；時間是注入的（測試用手動時鐘與假的 `host.ai`）。
  */
-import type { PluginBackendAiApiV1, PluginBackendAiOptionsV1 } from '@teamuq/plugin-sdk'
+import { createHash } from 'node:crypto'
+import type { PluginBackendAiApiV1, PluginBackendAiOptionsV1, PluginBackendAiSessionV1 } from '@teamuq/plugin-sdk'
 import { AiPortError } from '../../core/aiPort'
 import type { AiPort, AiPortRequest, AiPortResult, AiPriority } from '../../core/aiPort'
 import { EMPTY_AI_COUNTERS } from '../../shared/aiStatus'
@@ -23,6 +24,8 @@ import { normalizeHostAiSelection } from '../../shared/hostAi'
 import type { HostAiEffort } from '../../shared/hostAi'
 import { parseModelJson } from '../../shared/jsonReply'
 import type { TeamuqTaskBinding } from './teamuqTask'
+import { AiSessionMapStoreError } from './aiSessionMapStore'
+import type { AiSessionMapRecord, AiSessionMapStore } from './aiSessionMapStore'
 
 export interface Clock {
   now(): number
@@ -186,6 +189,9 @@ export const codeOf = (error: unknown): string => {
 export const ACCESS_CODES: ReadonlySet<string> = new Set(['not_granted', 'plugin_not_active', 'access_revoked'])
 export const PROVIDER_CODES: ReadonlySet<string> = new Set(['provider_unavailable', 'provider_not_ready', 'unsupported_version', 'model_unavailable', 'unavailable', 'provider_not_found', 'execution_unavailable'])
 export const BUSY_CODES: ReadonlySet<string> = new Set(['busy', 'session_limit', 'session_not_found', 'turn_in_progress', 'session_closed'])
+const SESSION_IDENTITY_CODES: ReadonlySet<string> = new Set(['session_not_found', 'session_closed'])
+const SUPPORTED_EFFORTS: ReadonlySet<string> = new Set(['minimal', 'low', 'medium', 'high', 'xhigh'])
+const CONTINUITY_VALIDATOR_REVISION = 'line-todo.extract-result.v1'
 /** host 在受理一輪之前就拒絕的代碼：這一輪不算進我們的視窗。 */
 const NOT_ACCEPTED: ReadonlySet<string> = new Set([
   ...ACCESS_CODES, ...PROVIDER_CODES, ...BUSY_CODES, 'plugin_host_unavailable', 'rate_limited', 'quota_exhausted', 'request_invalid', 'input_too_large', 'unsupported_image', 'task_not_found',
@@ -199,6 +205,7 @@ const NOT_ACCEPTED: ReadonlySet<string> = new Set([
 export const isTransientAiCode = (code: string): boolean =>
   code === 'rate_limited' || code === 'quota_exhausted' || code === 'interrupted' || code === 'backend_stopped' || code === 'plugin_host_unavailable'
   || ACCESS_CODES.has(code) || PROVIDER_CODES.has(code) || BUSY_CODES.has(code)
+  || code === 'continuity_store_unavailable'
 // 注意 `plugin_host_timeout`（一次 complete 等了 310 s host 都沒回）不列在這裡：它是「這一輪」的失敗。列為暫時性的話，一個每次都讓模型卡死的聊天室會一直被放回佇列、
 // 每次再占 5 分鐘，後面的聊天室永遠輪不到；當成該項失敗才會套用聊天室的指數退避（30 秒 → 30 分鐘）。`getOptions` 的逾時另外處理（見 ensureOptions）。
 
@@ -214,6 +221,8 @@ export interface HostAiPortOptions {
   selection?: () => unknown
   /** 每一輪掛在哪個 TeamUQ Task（teamuqTask.ts）；省略或回 null＝不帶 `taskId`。 */
   task?: TeamuqTaskBinding
+  /** app_settings 的每聊天室 opaque Host session 對照表；透過 lazy DB getter 注入。 */
+  sessionMapStore?: AiSessionMapStore
   clock?: Clock
   config?: Partial<HostAiConfig>
   /** 診斷輸出（測試／除錯）；不含訊息內容。 */
@@ -269,6 +278,8 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
   let selInit = false
   let optionsAt = -Infinity
   let choice: Choice | null = null
+  let selectedDefaultEffort: HostAiEffort | null = null
+  let closedSessionResume = false
   let providerReason: string | null = 'loading_models'
   let limits: PluginBackendAiOptionsV1['limits'] = { systemChars: AI_CHAT_REFERENCE.systemChars, transcriptLines: AI_CHAT_REFERENCE.transcriptLines, transcriptChars: AI_CHAT_REFERENCE.transcriptChars, inputChars: AI_CHAT_REFERENCE.inputChars, imageBytes: 0, turnsPerMinute: cfg.perMinute }
   let revoked = false
@@ -365,6 +376,7 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
       selInit = true
       optionsAt = -Infinity
       choice = null
+      selectedDefaultEffort = null
       providerReason = 'loading_models'
       blockers.provider = 0
     }
@@ -397,6 +409,7 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
     revoked = false
     optionsAt = now()
     limits = options.limits
+    closedSessionResume = (options as PluginBackendAiOptionsV1 & { capabilities?: { closedSessionResume?: boolean } }).capabilities?.closedSessionResume === true
     turnWindow.perMinute = Math.min(cfg.perMinute, options.limits.turnsPerMinute)
     blockers.quota = options.quota.state === 'exhausted' ? now() + (options.quota.retryAfterMs && options.quota.retryAfterMs > 0 ? options.quota.retryAfterMs : cfg.quotaDefaultMs) : 0
     const wanted = sel.providerId ?? options.defaultProviderId
@@ -416,12 +429,14 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
       : provider.models.find((m) => m.isDefault) ?? provider.models[0] ?? null
     if (!model || (sel.effort !== null && !model.efforts.includes(sel.effort))) {
       choice = null
+      selectedDefaultEffort = null
       providerReason = !model ? 'model_unavailable' : 'effort_unavailable'
       blockers.provider = now() + cfg.providerRetryMs
       emitStatus()
       throw providerError()
     }
     choice = { providerId: provider.id, modelId: model.id, effort: sel.effort }
+    selectedDefaultEffort = model.defaultEffort !== null && SUPPORTED_EFFORTS.has(model.defaultEffort) ? model.defaultEffort as HostAiEffort : null
     providerReason = null
     blockers.provider = 0
     emitStatus()
@@ -481,7 +496,64 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
     return new AiPortError(code)
   }
 
-  const callHost = async (input: Parameters<PluginBackendAiApiV1['complete']>[0]): Promise<string> => {
+  type SessionEvent = Parameters<Parameters<PluginBackendAiSessionV1['onEvent']>[0]>[0]
+  const sendSessionTurn = (session: PluginBackendAiSessionV1, text: string): Promise<string> => new Promise((resolve, reject) => {
+    let turnId: string | null = null
+    let output = ''
+    let settled = false
+    let bufferedCount = 0
+    const eventsBeforeAck = new Map<string, SessionEvent[]>()
+    let unsubscribe = (): void => undefined
+    const timer = clock.setTimeout(() => finish(new AiPortError('turn_timeout')), cfg.completeGuardMs)
+    const finish = (error?: unknown, value?: string): void => {
+      if (settled) return
+      settled = true
+      clock.clearTimeout(timer)
+      unsubscribe()
+      if (error !== undefined) reject(error)
+      else resolve(value ?? '')
+    }
+    const consume = (event: SessionEvent): void => {
+      if (settled || turnId === null || event.turnId !== turnId) return
+      if (event.kind === 'textDelta') { output += event.text; return }
+      if (event.kind === 'failed') { finish(new AiPortError(event.code)); return }
+      if (event.kind === 'interrupted') { finish(new AiPortError('interrupted')); return }
+      if (event.kind === 'completed') {
+        if (output.trim() === '') finish(new AiPortError('empty_reply'))
+        else finish(undefined, output)
+      }
+    }
+    try {
+      unsubscribe = session.onEvent((event) => {
+        if (turnId === null) {
+          bufferedCount += 1
+          if (bufferedCount > 256) { finish(new AiPortError('event_stream_error')); return }
+          const items = eventsBeforeAck.get(event.turnId) ?? []
+          items.push(event)
+          eventsBeforeAck.set(event.turnId, items)
+          return
+        }
+        consume(event)
+      })
+    } catch (error) {
+      finish(new AiPortError(codeOf(error)))
+      return
+    }
+    void (async () => {
+      try {
+        const submitted = await session.send({ text })
+        if (settled) return
+        turnId = submitted.turnId
+        const matching = eventsBeforeAck.get(turnId) ?? []
+        eventsBeforeAck.clear() // resumed sessions may replay older turn IDs; only this send's turn is eligible.
+        for (const event of matching) consume(event)
+      } catch (error) {
+        finish(error)
+      }
+    })()
+  })
+
+  const callHost = async (input: Parameters<PluginBackendAiApiV1['complete']>[0], session?: PluginBackendAiSessionV1): Promise<string> => {
     for (let attempt = 0; ; attempt += 1) {
       if (stopped) throw new AiPortError('interrupted')
       const at = now()
@@ -489,17 +561,18 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
       inFlight = true
       emitStatus()
       try {
-        const reply = await withGuard(opts.ai.complete(input))
+        const reply = session === undefined ? (await withGuard(opts.ai.complete(input))).text : await sendSessionTurn(session, input.text)
         counters.turns += 1
         rateAttempts = 0
-        return reply.text
+        return reply
       } catch (error) {
         const code = codeOf(error)
         // not a host failure (no `.code`): something in our own call path broke. Only the error class goes to the diagnostics — a message could quote LINE text.
         if (typeof (error as { code?: unknown } | null)?.code !== 'string') log('host call threw', { code, error: typeof (error as { name?: unknown } | null)?.name === 'string' ? String((error as { name: string }).name).slice(0, 40) : typeof error })
         if (NOT_ACCEPTED.has(code)) turnWindow.unrecord(at)
         else counters.turns += 1
-        if (BUSY_CODES.has(code) && attempt < cfg.busyRetries) { inFlight = false; await sleep(cfg.busyRetryMs); continue }
+        if (session !== undefined && SESSION_IDENTITY_CODES.has(code)) throw new AiPortError(code)
+        if (session === undefined && BUSY_CODES.has(code) && attempt < cfg.busyRetries) { inFlight = false; await sleep(cfg.busyRetryMs); continue }
         throw await classify(code)
       } finally {
         inFlight = false
@@ -518,6 +591,135 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
       opts.task!.forget(taskId)
       const next = await opts.task!.resolve()
       return await callHost(next === null ? input : { ...input, taskId: next })
+    }
+  }
+
+  const sameEffective = (left: AiSessionMapRecord['effective'], right: AiSessionMapRecord['effective']): boolean =>
+    left.providerId === right.providerId && left.modelId === right.modelId && left.effort === right.effort
+
+  const removeChatMapping = async (chatId: string, store: AiSessionMapStore): Promise<void> => {
+    try { await store.remove(chatId) } catch { throw new AiPortError('continuity_store_unavailable') }
+  }
+
+  const closeChatSession = async (session: PluginBackendAiSessionV1): Promise<void> => {
+    try { await session.close() } catch (error) {
+      if (SESSION_IDENTITY_CODES.has(codeOf(error))) return
+      throw new AiPortError('busy', cfg.busyBackoffMs)
+    }
+  }
+
+  const openFreshChatSession = async (base: { system: string; providerId: string; modelId?: string; effort?: HostAiEffort }): Promise<PluginBackendAiSessionV1> => {
+    const taskId = await opts.task?.resolve() ?? null
+    try {
+      return await opts.ai.openSession(taskId === null ? base : { ...base, taskId })
+    } catch (error) {
+      if (taskId === null || codeOf(error) !== 'task_not_found') throw await classify(codeOf(error))
+      opts.task!.forget(taskId)
+      const next = await opts.task!.resolve()
+      try { return await opts.ai.openSession(next === null ? base : { ...base, taskId: next }) }
+      catch (retryError) { throw await classify(codeOf(retryError)) }
+    }
+  }
+
+  const continuityFingerprint = (chatId: string, system: string, effective: AiSessionMapRecord['effective']): string => createHash('sha256').update(JSON.stringify({
+    chatId,
+    providerId: effective.providerId,
+    modelId: effective.modelId,
+    effort: effective.effort,
+    systemSha256: createHash('sha256').update(system, 'utf8').digest('hex'),
+    validatorRevision: CONTINUITY_VALIDATOR_REVISION
+  }), 'utf8').digest('hex')
+
+  const runWithChatSession = async (
+    chatId: string,
+    fingerprint: string,
+    expected: AiSessionMapRecord['effective'],
+    base: { system: string; providerId: string; modelId?: string; effort?: HostAiEffort },
+    runTurns: (send: (input: Parameters<PluginBackendAiApiV1['complete']>[0]) => Promise<string>) => Promise<AiPortResult>
+  ): Promise<AiPortResult> => {
+    const store = opts.sessionMapStore
+    if (store === undefined) throw new AiPortError('continuity_store_unavailable')
+    let mapping: AiSessionMapRecord | null
+    try { mapping = await store.get(chatId) } catch (error) {
+      if (error instanceof AiSessionMapStoreError && error.code === 'corrupt') {
+        await removeChatMapping(chatId, store)
+        throw new AiPortError('continuity_lost')
+      }
+      throw new AiPortError('continuity_store_unavailable')
+    }
+
+    let session: PluginBackendAiSessionV1 | null = null
+    let activeMapping: AiSessionMapRecord | null = null
+    try {
+      if (mapping !== null && mapping.continuityFingerprint !== fingerprint) {
+        let old: PluginBackendAiSessionV1 | null = null
+        try { old = await opts.ai.openSession({ resume: mapping.hostSessionId }) } catch (error) {
+          const code = codeOf(error)
+          if (!SESSION_IDENTITY_CODES.has(code)) throw await classify(code)
+        }
+        if (old !== null) {
+          if (old.sessionId !== mapping.hostSessionId || !sameEffective(old.effective, mapping.effective)) {
+            if (old.sessionId === mapping.hostSessionId) await closeChatSession(old)
+            await removeChatMapping(chatId, store)
+            throw new AiPortError('continuity_lost')
+          }
+          await closeChatSession(old)
+        }
+        await removeChatMapping(chatId, store)
+        mapping = null
+      }
+
+      if (mapping !== null) {
+        try { session = await opts.ai.openSession({ resume: mapping.hostSessionId }) } catch (error) {
+          const code = codeOf(error)
+          if (SESSION_IDENTITY_CODES.has(code)) {
+            await removeChatMapping(chatId, store)
+            throw new AiPortError('continuity_lost')
+          }
+          throw await classify(code)
+        }
+        if (session.sessionId !== mapping.hostSessionId || !sameEffective(session.effective, mapping.effective) || !sameEffective(session.effective, expected)) {
+          if (session.sessionId === mapping.hostSessionId) await closeChatSession(session)
+          await removeChatMapping(chatId, store)
+          session = null
+          throw new AiPortError('continuity_lost')
+        }
+        if (session.turn !== null && session.turn.terminal === null) {
+          await closeChatSession(session)
+          session = null
+          throw new AiPortError('busy', cfg.busyBackoffMs)
+        }
+        activeMapping = mapping
+      } else {
+        session = await openFreshChatSession(base)
+        if (session.sessionId === '' || !sameEffective(session.effective, expected)) {
+          await closeChatSession(session)
+          session = null
+          throw new AiPortError('model_unavailable')
+        }
+        const fresh: AiSessionMapRecord = {
+          chatId,
+          hostSessionId: session.sessionId,
+          effective: session.effective,
+          continuityFingerprint: fingerprint
+        }
+        try { await store.put(fresh) } catch { throw new AiPortError('continuity_store_unavailable') }
+        activeMapping = fresh
+      }
+
+      const send = async (input: Parameters<PluginBackendAiApiV1['complete']>[0]): Promise<string> => {
+        try { return await callHost(input, session!) } catch (error) {
+          if (SESSION_IDENTITY_CODES.has(codeOf(error)) && activeMapping !== null) {
+            await removeChatMapping(chatId, store)
+            activeMapping = null
+            throw new AiPortError('continuity_lost')
+          }
+          throw error
+        }
+      }
+      return await runTurns(send)
+    } finally {
+      if (session !== null) await closeChatSession(session)
     }
   }
 
@@ -544,35 +746,42 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
 
     const base = { system: req.system, providerId: picked.providerId, ...(picked.modelId !== null ? { modelId: picked.modelId } : {}), ...(picked.effort !== null ? { effort: picked.effort } : {}) }
     const model = picked.modelId
-    const first = await callOnTask({ ...base, text: req.user })
-    if (!req.expectJson) return { text: first.trim(), model }
-
-    let reply = first
-    for (let repair = 0; ; repair += 1) {
-      const parsed = parseModelJson(reply)
-      let reason: string
-      let failure: 'invalid_json' | 'invalid_result'
-      if (parsed.ok) {
-        const checked = req.validate ? req.validate(parsed.value) : { ok: true as const, value: parsed.value }
-        if (checked.ok) return { text: JSON.stringify(checked.value), value: checked.value, model }
-        reason = checked.reason
-        failure = 'invalid_result'
-      } else {
-        reason = `不是合法的 JSON（${parsed.reason}）`
-        failure = 'invalid_json'
+    const expected: AiSessionMapRecord['effective'] = { providerId: picked.providerId, modelId: picked.modelId ?? '', effort: picked.effort ?? selectedDefaultEffort }
+    const runTurns = async (send: (input: Parameters<PluginBackendAiApiV1['complete']>[0]) => Promise<string>): Promise<AiPortResult> => {
+      const first = await send({ ...base, text: req.user })
+      if (!req.expectJson) return { text: first.trim(), model }
+      let reply = first
+      for (let repair = 0; ; repair += 1) {
+        const parsed = parseModelJson(reply)
+        let reason: string
+        let failure: 'invalid_json' | 'invalid_result'
+        if (parsed.ok) {
+          const checked = req.validate ? req.validate(parsed.value) : { ok: true as const, value: parsed.value }
+          if (checked.ok) return { text: JSON.stringify(checked.value), value: checked.value, model }
+          reason = checked.reason
+          failure = 'invalid_result'
+        } else {
+          reason = `不是合法的 JSON（${parsed.reason}）`
+          failure = 'invalid_json'
+        }
+        if (repair >= cfg.maxRepairs) throw new AiPortError(failure)
+        counters.repairs += 1
+        // 有續接能力時 repair 是同一個 Host session 的下一輪；舊 Host 則沿用 transcript one-shot 行為。
+        await waitForSlot(reserve, hourReserve, maxWait, false)
+        const lineMax = AI_CHAT_REFERENCE.transcriptLineChars
+        reply = await send({
+          ...base,
+          transcript: [{ role: 'user', text: req.user.slice(0, lineMax) }, { role: 'assistant', text: reply.slice(0, lineMax) }],
+          text: repairPrompt(reason)
+        })
       }
-      if (repair >= cfg.maxRepairs) throw new AiPortError(failure)
-      counters.repairs += 1
-      // `complete` 回覆後 session 就關了：重問時把前一輪的問與答當 transcript 帶過去（每行 ≤ 8,000 字）。
-      // 等不到配額就把 rate_limited 原樣交出去：那是暫時的（呼叫端放回租約、稍後整個項目重來），不是這一項的 invalid_json（review F6）。
-      await waitForSlot(reserve, hourReserve, maxWait, false)
-      const lineMax = AI_CHAT_REFERENCE.transcriptLineChars
-      reply = await callOnTask({
-        ...base,
-        transcript: [{ role: 'user', text: req.user.slice(0, lineMax) }, { role: 'assistant', text: reply.slice(0, lineMax) }],
-        text: repairPrompt(reason)
-      })
     }
+
+    if (req.conversationScope?.kind === 'line-chat-extract' && closedSessionResume) {
+      const fingerprint = continuityFingerprint(req.conversationScope.chatId, req.system, expected)
+      return runWithChatSession(req.conversationScope.chatId, fingerprint, expected, base, runTurns)
+    }
+    return runTurns((input) => callOnTask(input))
   }
 
   const pick = (): Job | undefined => {
