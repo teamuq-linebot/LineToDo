@@ -8,11 +8,9 @@
 //      externalBackend/backendInvokeGate.ts, bundled with esbuild into a temp dir, like Core's own backendInvokeGate.test.mjs does) and against the
 //      stand-in; every call must end the same way. The composition steps (permission off / on, disable / enable) are applied to the real gate the
 //      way step 2 checks Core wires them. The 30 s deadline runs on mocked timers.
-//   2. the composition (apps/desktop/src/main/native/startup/pluginRuntimeComposition.ts): beforeDisable → revoke, afterEnable → activate,
-//      refreshGrants → revoke when backend:invoke is revoked and NO activate when it is allowed again. If Core starts lifting the fence on re-allow,
-//      this fails: the stand-in's setBackendInvokeRevoked and the fenced text (lib/backendError.ts) have to be revisited.
-//   3. the switch title (packages/features/settings/.../pluginPage/pluginText.ts PERMISSION_TEXT["backend:invoke"].title) is the one the plugin
-//      quotes (src/renderer/lib/backendError.ts BACKEND_INVOKE_TOGGLE_TITLE and the tests' scripts/plugin/lib/fenced-text.mjs). Review R1-N1.
+//   2. the composition (apps/desktop/src/main/native/startup/pluginRuntimeComposition.ts): beforeDisable → revoke, afterEnable → activate.
+//      Current Core marks backend:invoke as non-revocable legacy manifest metadata; trust-policy denial is checked on each call and does not fence.
+//   3. verify the live backend:invoke label is documented as legacy/non-revocable and the plugin does not tell users to change it as a switch.
 //   4. the place the fenced sentences send the user (0.1.3): this Core has a plugin management page labelled 「外掛」 — 1.6.8 as a settings group
 //      (packages/features/settings/.../settingsGroupConfig.ts), 1.7.1 as a My AI tab (packages/features/agent-org/.../categoryTabs.ts) — and the
 //      plugin's overview (pluginPage/drawers/OverviewTab.tsx) has the section 「它可以做的事」 listing the switch by its title with an 「允許」 box, plus
@@ -36,7 +34,7 @@ import { buildSync } from 'esbuild'
 
 import { ROOT } from './lib/paths.mjs'
 import {
-  BOARD_VIEW_TITLE, CORE_AI_CHAT_TITLE, CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, CORE_PLUGIN_PAGE_LABEL, CORE_PLUGIN_SETTINGS_TAB_LABEL,
+  BACKEND_TRUST_REQUIREMENT, BOARD_VIEW_TITLE, CORE_AI_CHAT_TITLE, CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, CORE_PLUGIN_PAGE_LABEL, CORE_PLUGIN_SETTINGS_TAB_LABEL,
   EXPECTED_AI_CHAT_REVOKED_TASK_TEXT, EXPECTED_AI_CHAT_REVOKED_TEXT, EXPECTED_AI_FENCED_TEXT, EXPECTED_FENCED_TEXT, EXPECTED_NOT_IN_HOST_TEXT,
   EXPECTED_TIMEOUT_TEXT, EXPECTED_UNDO_HINT_PLUGIN, PLUGIN_PAGE_PLACE_TEXT, R1_PLACE_SENTENCES, VERSION_SPECIFIC_PLACE, namesVersionSpecificPlace
 } from './lib/fenced-text.mjs'
@@ -45,6 +43,7 @@ import { createCoreGateStandin } from '../lib/core-invoke-gate-standin.mjs'
 const GATE = 'packages/platform/plugin-runtime/src/main/externalBackend/backendInvokeGate.ts'
 const COMPOSITION = 'apps/desktop/src/main/native/startup/pluginRuntimeComposition.ts'
 const PLUGIN_TEXT = 'packages/features/settings/src/ui/views/Settings/sections/pluginPage/pluginText.ts'
+const PERMISSION_ENDPOINTS = 'packages/plugin-sdk/src/endpoints/permissions.ts'
 const SETTINGS_GROUPS = 'packages/features/settings/src/ui/views/Settings/settingsGroupConfig.ts'
 const MY_AI_TABS = 'packages/features/agent-org/src/ui/agent-teams/navShell/categoryTabs.ts'
 const OVERVIEW = 'packages/features/settings/src/ui/views/Settings/sections/pluginPage/drawers/OverviewTab.tsx'
@@ -52,7 +51,7 @@ const DRAWER = 'packages/features/settings/src/ui/views/Settings/sections/plugin
 const PLUGIN_TABS = 'packages/features/plugins/src/ui/pluginTabs.ts'
 const PLUGIN_SURFACES = 'packages/features/plugins/src/ui/usePluginSurfaces.ts'
 const APP = 'apps/desktop/src/renderer/App.tsx'
-const CORE_FILES = [GATE, COMPOSITION, PLUGIN_TEXT, SETTINGS_GROUPS, MY_AI_TABS, OVERVIEW, DRAWER, PLUGIN_TABS, PLUGIN_SURFACES, APP]
+const CORE_FILES = [GATE, COMPOSITION, PLUGIN_TEXT, PERMISSION_ENDPOINTS, SETTINGS_GROUPS, MY_AI_TABS, OVERVIEW, DRAWER, PLUGIN_TABS, PLUGIN_SURFACES, APP]
 
 /** exit 2 = not compared (no Core source); exit 1 = compared and different */
 function notRun(reason) {
@@ -101,12 +100,18 @@ const check = (label, body) => {
 
 // ── 3. the switch title ──
 const titleMatch = read(PLUGIN_TEXT).match(/"backend:invoke":\s*\{\s*title:\s*"([^"]+)"/u)
-const productMatch = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'lib', 'backendError.ts'), 'utf8').match(/export const BACKEND_INVOKE_TOGGLE_TITLE = '([^']+)'/u)
-check(`the backend:invoke switch title on Core's settings page is the one the plugin quotes (Core: 「${titleMatch?.[1]}」)`, () => {
+const backendPermissionDefinition = read(PERMISSION_ENDPOINTS).match(/\{ id: 'backend:invoke',[^}]+\}/u)?.[0]
+const productBackendText = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'lib', 'backendError.ts'), 'utf8')
+const productFencedMessage = productBackendText.match(/const FENCED_TEXT = `([^`]+)`/u)?.[1]
+check(`Core's backend:invoke field is legacy/non-revocable and product guidance does not present it as a switch (Core: 「${titleMatch?.[1]}」)`, () => {
   assert.ok(titleMatch, `${PLUGIN_TEXT}: PERMISSION_TEXT["backend:invoke"].title not found`)
-  assert.ok(productMatch, 'src/renderer/lib/backendError.ts: BACKEND_INVOKE_TOGGLE_TITLE not found')
-  assert.equal(productMatch[1], titleMatch[1], 'src/renderer/lib/backendError.ts BACKEND_INVOKE_TOGGLE_TITLE')
-  assert.equal(CORE_BACKEND_INVOKE_TITLE, titleMatch[1], 'scripts/plugin/lib/fenced-text.mjs CORE_BACKEND_INVOKE_TITLE')
+  assert.equal(titleMatch[1],CORE_BACKEND_INVOKE_TITLE,'the checked-in expected label records current Core')
+  assert.ok(backendPermissionDefinition,`${PERMISSION_ENDPOINTS}: backend:invoke definition not found`)
+  assert.match(backendPermissionDefinition,/revocable: false/u,'current backend:invoke is not an authorization switch')
+  assert.match(backendPermissionDefinition,/backend\.call 不需另行授權/u,'current Core documents backend.call as requiring no separate grant')
+  assert.ok(productFencedMessage,'src/renderer/lib/backendError.ts: FENCED_TEXT not found')
+  assert.match(productFencedMessage,new RegExp(BACKEND_TRUST_REQUIREMENT,'u'),'product guidance names the live full-trust requirement')
+  assert.doesNotMatch(productFencedMessage,/backend:invoke|舊版 manifest 欄位/u,'product guidance does not point at a non-actionable legacy field')
 })
 
 // ── 4. where the fenced sentences send the user (0.1.3) ──
@@ -134,7 +139,8 @@ check('the fenced sentences name that place and no parent that only one TeamUQ v
     assert.doesNotMatch(text, VERSION_SPECIFIC_PLACE, `${name} names a version-specific place`)
   }
   for (const [name, text] of Object.entries({ EXPECTED_FENCED_TEXT, EXPECTED_AI_FENCED_TEXT })) {
-    assert.ok(text.includes(`「${CORE_PERMISSIONS_SECTION_TITLE}」裡已允許「${CORE_BACKEND_INVOKE_TITLE}」`), `${name} does not point at the switch inside 「${CORE_PERMISSIONS_SECTION_TITLE}」`)
+    assert.ok(text.includes(BACKEND_TRUST_REQUIREMENT), `${name} does not name the current trust requirement`)
+    assert.doesNotMatch(text,/backend:invoke|舊版 manifest 欄位/u,`${name} still points at the legacy field`)
   }
 })
 
@@ -199,22 +205,15 @@ check('composition: disabling the plugin revokes (fences), enabling it activates
   assert.ok(disable && /installedBackendInvoke\??\.revoke\(/u.test(disable), `beforeDisable no longer revokes:\n${disable}`)
   assert.ok(enable && /installedBackendInvoke\??\.activate\(/u.test(enable), `afterEnable no longer activates:\n${enable}`)
 })
-check('composition: turning backend:invoke off revokes; allowing it again does NOT activate (the plugin stays fenced — what the fenced text tells the user)', () => {
+check('composition: the non-revocable backend:invoke legacy field is not wired as a grant refresh; disable/enable still owns gate fencing', () => {
   const refreshFile = 'apps/desktop/src/main/native/startup/permissionRevocation/refreshPermissionGrants.ts'
-  if (fs.existsSync(path.join(core, refreshFile))) {
-    const grants = read(refreshFile)
-    assert.match(composition, /import\s*\{\s*createPermissionGrantRefresh\s*\}\s*from\s*['"]\.\/permissionRevocation\/refreshPermissionGrants['"]/u)
-    assert.match(composition, /const refreshGrants = createPermissionGrantRefresh\(/u)
-    assert.match(composition, /backendInvoke:\s*\(\)\s*=>\s*installedBackendInvoke/u)
-    assert.match(composition, /\n\s*refreshGrants,/u)
-    assert.match(grants, /revoked\.includes\('backend:invoke'\)\)\s*await options\.backendInvoke\(\)\?\.revoke\(pluginId\)/u)
-    assert.doesNotMatch(grants, /\.activate\(/u)
-    return
+  assert.match(composition,/beforeDisable:\s*async\s*\(pluginId\)[\s\S]*?installedBackendInvoke\.revoke\(pluginId\)/u,'plugin disable revokes the gate')
+  assert.match(composition,/afterEnable:\s*async\s*\(pluginId\)[\s\S]*?installedBackendInvoke\?\.activate\(pluginId\)/u,'plugin enable activates the gate')
+  if(fs.existsSync(path.join(core,refreshFile))){
+    const grants=read(refreshFile)
+    assert.doesNotMatch(grants,/backend:invoke|backendInvoke/u,'refreshGrants has no separately revocable backend:invoke switch')
+    assert.doesNotMatch(composition,/backendInvoke:\s*\(\)\s*=>\s*installedBackendInvoke/u,'composition does not inject a legacy grant callback')
   }
-  const grants = block(composition, 'refreshGrants')
-  assert.ok(grants, 'refreshGrants not found')
-  assert.match(grants, /revoked\.includes\('backend:invoke'\)\)\s*await installedBackendInvoke\??\.revoke\(/u, `refreshGrants no longer revokes on backend:invoke:\n${grants}`)
-  assert.doesNotMatch(grants, /\.activate\(/u, `refreshGrants now activates — Core lifts the fence on re-allow; revisit the stand-in (setBackendInvokeRevoked) and lib/backendError.ts:\n${grants}`)
 })
 
 // ── 1. the invoke gate ──
@@ -253,14 +252,15 @@ function backend() {
 
 function realSide() {
   const b = backend()
-  const policy = { installed: true, enabled: true, trusted: true, grant: true, methods: METHODS }
+  const policy = { installed: true, enabled: true, trusted: true, methods: METHODS }
   const stops = []
   const gate = createInstalledBackendInvokeGate({ invoke: async (_id, method) => b.run(method), stop: async (_id, why) => { stops.push(why) } }, async () => ({ ...policy }))
   return {
     b, stops,
     call: (method) => gate.invokeView(PID, 'view-1', { method, params: {} }),
-    // pluginRuntimeComposition.ts refreshGrants / beforeDisable / afterEnable (checked in step 2)
-    setBackendInvokeRevoked: async (revoked) => { policy.grant = !revoked; if (revoked) await gate.revoke(PID) },
+    // Current Core checks trust on each call; backend:invoke grant state is ignored as legacy metadata.
+    setTrusted: (trusted) => { policy.trusted=trusted },
+    setLegacyBackendInvokeGrant: (granted) => { policy.legacyBackendInvokeGrant=granted },
     disable: async () => { policy.enabled = false; await gate.revoke(PID) },
     enable: async () => { policy.enabled = true; gate.activate(PID) },
     uninstall: async () => { policy.installed = false }
@@ -273,7 +273,8 @@ function standinSide() {
   return {
     b, stops: s.state.stops,
     call: (method) => s.invokeView(method, {}),
-    setBackendInvokeRevoked: async (revoked) => s.setBackendInvokeRevoked(revoked),
+    setTrusted: (trusted) => s.setTrusted(trusted),
+    setLegacyBackendInvokeGrant: (granted) => s.setLegacyBackendInvokeGrant(granted),
     disable: async () => s.disable(),
     enable: async () => s.enable(),
     uninstall: async () => s.uninstall()
@@ -296,17 +297,19 @@ async function scenario(side) {
   const log = []
   const step = async (label, promise) => { log.push([label, await settle(promise)]) }
   await step('1 ping', side.call('ping'))
-  // backend:invoke turned off on the plugin page while a call is in flight
+  // An untrusted composed package is denied on this call, but that policy check is not a gate fence.
+  side.setTrusted(false)
+  await step('2 untrusted policy', side.call('ping'))
+  side.setTrusted(true)
+  await step('3 trust restored', side.call('ping'))
+  // Current Core ignores backend:invoke grant state because the manifest field is non-revocable legacy metadata.
+  side.setLegacyBackendInvokeGrant(false)
+  await step('4 legacy grant absent', side.call('ping'))
+  side.setLegacyBackendInvokeGrant(true)
+  // Plugin disable is the composed event that fences an in-flight call.
   const a = side.call('hang'); await tick(); await tick()
-  await side.setBackendInvokeRevoked(true)
-  await step('2 in-flight at revoke', a)
-  await step('3 ping after revoke', side.call('ping'))
-  // allowed again: refreshGrants does not activate
-  await side.setBackendInvokeRevoked(false)
-  await step('4 ping after re-allow', side.call('ping'))
-  await step('5 ping after re-allow (again)', side.call('ping'))
-  // disable → enable (afterEnable → activate)
   await side.disable()
+  await step('5 in-flight at disable', a)
   await step('6 ping while disabled', side.call('ping'))
   await side.enable()
   await step('7 ping after enable', side.call('ping'))
@@ -316,8 +319,8 @@ async function scenario(side) {
   await step('9 in-flight at timeout', b)
   side.b.release(); await tick()
   await step('10 ping after timeout', side.call('ping'))
-  await side.setBackendInvokeRevoked(false)
-  await step('11 ping after re-allow (timeout fence)', side.call('ping'))
+  await side.setLegacyBackendInvokeGrant(false)
+  await step('11 legacy grant change after timeout', side.call('ping'))
   await side.disable(); await side.enable()
   await step('12 ping after disable+enable', side.call('ping'))
   await step('13 method not in manifest', side.call('nope'))

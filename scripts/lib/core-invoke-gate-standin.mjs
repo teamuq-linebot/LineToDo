@@ -1,12 +1,13 @@
-// Stand-in for what a plugin VIEW sees of TeamUQ Core 1.7.1 when it calls its backend: the installed backend invoke gate, the parts of the
-// runtime composition that drive it, and the view bridge. Used by test-plugin-guide.mjs / test-plugin-ui-effects.mjs (G-03, review B1).
+// Stand-in for what a plugin VIEW sees of TeamUQ Core when it calls its backend: the installed backend invoke gate, the parts of the
+// runtime composition that drive it, and the view bridge. The current Core treats backend:invoke as a non-revocable legacy manifest field;
+// setTrusted models current policy checks, while setBackendInvokeRevoked remains an explicit old-Core compatibility scenario.
 //
 // It follows Core, not the plugin's wishes. Source (teamuq-electron V1, version 1.7.1; read-only):
 //   packages/platform/plugin-runtime/src/main/externalBackend/backendInvokeGate.ts — createInstalledBackendInvokeGate
 //     :74       a FENCED plugin gets 'plugin_disabled' for every new call. The fence reason (fenceErrors) is not reported to new calls.
 //     :75-76    more than PLUGIN_BACKEND_INVOKE_LIMITS.inFlight (8) calls in flight → 'plugin_backend_unavailable'
 //     :121-127  after the (async) policy read: fenced meanwhile → the fence reason; not installed → 'plugin_not_installed';
-//               disabled → 'plugin_disabled'; no grant → 'plugin_permission_denied'; method not in the manifest → 'backend_method_not_allowed'
+//               disabled → 'plugin_disabled'; not trusted → 'plugin_permission_denied'; method not in the manifest → 'backend_method_not_allowed'
 //     :62-69, :144-146  a call past its deadline (timeoutMs 30 s) FENCES the plugin: every call in flight ends 'backend_invoke_timeout',
 //               the backend is stopped ('hung'). :157 the runtime reporting plugin_call_timeout does the same.
 //     :148      a runtime answer that arrives after the fence → 'backend_invoke_timeout'
@@ -17,8 +18,7 @@
 //   apps/desktop/src/main/native/startup/pluginRuntimeComposition.ts
 //     :239      beforeDisable (the user disables the plugin) → revoke()
 //     :240      afterEnable (the user enables it again)      → activate()
-//     :447-454  refreshGrants (the user flips a permission in 「我的 AI › 外掛」): backend:invoke revoked → revoke();
-//               backend:invoke allowed again → NOTHING (no activate): the fence stays until disable → enable or a TeamUQ restart.
+//     current Core marks backend:invoke non-revocable and does not wire it through refreshGrants; beforeDisable / afterEnable still revoke / activate.
 //   packages/platform/plugin-runtime/src/adapters/preload/pluginViewBridge.ts:93-97   { ok:false, error } → the view's call rejects new Error(error)
 //
 // Not modelled: view generations (closeView), payload-size checks, the signer checks of the generic gate. The stand-in keeps the same runtime
@@ -40,7 +40,7 @@ export function createCoreGateStandin(runtime, { methods, timeoutMs = CORE_INVOK
   let fenceError = null
   let generation = 0
   /** install state as resolvePolicy() would read it */
-  const policy = { installed: true, enabled: true, grant: true }
+  const policy = { installed: true, enabled: true, trusted: true }
   /** calls in flight: cancel(code) → finishes that call with { ok:false, error: code } */
   const inFlight = new Set()
   const state = { calls: [], refusedMethods: [], stops: [], results: [] }
@@ -62,7 +62,7 @@ export function createCoreGateStandin(runtime, { methods, timeoutMs = CORE_INVOK
     if (generation !== admittedAt || fenced) return { ok: false, error: fenceError ?? 'plugin_disabled' }
     if (!policy.installed) return { ok: false, error: 'plugin_not_installed' }
     if (!policy.enabled) return { ok: false, error: 'plugin_disabled' }
-    if (!policy.grant) return { ok: false, error: 'plugin_permission_denied' }
+    if (!policy.trusted) return { ok: false, error: 'plugin_permission_denied' }
     if (!methods.includes(method)) { state.refusedMethods.push(method); return { ok: false, error: 'backend_method_not_allowed' } }
     return new Promise((resolve) => {
       let settled = false
@@ -116,10 +116,13 @@ export function createCoreGateStandin(runtime, { methods, timeoutMs = CORE_INVOK
     activate() { fenced = false; generation += 1 },
     /** a call's 30 s deadline firing right now (what the timer in the gate does) */
     timeoutNow() { fence('backend_invoke_timeout', 'hung') },
+    /** Current Core resolves trust policy for each admitted call; changing it is not an invoke-gate fence. */
+    setTrusted(trusted) { policy.trusted = trusted },
+    /** The legacy backend:invoke grant is ignored by the current installed invoke gate. */
+    setLegacyBackendInvokeGrant(granted) { policy.legacyBackendInvokeGrant = granted },
     // ── what the user does in TeamUQ, through the composition ──
-    /** 「我的 AI › 外掛」: backend:invoke off (true) → refreshGrants → revoke(); back on (false) → refreshGrants → nothing. */
+    /** Compatibility simulation for older Core builds that treated backend:invoke as revocable. Current Core conformance uses setTrusted instead. */
     setBackendInvokeRevoked(revoked) {
-      policy.grant = !revoked
       if (revoked) this.revoke()
     },
     /** disable the plugin: beforeDisable → revoke() */

@@ -12,7 +12,7 @@ import test from 'node:test'
 import { build } from 'esbuild'
 
 import { ROOT, analyzeUiBundle, buildPluginUi } from './build-ui.mjs'
-import { CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE } from './lib/fenced-text.mjs'
+import { BACKEND_TRUST_REQUIREMENT, EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE } from './lib/fenced-text.mjs'
 
 const work = mkdtempSync(join(tmpdir(), 'plugin-ui-test-'))
 test.after(() => rmSync(work, { recursive: true, force: true }))
@@ -83,8 +83,8 @@ test('board: plugin and standalone both expose the shared settings tab; standalo
   // App reads the theme from the DOM on first render; a server render has no DOM
   globalThis.document = { documentElement: { dataset: {} } }
   try {
-    assert.deepEqual(tabs(renderApp(STANDALONE)), ['彙整', '聊天', '群組議題', '設定'])
-    assert.deepEqual(tabs(renderApp(PLUGIN)), ['彙整', '聊天', '群組議題', '設定'])
+    assert.deepEqual(tabs(renderApp(STANDALONE)), ['彙整', '聊天', '群組議題', '待確認', '設定'])
+    assert.deepEqual(tabs(renderApp(PLUGIN)), ['彙整', '聊天', '群組議題', '待確認', '設定'])
   } finally { delete globalThis.document }
 })
 
@@ -123,10 +123,11 @@ test('G-03 / B1: the backend status line, when Core fences the plugin, names the
   assert.match(revoked, /data-backend-link="revoked"/)
   for (const code of ['plugin_permission_denied', 'plugin_disabled']) {
     const html = renderBackendBar({ state: 'revoked', code })
-    assert.match(html, /backend:invoke/, code)
-    assert.match(html, /外掛被停用/, code)
+    assert.match(html, /外掛已停用/, code)
     assert.match(html, /太久沒有回應而被 TeamUQ 隔離/, code)
-    assert.ok(html.includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，確認「${CORE_PERMISSIONS_SECTION_TITLE}」裡已允許「${CORE_BACKEND_INVOKE_TITLE}」，而且外掛是啟用的`), `${code}: where to go, the switch title on TeamUQ's plugin page (R1-N1, 0.1.3)`)
+    assert.ok(html.includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，確認執行範圍是「完全信任級」且外掛已啟用`), `${code}: where to go and check current trust/enablement guidance (0.1.3)`)
+    assert.ok(html.includes(BACKEND_TRUST_REQUIREMENT), `${code}: current trust requirement is explicit`)
+    assert.doesNotMatch(html,/backend:invoke|舊版 manifest 欄位/u,`${code}: no obsolete authorization-switch advice`)
     assert.doesNotMatch(html, VERSION_SPECIFIC_PLACE, `${code}: 0.1.3 — no place that only one TeamUQ version has`)
     assert.match(html, /停用再啟用，或重新啟動 TeamUQ/, code)
     assert.doesNotMatch(html, /自動恢復|目前在 TeamUQ 中是停用狀態/, code)
@@ -152,6 +153,7 @@ test('G-04: a re-created plugin view restores the tab, the sort / filters and gr
   const active = (html) => html.match(/<button class="tab active">([^<]+)<\/button>/)?.[1]
   assert.equal(active(renderAppWithState(PLUGIN, null)), '彙整')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'topics' })), '群組議題')
+  assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'identity' })), '待確認')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'settings' })), '設定')
   assert.equal(active(renderAppWithState(STANDALONE, { 'app.tab': 'settings' })), '設定')
   const board = renderAppWithState(PLUGIN, { 'board.sortBy': 'priority', 'board.sortDirection': 'asc', 'board.chatKindFilter': 'group', 'board.localViewedFilter': 'unviewed', 'board.groupByChat': true })

@@ -274,6 +274,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   const aiSessionMapStore = createAiSessionMapStore({ getDatabase: () => appDb })
   let queue!: ExtractQueue
   let worker = null as ExtractWorker | null
+  let workerStartTimer: ReturnType<typeof setTimeout> | null = null
   const aiPort: HostAiPort = options.hostAi
     ? createHostAiPort({
       ai: options.hostAi,
@@ -298,6 +299,9 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   let lastAiStatusAt = 0
   const publishAiStatus = (): void => { aiStatusTimer = null; lastAiStatusAt = Date.now(); hub.publish('ai-status', aiStatus()) }
   const offAiPortStatus = aiPort.onStatus(() => {
+    // Auth/provider recovery must wake a leased review queue immediately; its bounded SourceCache
+    // lease is renewed per part, and the ReviewCoordinator can otherwise time out while polling sleeps.
+    worker?.kick()
     if (aiStatusTimer !== null) return
     const wait = lastAiStatusAt + 1000 - Date.now()
     if (wait <= 0) publishAiStatus()
@@ -327,9 +331,10 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
 
   const runtime = await createLineTodoRuntime({
     dataDir,
-    initialize: () => createLineTodoApplication({
+    initialize: (ownerLockProof) => createLineTodoApplication({
       dataDir,
       dbPath: join(dataDir, 'line-todo.db'),
+      runtimeOwnerProof: ownerLockProof,
       appDbEngine: options.appDbEngine ?? createBetterSqlite3AppEngine(),
       onDatabase: (db) => { appDb = db; appDbForMedia = db },
       participantIdentity: UNKNOWN_IDENTITY,
@@ -343,16 +348,24 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       },
       line,
       // 同步呼叫端（reviewLastDays 回顧）也走 ExtractQueue：同一個 pull/commit 通道，結果直接 resolve 給呼叫端。
-      makeExtract: () => review.wrapExtract((input) => queue.request(input)),
+      makeExtract: () => {
+        const extract=review.wrapExtract((input) => queue.request(input))
+        ;(extract as typeof extract & {identityAttemptManagedByQueue?:boolean}).identityAttemptManagedByQueue=true
+        return extract
+      },
       schedulerFactory: (db, repos) => {
         queue = new ExtractQueue({
           ...options.extract,
           db,
           getConfig: getDefaults,
           getSystemSha256: prompts.revision,
+          getSessionContext: () => JSON.stringify(settings.get().pluginAi),
           onRun: (result) => scheduler?.recordExternalRun(result),
           onPending: () => worker?.kick(),
-          consumerOnline: () => worker?.running() === true
+          // A review can arrive immediately after activation acknowledges. Treat the scheduled
+          // startup interval as available so request() queues the work for the worker instead of
+          // recording a false extract_ui_offline pause before start() runs.
+          consumerOnline: () => worker?.running() === true || workerStartTimer !== null
         })
         worker = createExtractWorker({
           queue,
@@ -440,7 +453,6 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   }))
 
   let disposed = false
-  let workerStartTimer: ReturnType<typeof setTimeout> | null = null
   const dispatcher: Dispatcher = new Dispatcher({
     ...options.dispatcher,
     getApi: () => {

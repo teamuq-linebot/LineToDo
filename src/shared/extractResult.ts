@@ -6,6 +6,7 @@
  * `src/main/llm/schema.ts` 重新匯出這裡的全部符號，所有既有的 import 路徑與行為不變。
  */
 import { z } from 'zod'
+import { IdentityDecisionSchema, validateIdentityDecisions, type IdentityDecision, type IdentityValidationContext } from './identityDecision'
 
 /**
  * schema.ts — 抽取輸出的「單一真實來源」。
@@ -25,6 +26,7 @@ export const PRIORITIES = [1, 2, 3] as const
 
 // ── zod：runtime 驗證 ───────────────────────────────────────
 const NewTodoSchema = z.object({
+  draftRef: z.string().regex(/^[a-z0-9_-]{1,40}$/i).optional(),
   bucket: z.enum(BUCKETS),
   title: z.string().min(1),
   detail: z.string().nullable().optional(),
@@ -36,7 +38,8 @@ const NewTodoSchema = z.object({
 
 const ResolvedSchema = z.object({
   todoId: z.string().min(1),
-  evidence: z.string().min(1)
+  evidence: z.string().min(1),
+  evidenceMsgIds: z.array(z.string().min(1)).min(1).max(20).optional()
 })
 
 // 既有代辦升級/重新分類（最典型：會議從「喬時間的代辦」→「時間確定的行程」）。
@@ -51,6 +54,7 @@ const UpdatedTodoSchema = z.object({
 export const ExtractResultSchema = z.object({
   importance: z.enum(IMPORTANCES),
   newTodos: z.array(NewTodoSchema),
+  identityDecisions: z.array(IdentityDecisionSchema).optional(),
   resolved: z.array(ResolvedSchema),
   // .default([]) 確保不含 updates 的舊式 JSON 仍可解析（向後相容）。
   updates: z.array(UpdatedTodoSchema).default([])
@@ -61,6 +65,10 @@ export type NewTodo = z.infer<typeof NewTodoSchema>
 export type ResolvedTodo = z.infer<typeof ResolvedSchema>
 export type UpdatedTodo = z.infer<typeof UpdatedTodoSchema>
 
+export interface ExtractIdentityValidationContext extends IdentityValidationContext {
+  allowedTodoIds: string[]
+}
+
 /**
  * 驗證「已解析成 JS 值」的抽取結果。
  * - zod 驗證失敗 → throw ZodError（呼叫端標該 chat partial、不中斷整輪）。
@@ -70,12 +78,29 @@ export type UpdatedTodo = z.infer<typeof UpdatedTodoSchema>
  * Codex out.json）不必為了餵 parseExtractResult 而先 stringify 再 parse 回來。
  * zod 驗證永遠在 provider 之外做（design.md §1.3），這裡是唯一的真實來源。
  */
-export function validateExtractResult(value: unknown): ExtractResult {
+export function validateExtractResult(value: unknown, identityContext?: ExtractIdentityValidationContext): ExtractResult {
   const parsed = ExtractResultSchema.parse(value)
+  const identityDecisions: IdentityDecision[] = identityContext
+    ? validateIdentityDecisions(parsed.identityDecisions, parsed.newTodos.map((todo) => todo.draftRef ?? ''), identityContext)
+    : (parsed.identityDecisions ?? []) as IdentityDecision[]
+  if (identityContext) {
+    const selected = new Set(identityContext.selectedMessageIds)
+    if (parsed.newTodos.some((todo) => todo.sourceMsgIds.some((id) => !selected.has(id)))) {
+      throw new Error('newTodo_source_not_selected')
+    }
+    if (parsed.resolved.some((todo) => !todo.evidenceMsgIds?.length || todo.evidenceMsgIds.some((id)=>!selected.has(id)))) {
+      throw new Error('resolved_evidence_not_selected')
+    }
+    const allowedTodoIds = new Set(identityContext.allowedTodoIds)
+    if (parsed.resolved.some((todo) => !allowedTodoIds.has(todo.todoId)) || parsed.updates.some((todo) => !allowedTodoIds.has(todo.todoId))) {
+      throw new Error('existing_todo_id_not_supplied')
+    }
+  }
   // 正規化 optional → null，給下游 DB 寫入用穩定型別。
   return {
     importance: parsed.importance,
     newTodos: parsed.newTodos.map((t) => ({
+      ...(t.draftRef ? { draftRef:t.draftRef } : {}),
       bucket: t.bucket,
       title: t.title,
       detail: t.detail ?? null,
@@ -84,13 +109,14 @@ export function validateExtractResult(value: unknown): ExtractResult {
       confidence: t.confidence,
       sourceMsgIds: t.sourceMsgIds
     })),
-    resolved: parsed.resolved.map((r) => ({ todoId: r.todoId, evidence: r.evidence })),
+    resolved: parsed.resolved.map((r) => ({ todoId: r.todoId, evidence: r.evidence, ...(r.evidenceMsgIds ? { evidenceMsgIds:[...r.evidenceMsgIds] } : {}) })),
     updates: parsed.updates.map((u) => ({
       todoId: u.todoId,
       bucket: u.bucket,
       dueAt: u.dueAt ?? null,
       evidence: u.evidence
-    }))
+    })),
+    identityDecisions
   }
 }
 

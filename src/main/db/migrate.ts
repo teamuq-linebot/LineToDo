@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3'
-import { SCHEMA_DDL, SCHEMA_VERSION } from './schema'
+import { IDENTITY_CORE_DDL, SCHEMA_DDL, SCHEMA_VERSION, SOURCE_CACHE_DDL } from './schema'
 
 /**
  * migrate.ts — 用 PRAGMA user_version 管理 schema 版本。
@@ -78,6 +78,20 @@ export function migrate(db: Database): { from: number; to: number } {
     if (v < 6) {
       db.exec('ALTER TABLE todo_not_mine_events ADD COLUMN parent_feedback_id TEXT REFERENCES todo_not_mine_events(feedback_id); CREATE INDEX IF NOT EXISTS idx_not_mine_analysis_parent ON todo_not_mine_events(parent_feedback_id, created_at) WHERE parent_feedback_id IS NOT NULL;')
       v = 6
+    }
+    // v6 → v7: additive raw-source cache coordination. Backfill one cold
+    // metadata row per existing chat before source triggers become active.
+    if (v < 7) {
+      db.exec(SOURCE_CACHE_DDL)
+      v = 7
+    }
+    // v7 -> v8: additive Todo entity history, candidate indexes, decisions and relations.
+    // Canonical IDs and legacy source_msg_ids remain unchanged. Topic-specific tables are
+    // owned by GroupTopics' independent feature migration.
+    if (v < 8) {
+      db.exec('ALTER TABLE todos ADD COLUMN entity_revision INTEGER NOT NULL DEFAULT 1 CHECK(entity_revision >= 1);')
+      db.exec(IDENTITY_CORE_DDL)
+      v = 8
     }
     db.pragma(`user_version = ${v}`)
     return v

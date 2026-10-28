@@ -99,7 +99,8 @@ const FAST_WORKER = { pollIntervalMs: 60, unavailableRetryMs: 40 }
 function todoFor(user, title = '寄報價單給客戶') {
   const payload = JSON.parse(user)
   const first = payload.newMessages[0]
-  return { importance: 'action', newTodos: [{ bucket: 'todo', title, detail: `來自：${first.text.slice(0, 20)}`, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], resolved: [], updates: [] }
+  const draftRef=`e2e_${String(first.msgId).replace(/[^a-z0-9_-]/giu,'_')}`
+  return { importance: 'action', newTodos: [{ draftRef,bucket: 'todo', title, detail: `來自：${first.text.slice(0, 20)}`, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], identityDecisions:[{draftRef,outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'high',evidenceMsgIds:[first.msgId]}], resolved: [], updates: [] }
 }
 const fenced = (value) => '好的，整理如下：\n```json\n' + JSON.stringify(value, null, 2) + '\n```\n'
 
@@ -442,7 +443,7 @@ test('e2e limits: a chat with far more text than one turn can carry is split by 
 })
 
 test('e2e throughput: a long chat (200 new messages x ~100 chars, with recentContext) is carried in turns that are nearly full — ~ new-message chars / per-turn budget, not one turn per message — each <= 7,500 chars', async () => {
-  await withStack({ ai: { extractReserve: 0 }, reply: () => fenced({ importance: 'fyi', newTodos: [], resolved: [], updates: [] }) }, async ({ api, line, calls }) => {
+  await withStack({ ai: { extractReserve: 0 }, reply: () => fenced({ importance: 'fyi', newTodos: [], identityDecisions:[], resolved: [], updates: [] }) }, async ({ api, line, calls }) => {
     const text = (i) => `第 ${i} 則：請幫我確認一下這件事情的進度，並且在明天中午之前回覆給客戶，謝謝。` + '補充說明內容。'.repeat(8)
     // 40 older messages first: they are processed, and become the recentContext of the next cycle
     for (let i = 1; i <= 40; i += 1) line.emit(raw(i, { chatId: 'u-long', chat: '長聊天室', isGroup: true, text: text(i) }))
@@ -627,6 +628,7 @@ test('e2e groupTopics.analyze: the JSON Schema is put in the prompt (no structur
       const payload = JSON.parse(ctx.user)
       return '```json\n' + JSON.stringify({
         topics: [{ ref: 'launch', title: '產品發表會', summary: '討論發表會的場地與時間。' }],
+        identityDecisions:[{draftRef:'launch',outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'high',evidenceMsgIds:[payload.messages[0].msgId]}],
         assignments: payload.messages.map((m) => ({ msgId: m.msgId, topicRef: 'launch', relation: 'about', confidence: 0.8, relevance: 'awareness', relevanceEvidenceMsgIds: [m.msgId] }))
       }) + '\n```'
     }
@@ -647,7 +649,7 @@ test('e2e groupTopics.analyze: the JSON Schema is put in the prompt (no structur
   })
   // invalid output (an assignment for a message that was never sent) is rejected by the backend and nothing is saved
   await withStack({
-    reply: (ctx) => (ctx.system.includes('ONE group chat') ? JSON.stringify({ topics: [], assignments: [{ msgId: 'ghost', topicRef: null, relation: 'uncertain', confidence: 0.1, relevance: 'unknown', relevanceEvidenceMsgIds: [] }] }) : fenced(todoFor(ctx.user)))
+    reply: (ctx) => (ctx.system.includes('ONE group chat') ? JSON.stringify({ topics: [], identityDecisions:[], assignments: [{ msgId: 'ghost', topicRef: null, relation: 'uncertain', confidence: 0.1, relevance: 'unknown', relevanceEvidenceMsgIds: [] }] }) : fenced(todoFor(ctx.user)))
   }, async ({ api, line }) => {
     line.emit(raw(1, { chatId: 'g-x', chat: '群', isGroup: true, text: '大家好' }))
     await until(async () => (await api.db.chats.get('g-x')) !== null, { message: 'chat persisted' })

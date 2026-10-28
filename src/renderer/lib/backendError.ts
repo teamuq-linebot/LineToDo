@@ -7,15 +7,8 @@
  */
 import { PERMISSIONS_SECTION_TITLE, PLUGIN_PAGE_PLACE } from '../../shared/teamuqPlaces'
 
-/** `revoked`＝TeamUQ 已隔離這個外掛的後端呼叫（權限關閉／停用／逾時，見下方 FENCED_TEXT）或外掛已移除；`unavailable`＝暫時的，稍後再試。 */
+/** `revoked`＝TeamUQ 已隔離這個外掛的後端呼叫（停用／逾時）或外掛已移除；`unavailable`＝暫時的，稍後再試。 */
 export type BackendErrorKind = 'revoked' | 'unavailable' | 'invalid' | 'other'
-
-/**
- * TeamUQ 外掛管理頁（「外掛」頁 → 這個外掛 →「它可以做的事」）上 `backend:invoke` 權限開關的標題（review R1-N1）。
- * 照抄 Core 的 `pluginText.ts` `PERMISSION_TEXT["backend:invoke"].title`，使用者照畫面文字去找才找得到同名的開關（1.6.8 與 1.7.1 同名）。
- * 與 Core 的一致性由 `npm run check:core-gate-conformance` 對 teamuq-electron 原始碼比對。
- */
-export const BACKEND_INVOKE_TOGGLE_TITLE = '讓畫面和它的背景程式溝通'
 
 /**
  * 被隔離時要使用者去的地方（0.1.3）。不寫完整路徑，因為外掛管理頁在不同版本的 TeamUQ 放在不同地方：1.6.8 是「設定」裡的「外掛」分類
@@ -27,14 +20,14 @@ export const BACKEND_INVOKE_TOGGLE_TITLE = '讓畫面和它的背景程式溝通
 export { PERMISSIONS_SECTION_TITLE, PLUGIN_PAGE_PLACE }
 
 /**
- * TeamUQ 已「隔離」這個外掛的後端呼叫（review B1：照 Core 1.7.1 `backendInvokeGate.ts` 的實際行為寫）。重試不會好，要使用者到 TeamUQ 處理。
- *   - Core 有三種隔離來源：關閉 `backend:invoke` 權限（refreshGrants → revoke）、停用外掛（beforeDisable → revoke）、單次呼叫逾時（timeoutPlugin）。
+ * TeamUQ 已拒絕這個外掛的後端呼叫。`backend:invoke` 在目前 Core 是舊 manifest 相容欄位，不是使用者可關閉的授權；被拒絕可能來自非完全信任級套件、外掛停用，或逾時隔離。
+ * 重試不會解除停用或逾時隔離，要使用者到 TeamUQ 處理。
+ *   - Core 的 `backendInvokeGate.ts` 以 installed / enabled / trusted / manifest method allowlist 驗證每次呼叫；外掛停用（beforeDisable → revoke）與單次呼叫逾時（timeoutPlugin）會隔離。
  *   - 隔離當下正在進行的呼叫拿到原因碼（`plugin_permission_denied`／`backend_invoke_timeout`）；之後每個新呼叫一律是 `plugin_disabled`，
  *     Core 不再告訴外掛是哪一種原因（`:74`）。所以 `plugin_disabled` 不能斷定是「停用」，`plugin_permission_denied` 也可能是停用造成的。
- *   - 解除隔離只有 `activate()`（外掛停用再啟用的 afterEnable）或重新啟動 TeamUQ。在外掛管理頁重新允許權限**不會**解除（refreshGrants
- *     不呼叫 activate），所以這裡不承諾「重新允許後會自動恢復」，而是列出使用者實際能做、而且有效的操作。
+ *   - `backend:invoke` 舊欄位不另行授權；若套件信任狀態恢復，下一次呼叫會重新檢查政策。解除停用／逾時隔離則需 `activate()`（外掛停用再啟用的 afterEnable）或重新啟動 TeamUQ。
  */
-const FENCED_TEXT = `TeamUQ 目前不讓這個外掛呼叫後端，所以讀不到 LINE 與待辦資料。可能的原因：「${BACKEND_INVOKE_TOGGLE_TITLE}」權限（backend:invoke）被關閉、外掛被停用，或外掛後端太久沒有回應而被 TeamUQ 隔離。請到 ${PLUGIN_PAGE_PLACE}打開這個外掛，確認「${PERMISSIONS_SECTION_TITLE}」裡已允許「${BACKEND_INVOKE_TOGGLE_TITLE}」，而且外掛是啟用的；如果之後仍沒有恢復，請把外掛停用再啟用，或重新啟動 TeamUQ。`
+const FENCED_TEXT = `TeamUQ 目前不讓這個外掛呼叫後端，所以讀不到 LINE 與待辦資料。可能的原因：外掛不是「完全信任級」組合外掛、外掛已停用，或後端太久沒有回應而被 TeamUQ 隔離。請到 ${PLUGIN_PAGE_PLACE}打開這個外掛，確認執行範圍是「完全信任級」且外掛已啟用；若套件來源或信任狀態有問題，請重新安裝可信任來源的外掛；若後端逾時被隔離，請把外掛停用再啟用，或重新啟動 TeamUQ。`
 
 const REVOKED_TEXT: Record<string, string> = {
   plugin_permission_denied: FENCED_TEXT,

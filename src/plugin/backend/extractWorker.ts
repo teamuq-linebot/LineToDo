@@ -95,9 +95,16 @@ export function createExtractWorker(deps: ExtractWorkerDeps): ExtractWorker {
   }
 
   /** 處理一個領到的項目。回傳：要等多久再看（null＝可以馬上領下一個）。 */
-  const runItem = async (item: { itemId: string; chatId: string; user: string }): Promise<number | null> => {
+  const runItem = async (item: { itemId: string; chatId: string; user: string; sessionEpoch?: number; onAdditionalUserPayload?: (serializedUserPayload:string)=>boolean }): Promise<number | null> => {
+    let heartbeat:unknown=null
+    const keepAlive=():void=>{
+      if(stopped)return
+      deps.queue.progress(item.itemId)
+      heartbeat=clock.setTimeout(keepAlive,30_000)
+    }
+    heartbeat=clock.setTimeout(keepAlive,30_000)
     try {
-      const result = await deps.port.complete({ system: deps.system(), user: item.user, conversationScope: { kind: 'line-chat-extract', chatId: item.chatId }, expectJson: true, validate, priority: 'background' })
+      const result = await deps.port.complete({ system: deps.system(), user: item.user, conversationScope: { kind: 'line-chat-extract', chatId: item.chatId, ...(item.sessionEpoch!==undefined?{sessionEpoch:item.sessionEpoch}:{}) }, ...(item.onAdditionalUserPayload?{onAdditionalUserPayload:item.onAdditionalUserPayload}:{}), expectJson: true, validate, priority: 'background' })
       if (stopped) return null
       const committed = deps.queue.commit({ results: [{ itemId: item.itemId, ok: true, result: result.value }] })
       const status = committed.results[0]?.status
@@ -122,6 +129,8 @@ export function createExtractWorker(deps: ExtractWorkerDeps): ExtractWorker {
         log('extract commit/release failed', { code: codeOf(inner) })
         return cfg.unavailableRetryMs
       }
+    } finally {
+      if(heartbeat!==null)clock.clearTimeout(heartbeat)
     }
   }
 

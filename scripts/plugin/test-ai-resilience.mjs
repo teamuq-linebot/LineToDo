@@ -48,7 +48,8 @@ const raw = (i, { chatId = `u-${i}`, chat = `客戶${i}`, text } = {}) => {
 }
 const todoFor = (user, title) => {
   const payload = JSON.parse(user); const first = payload.newMessages[0]
-  return { importance: 'action', newTodos: [{ bucket: 'todo', title: title ?? `處理 ${payload.chat.name}`, detail: `來自：${first.text.slice(0, 20)}`, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], resolved: [], updates: [] }
+  const draftRef=`resilience_${String(first.msgId).replace(/[^a-z0-9_-]/giu,'_')}`
+  return { importance: 'action', newTodos: [{ draftRef,bucket: 'todo', title: title ?? `處理 ${payload.chat.name}`, detail: `來自：${first.text.slice(0, 20)}`, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], identityDecisions:[{draftRef,outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'high',evidenceMsgIds:[first.msgId]}], resolved: [], updates: [] }
 }
 const fenced = (value) => '好的，整理如下：\n```json\n' + JSON.stringify(value) + '\n```\n'
 
@@ -137,12 +138,29 @@ test('R2 hourly cap in one backend: 410 chats, real limits (20/min, 400/h, reser
     await call('pipeline.runOnce')
     let steps = 0
     let sawHourlyStatus = false
+    let hourlyStatusObservedAt = null
     for (; steps < 400; steps += 1) {
-      await clock.advance(20_000, 30)
+      // Keep 380 accepted background turns within the first rolling hour, then sample each second
+      // near the reserve boundary so the hourly pause is observable before the first turn expires.
+      const stepMs=ai.stats.completes>=360&&!sawHourlyStatus?1_000:(sawHourlyStatus?20_000:10_000)
+      await clock.advance(stepMs, 30)
       if (steps % 20 === 0) await call('pipeline.runOnce')
       if (!sawHourlyStatus && ai.stats.completes >= 380) {
-        const status = await call('ai.status', {})
-        if (status.state === 'paused' && status.reason === 'rate_limited_hour') { sawHourlyStatus = true; assert.equal(status.turnsPerHour, 400); assert.ok(status.resumeAt > clock.now()) }
+        // Ensure the remaining unprocessed chats are in the outbox, then allow the in-flight Host
+        // turn to settle without moving fake time past the same rolling-hour window.
+        await call('pipeline.runOnce')
+        for(let probe=0;probe<10&&!sawHourlyStatus;probe+=1){
+          const status = await call('ai.status', {})
+          if (status.state === 'paused' && status.reason === 'rate_limited_hour') {
+            sawHourlyStatus = true
+            hourlyStatusObservedAt = clock.now()
+            assert.equal(status.turnsPerHour, 400)
+            assert.ok(status.resumeAt > hourlyStatusObservedAt)
+            assert.equal(ai.stats.turns.length, 380, 'the background reserve leaves exactly 20 host turns available in this same rolling hour')
+            assert.ok(hourlyStatusObservedAt-ai.stats.turns[0].at<3_600_000,'the hourly pause is observed before the first accepted turn expires')
+          }
+          else await sleep(10)
+        }
       }
       if ((await extracted(call)) >= N) break
     }
@@ -156,7 +174,7 @@ test('R2 hourly cap in one backend: 410 chats, real limits (20/min, 400/h, reser
     assert.ok(maxInWindow(turns, 60_000) <= 18, `rolling minute max ${maxInWindow(turns, 60_000)}`)
     assert.equal(ai.stats.errors.rate_limited, 0, 'the port\'s own window kept it below the host limit — Core never had to refuse')
     assert.equal(status.counters.failed, 0)
-    assert.equal(sawHourlyStatus, true, 'while the last chats waited for the hour, the status said so (review F9) instead of "ready"')
+    assert.equal(sawHourlyStatus, true, `while the last chats waited for the hour, the status said so (review F9) instead of "ready"; now=${clock.now()} steps=${steps} accepted=${ai.stats.turns.length}`)
     assert.equal(ai.control.liveSessions(), 0)
   } finally { await b.dispose(); rmSync(dataDir, { recursive: true, force: true }) }
 })
@@ -215,8 +233,14 @@ test('R4 a user action (草擬回覆) while a big background backlog has used al
   try {
     for (let i = 1; i <= 420; i += 1) line.emit(raw(i))
     await call('pipeline.runOnce')
-    for (let s = 0; s < 120 && ai.stats.completes < 380; s += 1) { await clock.advance(20_000, 30); if (s % 20 === 0) await call('pipeline.runOnce') }
+    const backlogStart=clock.now()
+    let steps=0
+    // Up to 400 steps is a bounded liveness ceiling; assertions below require the 380 turns to
+    // fit in the original rolling-hour window, so this cannot pass after a quota reset.
+    for (; steps < 400 && ai.stats.completes < 380; steps += 1) { await clock.advance(20_000, 100); if (steps % 20 === 0) await call('pipeline.runOnce') }
+    assert.ok(clock.now()-backlogStart<3_600_000,`the 380 background turns must be reached within this same hour; elapsedMs=${clock.now()-backlogStart}, steps=${steps}`)
     assert.equal(ai.stats.completes, 380, 'background used its share of the hour (400 - 20 kept for the user)')
+    assert.equal(ai.control.turnsInWindow(3_600_000),380,'all background turns still occupy the same rolling-hour window')
     await clock.advance(20_000, 30)
     assert.equal(ai.stats.completes, 380, 'and went no further')
     const status = await call('ai.status', {})
@@ -230,6 +254,7 @@ test('R4 a user action (草擬回覆) while a big background backlog has used al
     const outcome = await Promise.race([pending, sleep(3000).then(() => ({ pendingStill: true }))])
     assert.deepEqual(outcome, { ok: true, v: { draft: '好的，我明天下午三點前回覆您。' } })
     assert.equal(ai.stats.completes - before, 1, 'one more turn: the user\'s')
+    assert.equal(ai.control.turnsInWindow(3_600_000),381,'one of the 20 reserved turns remains available to the user')
     assert.equal(ai.stats.errors.rate_limited, 0)
   } finally { await b.dispose(); rmSync(dataDir, { recursive: true, force: true }) }
 })

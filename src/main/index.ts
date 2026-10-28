@@ -154,11 +154,12 @@ app.whenReady().then(async () => {
         try { await disposeMedia?.() } catch (error) { failure ??= error }
         if (failure) throw failure
       },
-      initialize: async () => {
+      initialize: async (ownerLockProof) => {
         const application = await createLineTodoApplication({
           dataDir,
           dbPath: join(dataDir, 'line-todo.db'),
           appDbEngine: createBetterSqlite3AppEngine(),
+          runtimeOwnerProof: ownerLockProof,
           onDatabase: (db) => { runtimeDatabase = db },
           settings,
           pipelineConfig: { getDefaults, getQwenConfig, isProviderConfigured: providers.isProviderConfigured },
@@ -167,7 +168,7 @@ app.whenReady().then(async () => {
           line: linePort,
           participantIdentity,
           makeExtract: acceptanceMode
-            ? () => async (input) => ({ importance: 'action', newTodos: [{ bucket: 'todo', title: 'Manual review fixture task', detail: null, priority: 1, confidence: 0.95, sourceMsgIds: input.newMessages.map((item) => item.msgId) }], resolved: [], updates: [] })
+            ? () => async (input) => ({ importance: 'action', newTodos: [{ draftRef:'acceptance_fixture',bucket: 'todo', title: 'Manual review fixture task', detail: null, priority: 1, confidence: 0.95, sourceMsgIds: input.newMessages.map((item) => item.msgId) }],identityDecisions:[{draftRef:'acceptance_fixture',outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'high',evidenceMsgIds:[input.newMessages[0].msgId]}], resolved: [], updates: [] })
             : makeExtract,
           schedulerFactory: (db, repos) => {
             scheduler = new PipelineScheduler({ db, getDefaults,

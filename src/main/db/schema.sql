@@ -1,68 +1,65 @@
--- schema.sql  (user_version = 5)
--- line-todo App 自有 DB（與 LINE 自身的 edb 完全分離；本 App 只新增、不寫回 LINE）。
--- 位置：app.getPath('userData')/line-todo.db
--- 此檔為「可讀參考來源」；runtime 實際執行的 DDL 內嵌在 schema.ts（避免 bundler 漏帶 .sql）。
--- 兩者須保持一致：改 DDL 時兩邊一起改。
-
+-- schema.sql (user_version = 8)
+-- Readable reference for the app-owned sidecar SQLite schema.
+-- Runtime DDL is embedded in src/main/db/schema.ts; keep this generated reference aligned.
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
--- ── 聊天室（含降噪黑名單旗標）──────────────────────────────
+
 CREATE TABLE IF NOT EXISTS chats (
-  chat_id        TEXT PRIMARY KEY,          -- LINE _chatId
-  name           TEXT,                      -- 顯示名稱（可能隨時間更新）
-  is_group       INTEGER NOT NULL DEFAULT 0,-- 0/1
-  blocked        INTEGER NOT NULL DEFAULT 0,-- 1 = 黑名單（不進 LLM 管線）
-  block_reason   TEXT,                      -- 'auto:official' / 'auto:keyword' / 'manual' ...
-  first_seen_at  TEXT NOT NULL,             -- ISO8601 (App 端寫入時間)
+  chat_id        TEXT PRIMARY KEY,
+  name           TEXT,
+  is_group       INTEGER NOT NULL DEFAULT 0,
+  blocked        INTEGER NOT NULL DEFAULT 0,
+  block_reason   TEXT,
+  first_seen_at  TEXT NOT NULL,
   last_seen_at   TEXT NOT NULL
 );
 
--- ── 原始訊息鏡像（去重 + 給 LLM 上下文）────────────────────
 CREATE TABLE IF NOT EXISTS messages (
-  msg_id         TEXT PRIMARY KEY,          -- 去重鍵（見 schema.ts deriveMsgId 註解）
+  msg_id         TEXT PRIMARY KEY,
   chat_id        TEXT NOT NULL,
-  ts             INTEGER NOT NULL,          -- epoch 毫秒
-  time_iso       TEXT NOT NULL,             -- 本地 ISO8601（顯示用）
+  ts             INTEGER NOT NULL,
+  time_iso       TEXT NOT NULL,
   direction      TEXT NOT NULL CHECK(direction IN ('in','out')),
   sender         TEXT,
-  text           TEXT,                      -- 文字或 CT label
+  text           TEXT,
   content_type   INTEGER NOT NULL DEFAULT 0,
-  processed      INTEGER NOT NULL DEFAULT 0,-- 0=未進 LLM / 1=已抽取過
-  ingested_at    TEXT NOT NULL,             -- App 端落庫時間 ISO8601
-  key_material   TEXT,                      -- 媒體解密金鑰材料（僅媒體訊息；文字訊息為 NULL）
-  orig_filename  TEXT,                      -- 媒體原始檔名（可空）
-  file_size      INTEGER,                   -- 媒體檔案大小 bytes（可空）
-  media_backed_up INTEGER NOT NULL DEFAULT 0,-- 0=未備份 / 1=已備份（媒體自動備份增量追蹤）
-  unsent         INTEGER NOT NULL DEFAULT 0,-- 0=正常 / 1=已收回（LINE _attribute==1）
+  processed      INTEGER NOT NULL DEFAULT 0,
+  ingested_at    TEXT NOT NULL,
+  key_material   TEXT,
+  orig_filename  TEXT,
+  file_size      INTEGER,
+  media_backed_up INTEGER NOT NULL DEFAULT 0,
+  unsent INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
 );
-CREATE INDEX IF NOT EXISTS idx_messages_chat_ts   ON messages(chat_id, ts);
-CREATE INDEX IF NOT EXISTS idx_messages_unproc    ON messages(processed, chat_id);
+CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_id, ts);
+CREATE INDEX IF NOT EXISTS idx_messages_unproc  ON messages(processed, chat_id);
 
--- ── 代辦（看板核心）────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS todos (
-  id                  TEXT PRIMARY KEY,     -- App 產生 uuid
+  id                  TEXT PRIMARY KEY,
   chat_id             TEXT NOT NULL,
+  entity_revision     INTEGER NOT NULL DEFAULT 1 CHECK(entity_revision >= 1),
   bucket              TEXT NOT NULL CHECK(bucket IN ('todo','waiting','schedule')),
   status              TEXT NOT NULL DEFAULT 'pending'
                         CHECK(status IN ('pending','waiting_reply','scheduled',
                                          'done','suggested_done','dismissed')),
-  title               TEXT NOT NULL,        -- 一句話代辦摘要（LLM 產）
-  detail              TEXT,                 -- 補充內容（LLM 產，可空）
-  priority            INTEGER NOT NULL DEFAULT 2,  -- 1=高 2=中 3=低（LLM 建議，可調）
-  due_at              TEXT,                 -- 行程/期限 ISO8601；無則 NULL
-  source_msg_ids      TEXT NOT NULL,        -- JSON 陣列字串：來源 message msg_id（可多筆）
-  confidence          REAL NOT NULL DEFAULT 0.5,   -- 0..1，LLM 抽取信心
-  completion_evidence TEXT,                 -- 完成偵測證據（被哪則訊息/理由判定完成）
-  created_at          TEXT NOT NULL,        -- ISO8601
-  updated_at          TEXT NOT NULL,        -- ISO8601（每次狀態變更更新）
-  resolved_at         TEXT,                 -- 進入 done/dismissed 的時間 ISO8601
+  title               TEXT NOT NULL,
+  detail              TEXT,
+  priority            INTEGER NOT NULL DEFAULT 2,
+  due_at              TEXT,
+  source_msg_ids      TEXT NOT NULL,
+  confidence          REAL NOT NULL DEFAULT 0.5,
+  completion_evidence TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  resolved_at         TEXT,
   FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
 );
 CREATE INDEX IF NOT EXISTS idx_todos_status    ON todos(status);
 CREATE INDEX IF NOT EXISTS idx_todos_chat_open ON todos(chat_id, status);
 CREATE INDEX IF NOT EXISTS idx_todos_due       ON todos(due_at);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_todos_chat_id ON todos(chat_id,id);
 
 CREATE TABLE IF NOT EXISTS todo_not_mine_events (
   feedback_id TEXT PRIMARY KEY, todo_id TEXT NOT NULL, event_type TEXT NOT NULL,
@@ -85,22 +82,183 @@ CREATE TABLE IF NOT EXISTS todo_correction_effects (
   chat_id TEXT NOT NULL, message_ids TEXT NOT NULL, stage TEXT NOT NULL, created_at TEXT NOT NULL
 );
 
--- ── App 設定（key-value；QWEN key 不存這裡，存 safeStorage 檔）──
 CREATE TABLE IF NOT EXISTS app_settings (
   key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL                       -- JSON 字串
+  value TEXT NOT NULL
 );
 
--- ── 每輪 pipeline 執行記錄（可觀測 / 除錯）─────────────────
 CREATE TABLE IF NOT EXISTS pipeline_runs (
-  id             TEXT PRIMARY KEY,          -- uuid
+  id             TEXT PRIMARY KEY,
   started_at     TEXT NOT NULL,
   finished_at    TEXT,
   new_msgs       INTEGER NOT NULL DEFAULT 0,
   chats_seen     INTEGER NOT NULL DEFAULT 0,
   todos_created  INTEGER NOT NULL DEFAULT 0,
   todos_resolved INTEGER NOT NULL DEFAULT 0,
-  line_bridge    TEXT NOT NULL DEFAULT 'ok', -- 'ok' | 'error' | 'skipped'
-  llm_status     TEXT NOT NULL DEFAULT 'ok', -- 'ok' | 'partial' | 'error'
+  line_bridge    TEXT NOT NULL DEFAULT 'ok',
+  llm_status     TEXT NOT NULL DEFAULT 'ok',
   note           TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_messages_chat_msg ON messages(chat_id,msg_id);
+CREATE INDEX IF NOT EXISTS idx_messages_chat_ts_msg ON messages(chat_id,ts,msg_id);
+CREATE TABLE IF NOT EXISTS chat_context_cache (
+  chat_id TEXT PRIMARY KEY,
+  cache_schema_version INTEGER NOT NULL CHECK(cache_schema_version > 0),
+  state_version INTEGER NOT NULL DEFAULT 1 CHECK(state_version >= 1),
+  source_epoch INTEGER NOT NULL DEFAULT 1 CHECK(source_epoch >= 1),
+  append_seq INTEGER NOT NULL DEFAULT 0 CHECK(append_seq >= 0),
+  scope_revision INTEGER NOT NULL DEFAULT 1 CHECK(scope_revision >= 1),
+  todo_identity_revision INTEGER NOT NULL DEFAULT 0 CHECK(todo_identity_revision >= 0),
+  topic_identity_revision INTEGER NOT NULL DEFAULT 0 CHECK(topic_identity_revision >= 0),
+  window_complete INTEGER NOT NULL DEFAULT 0 CHECK(window_complete IN (0,1)),
+  window_digest TEXT CHECK(window_digest IS NULL OR length(window_digest) = 64),
+  active_lease_id TEXT,
+  lease_expires_at TEXT,
+  session_epoch INTEGER NOT NULL DEFAULT 0 CHECK(session_epoch >= 0),
+  session_fingerprint TEXT,
+  accepted_turns INTEGER NOT NULL DEFAULT 0 CHECK(accepted_turns BETWEEN 0 AND 64),
+  submitted_requests INTEGER NOT NULL DEFAULT 0 CHECK(submitted_requests BETWEEN 0 AND 64),
+  submitted_user_utf8_bytes INTEGER NOT NULL DEFAULT 0 CHECK(submitted_user_utf8_bytes BETWEEN 0 AND 131072),
+  last_accepted_at TEXT,
+  tainted INTEGER NOT NULL DEFAULT 0 CHECK(tainted IN (0,1)),
+  updated_at TEXT NOT NULL,
+  CHECK((active_lease_id IS NULL AND lease_expires_at IS NULL) OR
+        (active_lease_id IS NOT NULL AND lease_expires_at IS NOT NULL)),
+  FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE ON UPDATE RESTRICT
+);
+CREATE TABLE IF NOT EXISTS chat_context_cache_window (
+  chat_id TEXT NOT NULL,
+  position INTEGER NOT NULL CHECK(position BETWEEN 0 AND 9),
+  msg_id TEXT NOT NULL,
+  content_fingerprint TEXT NOT NULL CHECK(length(content_fingerprint) = 64),
+  PRIMARY KEY(chat_id,position),
+  UNIQUE(chat_id,msg_id),
+  FOREIGN KEY(chat_id) REFERENCES chat_context_cache(chat_id) ON DELETE CASCADE ON UPDATE RESTRICT,
+  FOREIGN KEY(chat_id,msg_id) REFERENCES messages(chat_id,msg_id) ON DELETE CASCADE ON UPDATE CASCADE
+);
+INSERT OR IGNORE INTO chat_context_cache(chat_id,cache_schema_version,state_version,source_epoch,append_seq,scope_revision,todo_identity_revision,topic_identity_revision,window_complete,window_digest,active_lease_id,lease_expires_at,session_epoch,session_fingerprint,accepted_turns,submitted_requests,submitted_user_utf8_bytes,last_accepted_at,tainted,updated_at)
+SELECT chat_id,1,1,1,0,1,0,0,0,NULL,NULL,NULL,0,NULL,0,0,0,NULL,0,last_seen_at FROM chats;
+CREATE TRIGGER IF NOT EXISTS trg_chats_cache_after_insert AFTER INSERT ON chats BEGIN
+  INSERT OR IGNORE INTO chat_context_cache(chat_id,cache_schema_version,state_version,source_epoch,append_seq,scope_revision,todo_identity_revision,topic_identity_revision,window_complete,window_digest,active_lease_id,lease_expires_at,session_epoch,session_fingerprint,accepted_turns,submitted_requests,submitted_user_utf8_bytes,last_accepted_at,tainted,updated_at)
+  VALUES(NEW.chat_id,1,1,1,0,1,0,0,0,NULL,NULL,NULL,0,NULL,0,0,0,NULL,0,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+END;
+CREATE TRIGGER IF NOT EXISTS trg_messages_cache_after_insert AFTER INSERT ON messages BEGIN
+  UPDATE chat_context_cache SET append_seq=append_seq+1,state_version=state_version+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE chat_id=NEW.chat_id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_messages_cache_after_source_update AFTER UPDATE OF msg_id,chat_id,ts,time_iso,direction,sender,text,content_type,unsent ON messages
+WHEN OLD.msg_id IS NOT NEW.msg_id OR OLD.chat_id IS NOT NEW.chat_id OR OLD.ts IS NOT NEW.ts OR OLD.time_iso IS NOT NEW.time_iso OR OLD.direction IS NOT NEW.direction OR OLD.sender IS NOT NEW.sender OR OLD.text IS NOT NEW.text OR OLD.content_type IS NOT NEW.content_type OR OLD.unsent IS NOT NEW.unsent
+BEGIN
+  UPDATE chat_context_cache SET source_epoch=source_epoch+1,state_version=state_version+1,window_complete=0,window_digest=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE chat_id=OLD.chat_id;
+  UPDATE chat_context_cache SET source_epoch=source_epoch+1,state_version=state_version+1,window_complete=0,window_digest=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE chat_id=NEW.chat_id AND NEW.chat_id IS NOT OLD.chat_id;
+  DELETE FROM chat_context_cache_window WHERE chat_id=OLD.chat_id OR chat_id=NEW.chat_id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_messages_cache_after_delete AFTER DELETE ON messages BEGIN
+  UPDATE chat_context_cache SET source_epoch=source_epoch+1,state_version=state_version+1,window_complete=0,window_digest=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE chat_id=OLD.chat_id;
+  DELETE FROM chat_context_cache_window WHERE chat_id=OLD.chat_id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_chats_cache_after_scope_update AFTER UPDATE OF name,is_group,blocked ON chats
+WHEN OLD.name IS NOT NEW.name OR OLD.is_group IS NOT NEW.is_group OR OLD.blocked IS NOT NEW.blocked
+BEGIN
+  UPDATE chat_context_cache SET scope_revision=scope_revision+1,state_version=state_version+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE chat_id=NEW.chat_id;
+END;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_todos_chat_id ON todos(chat_id,id);
+CREATE TABLE IF NOT EXISTS identity_index_meta (
+  chat_id TEXT NOT NULL, entity_type TEXT NOT NULL CHECK(entity_type IN ('todo','topic')),
+  tokenizer_version TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('building','ready','stale','failed')),
+  cursor_entity_id TEXT, last_error_code TEXT, updated_at TEXT NOT NULL,
+  PRIMARY KEY(chat_id,entity_type), FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE ON UPDATE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_identity_index_state ON identity_index_meta(entity_type,state,chat_id);
+CREATE TABLE IF NOT EXISTS identity_backfill_issues (
+  issue_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, entity_type TEXT NOT NULL CHECK(entity_type IN ('todo','topic')),
+  entity_id TEXT NOT NULL, issue_kind TEXT NOT NULL CHECK(issue_kind IN ('malformed_source_json','orphan_source_ref','term_limit_exceeded')),
+  detail_json TEXT NOT NULL CHECK(json_valid(detail_json)), state TEXT NOT NULL CHECK(state IN ('open','resolved')),
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(chat_id,entity_type,entity_id,issue_kind,detail_json),
+  FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE ON UPDATE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_identity_backfill_issues_inbox ON identity_backfill_issues(chat_id,state,entity_type,updated_at,issue_id);
+CREATE TABLE IF NOT EXISTS todo_identity_terms (
+  chat_id TEXT NOT NULL, term TEXT NOT NULL CHECK(length(term) BETWEEN 1 AND 128), todo_id TEXT NOT NULL,
+  indexed_revision INTEGER NOT NULL CHECK(indexed_revision > 0), term_kind TEXT NOT NULL CHECK(term_kind IN ('current','historical')),
+  PRIMARY KEY(chat_id,term,todo_id,term_kind),
+  FOREIGN KEY(chat_id,todo_id) REFERENCES todos(chat_id,id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_todo_identity_terms_entity ON todo_identity_terms(chat_id,todo_id,term_kind,indexed_revision);
+CREATE TABLE IF NOT EXISTS todo_identity_aliases (
+  alias_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, todo_id TEXT NOT NULL, title TEXT NOT NULL, detail TEXT,
+  source_msg_ids TEXT NOT NULL, entity_revision INTEGER NOT NULL CHECK(entity_revision > 0), created_at TEXT NOT NULL,
+  UNIQUE(chat_id,todo_id,entity_revision), FOREIGN KEY(chat_id,todo_id) REFERENCES todos(chat_id,id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+CREATE TABLE IF NOT EXISTS todo_identity_sources (
+  chat_id TEXT NOT NULL, todo_id TEXT NOT NULL, msg_id TEXT NOT NULL, source_role TEXT NOT NULL CHECK(source_role IN ('canonical','historical','decision')),
+  PRIMARY KEY(chat_id,todo_id,msg_id),
+  FOREIGN KEY(chat_id,todo_id) REFERENCES todos(chat_id,id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(chat_id,msg_id) REFERENCES messages(chat_id,msg_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_todo_identity_sources_source ON todo_identity_sources(chat_id,msg_id,todo_id);
+CREATE TABLE IF NOT EXISTS todo_identity_decisions (
+  decision_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, source_digest TEXT NOT NULL CHECK(length(source_digest)=64), draft_ref TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK(outcome IN ('update_existing','new','link','defer')), state TEXT NOT NULL CHECK(state IN ('open','resolved','stale','dismissed')),
+  canonical_todo_id TEXT, decision_revision INTEGER NOT NULL CHECK(decision_revision>=1), source_epoch INTEGER NOT NULL CHECK(source_epoch>=1),
+  scope_revision INTEGER NOT NULL CHECK(scope_revision>=1), identity_revision INTEGER NOT NULL CHECK(identity_revision>=0), topic_identity_revision INTEGER NOT NULL CHECK(topic_identity_revision>=0), draft_json TEXT NOT NULL CHECK(json_valid(draft_json)),
+  candidate_snapshot_json TEXT NOT NULL CHECK(json_valid(candidate_snapshot_json)), reason_codes_json TEXT NOT NULL CHECK(json_valid(reason_codes_json)),
+  prompt_version TEXT NOT NULL, schema_version TEXT NOT NULL, query_version TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  UNIQUE(chat_id,source_digest,draft_ref,decision_revision), UNIQUE(decision_id,chat_id),
+  FOREIGN KEY(chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE ON UPDATE RESTRICT,
+  FOREIGN KEY(chat_id,canonical_todo_id) REFERENCES todos(chat_id,id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_todo_identity_decisions_keyset ON todo_identity_decisions(chat_id,state,decision_id);
+CREATE TABLE IF NOT EXISTS todo_identity_decision_sources (
+  decision_id TEXT NOT NULL, chat_id TEXT NOT NULL, msg_id TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal>=0),
+  evidence_role TEXT NOT NULL CHECK(evidence_role IN ('action','date','owner','context','counterevidence')),
+  PRIMARY KEY(decision_id,msg_id), UNIQUE(decision_id,ordinal),
+  FOREIGN KEY(decision_id,chat_id) REFERENCES todo_identity_decisions(decision_id,chat_id) ON DELETE CASCADE ON UPDATE RESTRICT,
+  FOREIGN KEY(chat_id,msg_id) REFERENCES messages(chat_id,msg_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_todo_identity_sources_inbox ON todo_identity_decision_sources(chat_id,msg_id,decision_id);
+CREATE TABLE IF NOT EXISTS todo_identity_events (
+  event_id TEXT PRIMARY KEY, decision_id TEXT NOT NULL, event_revision INTEGER NOT NULL CHECK(event_revision>=1),
+  actor TEXT NOT NULL CHECK(actor IN ('ai','user','system')),
+  action TEXT NOT NULL CHECK(action IN ('created','deferred','stale','retried','resolved_existing','resolved_new','updated_existing','linked','relation_accepted','relation_rejected','dismissed')),
+  payload_json TEXT NOT NULL CHECK(json_valid(payload_json)), created_at TEXT NOT NULL, UNIQUE(decision_id,event_revision),
+  FOREIGN KEY(decision_id) REFERENCES todo_identity_decisions(decision_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+CREATE TABLE IF NOT EXISTS todo_identity_relations (
+  relation_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, left_todo_id TEXT NOT NULL, right_todo_id TEXT NOT NULL,
+  relation_type TEXT NOT NULL CHECK(relation_type IN ('recurrence','related_action','follow_up')),
+  status TEXT NOT NULL CHECK(status IN ('proposed','confirmed','rejected')), decision_id TEXT NOT NULL, created_at TEXT NOT NULL,
+  CHECK(left_todo_id<>right_todo_id), UNIQUE(chat_id,left_todo_id,right_todo_id,relation_type),
+  FOREIGN KEY(chat_id,left_todo_id) REFERENCES todos(chat_id,id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(chat_id,right_todo_id) REFERENCES todos(chat_id,id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(decision_id) REFERENCES todo_identity_decisions(decision_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_todo_identity_relations_right ON todo_identity_relations(chat_id,right_todo_id,left_todo_id);
+CREATE TABLE IF NOT EXISTS todo_topic_identity_relations (
+  relation_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, todo_id TEXT NOT NULL, topic_id TEXT NOT NULL,
+  relation_type TEXT NOT NULL CHECK(relation_type IN ('same_topic','related_action')),
+  status TEXT NOT NULL CHECK(status IN ('proposed','confirmed','rejected','stale')), decision_id TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1), created_at TEXT NOT NULL,
+  UNIQUE(chat_id,todo_id,topic_id,relation_type),
+  FOREIGN KEY(chat_id,todo_id) REFERENCES todos(chat_id,id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(chat_id,topic_id) REFERENCES discussion_topics(chat_id,topic_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(decision_id) REFERENCES todo_identity_decisions(decision_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_todo_topic_identity_topic ON todo_topic_identity_relations(chat_id,topic_id,todo_id);
+INSERT OR IGNORE INTO identity_index_meta(chat_id,entity_type,tokenizer_version,state,updated_at) SELECT c.chat_id,'todo','identity-query-v2',CASE WHEN EXISTS(SELECT 1 FROM todos t WHERE t.chat_id=c.chat_id) THEN 'building' ELSE 'ready' END,c.last_seen_at FROM chats c;
+CREATE TRIGGER IF NOT EXISTS trg_todos_identity_insert AFTER INSERT ON todos BEGIN
+  UPDATE chat_context_cache SET todo_identity_revision=todo_identity_revision+1,state_version=state_version+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE chat_id=NEW.chat_id;
+  INSERT OR IGNORE INTO identity_index_meta(chat_id,entity_type,tokenizer_version,state,updated_at) VALUES(NEW.chat_id,'todo','identity-query-v2','stale',strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+  UPDATE identity_index_meta SET state='stale',cursor_entity_id=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE chat_id=NEW.chat_id AND entity_type='todo';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_todos_identity_update AFTER UPDATE OF chat_id,bucket,status,title,detail,priority,due_at,source_msg_ids,confidence,completion_evidence,resolved_at ON todos
+WHEN OLD.chat_id IS NOT NEW.chat_id OR OLD.bucket IS NOT NEW.bucket OR OLD.status IS NOT NEW.status OR OLD.title IS NOT NEW.title OR OLD.detail IS NOT NEW.detail OR OLD.priority IS NOT NEW.priority OR OLD.due_at IS NOT NEW.due_at OR OLD.source_msg_ids IS NOT NEW.source_msg_ids OR OLD.confidence IS NOT NEW.confidence OR OLD.completion_evidence IS NOT NEW.completion_evidence OR OLD.resolved_at IS NOT NEW.resolved_at
+BEGIN
+  INSERT OR IGNORE INTO todo_identity_aliases(alias_id,chat_id,todo_id,title,detail,source_msg_ids,entity_revision,created_at) VALUES(lower(hex(randomblob(16))),OLD.chat_id,OLD.id,OLD.title,OLD.detail,OLD.source_msg_ids,OLD.entity_revision,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+  UPDATE todos SET entity_revision=entity_revision+1 WHERE id=NEW.id;
+  UPDATE chat_context_cache SET todo_identity_revision=todo_identity_revision+1,state_version=state_version+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE chat_id=OLD.chat_id OR chat_id=NEW.chat_id;
+  UPDATE identity_index_meta SET state='stale',cursor_entity_id=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE (chat_id=OLD.chat_id OR chat_id=NEW.chat_id) AND entity_type='todo';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_todos_identity_delete AFTER DELETE ON todos BEGIN
+  UPDATE chat_context_cache SET todo_identity_revision=todo_identity_revision+1,state_version=state_version+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE chat_id=OLD.chat_id;
+  UPDATE identity_index_meta SET state='stale',cursor_entity_id=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE chat_id=OLD.chat_id AND entity_type='todo';
+END;

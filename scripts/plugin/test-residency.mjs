@@ -14,6 +14,7 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { build } from 'esbuild'
+import NativeDatabase from 'better-sqlite3-plugin'
 
 import { byAttr, byText, install, reactProps, walk } from './fixtures/mini-dom.mjs'
 import { createCoreGateStandin } from '../lib/core-invoke-gate-standin.mjs'
@@ -64,7 +65,7 @@ function fakeLine() {
 const raw = (i, text, { chatId = 'u-alice', chat = 'Alice' } = {}) => { const t = 1_700_000_000_000 + i * 1000; return { msgId: `m${i}`, chat, chatId, isGroup: false, ts: t, time: new Date(t).toISOString(), direction: 'in', sender: chat, text, contentType: 0 } }
 const fenced = (v) => '```json\n' + JSON.stringify(v) + '\n```'
 /** the model: a todo titled after the first message of the offered chat */
-const answer = (user) => { const p = JSON.parse(user); const first = p.newMessages[0]; return { importance: 'action', newTodos: [{ bucket: 'todo', title: `跟進 ${first.msgId}`, detail: 'x', priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], resolved: [], updates: [] } }
+const answer = (user) => { const p = JSON.parse(user); const first = p.newMessages[0]; const draftRef=`residency_${String(first.msgId).replace(/[^a-z0-9_-]/giu,'_')}`; return { importance: 'action', newTodos: [{ draftRef,bucket: 'todo', title: `跟進 ${first.msgId}`, detail: 'x', priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], identityDecisions:[{draftRef,outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'high',evidenceMsgIds:[first.msgId]}], resolved: [], updates: [] } }
 const FAST = { ai: { config: { busyRetryMs: 10, providerRetryMs: 150, optionsTtlMs: 20 }, worker: { pollIntervalMs: 40, unavailableRetryMs: 40 } } }
 
 async function startBackend({ dataDir, line, ai, residency, extra = {} }) {
@@ -235,7 +236,7 @@ test('absent (old Core): the same work gives the same todos, AI calls, counters 
 test('onChange: backend.residency and backend.info follow Core, each real change is published once as a `residency` event, a repeated value is not, dispose stops following', async () => {
   const dataDir = tempData('change')
   const line = fakeLine()
-  const ai = createMockTuqAi({ reply: () => fenced({ importance: 'noise', newTodos: [], resolved: [], updates: [] }) })
+  const ai = createMockTuqAi({ reply: () => fenced({ importance: 'noise', newTodos: [], identityDecisions:[], resolved: [], updates: [] }) })
   const core = createResidencyStandin({ mode: 'present', initial: RESIDENT })
   const { backend, must } = await startBackend({ dataDir, line, ai, residency: core.api })
   try {
@@ -356,13 +357,27 @@ test('crash restart (SIGKILL with an AI call outstanding, no dispose): the stale
     const line = fakeLine()
     const ai = createMockTuqAi({ reply: (ctx) => fenced(answer(ctx.user)) })
     const core = createResidencyStandin({ mode: 'present', initial: DOWNGRADED_BUDGET })
-    const { backend, call, must } = await startBackend({ dataDir, line, ai, residency: core.api })
+    const { backend, call, must } = await startBackend({ dataDir, line, ai, residency: core.api, extra:{extract:{retryBaseMs:20,retryMaxMs:20}} })
     try {
       assert.equal((await must('backend.residency')).reason, 'resident_budget_exceeded', 'the restarted backend starts from whatever Core says now')
       assert.equal((await must('db.messages.list', { limit: 100 })).length, 2, 'what the dead backend stored is still there')
       assert.equal((await must('db.todos.list')).length, 0)
+      const recoveryProbe=new NativeDatabase(join(dataDir,'line-todo.db'),{readonly:true,fileMustExist:true})
+      try {
+        const recovered=recoveryProbe.prepare('SELECT active_lease_id,tainted FROM chat_context_cache WHERE chat_id=?').get('u-alice')
+        assert.equal(recovered.active_lease_id,null,'the exclusive owner-lock initializer recovers the dead process lease before any new pipeline request')
+        assert.equal(recovered.tainted,1,'recovery taints the old Host context so its controlled retry starts a fresh epoch')
+      } finally { recoveryProbe.close() }
       await call('pipeline.runOnce')
-      await until(async () => (await must('db.todos.list')).length === 1, { message: 'the unfinished work is done' })
+      try { await until(async () => (await must('db.todos.list')).length === 1, { message: 'the unfinished work is done' }) }
+      catch (error) {
+        const diagnosticDb=new NativeDatabase(join(dataDir,'line-todo.db'),{readonly:true,fileMustExist:true})
+        let sourceState
+        try { sourceState=diagnosticDb.prepare('SELECT active_lease_id,tainted,session_epoch,submitted_requests,submitted_user_utf8_bytes FROM chat_context_cache WHERE chat_id=?').get('u-alice') }
+        finally { diagnosticDb.close() }
+        const diagnostic={extract:await must('extract.stats'),status:await must('ai.status'),messages:await must('db.messages.list',{limit:10}),todos:await must('db.todos.list'),completes:ai.stats.completes,turns:ai.stats.turns.length,sourceState}
+        throw new Error(`unfinished recovery timed out; diagnostic=${JSON.stringify(diagnostic)}`,{cause:error})
+      }
       await sleep(250)
       assert.equal((await must('db.todos.list')).length, 1, 'exactly one todo')
       assert.deepEqual(ai.stats.turns.map((t) => JSON.parse(t.text).newMessages.map((m) => m.msgId)), [['i:m1', 'i:m2']], 'one AI turn with both messages: the dead lease did not block them and was not counted twice')
@@ -381,7 +396,7 @@ test('crash restart (SIGKILL with an AI call outstanding, no dispose): the stale
 async function withBoard(initial, body) {
   const dataDir = tempData('board')
   const line = fakeLine()
-  const ai = createMockTuqAi({ reply: () => fenced({ importance: 'noise', newTodos: [], resolved: [], updates: [] }) })
+  const ai = createMockTuqAi({ reply: () => fenced({ importance: 'noise', newTodos: [], identityDecisions:[], resolved: [], updates: [] }) })
   const core = createResidencyStandin({ mode: initial === undefined ? 'absent' : 'present', initial })
   const { backend } = await startBackend({ dataDir, line, ai, residency: initial === undefined ? undefined : core.api })
   const gate = createCoreGateStandin(backend, { methods: [...ui.BACKEND_METHOD_GROUPS] })

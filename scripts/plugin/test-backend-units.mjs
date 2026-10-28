@@ -16,6 +16,7 @@ import { openDatabase } from '../../src/main/db/database.ts'
 import { getUnprocessedForPipeline, insertMessages } from '../../src/main/db/messages.repo.ts'
 import { getLastRun } from '../../src/main/db/pipeline.repo.ts'
 import { createTodo, listTodos } from '../../src/main/db/todos.repo.ts'
+import { readChatSourceState } from '../../src/main/db/sourceCache.ts'
 import { EXTRACT_SYSTEM_PROMPT, buildUserPayload } from '../../src/main/llm/extractPrompt.ts'
 import { runOnce } from '../../src/main/pipeline/runOnce.ts'
 import { fixedWatchSource } from '../../src/main/pipeline/scheduler.ts'
@@ -60,7 +61,8 @@ async function cycle(db, queue, messages) {
 
 const okResult = (msgIds, title = '回覆報價單') => ({
   importance: 'action',
-  newTodos: [{ bucket: 'todo', title, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: msgIds.slice(0, 1) }],
+  newTodos: [{ draftRef:`draft_${String(msgIds[0]??'none').replace(/[^a-z0-9_-]/giu,'_')}`, bucket: 'todo', title, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: msgIds.slice(0, 1) }],
+  identityDecisions: msgIds.length ? [{ draftRef:`draft_${String(msgIds[0]).replace(/[^a-z0-9_-]/giu,'_')}`,outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'high',evidenceMsgIds:msgIds.slice(0,1)}] : [],
   resolved: [], updates: []
 })
 
@@ -145,11 +147,12 @@ test('partition: open todos that would eat the budget are cut to a prefix', () =
   assert.deepEqual(kept.map((t) => t.todoId), openTodos.slice(0, kept.length).map((t) => t.id))
 })
 
-test('ExtractQueue rebuilds lease payload with the chat current open todos', async () => {
+test('ExtractQueue leases current source text, selected rows and open todos, and accounts each repair payload once', async () => {
   const { db } = freshDb()
   const { queue } = makeQueue(db)
   try {
     await cycle(db, queue, [raw(901, { chatId: 'u-alice', text: '請處理這項新訊息' })])
+    db.prepare('UPDATE messages SET text=? WHERE chat_id=? AND msg_id=?').run('來源在佇列等待期間已更新', 'u-alice', id(901))
     const latest = createTodo({ chatId: 'u-alice', bucket: 'todo', status: 'pending', title: '供料後才新增的既有代辦', sourceMsgIds: [], confidence: 1 }, db)
     const pulled = queue.pull({ max: 1 })
     assert.equal(pulled.items.length, 1)
@@ -158,7 +161,16 @@ test('ExtractQueue rebuilds lease payload with the chat current open todos', asy
     assert.equal(item.chatId, 'u-alice')
     assert.equal(payload.openTodos.some((todo) => todo.todoId === latest.id && todo.title === latest.title), true)
     assert.deepEqual(payload.newMessages.map((message) => message.msgId), [id(901)])
-    const committed = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: { importance: 'noise', newTodos: [], resolved: [], updates: [] } }] })
+    assert.equal(payload.newMessages[0].text, '來源在佇列等待期間已更新', 'the leased model text is hydrated from the current source row')
+    assert.equal(typeof item.sessionEpoch, 'number')
+    assert.equal(typeof item.onAdditionalUserPayload, 'function')
+    const beforeRepair=readChatSourceState(db,'u-alice')
+    assert.equal(beforeRepair.submittedRequests,1)
+    assert.equal(item.onAdditionalUserPayload('repair input bytes'),true)
+    const afterRepair=readChatSourceState(db,'u-alice')
+    assert.equal(afterRepair.submittedRequests,2)
+    assert.equal(afterRepair.submittedUserUtf8Bytes,Buffer.byteLength(item.user,'utf8')+Buffer.byteLength('repair input bytes','utf8'))
+    const committed = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: { importance: 'noise', newTodos: [], identityDecisions: [], resolved: [], updates: [] } }] })
     assert.equal(committed.results[0].status, 'applied')
     assert.equal(queue.stats().leased, 0)
   } finally {
@@ -169,9 +181,10 @@ test('ExtractQueue rebuilds lease payload with the chat current open todos', asy
 
 // ───────────── ExtractQueue + runOnce ─────────────
 
-test('runOnce: duplicate normalized titles in one extract create one todo and merge all sources', async () => {
+test('runOnce: explicit identity decisions keep distinct same-title drafts and update only the supplied canonical ID', async () => {
   const { db } = freshDb()
-  const newTodo = (title, sourceMsgIds) => ({
+  const newTodo = (draftRef,title, sourceMsgIds) => ({
+    draftRef,
     bucket: 'todo', title, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds
   })
   const firstMessages = [raw(101), raw(102), raw(103)]
@@ -182,36 +195,45 @@ test('runOnce: duplicate normalized titles in one extract create one todo and me
     extractFn: async (input) => ({
       importance: 'action',
       newTodos: [
-        newTodo('回覆報價單', [input.newMessages[0].msgId]),
-        newTodo('回覆 報價單！', [input.newMessages[1].msgId]),
-        newTodo('更新週報', [input.newMessages[2].msgId])
+        newTodo('draft_quote_a','回覆報價單', [input.newMessages[0].msgId]),
+        newTodo('draft_quote_b','回覆 報價單！', [input.newMessages[1].msgId]),
+        newTodo('draft_weekly','更新週報', [input.newMessages[2].msgId])
       ],
+      identityDecisions:input.newMessages.map((message,index)=>({draftRef:['draft_quote_a','draft_quote_b','draft_weekly'][index],outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'distinct_action',confidenceBand:'high',evidenceMsgIds:[message.msgId]})),
       resolved: [],
       updates: []
     })
   })
 
-  assert.equal(first.todosCreated, 2)
-  assert.equal(first.todosMerged, 1)
+  assert.equal(first.todosCreated, 3)
+  assert.equal(first.todosMerged, 0,'normalized title equality alone does not merge distinct drafts')
   const initialTodos = listTodos({}, db)
-  assert.equal(initialTodos.length, 2)
+  assert.equal(initialTodos.length, 3)
   const mergedTodo = initialTodos.find((todo) => todo.title === '回覆報價單')
   const completionTarget = initialTodos.find((todo) => todo.title === '更新週報')
+  const otherSimilarTitle = initialTodos.find((todo) => todo.title === '回覆 報價單！')
   assert.ok(mergedTodo)
   assert.ok(completionTarget)
-  assert.deepEqual(mergedTodo.sourceMsgIds, [id(101), id(102)])
+  assert.ok(otherSimilarTitle)
+  assert.notEqual(mergedTodo.id,otherSimilarTitle.id)
+  assert.deepEqual(mergedTodo.sourceMsgIds, [id(101)])
+  assert.deepEqual(otherSimilarTitle.sourceMsgIds,[id(102)])
 
   const second = await runOnce({
     db,
     config,
-    watchSource: fixedWatchSource([raw(104)]),
+    watchSource: fixedWatchSource([raw(104,{text:'回覆報價單的預約移到週五，也請通知團隊'})]),
     extractFn: async (input) => ({
       importance: 'action',
       newTodos: [
-        newTodo('回覆報價單。', [input.newMessages[0].msgId]),
-        newTodo('通知團隊', [input.newMessages[0].msgId])
+        newTodo('draft_quote_reschedule','回覆報價單。', [input.newMessages[0].msgId]),
+        newTodo('draft_notify','通知團隊', [input.newMessages[0].msgId])
       ],
-      resolved: [{ todoId: completionTarget.id, evidence: '已寄出' }],
+      identityDecisions:[
+        {draftRef:'draft_quote_reschedule',outcome:'update_existing',candidateType:'todo',candidateId:mergedTodo.id,relationKind:null,reasonCode:'reschedule',confidenceBand:'high',evidenceMsgIds:[input.newMessages[0].msgId]},
+        {draftRef:'draft_notify',outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'distinct_action',confidenceBand:'high',evidenceMsgIds:[input.newMessages[0].msgId]}
+      ],
+      resolved: [{ todoId: completionTarget.id, evidence: '已寄出',evidenceMsgIds:[input.newMessages[0].msgId] }],
       updates: []
     })
   })
@@ -220,9 +242,10 @@ test('runOnce: duplicate normalized titles in one extract create one todo and me
   assert.equal(second.todosMerged, 1, 'an existing open todo still absorbs a matching result')
   assert.equal(second.todosResolvedDone, 1, 'existing completion handling still applies')
   const finalTodos = listTodos({}, db)
-  assert.equal(finalTodos.length, 3)
+  assert.equal(finalTodos.length, 4)
   const updatedMergedTodo = finalTodos.find((todo) => todo.id === mergedTodo.id)
-  assert.deepEqual(updatedMergedTodo.sourceMsgIds, [id(101), id(102), id(104)])
+  assert.deepEqual(updatedMergedTodo.sourceMsgIds, [id(101), id(104)])
+  assert.deepEqual(finalTodos.find((todo)=>todo.id===otherSimilarTitle.id).sourceMsgIds,[id(102)])
   assert.equal(finalTodos.find((todo) => todo.id === completionTarget.id).status, 'done')
   assert.ok(finalTodos.some((todo) => todo.title === '通知團隊'))
 })
@@ -273,12 +296,12 @@ test('receive: a valid result is applied with the same logic as standalone; mess
   const { queue, runs } = makeQueue(db)
   await cycle(db, queue, [raw(1), raw(2)])
   const { items } = queue.pull()
-  const committed = queue.commit({ results: [{ itemId: items[0].itemId, ok: true, result: okResult(['m1', 'm2']) }] })
+  const committed = queue.commit({ results: [{ itemId: items[0].itemId, ok: true, result: okResult([id(1), id(2)]) }] })
   assert.equal(committed.results[0].status, 'applied')
   assert.equal(committed.results[0].createdIds.length, 1)
   assert.equal(committed.run.todosCreated, 1)
   assert.equal(getUnprocessedForPipeline(100, db).length, 0)
-  assert.deepEqual(stable(listTodos({}, db)), [{ chatId: 'u-alice', bucket: 'todo', status: 'pending', title: '回覆報價單', priority: 2, sourceMsgIds: ['m1'] }])
+  assert.deepEqual(stable(listTodos({}, db)), [{ chatId: 'u-alice', bucket: 'todo', status: 'pending', title: '回覆報價單', priority: 2, sourceMsgIds: [id(1)] }])
   assert.equal(runs.length, 1)
   assert.deepEqual(runs[0].createdIds, committed.results[0].createdIds)
   assert.equal(runs[0].llmStatus, 'ok')
@@ -339,7 +362,7 @@ test('receive: failures back off exponentially per chat and a later success clea
   assert.equal(res.results[0].retryInMs, 30_000, 'a retryAfterMs hint larger than the backoff wins')
   advance(30_001)
   ;[item] = queue.pull().items
-  res = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: okResult(['m1']) }] })
+  res = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: okResult([id(1)]) }] })
   assert.equal(res.results[0].status, 'applied')
   assert.equal(queue.stats().chatsBackingOff, 0)
   // a hostile failCode is normalised
@@ -354,9 +377,9 @@ test('receive: unknown, stale, duplicated and malformed commit items are refused
   const { queue, advance } = makeQueue(db)
   await cycle(db, queue, [raw(1)])
   const [item] = queue.pull().items
-  const first = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: okResult(['m1']) }, { itemId: 'nope', ok: true, result: okResult(['m1']) }, { ok: true }, { itemId: 'x', ok: 'yes' }] })
+  const first = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: okResult([id(1)]) }, { itemId: 'nope', ok: true, result: okResult([id(1)]) }, { ok: true }, { itemId: 'x', ok: 'yes' }] })
   assert.deepEqual(first.results.map((r) => r.status), ['applied', 'unknown_item', 'bad_request', 'bad_request'])
-  const again = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: okResult(['m1']) }] })
+  const again = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: okResult([id(1)]) }] })
   assert.equal(again.results[0].status, 'unknown_item', 'a committed lease cannot be committed twice')
   assert.equal(listTodos({}, db).length, 1)
 
@@ -366,8 +389,8 @@ test('receive: unknown, stale, duplicated and malformed commit items are refused
   advance(6000)
   const [b] = queue.pull().items
   assert.notEqual(a.itemId, b.itemId)
-  assert.equal(queue.commit({ results: [{ itemId: a.itemId, ok: true, result: okResult(['m2']) }] }).results[0].status, 'unknown_item')
-  assert.equal(queue.commit({ results: [{ itemId: b.itemId, ok: true, result: okResult(['m2'], '另一件事') }] }).results[0].status, 'applied')
+  assert.equal(queue.commit({ results: [{ itemId: a.itemId, ok: true, result: okResult([id(2)]) }] }).results[0].status, 'unknown_item')
+  assert.equal(queue.commit({ results: [{ itemId: b.itemId, ok: true, result: okResult([id(2)], '另一件事') }] }).results[0].status, 'applied')
 })
 
 test('receive: messages that arrive while a lease is out are offered separately; in-flight messages are never duplicated', async () => {
@@ -378,7 +401,7 @@ test('receive: messages that arrive while a lease is out are offered separately;
   await cycle(db, queue, [raw(3), raw(4)])
   const next = queue.pull()
   assert.equal(next.items.length, 0, 'one part per chat at a time: the chat is busy until its lease is resolved')
-  queue.commit({ results: [{ itemId: leased.itemId, ok: true, result: okResult(['m1', 'm2']) }] })
+  queue.commit({ results: [{ itemId: leased.itemId, ok: true, result: okResult([id(1), id(2)]) }] })
   assert.deepEqual(getUnprocessedForPipeline(100, db).map((m) => m.msgId), [id(3), id(4)])
   await cycle(db, queue, [])
   const [fresh] = queue.pull().items
@@ -390,7 +413,7 @@ test('receive: resolved / updates go through the shared apply logic (parity with
   const a = freshDb().db
   const script = [
     (input) => okResult(input.newMessages.map((m) => m.msgId)),
-    (input) => ({ importance: 'action', newTodos: [], resolved: input.openTodos.map((t) => ({ todoId: t.id, evidence: '對方已完成' })), updates: [] })
+    (input) => ({ importance: 'action', newTodos: [], identityDecisions:[], resolved: input.openTodos.map((t) => ({ todoId: t.id, evidence: '對方已完成',evidenceMsgIds:[input.newMessages[0].msgId] })), updates: [] })
   ]
   let n = 0
   for (const batch of [[raw(1), raw(2)], [raw(3)]]) {
@@ -428,7 +451,7 @@ test('receive: a large chat is delivered in parts, one at a time; all parts comm
     assert.ok(item.userChars <= 2500)
     const ids = JSON.parse(item.user).newMessages.map((m) => m.msgId)
     seen.push(...ids)
-    const res = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: { importance: 'fyi', newTodos: [], resolved: [], updates: [] } }] })
+    const res = queue.commit({ results: [{ itemId: item.itemId, ok: true, result: { importance: 'fyi', newTodos: [], identityDecisions:[], resolved: [], updates: [] } }] })
     assert.equal(res.results[0].status, 'applied')
   }
   assert.deepEqual(seen, messages.map((m) => id(m.msgId.slice(1))))
@@ -470,6 +493,26 @@ test('request(): an awaiting caller times out instead of hanging forever', async
   await assert.rejects(queue.request(inputOf([dto(1, 'hi')])), /extract_await_timeout/)
   assert.equal(queue.stats().awaiting, 0)
   queue.dispose()
+})
+
+test('ExtractQueue.progress renews a long supported lease so a newly acquired queue lease does not cause a false stall timeout',async()=>{
+  const {db}=freshDb()
+  const timers=[]
+  const {queue,advance}=makeQueue(db,{awaitTimeoutMs:1000,schedule:(fn,ms)=>{const timer={fn,ms,cancelled:false};timers.push(timer);return()=>{timer.cancelled=true}}})
+  try{
+    const waiting=queue.request(inputOf([dto(930,'合成長作業仍在進行')]))
+    const item=queue.pull({max:1,leaseMs:5000}).items[0]
+    assert.ok(item)
+    advance(900);queue.progress(item.itemId)
+    const first=timers.find((timer)=>!timer.cancelled);first.fn()
+    assert.equal(queue.stats().awaiting,1,'progress refreshed the stall clock instead of rejecting the in-flight caller')
+    advance(900);queue.progress(item.itemId)
+    const latest=timers.filter((timer)=>!timer.cancelled).at(-1);latest.fn()
+    assert.equal(queue.stats().awaiting,1)
+    queue.commit({results:[{itemId:item.itemId,ok:true,result:{importance:'noise',newTodos:[],identityDecisions:[],resolved:[],updates:[]}}]})
+    const result=await waiting
+    assert.equal(result.importance,'noise')
+  }finally{queue.dispose();db.close()}
 })
 
 // ───────────── EventHub ─────────────
@@ -825,7 +868,7 @@ function makeSessionAwareHost(options = {}) {
     },
     async complete(input) {
       completeCalls.push(structuredClone(input))
-      const text = options.completeReply ?? '這是一般 fresh completion'
+      const text = typeof options.completeReply==='function'?options.completeReply(input,completeCalls.length-1):options.completeReply ?? '這是一般 fresh completion'
       return { sessionId: '900', requestId: `plugin:900:complete-${completeCalls.length}`, providerTurnId: null, text, historySaved: 'saved' }
     },
     async openSession(input) {
@@ -861,7 +904,7 @@ function makeSessionAwareHost(options = {}) {
         try { parsed = JSON.parse(text) } catch { /* a repair prompt is plain text */ }
         if (parsed !== null) row.lastInput = parsed
         const turnId = (++row.nextTurn).toString(16).padStart(16, '0')
-        const output = options.reply === undefined ? JSON.stringify({ importance: 'noise', newTodos: [], resolved: [], updates: [] }) : options.reply({ row, text, parsed, sendIndex: row.sends.length })
+        const output = options.reply === undefined ? JSON.stringify({ importance: 'noise', newTodos: [], identityDecisions:[], resolved: [], updates: [] }) : options.reply({ row, text, parsed, sendIndex: row.sends.length })
         row.sends.push({ sessionId: row.id, turnId, text, output, parsed })
         if (row.lastTurnId !== null && options.replayPrevious !== false) {
           publish({ turnId: row.lastTurnId, kind: 'textDelta', text: row.lastOutput })
@@ -918,8 +961,8 @@ test('HostAi keeps JSON repair in one session and resets only the chat whose sys
   const store = memoryAiSessionMapStore()
   const host = makeSessionAwareHost({ reply: ({ row, text, sendIndex }) => {
     if (row.id === '1' && sendIndex === 0) return '{invalid first response'
-    if (row.id === '1' && text.includes('你上一則回覆無法使用')) return JSON.stringify({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
-    return JSON.stringify({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
+    if (row.id === '1' && text.includes('你上一則回覆無法使用')) return JSON.stringify({ importance: 'noise', newTodos: [], identityDecisions:[], resolved: [], updates: [] })
+    return JSON.stringify({ importance: 'noise', newTodos: [], identityDecisions:[], resolved: [], updates: [] })
   } })
   const port = createHostAiPort({ ai: host.api, selection: () => ({ providerId: 'codex', modelId: 'model-a', effort: 'medium' }), sessionMapStore: store })
   const request = (chatId, system) => ({ system, user: JSON.stringify({ chatId, newMessages: [] }), expectJson: true, validate: (value) => ({ ok: true, value }), priority: 'background', conversationScope: { kind: 'line-chat-extract', chatId } })
@@ -945,18 +988,77 @@ test('HostAi keeps JSON repair in one session and resets only the chat whose sys
   } finally { port.stop() }
 })
 
-test('HostAi clears an invalid mapped resume and fails this item without same-call fresh fallback', async () => {
+test('HostAi clears an invalid mapped resume and fails this item; the next source epoch opens fresh and seeds current input', async () => {
   const store = memoryAiSessionMapStore()
   const host = makeSessionAwareHost()
   const port = createHostAiPort({ ai: host.api, selection: () => ({ providerId: 'codex', modelId: 'model-a', effort: 'medium' }), sessionMapStore: store })
-  const request = { system: 'same system', user: '{}', expectJson: true, validate: (value) => ({ ok: true, value }), priority: 'background', conversationScope: { kind: 'line-chat-extract', chatId: 'u-alice' } }
+  const request = { system: 'same system', user: '{"current":"input"}', expectJson: true, validate: (value) => ({ ok: true, value }), priority: 'background', conversationScope: { kind: 'line-chat-extract', chatId: 'u-alice', sessionEpoch: 1 } }
   try {
     await port.complete(request)
     host.deleteSession('1')
     await assert.rejects(port.complete(request), (error) => error.code === 'continuity_lost')
     assert.equal(store.records.has('u-alice'), false)
     assert.deepEqual(host.operations.filter((entry) => entry.op === 'fresh' || entry.op === 'resume').map(({ op, id }) => [op, id]), [['fresh', '1'], ['resume', '1']])
+    await port.complete({ ...request, conversationScope: { ...request.conversationScope, sessionEpoch: 2 } })
+    assert.equal(host.sessions.get('2').sends[0].text, request.user, 'a new cache epoch starts with the fresh bounded request payload')
+    assert.deepEqual(host.operations.filter((entry) => entry.op === 'fresh' || entry.op === 'resume').map(({ op, id }) => [op, id]), [['fresh', '1'], ['resume', '1'], ['fresh', '2']])
   } finally { port.stop() }
+})
+
+test('HostAi fingerprints the cache session epoch and reports the effective Host model and effort', async () => {
+  const store=memoryAiSessionMapStore()
+  const host=makeSessionAwareHost()
+  const port=createHostAiPort({ai:host.api,selection:()=>({providerId:'codex',modelId:'model-a',effort:'low'}),sessionMapStore:store})
+  const request=(sessionEpoch)=>({system:'same system',user:JSON.stringify({turn:sessionEpoch}),expectJson:false,priority:'background',conversationScope:{kind:'line-chat-extract',chatId:'u-alice',sessionEpoch}})
+  try{
+    assert.deepEqual(await port.effectiveSelection(),{providerId:'codex',modelId:'model-a',effort:'low'})
+    await port.complete(request(4))
+    await port.complete(request(4))
+    assert.deepEqual(host.operations.filter((entry)=>entry.op==='fresh'||entry.op==='resume').map(({op,id})=>[op,id]),[['fresh','1'],['resume','1']])
+    await port.complete(request(5))
+    assert.deepEqual(host.operations.filter((entry)=>entry.op==='fresh'||entry.op==='resume').map(({op,id})=>[op,id]),[['fresh','1'],['resume','1'],['resume','1'],['fresh','2']])
+    assert.equal(host.sessions.get('2').sends[0].text,request(5).user)
+  }finally{port.stop()}
+})
+
+test('HostAi repair sends the full current SDK transcript and records its serialized user/assistant input once',async()=>{
+  const user=JSON.stringify({chat:'synthetic-chat',message:'請保留完整修復上下文'})
+  const host=makeSessionAwareHost({closedSessionResume:false,completeReply:(_input,index)=>index===0?'not-json':'{"importance":"noise"}'})
+  const port=createHostAiPort({ai:host.api,selection:()=>({providerId:'codex',modelId:'model-a',effort:'medium'})})
+  const additional=[]
+  try{
+    const result=await port.complete({system:'system',user,expectJson:true,validate:(value)=>({ok:true,value}),priority:'user',conversationScope:{kind:'line-chat-extract',chatId:'synthetic-chat'},onAdditionalUserPayload:(payload)=>{additional.push(payload);return true}})
+    assert.deepEqual(result.value,{importance:'noise'})
+    assert.equal(host.completeCalls.length,2)
+    const repair=host.completeCalls[1]
+    assert.deepEqual(repair.transcript,[{role:'user',text:user},{role:'assistant',text:'not-json'}],'the actual Host complete() receives the current complete transcript')
+    assert.equal(additional.length,1)
+    assert.equal(additional[0],[...repair.transcript.map((line)=>line.text),repair.text].join('\n'))
+    assert.equal(Buffer.byteLength(additional[0],'utf8'),Buffer.byteLength(user,'utf8')+Buffer.byteLength('not-json','utf8')+Buffer.byteLength(repair.text,'utf8')+2,'two serialized transcript line separators are counted')
+  }finally{port.stop()}
+})
+
+test('ExtractWorker and HostAi account the actual submitted primary and repair SDK text exactly once',async()=>{
+  const {db}=freshDb()
+  const {queue}=makeQueue(db,{leaseMs:120_000})
+  const host=makeSessionAwareHost({reply:({sendIndex})=>sendIndex===0?'{invalid response':JSON.stringify({importance:'noise',newTodos:[],identityDecisions:[],resolved:[],updates:[]})})
+  const port=createHostAiPort({ai:host.api,selection:()=>({providerId:'codex',modelId:'model-a',effort:'medium'}),sessionMapStore:memoryAiSessionMapStore(),config:{extractReserve:0,extractHourReserve:0}})
+  const worker=createExtractWorker({queue,port,system:()=> 'extract system',config:{pollIntervalMs:60_000}})
+  try{
+    const source=raw(944,{chatId:'u-alice',text:'請保留當前來源並處理修復測試'})
+    await cycle(db,queue,[source])
+    worker.start()
+    await worker.idle()
+    const session=host.sessions.get('1')
+    assert.equal(session.sends.length,2,'invalid primary response triggers exactly one same-purpose repair turn')
+    assert.equal(session.sends[0].text.includes(source.text),true,'fresh Host session is seeded by the current leased source payload')
+    assert.equal(worker.counters().extracted,1,'the repaired result commits through the owning queue transaction')
+    assert.equal(queue.stats().pending,0)
+    const state=readChatSourceState(db,'u-alice')
+    assert.equal(state.submittedRequests,2)
+    assert.equal(state.submittedUserUtf8Bytes,session.sends.reduce((sum,turn)=>sum+Buffer.byteLength(turn.text,'utf8'),0),'cache accounting matches the actual SDK session.send text fields')
+    assert.equal(db.prepare('SELECT processed FROM messages WHERE chat_id=? AND msg_id=?').get('u-alice',id(944)).processed,1)
+  }finally{worker.stop();port.stop();queue.dispose();db.close()}
 })
 
 test('HostAi never sends a new batch over a resumed session with an unfinished prior turn', async () => {
@@ -1173,11 +1275,12 @@ test('production assembly resumes each LINE chat across A→B→A and backend re
       const sourceMsgId = row.lastInput?.newMessages?.[0]?.msgId
       return JSON.stringify({
         importance: 'action',
-        newTodos: [{ bucket: 'todo', title: 'A 初始待辦', detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [sourceMsgId] }],
+        newTodos: [{ draftRef:'draft_a',bucket: 'todo', title: 'A 初始待辦', detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [sourceMsgId] }],
+        identityDecisions:[{draftRef:'draft_a',outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'high',evidenceMsgIds:[sourceMsgId]}],
         resolved: [], updates: []
       })
     }
-    return JSON.stringify({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
+    return JSON.stringify({ importance: 'noise', newTodos: [], identityDecisions:[], resolved: [], updates: [] })
   } })
   const createBackend = () => createPluginBackend({
     pluginId: 'tuqdev.line-todo', version: '9.9.9', dataDir, line: line.port,

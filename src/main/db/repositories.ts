@@ -18,6 +18,7 @@ export function createRepositories(db: Database) {
       insert: (message: Parameters<typeof messagesRepo.insertMessage>[0]) => messagesRepo.insertMessage(message, db),
       insertBatch: (messages: Parameters<typeof messagesRepo.insertMessages>[0]) => messagesRepo.insertMessages(messages, db),
       list: (query: messagesRepo.ListMessagesQuery = {}) => messagesRepo.listMessages(query, db),
+      byChatIds: (chatId: string, ids: string[]) => messagesRepo.getMessagesByChatAndIds(chatId, ids, db),
       recentByChat: (chatId: string, limit = 30) => messagesRepo.getRecentByChat(chatId, limit, db),
       byChatSince: (chatId: string, sinceMs: number) => messagesRepo.getByChatSince(chatId, sinceMs, db),
       count: (chatId?: string) => messagesRepo.countMessages(chatId, db),

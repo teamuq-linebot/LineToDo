@@ -3,13 +3,15 @@ import type {
   Api, BackfillProgress, LineBridgeStatus, MessagesPersistedEvent, ReconcileProgress,
   PipelineLoadStats, PipelineRunResult, PipelineStatus, ProviderHealth, RawLineMessage,
   ReviewLastDaysResult, SettingsPatch, SettingsView, TodoDTO,
-  TodosChangedEvent, QwenTestResult
+  TodosChangedEvent, QwenTestResult, IdentityResolveInputDTO
   , NotMineReasonCode
 } from '../shared/api'
 import { openDatabase } from '../main/db/database'
 import type { AppDbEngine } from '../main/db/appDbEngine'
 import { createRepositories } from '../main/db/repositories'
 import type { Database } from 'better-sqlite3'
+import { recoverAbandonedSourceLeases } from '../main/db/sourceCache'
+import type { RuntimeOwnerProof } from '../shared/runtimeOwnerProof'
 
 import type { UpdateTodoPatch } from '../main/db/todos.repo'
 
@@ -32,10 +34,15 @@ import { insertMessages } from '../main/db/messages.repo'
 import { ensureGroupTopicsSchema } from '../main/features/groupTopics/repository'
 import { createGroupTopicsService } from '../main/features/groupTopics/service'
 import { GROUP_TOPICS_BUNDLE_ENABLED } from '../main/features/groupTopics/prompts/bundle'
+import { createIdentityRetryService } from '../main/identity/retryService'
+import { inspectIdentityDecision, listIdentityInbox, listTodoTopicRelationsForChat, listTopicLinkProposals, resolveIdentityDecision, resolveTodoTopicRelation, resolveTopicLinkProposal } from '../main/identity/reviewPorts'
+import type { IdentityEntityType } from '../main/identity/reviewPorts'
 
 export interface LineTodoApplicationPorts {
   dataDir: string
   dbPath: string
+  /** Internal proof forwarded only by createLineTodoRuntime after exclusive owner-lock acquisition. */
+  runtimeOwnerProof?: RuntimeOwnerProof
   /** app DB 引擎（哪個 better-sqlite3 build／binding）；省略時用 standalone better-sqlite3。 */
   appDbEngine?: AppDbEngine
   onDatabase?(db: Database): void
@@ -84,6 +91,28 @@ const RECENT_DAYS = 7
 const UPDATE_BUCKETS = new Set<TodoDTO['bucket']>(['todo', 'waiting', 'schedule'])
 const UPDATE_COLUMNS = new Set(['todo', 'waiting', 'schedule', 'done'])
 function validFeedbackId(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) }
+function identityEntityType(value: unknown): value is IdentityEntityType { return value==='todo'||value==='topic' }
+function revision(value: unknown): value is number { return typeof value==='number'&&Number.isSafeInteger(value)&&value>=0 }
+function normalizeIdentityResolveInput(raw: unknown): IdentityResolveInputDTO | null {
+  if(!raw||typeof raw!=='object')return null
+  const value=raw as Record<string,unknown>
+  if(!identityEntityType(value.entityType)||typeof value.decisionId!=='string'||value.decisionId.length<1||value.decisionId.length>128||!revision(value.expectedDecisionRevision)||!Array.isArray(value.expectedCandidateRevisions)||value.expectedCandidateRevisions.length>50)return null
+  const candidateRevisions=value.expectedCandidateRevisions.flatMap((candidate):Array<{entityType:'todo'|'topic';entityId:string;revision:number}>=>{
+    if(!candidate||typeof candidate!=='object')return[]
+    const ref=candidate as Record<string,unknown>
+    return identityEntityType(ref.entityType)&&typeof ref.entityId==='string'&&ref.entityId.length>0&&ref.entityId.length<=128&&revision(ref.revision)?[{entityType:ref.entityType,entityId:ref.entityId,revision:ref.revision}]:[]
+  })
+  if(candidateRevisions.length!==value.expectedCandidateRevisions.length)return null
+  if(!['existing','new','link','dismiss'].includes(String(value.outcome)))return null
+  const candidateType=value.candidateType===undefined?undefined:identityEntityType(value.candidateType)?value.candidateType:null
+  if(candidateType===null)return null
+  const candidateId=value.candidateId===undefined?undefined:typeof value.candidateId==='string'&&value.candidateId.length>0&&value.candidateId.length<=128?value.candidateId:null
+  if(candidateId===null)return null
+  const relations=['recurrence','related_action','follow_up','same_topic'] as const
+  const relationKind=value.relationKind===undefined?undefined:relations.includes(value.relationKind as typeof relations[number])?value.relationKind as typeof relations[number]:null
+  if(relationKind===null)return null
+  return {entityType:value.entityType,decisionId:value.decisionId,expectedDecisionRevision:value.expectedDecisionRevision,expectedCandidateRevisions:candidateRevisions,outcome:value.outcome as IdentityResolveInputDTO['outcome'],...(candidateType?{candidateType}:{}),...(candidateId?{candidateId}:{}),...(relationKind?{relationKind}:{})}
+}
 
 function subscribe<T>(events: EventEmitter, event: string, cb: (value: T) => void): () => void {
   events.on(event, cb)
@@ -133,6 +162,9 @@ function buildSettingsView(settings: AppSettings, qwen: QwenConfig, isProviderCo
 
 export async function createLineTodoApplication(ports: LineTodoApplicationPorts): Promise<LineTodoApplication> {
   const database = openDatabase({ dbPath: ports.dbPath, engine: ports.appDbEngine })
+  // Only the runtime's opaque proof authorizes restart recovery. Direct/standby application
+  // initialization cannot release an active lease owned by another process.
+  if(ports.runtimeOwnerProof)recoverAbandonedSourceLeases(database.db,ports.runtimeOwnerProof,ports.dataDir,ports.dbPath)
   ports.onDatabase?.(database.db)
   const repos = createRepositories(database.db)
   const settings = ports.settings
@@ -234,6 +266,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   } catch (error) {
     console.warn('[group-topics] additive schema unavailable; feature disabled:', error instanceof Error ? error.name : 'unknown')
   }
+  const identityRetryService=createIdentityRetryService(database.db)
 
   disposers.push(ports.line.onMessage((message) => {
     if (state !== 'running') return
@@ -288,6 +321,11 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
       pendingCount: async (chatId) => groupTopicsService?.pendingCount(chatId) ?? 0,
       list: async (chatId) => groupTopicsService?.list(chatId) ?? { ok: false, topics: [] },
       linkCandidates: async (chatId) => groupTopicsService?.listLinkCandidates(chatId) ?? [],
+      linkProposals: async (chatId) => listTopicLinkProposals(database.db,{chatId}),
+      resolveLinkProposal: async (input) => {
+        if(!input||typeof input.linkId!=='string'||!input.linkId||!revision(input.expectedLinkRevision)||!revision(input.leftTopicRevision)||!revision(input.rightTopicRevision)||(input.choice!=='accept'&&input.choice!=='reject'))return{ok:false,reason:'invalid_request'}
+        return resolveTopicLinkProposal(database.db,input)
+      },
       analyze: async (chatId) => groupTopicsService?.analyze(chatId, () => ports.providers.resolveProvider()) ?? { ok: false, reason: 'unavailable' },
       todoRefs: async (topicId) => groupTopicsService?.todoRefs(topicId) ?? []
     } : undefined,
@@ -395,7 +433,33 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
         },
         reopenNotMine: async (feedbackId) => validFeedbackId(feedbackId) ? repos.notMine.reopen(feedbackId) : {ok:false,error:'feedback id 格式不正確'},
         applyNotMineCorrection: async (feedbackId,condition,effect) => validFeedbackId(feedbackId)&&typeof condition==='string'&&typeof effect==='string' ? repos.notMine.apply(feedbackId,condition,effect) : {ok:false,error:'修正資料格式不正確'},
-        setNotMineCorrectionEnabled: async (correctionId,enabled) => validFeedbackId(correctionId) ? repos.notMine.setEnabled(correctionId,!!enabled) : {ok:false,error:'correction id 格式不正確'}
+        setNotMineCorrectionEnabled: async (correctionId,enabled) => validFeedbackId(correctionId) ? repos.notMine.setEnabled(correctionId,!!enabled) : {ok:false,error:'correction id 格式不正確'},
+        identity: {
+          listPending: async (input) => {
+            if(!input||!identityEntityType(input.entityType))return{items:[]}
+            const chatId=typeof input.chatId==='string'&&input.chatId.length<=128?input.chatId:undefined
+            const after=input.after&&typeof input.after.decisionId==='string'?{decisionId:input.after.decisionId}:undefined
+            return listIdentityInbox(database.db,input.entityType,{...(chatId?{chatId}:{}),...(after?{after}:{}),...(revision(input.limit)?{limit:input.limit}:{})})
+          },
+          inspect: async (input) => {
+            if(!input||!identityEntityType(input.entityType)||typeof input.decisionId!=='string'||input.decisionId.length>128)return null
+            const result=inspectIdentityDecision(database.db,input.entityType,input.decisionId)
+            return result?{item:result.item,sourceEvidence:result.messages}:null
+          },
+          retry: async (input) => {
+            if(!input||!identityEntityType(input.entityType)||typeof input.decisionId!=='string'||!revision(input.expectedDecisionRevision))return{ok:false,reason:'invalid_request'}
+            return identityRetryService.retry(input,()=>ports.providers.resolveProvider())
+          },
+          resolve: async (raw) => {
+            const input=normalizeIdentityResolveInput(raw)
+            return input?resolveIdentityDecision(database.db,input):{ok:false,reason:'invalid_request'}
+          },
+          todoTopicRelations: async (chatId) => typeof chatId==='string'&&chatId.length<=128?listTodoTopicRelationsForChat(database.db,chatId):[],
+          resolveTodoTopicRelation: async (input) => {
+            if(!input||typeof input.relationId!=='string'||!input.relationId||!revision(input.expectedRevision)||!revision(input.expectedTodoRevision)||!revision(input.expectedTopicRevision)||(input.choice!=='confirm'&&input.choice!=='reject'))return{ok:false,reason:'invalid_request'}
+            return resolveTodoTopicRelation(database.db,input)
+          }
+        }
       },
       onMessagesPersisted: (cb) => subscribe(events, 'messages-persisted', cb)
     },

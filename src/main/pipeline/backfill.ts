@@ -1,35 +1,35 @@
 import type { Database } from 'better-sqlite3'
+import { createHash } from 'node:crypto'
 import { getDb } from '../db/database'
-import type { MessageDTO, TodoDTO } from '../db/dto'
+import type { MessageDTO } from '../db/dto'
 import { deriveMsgId } from '../db/schema'
 import {
   insertMessages,
   getByChatSince,
+  getMessagesByChatAndIds,
   listMessages,
   markProcessed
 } from '../db/messages.repo'
 import { getChat, setBlocked } from '../db/chats.repo'
 import {
-  createTodo,
-  getOpenTodosByChat,
-  mergeSources,
-  reclassifyTodo,
-  resolveTodo
+  getOpenTodosByChat
 } from '../db/todos.repo'
 import { startRun, finishRun } from '../db/pipeline.repo'
 import { getMessagesSince } from '../line/engine/watchEngine'
 import { getPipelineDefaults } from '../config/defaults'
 import type { PipelineDefaults } from '../config/defaults'
-import { makeExtractFn } from './runOnce'
-import type { ChatExtractInput } from './runOnce'
-import type { ExtractResult } from '../llm/schema'
-import { evaluateChatAutoBlock, isBatchNoise, matchesChatIgnoreKeyword } from './blocklist'
-import { findDuplicateOpenTodo } from './dedup'
+import { applyChatExtract, makeExtractFn } from './runOnce'
+import type { ApplyTally, ChatExtractInput } from './runOnce'
+import { EXTRACT_JSON_SCHEMA, type ExtractResult } from '../llm/schema'
+import { evaluateChatAutoBlock, isBatchNoise } from './blocklist'
 import { mapLimited } from './concurrency'
 import type { RawLineMessage } from '../line/types'
 import type { LineImportBatch, LineSourceCursor } from '../line/importTypes'
 import type { CommitLineImportResult } from '../db/lineImport.repo'
 import { fetchAndCommitImportWindow } from './importWindow'
+import { advanceIdentityIndex, assertIdentitySnapshotCurrent, beginIdentitySourceAttempt, captureIdentitySnapshot, recallTodoIdentityCandidates, releaseIdentitySourceAttempt, tableExists } from '../db/identity.repo'
+import { buildUserPayload, EXTRACT_SYSTEM_PROMPT } from '../llm/extractPrompt'
+import { IDENTITY_QUERY_VERSION } from '../../shared/identityDecision'
 
 /**
  * backfill.ts — 「回顧過去 N 天」一次性補抓（重用 runOnce 既有抽取/去重/完成偵測邏輯，
@@ -100,27 +100,6 @@ export interface ReviewLastDaysDeps {
 
 type ImportWindowResult = Awaited<ReturnType<typeof fetchAndCommitImportWindow>>
 
-/** bucket → 建立時 active 狀態（與 runOnce.bucketToActiveStatus 一致）。 */
-function bucketToActiveStatus(bucket: TodoDTO['bucket']): TodoDTO['status'] {
-  switch (bucket) {
-    case 'waiting':
-      return 'waiting_reply'
-    case 'schedule':
-      return 'scheduled'
-    case 'todo':
-    default:
-      return 'pending'
-  }
-}
-
-/** dueAt 是否仍在未來（與 runOnce.isFuture 一致）。 */
-function isFuture(dueAt: string | null, nowMs: number): boolean {
-  if (!dueAt) return false
-  const due = Date.parse(dueAt)
-  if (Number.isNaN(due)) return false
-  return due > nowMs
-}
-
 /**
  * 預設窗口來源：in-process 引擎的 getMessagesSince（不吃 checkpoint，取 sinceMs 之後的窗口）。
  * 引擎的錯誤以 reject/throw 表達 → 這裡 catch 轉成 { error } 回傳，讓下游
@@ -188,6 +167,7 @@ export async function reviewLastDays(
     emit({ processed: 0, total: 0, phase: 'done' })
     return result
   }
+  const identityAttemptManagedByQueue=(extractFn as typeof extractFn & {identityAttemptManagedByQueue?:boolean}).identityAttemptManagedByQueue===true
 
   // ── 1. 取窗口訊息 ──────────────────────────────────────────
   emit({ processed: 0, total: 0, phase: 'fetching' })
@@ -258,22 +238,18 @@ export async function reviewLastDays(
   const nowIso = new Date(nowMs).toISOString()
 
   const DAY_MS = 24 * 60 * 60 * 1000
-  /** 把該 chat 窗口訊息切成依時間序的逐日片段（升冪，空片不產出）。 */
+  /** Preserve the existing chronological per-day request unit; SourceCache renews a long multipart lease. */
   function sliceByDay(msgs: MessageDTO[]): MessageDTO[][] {
-    const slices: MessageDTO[][] = []
-    let cur: MessageDTO[] = []
-    let bucketStart = -1
-    for (const m of msgs) {
-      const dayIdx = Math.floor((m.ts - sinceMs) / DAY_MS)
-      if (dayIdx !== bucketStart) {
-        if (cur.length) slices.push(cur)
-        cur = []
-        bucketStart = dayIdx
-      }
-      cur.push(m)
+    const output:MessageDTO[][]=[]
+    let current:MessageDTO[]=[]
+    let currentDay=-1
+    for(const message of [...msgs].sort((a,b)=>a.ts-b.ts||a.msgId.localeCompare(b.msgId))){
+      const day=Math.floor((message.ts-sinceMs)/DAY_MS)
+      if(day!==currentDay){if(current.length)output.push(current);current=[];currentDay=day}
+      current.push(message)
     }
-    if (cur.length) slices.push(cur)
-    return slices
+    if(current.length)output.push(current)
+    return output
   }
 
   /** 取某片段開始前的最近對話，作為上下文；不會被當成 newMessages 抽取。 */
@@ -339,105 +315,59 @@ export async function reviewLastDays(
         name: chat?.name ?? msgs[0]?.sender ?? null,
         isGroup: chat?.isGroup ?? false
       }
-      // 窗口起點：DB 既有 openTodos；逐片把本輪新建的接上，供後片完成偵測 / 去重。
-      const openTodos = getOpenTodosByChat(chatId, db)
-      const createdInThisChat: TodoDTO[] = []
-      const ignoreKw = cfg.chatIgnoreKeywords[chatId] ?? []
-
       try {
+        if(!advanceIdentityIndex(db,chatId,'todo')) throw new Error('todo_identity_index_building')
+        if(tableExists(db,'discussion_topics')&&!advanceIdentityIndex(db,chatId,'topic')) throw new Error('topic_identity_index_building')
         for (const slice of sliceByDay(msgs)) {
           const recentContext = getRecentContextBeforeSlice(chatId, slice)
+          const openTodos = getOpenTodosByChat(chatId, db)
           const classificationCorrections = deps.correctionsForChat?.(chatId) ?? []
-          const extract = await extractFn({
-            now: nowIso,
-            chat: chatMeta,
-            // 本片訊息當「新訊息」；slice 前的最近訊息只作上下文，不參與新抽取。
-            newMessages: slice,
-            recentContext,
-            // 餵入「DB 既有 + 本輪已建」未完成 todo，使後片能 resolve 前片所建（Fix 2）。
-            openTodos: [...openTodos, ...createdInThisChat],
+          const recalled = recallTodoIdentityCandidates(db, chatId, slice.map((message) => message.text ?? ''), slice.map((message) => message.msgId))
+          if (!recalled.ready) throw new Error('todo_identity_index_not_ready')
+          const capturedIdentitySnapshot = captureIdentitySnapshot(db, chatId, slice, recalled.truncated, recalled.candidateRevisions)
+          const identitySnapshot:ChatExtractInput['identitySnapshot']|null=capturedIdentitySnapshot
+          if (!identitySnapshot) throw new Error('todo_identity_source_state_missing')
+          const input: ChatExtractInput = {
+            now: nowIso, chat: chatMeta, newMessages: slice, recentContext, openTodos,
+            identityCandidates: recalled.candidates, identityCandidatesTruncated: recalled.truncated, identitySnapshot,
+            identityAttemptManagedByQueue,
+            isIdentityLedgerApplied:()=>{
+              try{
+                assertIdentitySnapshotCurrent(db,chatId,identitySnapshot,'todo')
+                const current=getMessagesByChatAndIds(chatId,slice.map((message)=>message.msgId),db)
+                return current.length===slice.length&&current.every((message)=>message.processed)
+              }catch{return false}
+            },
             classificationCorrections,
             ...(classificationCorrections.length && deps.onCorrectionsPayloadBuilt
-              ? { onCorrectionsPayloadBuilt: () => deps.onCorrectionsPayloadBuilt!(chatId, slice.map(m=>m.msgId), classificationCorrections) }
+              ? { onCorrectionsPayloadBuilt: () => deps.onCorrectionsPayloadBuilt!(chatId, slice.map((m) => m.msgId), classificationCorrections) }
               : {})
-          })
-
-          if (extract.importance !== 'noise') {
-            for (const nt of extract.newTodos) {
-              // 逐對話關鍵字忽略（第二層 per-chat 忽略）：命中就不建立此代辦。
-              if (matchesChatIgnoreKeyword(nt, ignoreKw)) continue
-              // Fix B1：同輪去重比對 [...openTodos, ...createdInThisChat]。
-              const dup = findDuplicateOpenTodo(nt.title, [
-                ...openTodos,
-                ...createdInThisChat
-              ])
-              if (dup) {
-                const merged = mergeSources(dup.id, nt.sourceMsgIds, db)
-                if (merged) {
-                  delta.todosMerged += 1
-                  delta.updatedIds.push(dup.id)
-                }
-                continue
-              }
-              const created = createTodo(
-                {
-                  chatId,
-                  bucket: nt.bucket,
-                  status: bucketToActiveStatus(nt.bucket),
-                  title: nt.title,
-                  detail: nt.detail,
-                  priority: nt.priority,
-                  dueAt: nt.dueAt,
-                  confidence: nt.confidence,
-                  sourceMsgIds: nt.sourceMsgIds
-                },
-                db
-              )
-              delta.todosCreated += 1
-              delta.createdIds.push(created.id)
-              createdInThisChat.push(created)
-            }
           }
-
-          const resolvedIdsThisSlice = new Set<string>()
-          for (const r of extract.resolved) {
-            // 在「DB 既有 + 本輪已建」中找目標，使前片所建可在後片被完成偵測命中。
-            const target =
-              openTodos.find((t) => t.id === r.todoId) ??
-              createdInThisChat.find((t) => t.id === r.todoId)
-            if (!target) continue
-            if (target.status === 'suggested_done' || target.status === 'done') continue
-            const toDone = !(target.bucket === 'schedule' && isFuture(target.dueAt, nowMs))
-            const updated = resolveTodo(target.id, r.evidence, toDone, db)
-            if (updated) {
-              // 標記記憶體鏡像狀態，避免後片重複 resolve 同一件（沿用 idempotent guard）。
-              target.status = updated.status
-              delta.resolvedIds.push(target.id)
-              resolvedIdsThisSlice.add(target.id)
-              if (toDone) delta.todosResolvedDone += 1
-              else delta.todosSuggestedDone += 1
-            }
+          const lease = input.identityAttemptManagedByQueue ? null : beginIdentitySourceAttempt(db, chatId, identitySnapshot, buildUserPayload(input),
+            createHash('sha256').update(JSON.stringify({system:EXTRACT_SYSTEM_PROMPT,schema:EXTRACT_JSON_SCHEMA.schema,identityQuery:IDENTITY_QUERY_VERSION})).digest('hex'))
+          if (lease && !lease.lease) throw new Error('todo_identity_lease_' + (lease.reason ?? 'unavailable'))
+          if (lease?.lease) identitySnapshot.sourceLease = lease.lease
+          let extract: ExtractResult
+          try { extract = await extractFn(input) } catch (error) {
+            if(lease?.lease) releaseIdentitySourceAttempt(db, lease.lease, true)
+            throw error
           }
-
-          // updates → 既有 todo 重新分類（比照 resolved 在 DB 既有 + 本輪已建中找目標）。
-          for (const u of extract.updates ?? []) {
-            const target =
-              openTodos.find((t) => t.id === u.todoId) ??
-              createdInThisChat.find((t) => t.id === u.todoId)
-            if (!target) continue
-            if (resolvedIdsThisSlice.has(target.id)) continue // 跳過本 slice 已 resolve 的 id，避免覆寫 resolve
-            const changed = reclassifyTodo(u.todoId, { bucket: u.bucket, dueAt: u.dueAt }, db)
-            if (changed > 0) {
-              // 更新記憶體鏡像，使後片 slice 看到新分類。
-              target.bucket = u.bucket
-              if (u.bucket === 'schedule') target.status = 'scheduled'
-              // 與 reclassifyTodo F4 對齊：只有具體值才覆寫鏡像 dueAt；null/undefined 都保留現值。
-              if (u.dueAt != null) target.dueAt = u.dueAt
-              delta.updatedIds.push(target.id)
-            }
-          }
+          if(input.identityLedgerSkip) continue
+          const sourceLease=input.identitySnapshot.sourceLease??lease?.lease
+          if(!sourceLease) throw new Error('todo_identity_source_lease_missing')
+          const tally: ApplyTally = { todosCreated: 0, todosMerged: 0, todosResolvedDone: 0, todosSuggestedDone: 0, createdIds: [], resolvedIds: [], updatedIds: [] }
+          try {
+            applyChatExtract({ db, cfg, now: nowIso, identity: {
+              snapshot: identitySnapshot, sourceLease, candidates: input.identityCandidates, candidatesTruncated: input.identityCandidatesTruncated,
+              selectedMessageIds: slice.map((message) => message.msgId), targetType: 'todo', allowedTodoIds: openTodos.map((todo) => todo.id)
+            } }, chatId, slice.map((message) => message.msgId), extract, tally)
+          } catch(error) { releaseIdentitySourceAttempt(db, sourceLease, true); throw error }
+          input.onIdentityApplied?.()
+          delta.todosCreated += tally.todosCreated; delta.todosMerged += tally.todosMerged
+          delta.todosResolvedDone += tally.todosResolvedDone; delta.todosSuggestedDone += tally.todosSuggestedDone
+          delta.createdIds.push(...tally.createdIds); delta.resolvedIds.push(...tally.resolvedIds); delta.updatedIds.push(...tally.updatedIds)
         }
-        markProcessed(msgIds, db)
+
       } catch (err) {
         delta.kind = 'fail'
         // 失敗 chat 訊息不標 processed（留待後續 live pipeline 或下次回顧）。

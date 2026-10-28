@@ -1,4 +1,5 @@
 import type { MessageDTO, TodoDTO } from '../db/dto'
+import type { IdentityCandidate } from '../../shared/identityDecision'
 
 /**
  * extractPrompt.ts — 抽取用 system prompt 全文（IMPLEMENTATION_PLAN.md §6.2）
@@ -59,7 +60,7 @@ export const EXTRACT_SYSTEM_PROMPT = `你是一個 LINE 訊息代辦抽取引擎
 【去重（極重要）】
 - 我會把這個聊天室目前「未完成的既有代辦」一起給你（openTodos，含其 id 與 title）。
 - 如果新訊息表達的事項和某個既有代辦其實是同一件事，不要重複產生新的 newTodo。
-- 如果新訊息顯示某個既有代辦「已經完成 / 已被回覆 / 已被取消」，把它放進 resolved，附上判定依據 evidence（引用是哪則訊息或理由），並用其既有 id（todoId）。
+- 如果新訊息顯示某個既有代辦「已經完成 / 已被回覆 / 已被取消」，把它放進 resolved，附上判定依據 evidence（引用是哪則訊息或理由）、evidenceMsgIds（本輪新訊息的 msgId），並用其既有 id（todoId）。
 - 只有確實是新的、且不等同任何既有代辦的事項，才放進 newTodos。
 
 【完成偵測（針對 openTodos）】
@@ -83,7 +84,15 @@ export const EXTRACT_SYSTEM_PROMPT = `你是一個 LINE 訊息代辦抽取引擎
 - 沒有任何需要升級的既有代辦時，updates 為空陣列。
 
 【輸出】
-嚴格符合 JSON Schema：{ newTodos: [...], resolved: [...], updates: [...], importance: "action"|"fyi"|"noise" }。
+【歷史身份決策（每個 newTodo 必須決定）】
+- user payload 的 historicalCandidates 是同聊天室、跨所有狀態/歷史的有界索引候選；recallReasons 只說明召回原因，不代表已證明同一身份。候選清單被截斷時，每個草稿都必須 defer。
+- 每一個 newTodo 加唯一 draftRef，並在 identityDecisions 為該 draftRef 輸出一筆決策。candidateId / candidateType 只能使用 supplied historicalCandidates；不能輸出 candidate revision，revision 由應用程式私下綁定。evidenceMsgIds 只能引用本輪 newMessages 的 msgId，且至少一筆。
+- update_existing 只可指向同聊天室同類型候選，並用 same_active_action、same_completed_action 或 reschedule 證明；due date 延後仍保留原 ID。已結案候選不能只依標題更新。
+- 已結案候選提供 completionEventTs 時，補入的所有來源事件時間均不晚於該值，才可用 same_completed_action 保留原 ID 與 done/dismissed 狀態。真正完成後的新 occurrence 應輸出 new，candidateType=todo、candidateId 指向舊項、relationKind=recurrence、reasonCode=fresh_occurrence。沒有可信完成時間或來源時間跨越完成時間時 defer。
+- 不同 action 使用 new；可用 link 保留兩個 canonical ID 並建立 recurrence、related_action、follow_up 或 same_topic 關聯。Todo↔Topic same_topic 關聯不能合併實體。
+- 不能有把握時用 defer。defer 會保存草稿、來源與候選版本供使用者處理，原訊息會原子標記已處理，不會在每輪重送給 AI。
+
+嚴格符合 JSON Schema：{ newTodos: [...], identityDecisions: [...], resolved: [...], updates: [...], importance: "action"|"fyi"|"noise" }。
 沒有任何新代辦時 newTodos 為空陣列；沒有任何完成時 resolved 為空陣列；沒有任何需要升級的既有代辦時 updates 為空陣列。不要輸出 schema 以外的欄位。`
 
 // ── user payload 型別（§6.4）────────────────────────────────
@@ -121,6 +130,9 @@ export interface BuildUserPayloadInput {
   /** 該 chat 目前未完成代辦（去重 + 完成偵測對象）。 */
   openTodos: TodoDTO[]
   classificationCorrections?: Array<{ id: string; revision: number; condition: string; effect: string }>
+  /** Bounded historic identity recall; revisions remain application-owned and are never serialized. */
+  identityCandidates?: IdentityCandidate[]
+  identityCandidatesTruncated?: boolean
   /** Internal audit hook. It is never serialized into the provider payload. */
   onCorrectionsPayloadBuilt?: () => void
 }
@@ -157,6 +169,11 @@ export function buildUserPayload(input: BuildUserPayloadInput): string {
       title: t.title,
       dueAt: t.dueAt
     })),
+    ...(input.identityCandidates ? { historicalCandidates: input.identityCandidates.map((candidate) => ({
+      entityType:candidate.entityType,entityId:candidate.entityId,title:candidate.title,summary:candidate.summary,
+      status:candidate.status,bucket:candidate.bucket,dueAt:candidate.dueAt,sourceMsgIds:candidate.sourceMsgIds,
+      recallReasons:candidate.recallReasons,completionEventTs:candidate.completionEventTs
+    })), historicalCandidatesTruncated:input.identityCandidatesTruncated===true } : {}),
     ...(input.classificationCorrections?.length ? { chatScopedClassificationCorrections: input.classificationCorrections.map(r=>({id:r.id,revision:r.revision,condition:r.condition,effect:r.effect,scope:'this chat only'})) } : {})
   }
   // ensure UTF-8 中文不被轉義（JSON.stringify 預設即保留非 ASCII）。

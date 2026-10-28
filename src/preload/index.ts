@@ -5,7 +5,8 @@ import type {
   PipelineLoadStats, PipelineRunResult, TodosChangedEvent, BackfillProgress,
   ReconcileProgress, ReviewLastDaysResult, QwenTestResult, ProviderHealth,
   SettingsView, SettingsPatch, DraftReplyResult,
-  DriverStatus, DriverPostRequest, DriverPostResult, DriverPostProgress, DriverFollowUpResult
+  DriverStatus, DriverPostRequest, DriverPostResult, DriverPostProgress, DriverFollowUpResult,
+  IdentityEntityTypeDTO, IdentityResolveInputDTO, IdentityRetryResultDTO, IdentityReviewItemDTO, IdentityInspectDTO, TodoTopicRelationDTO, TopicLinkProposalDTO
 } from '../shared/api'
 export * from '../shared/api'
 
@@ -53,7 +54,9 @@ const api = {
     list: (chatId: string) => ipcRenderer.invoke('groupTopics:list', { chatId }),
     linkCandidates: (chatId: string) => ipcRenderer.invoke('groupTopics:linkCandidates', { chatId }),
     analyze: (chatId: string) => ipcRenderer.invoke('groupTopics:analyze', { chatId }),
-    todoRefs: (topicId: string) => ipcRenderer.invoke('groupTopics:todoRefs', { topicId })
+    todoRefs: (topicId: string) => ipcRenderer.invoke('groupTopics:todoRefs', { topicId }),
+    linkProposals: (chatId: string): Promise<TopicLinkProposalDTO[]> => ipcRenderer.invoke('groupTopics:linkProposals', { chatId }),
+    resolveLinkProposal: (input: { linkId: string; expectedLinkRevision: number; leftTopicRevision: number; rightTopicRevision: number; choice: 'accept' | 'reject' }) => ipcRenderer.invoke('groupTopics:resolveLinkProposal', input)
   },
 
   messages: {
@@ -177,7 +180,15 @@ const api = {
       analyzeNotMine: (feedbackId) => ipcRenderer.invoke('todos:analyzeNotMine',{feedbackId}),
       reopenNotMine: (feedbackId) => ipcRenderer.invoke('todos:reopenNotMine',{feedbackId}),
       applyNotMineCorrection: (feedbackId,condition,effect) => ipcRenderer.invoke('todos:applyNotMineCorrection',{feedbackId,condition,effect}),
-      setNotMineCorrectionEnabled: (correctionId,enabled) => ipcRenderer.invoke('todos:setNotMineCorrectionEnabled',{correctionId,enabled})
+      setNotMineCorrectionEnabled: (correctionId,enabled) => ipcRenderer.invoke('todos:setNotMineCorrectionEnabled',{correctionId,enabled}),
+      identity: {
+        listPending: (input: { entityType: IdentityEntityTypeDTO; chatId?: string; after?: { decisionId: string }; limit?: number }): Promise<{ items: IdentityReviewItemDTO[]; next?: { decisionId: string } }> => ipcRenderer.invoke('identity:listPending', input),
+        inspect: (input: { entityType: IdentityEntityTypeDTO; decisionId: string }): Promise<IdentityInspectDTO | null> => ipcRenderer.invoke('identity:inspect', input),
+        retry: (input: { entityType: IdentityEntityTypeDTO; decisionId: string; expectedDecisionRevision: number }): Promise<IdentityRetryResultDTO> => ipcRenderer.invoke('identity:retry', input),
+        resolve: (input: IdentityResolveInputDTO) => ipcRenderer.invoke('identity:resolve', input),
+        todoTopicRelations: (chatId: string): Promise<TodoTopicRelationDTO[]> => ipcRenderer.invoke('identity:todoTopicRelations', { chatId }),
+        resolveTodoTopicRelation: (input: { relationId: string; expectedRevision: number; expectedTodoRevision: number; expectedTopicRevision: number; choice: 'confirm' | 'reject' }) => ipcRenderer.invoke('identity:resolveTodoTopicRelation', input)
+      }
     },
     /** 訂閱「DB 有新訊息落庫」事件；回傳 unsubscribe。 */
     onMessagesPersisted: (

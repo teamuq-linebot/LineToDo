@@ -203,7 +203,15 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
         analyzeNotMine: (feedbackId) => runAi<NotMineAnalysisResult>('db.todos.analyzeNotMine', [feedbackId], (message) => ({ ok: false, reason: message })),
         reopenNotMine: (feedbackId) => call('db.todos.reopenNotMine', feedbackId),
         applyNotMineCorrection: (feedbackId, condition, effect) => call('db.todos.applyNotMineCorrection', feedbackId, condition, effect),
-        setNotMineCorrectionEnabled: (correctionId, enabled) => call('db.todos.setNotMineCorrectionEnabled', correctionId, enabled)
+        setNotMineCorrectionEnabled: (correctionId, enabled) => call('db.todos.setNotMineCorrectionEnabled', correctionId, enabled),
+        identity: {
+          listPending: (input) => call('db.todos.identity.listPending', input),
+          inspect: (input) => call('db.todos.identity.inspect', input),
+          retry: (input) => runAi<Awaited<ReturnType<NonNullable<LineTodoApi['db']['todos']['identity']>['retry']>>>('db.todos.identity.retry', [input], () => ({ ok: false, reason: 'retry_failed' })),
+          resolve: (input) => call('db.todos.identity.resolve', input),
+          todoTopicRelations: (chatId) => call('db.todos.identity.todoTopicRelations', chatId),
+          resolveTodoTopicRelation: (input) => call('db.todos.identity.resolveTodoTopicRelation', input)
+        }
       },
       onMessagesPersisted: on('messages-persisted')
     },
@@ -262,7 +270,9 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       list: (chatId) => call('groupTopics.list', chatId),
       linkCandidates: (chatId) => call('groupTopics.linkCandidates', chatId),
       analyze: (chatId) => runAi<Awaited<ReturnType<GroupTopicsApi['analyze']>>>('groupTopics.analyze', [chatId], () => ({ ok: false, reason: 'analysis_failed' })),
-      todoRefs: (topicId) => call('groupTopics.todoRefs', topicId)
+      todoRefs: (topicId) => call('groupTopics.todoRefs', topicId),
+      linkProposals: (chatId) => call('groupTopics.linkProposals', chatId),
+      resolveLinkProposal: (input) => call('groupTopics.resolveLinkProposal', input)
     },
     driver: undefined,
     plugin: {

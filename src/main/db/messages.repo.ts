@@ -4,6 +4,7 @@ import { deriveMsgId, type MessageRow } from './schema'
 import type { MessageDTO } from './dto'
 import type { RawLineMessage } from '../line/types'
 import { upsertChat } from './chats.repo'
+import { readChatSourceState, sharedSourceRows, type AppendBatch } from './sourceCache'
 
 /**
  * messages.repo — LINE 引擎（in-process TS watchEngine，經 watcher.ts emit）進來的訊息落庫 + 查詢。
@@ -74,6 +75,7 @@ export function insertMessages(
     }
 
   const now = new Date().toISOString()
+  const calledWithinOuterTransaction = db.inTransaction
 
   const insertMsg = db.prepare(
     `INSERT OR IGNORE INTO messages
@@ -118,10 +120,17 @@ export function insertMessages(
       )
     }
 
+    const appendBefore = new Map<string, { sourceEpoch: number; appendSeq: number }>()
+    for (const chatId of chatLatest.keys()) {
+      const state = readChatSourceState(db, chatId)
+      if (state) appendBefore.set(chatId, { sourceEpoch: state.sourceEpoch, appendSeq: state.appendSeq })
+    }
+
     let inserted = 0
     const insertedMsgIds: string[] = []
     let mediaBackfilled = 0
     let unsentMarked = 0
+    const insertedRowsByChat = new Map<string, MessageDTO[]>()
     const seenInBatch = new Set<string>()
     let attempted = 0
     for (const m of msgs) {
@@ -150,7 +159,26 @@ export function insertMessages(
       })
       inserted += info.changes
       // changes>0 代表此列非既有 msg_id（未被 INSERT OR IGNORE 略過）→ 記為本次新插入。
-      if (info.changes > 0) insertedMsgIds.push(msgId)
+      if (info.changes > 0) {
+        insertedMsgIds.push(msgId)
+        const rows = insertedRowsByChat.get(m.chatId) ?? []
+        rows.push({
+          msgId,
+          chatId: m.chatId,
+          ts: m.ts,
+          timeIso: m.time,
+          direction: m.direction,
+          sender: m.sender ?? null,
+          text: m.text ?? null,
+          contentType: typeof m.contentType === 'number' ? m.contentType : 0,
+          processed: false,
+          ingestedAt: now,
+          origFilename: m.fileName ?? null,
+          fileSize: m.fileSize ?? null,
+          unsent: m.unsent === true
+        })
+        insertedRowsByChat.set(m.chatId, rows)
+      }
       // 只對媒體訊息（帶 keyMaterial）跑補欄 UPDATE；非媒體訊息跳過，省去不必要開銷。
       if (keyMaterial !== null) {
         mediaBackfilled += backfillMedia.run({ msgId, keyMaterial, origFilename, fileSize }).changes
@@ -160,10 +188,35 @@ export function insertMessages(
         unsentMarked += markUnsent.run({ msgId }).changes
       }
     }
-    return { attempted, inserted, insertedMsgIds, mediaBackfilled, unsentMarked }
+    const appendBatches: Array<{ chatId: string; batch: AppendBatch }> = []
+    for (const chatId of chatLatest.keys()) {
+      const before = appendBefore.get(chatId)
+      const after = readChatSourceState(db, chatId)
+      if (before && after) {
+        appendBatches.push({
+          chatId,
+          batch: {
+            sourceEpochBefore: before.sourceEpoch,
+            sourceEpochAfter: after.sourceEpoch,
+            appendSeqBefore: before.appendSeq,
+            appendSeqAfter: after.appendSeq,
+            rows: insertedRowsByChat.get(chatId) ?? []
+          }
+        })
+      }
+    }
+    return { attempted, inserted, insertedMsgIds, mediaBackfilled, unsentMarked, appendBatches }
   })
 
-  const { attempted, inserted, insertedMsgIds, mediaBackfilled, unsentMarked } = run(batch)
+  const { attempted, inserted, insertedMsgIds, mediaBackfilled, unsentMarked, appendBatches } = run(batch)
+  // A caller may wrap an import batch in a larger transaction. A nested
+  // savepoint can return before that owner commits, so do not publish phantom
+  // rows/events to process memory; the next selector will hydrate from SQLite.
+  if (!calledWithinOuterTransaction) {
+    for (const { chatId, batch: appendBatch } of appendBatches) {
+      if (appendBatch.rows.length > 0) sharedSourceRows(db).recordInsertedRows(chatId, appendBatch)
+    }
+  }
   return {
     attempted,
     inserted,
@@ -229,6 +282,18 @@ export function getMessagesByIds(ids: string[], db: Database = getDb()): Message
 }
 
 /**
+ * Hydrate selector-chosen IDs through the shared exact (chatId,msgId) source
+ * seam. Membership remains owned by each caller's selector.
+ */
+export function getMessagesByChatAndIds(
+  chatId: string,
+  ids: string[],
+  db: Database = getDb()
+): MessageDTO[] {
+  return sharedSourceRows(db).loadExactRows(chatId, ids)
+}
+
+/**
  * 某 chat 最近 N 則，**依 ts 由舊到新**（適合當 LLM 上下文 / 對話顯示順序）。
  * 內部先取最新 N 筆再反轉，確保拿到的是「最近」而非「最舊」N 筆。
  */
@@ -238,10 +303,12 @@ export function getRecentByChat(
   db: Database = getDb()
 ): MessageDTO[] {
   const n = Math.min(Math.max(limit, 1), 1000)
-  const rows = db
-    .prepare('SELECT * FROM messages WHERE chat_id = ? ORDER BY ts DESC LIMIT ?')
-    .all(chatId, n) as MessageRow[]
-  return rows.reverse().map(rowToDTO)
+  const selected = db
+    .prepare('SELECT msg_id FROM messages WHERE chat_id = ? ORDER BY ts DESC,msg_id DESC LIMIT ?')
+    .all(chatId, n) as Array<{ msg_id: string }>
+  const rows = getMessagesByChatAndIds(chatId, selected.reverse().map((row) => row.msg_id), db)
+  sharedSourceRows(db).rememberTodoContext(chatId, rows)
+  return rows
 }
 
 /**
@@ -308,16 +375,32 @@ export function getUnprocessedForPipeline(
   db: Database = getDb()
 ): MessageDTO[] {
   const n = Math.min(Math.max(limit, 1), 10000)
-  const rows = db
+  const selected = db
     .prepare(
-      `SELECT m.* FROM messages m
-       JOIN chats c ON c.chat_id = m.chat_id
-       WHERE m.processed = 0 AND c.blocked = 0
-       ORDER BY m.ts ASC
-       LIMIT ?`
+      'SELECT m.chat_id,m.msg_id FROM messages m ' +
+      'JOIN chats c ON c.chat_id = m.chat_id ' +
+      'WHERE m.processed = 0 AND c.blocked = 0 ' +
+      'ORDER BY m.ts ASC LIMIT ?'
     )
-    .all(n) as MessageRow[]
-  return rows.map(rowToDTO)
+    .all(n) as Array<{ chat_id: string; msg_id: string }>
+  const idsByChat = new Map<string, string[]>()
+  for (const row of selected) {
+    const ids = idsByChat.get(row.chat_id) ?? []
+    ids.push(row.msg_id)
+    idsByChat.set(row.chat_id, ids)
+  }
+  const hydrated = new Map<string, MessageDTO>()
+  for (const [chatId, ids] of idsByChat) {
+    for (const row of getMessagesByChatAndIds(chatId, ids, db)) {
+      hydrated.set(JSON.stringify([chatId, row.msgId]), row)
+    }
+  }
+  // processed=0 came from the authoritative selector. It is progress metadata,
+  // so the raw-row cache cannot suppress a pending ID or report it as processed.
+  return selected.flatMap(({ chat_id, msg_id }) => {
+    const row = hydrated.get(JSON.stringify([chat_id, msg_id]))
+    return row ? [{ ...row, processed: false }] : []
+  })
 }
 
 /** 標記訊息已被 LLM 抽取（M2 pipeline 用；本輪先提供）。 */

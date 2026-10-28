@@ -1,4 +1,5 @@
 /** Stable contracts for the local, chat-scoped group topic projection. */
+import { validateIdentityDecisions, type IdentityCandidate, type IdentityDecision } from '../../../shared/identityDecision'
 export type Relevance = 'action' | 'awareness' | 'unrelated' | 'unknown'
 export type TopicRelation = 'about' | 'repost' | 'uncertain'
 
@@ -27,6 +28,7 @@ export interface TopicAssignment {
 export interface TopicAnalysis {
   topics: TopicDraft[]
   assignments: TopicAssignment[]
+  identityDecisions?: IdentityDecision[]
 }
 
 export interface TopicView {
@@ -47,8 +49,8 @@ export interface TopicView {
   trend: 'unknown'
 }
 
-export type TopicFailurePath = '$' | '$.topics' | '$.topics[*].ref' | '$.topics[*].title' | '$.topics[*].summary' | '$.assignments' | '$.assignments[*]' | '$.assignments[*].msgId' | '$.assignments[*].topicRef' | '$.assignments[*].relation' | '$.assignments[*].confidence' | '$.assignments[*].relevance' | '$.assignments[*].relevanceEvidenceMsgIds'
-export type TopicValidationReason = 'invalid_shape' | 'invalid_value' | 'duplicate_ref' | 'duplicate_assignment' | 'unknown_message_ref' | 'unknown_topic_ref' | 'missing_assignment' | 'invalid_evidence' | 'too_many_topics'
+export type TopicFailurePath = '$' | '$.topics' | '$.topics[*].ref' | '$.topics[*].title' | '$.topics[*].summary' | '$.assignments' | '$.assignments[*]' | '$.assignments[*].msgId' | '$.assignments[*].topicRef' | '$.assignments[*].relation' | '$.assignments[*].confidence' | '$.assignments[*].relevance' | '$.assignments[*].relevanceEvidenceMsgIds' | '$.identityDecisions'
+export type TopicValidationReason = 'invalid_shape' | 'invalid_value' | 'duplicate_ref' | 'duplicate_assignment' | 'unknown_message_ref' | 'unknown_topic_ref' | 'missing_assignment' | 'invalid_evidence' | 'too_many_topics' | 'invalid_identity_decision'
 
 export class TopicAnalysisValidationError extends Error {
   readonly path: TopicFailurePath
@@ -65,10 +67,11 @@ function invalid(path: TopicFailurePath, reason: TopicValidationReason): never {
   throw new TopicAnalysisValidationError(path, reason)
 }
 
-export function validateTopicAnalysis(value: unknown, input: TopicMessageInput[]): TopicAnalysis {
+export function validateTopicAnalysis(value: unknown, input: TopicMessageInput[], identity?: {candidates:IdentityCandidate[];candidatesTruncated:boolean}): TopicAnalysis {
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalid('$', 'invalid_shape')
   const root = value as Record<string, unknown>
-  if (Object.keys(root).sort().join(',') !== 'assignments,topics' || !Array.isArray(root.topics) || !Array.isArray(root.assignments)) invalid('$', 'invalid_shape')
+  const expectedKeys=identity?'assignments,identityDecisions,topics':'assignments,topics'
+  if (Object.keys(root).sort().join(',') !== expectedKeys || !Array.isArray(root.topics) || !Array.isArray(root.assignments) || (identity&&!Array.isArray(root.identityDecisions))) invalid('$', 'invalid_shape')
   const refs = new Set<string>()
   const topics: TopicDraft[] = root.topics.map((raw) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) invalid('$.topics', 'invalid_shape')
@@ -105,5 +108,18 @@ export function validateTopicAnalysis(value: unknown, input: TopicMessageInput[]
     return { msgId: a.msgId, topicRef: a.topicRef as string | null, relation: a.relation as TopicRelation, confidence: a.confidence, relevance: a.relevance as Relevance, relevanceEvidenceMsgIds: [...a.relevanceEvidenceMsgIds] as string[] }
   })
   if (seen.size !== allowedIds.size) invalid('$.assignments', 'missing_assignment')
-  return { topics, assignments }
+  let identityDecisions:IdentityDecision[]|undefined
+  if(identity){
+    try {
+      identityDecisions=validateIdentityDecisions(root.identityDecisions,topics.map((topic)=>topic.ref),{
+        candidates:identity.candidates,candidatesTruncated:identity.candidatesTruncated,
+        selectedMessageIds:input.map((message)=>message.msgId),targetType:'topic'
+      })
+      if(identityDecisions.some((decision)=>decision.candidateType!=='topic'&&decision.candidateType!==null)) invalid('$.identityDecisions','invalid_identity_decision')
+    } catch(error) {
+      if(error instanceof TopicAnalysisValidationError) throw error
+      invalid('$.identityDecisions','invalid_identity_decision')
+    }
+  }
+  return { topics, assignments, ...(identityDecisions?{identityDecisions}:{}) }
 }

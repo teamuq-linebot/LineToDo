@@ -1,6 +1,9 @@
 import type { Database } from 'better-sqlite3'
+import { createHash, randomUUID } from 'node:crypto'
 import { getDb } from '../db/database'
 import type { MessageDTO, TodoDTO } from '../db/dto'
+import type { IdentityCandidate, IdentityContextSnapshot } from '../../shared/identityDecision'
+import { runImmediateTransaction, sharedSourceRows, type ChatSourceLease } from '../db/sourceCache'
 import {
   insertMessages,
   getUnprocessedForPipeline,
@@ -11,9 +14,9 @@ import { getChat, setBlocked } from '../db/chats.repo'
 import {
   createTodo,
   getOpenTodosByChat,
-  mergeSources,
   reclassifyTodo,
-  resolveTodo
+  resolveTodo,
+  updateTodo
 } from '../db/todos.repo'
 import { startRun, finishRun } from '../db/pipeline.repo'
 import type { LineBridge, LlmStatus } from '../db/pipeline.repo'
@@ -22,10 +25,18 @@ import { getPipelineDefaults } from '../config/defaults'
 import type { PipelineDefaults } from '../config/defaults'
 import { resolveProvider } from '../llm/provider'
 import { extractTodos } from '../llm/extractor'
-import type { ExtractResult } from '../llm/schema'
+import { validateExtractResult, type ExtractResult } from '../llm/schema'
 import { evaluateChatAutoBlock, isBatchNoise, matchesChatIgnoreKeyword } from './blocklist'
-import { findDuplicateOpenTodo } from './dedup'
 import { mapLimited } from './concurrency'
+import { normalizeTitle } from './dedup'
+import { assertIdentitySnapshotCurrent, deterministicSourceDigest, identityMetaState, insertIdentityEvent, refreshTodoIdentityTerms, tableExists } from '../db/identity.repo'
+import type { IdentityContextSnapshot as TrustedIdentitySnapshot, IdentityDecision } from '../../shared/identityDecision'
+import { IDENTITY_QUERY_VERSION } from '../../shared/identityDecision'
+import type { IdentityValidationContext } from '../../shared/identityDecision'
+import { IdentityDecisionValidationError } from '../../shared/identityDecision'
+import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, recallTodoIdentityCandidates, releaseIdentitySourceAttempt } from '../db/identity.repo'
+import { buildUserPayload, EXTRACT_SYSTEM_PROMPT } from '../llm/extractPrompt'
+import { EXTRACT_JSON_SCHEMA } from '../llm/schema'
 
 /**
  * runOnce.ts — 串起一輪 pipeline（IMPLEMENTATION_PLAN.md §8）。
@@ -93,9 +104,26 @@ export interface ChatExtractInput {
   newMessages: MessageDTO[]
   recentContext: MessageDTO[]
   openTodos: TodoDTO[]
+  /** Bounded full-history candidates are model context; revisions/fingerprints are trusted app data. */
+  identityCandidates: IdentityCandidate[]
+  identityCandidatesTruncated: boolean
+  identitySnapshot: IdentityContextSnapshot & { sourceLease?: ChatSourceLease }
+  /** Internal backfill transport hint: the ExtractQueue will acquire/record the exact serialized attempt. */
+  identityAttemptManagedByQueue?: boolean
+  /** Backfill commit receipt: ReviewCoordinator records msgIds only after the owning DB apply succeeds. */
+  onIdentityApplied?: () => void
+  /** Review-ledger skip is valid only when the exact source IDs are already committed. */
+  isIdentityLedgerApplied?: () => boolean
+  identityLedgerSkip?: boolean
   classificationCorrections?: Array<{ id: string; revision: number; condition: string; effect: string }>
   /** Called by the owning extractor only after it has constructed the serialized user payload. */
   onCorrectionsPayloadBuilt?: () => void
+}
+
+export interface ChatIdentityApplyContext extends IdentityValidationContext {
+  snapshot: TrustedIdentitySnapshot
+  sourceLease?: ChatSourceLease
+  allowedTodoIds: string[]
 }
 
 export interface RunOnceResult {
@@ -154,87 +182,206 @@ export type ApplyTally = Pick<RunOnceResult, 'todosCreated' | 'todosMerged' | 't
  * standalone 的 runOnce 與外掛的 ExtractQueue.commit 走同一份邏輯，行為不分叉。
  */
 export function applyChatExtract(
-  ctx: { db: Database; cfg: PipelineDefaults; now: string },
+  ctx: { db: Database; cfg: PipelineDefaults; now: string; identity?: ChatIdentityApplyContext },
   chatId: string,
   msgIds: string[],
   extract: ExtractResult,
   result: ApplyTally
 ): void {
   const { db, cfg, now } = ctx
-  const openTodos = getOpenTodosByChat(chatId, db)
-  // 同批後續結果也要比對本輪已建立的 todo；保留 openTodos 原快照給 resolved/updates 使用。
-  const dedupTodos = [...openTodos]
+  const apply = (): void => {
+    if (ctx.identity) {
+      assertIdentitySnapshotCurrent(db,chatId,ctx.identity.snapshot,'todo')
+      const meta=identityMetaState(db,chatId,'todo')
+      if (meta!=='ready') throw new Error('todo_identity_index_not_ready')
+      if (ctx.identity.sourceLease && (ctx.identity.sourceLease.chatId!==chatId || ctx.identity.sourceLease.sourceEpoch!==ctx.identity.snapshot.sourceEpoch)) throw new Error('todo_identity_lease_mismatch')
+    }
+    const openTodos = getOpenTodosByChat(chatId, db)
+    const strict = ctx.identity ? validateExtractResult(extract,{
+      candidates:ctx.identity.candidates,candidatesTruncated:ctx.identity.candidatesTruncated,
+      selectedMessageIds:msgIds,targetType:'todo',allowedTodoIds:ctx.identity.allowedTodoIds
+    }) : extract
+    const sourceRows:Array<{msg_id:string;ts:number}>=[]
+    for(let offset=0;offset<msgIds.length;offset+=900){
+      const part=msgIds.slice(offset,offset+900)
+      if(part.length) sourceRows.push(...db.prepare(`SELECT msg_id,ts FROM messages WHERE chat_id=? AND msg_id IN (${part.map(()=>'?').join(',')})`).all(chatId,...part) as Array<{msg_id:string;ts:number}>)
+    }
+    if (sourceRows.length!==msgIds.length) throw new Error('todo_identity_source_missing')
+    const eventTsById=new Map(sourceRows.map((row)=>[row.msg_id,row.ts]))
+    const wasIndexReady=identityMetaState(db,chatId,'todo')==='ready'
+    const digest=ctx.identity ? deterministicSourceDigest(chatId,ctx.identity.snapshot) : createHash('sha256').update(JSON.stringify([chatId,msgIds])).digest('hex')
+    const changedTodoIds=new Set<string>()
+    const todoCandidates=new Map((ctx.identity?.candidates ?? []).filter((candidate)=>candidate.entityType==='todo').map((candidate)=>[candidate.entityId,candidate]))
+    const snapshotCandidate=(candidateId:string,type:'todo'|'topic')=>ctx.identity?.snapshot.candidateRevisions.find((item)=>item.entityType===type&&item.entityId===candidateId)
 
-  // importance==='noise' → 不產 todo（第二道降噪，§7.1）。
-  if (extract.importance !== 'noise') {
-    const ignoreKw = cfg.chatIgnoreKeywords[chatId] ?? []
-    for (const nt of extract.newTodos) {
-      // 逐對話關鍵字忽略（第二層 per-chat 忽略）：命中就不建立此代辦。
-      if (matchesChatIgnoreKeyword(nt, ignoreKw)) continue
-      const dup = findDuplicateOpenTodo(nt.title, dedupTodos)
-      if (dup) {
-        // 近似去重命中 → 更新既有 todo 的來源，不新增。
-        const merged = mergeSources(dup.id, nt.sourceMsgIds, db)
-        if (merged) {
-          result.todosMerged += 1
-          result.updatedIds.push(dup.id)
+    const createDecisionRow=(draftRef:string,outcome:'update_existing'|'new'|'link'|'defer',draft:unknown,candidateIds:string[],reasonCode:string,canonicalTodoId:string|null):string=>{
+      const decisionId=randomUUID()
+      const revision=(db.prepare('SELECT COALESCE(MAX(decision_revision),0)+1 AS revision FROM todo_identity_decisions WHERE chat_id=? AND source_digest=? AND draft_ref=?').get(chatId,digest,draftRef) as {revision:number}).revision
+      db.prepare(`INSERT INTO todo_identity_decisions(decision_id,chat_id,source_digest,draft_ref,outcome,state,canonical_todo_id,decision_revision,source_epoch,scope_revision,identity_revision,topic_identity_revision,draft_json,candidate_snapshot_json,reason_codes_json,prompt_version,schema_version,query_version,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(decisionId,chatId,digest,draftRef,outcome,outcome==='defer'?'open':'resolved',canonicalTodoId,revision,ctx.identity?.snapshot.sourceEpoch??1,ctx.identity?.snapshot.scopeRevision??1,ctx.identity?.snapshot.identityRevision??0,ctx.identity?.snapshot.topicIdentityRevision??0,JSON.stringify(draft),JSON.stringify({candidateIds,revisions:candidateIds.map((id)=>ctx.identity?.snapshot.candidateRevisions.find((candidate)=>candidate.entityId===id)??null)}),JSON.stringify([reasonCode]),'extract-identity-v1','extract-result-v3',IDENTITY_QUERY_VERSION,now,now)
+      return decisionId
+    }
+    const addSources=(decisionId:string,evidenceIds:string[])=>{
+      const insert=db.prepare(`INSERT INTO todo_identity_decision_sources(decision_id,chat_id,msg_id,ordinal,evidence_role) VALUES(?,?,?,?,?)`)
+      evidenceIds.forEach((id,index)=>insert.run(decisionId,chatId,id,index,'action'))
+    }
+    const addEvent=(decisionId:string,action:string,payload:unknown)=>insertIdentityEvent(db,{decisionId,revision:1,actor:'ai',action,payload,table:'todo_identity_events'})
+    const insertSourceHistory=(todoId:string,evidenceIds:string[])=>{
+      const insert=db.prepare("INSERT OR IGNORE INTO todo_identity_sources(chat_id,todo_id,msg_id,source_role) SELECT ?,?,?,'decision' WHERE EXISTS (SELECT 1 FROM messages WHERE chat_id=? AND msg_id=?)")
+      for(const id of evidenceIds) insert.run(chatId,todoId,id,chatId,id)
+    }
+    const createCanonicalTodo=(nt:ExtractResult['newTodos'][number])=>createTodo({chatId,bucket:nt.bucket,status:bucketToActiveStatus(nt.bucket),title:nt.title,detail:nt.detail,priority:nt.priority,dueAt:nt.dueAt,confidence:nt.confidence,sourceMsgIds:nt.sourceMsgIds},db)
+    const canUpdateTerminal=(candidate:IdentityCandidate,evidenceIds:string[]):boolean=>{
+      if(candidate.status!=='done'&&candidate.status!=='dismissed') return false
+      if(candidate.completionEventTs===null) return false
+      const times=evidenceIds.map((id)=>eventTsById.get(id)).filter((x):x is number=>x!==undefined)
+      return times.length===evidenceIds.length&&times.every((ts)=>ts<=candidate.completionEventTs!)
+    }
+    const deferIdentityDraft=(nt:ExtractResult['newTodos'][number],decision:IdentityDecision,candidateIds:string[],reasonCode:string):void=>{
+      const decisionId=createDecisionRow(nt.draftRef!,'defer',nt,candidateIds,reasonCode,null)
+      addSources(decisionId,decision.evidenceMsgIds??nt.sourceMsgIds)
+      addEvent(decisionId,'deferred',{modelOutcome:decision.outcome,modelReasonCode:decision.reasonCode,reasonCode,candidateIds})
+    }
+
+    // Candidate decisions for new drafts are strict and take place in the same transaction as canonical writes and acknowledgement.
+    if (strict.importance!=='noise') {
+      const decisions=new Map((strict.identityDecisions??[]).map((decision)=>[decision.draftRef,decision]))
+      for (const nt of strict.newTodos) {
+        const decision=decisions.get(nt.draftRef ?? '')
+        if (!decision) throw new IdentityDecisionValidationError('identityDecisions','missing_draft_decision')
+        if(matchesChatIgnoreKeyword(nt,cfg.chatIgnoreKeywords[chatId]??[])) continue
+        const candidate=decision.candidateType==='todo'&&decision.candidateId?todoCandidates.get(decision.candidateId):undefined
+        const terminalCandidate=candidate&&(candidate.status==='done'||candidate.status==='dismissed')?candidate:undefined
+        const exactTerminalSignal=!decision.candidateId?(ctx.identity?.candidates.find((item)=>item.entityType==='todo'&&(item.status==='done'||item.status==='dismissed')&&normalizeTitle(item.title)===normalizeTitle(nt.title))):undefined
+        if(terminalCandidate&&decision.outcome==='update_existing'&&(decision.reasonCode!=='same_completed_action'||!canUpdateTerminal(terminalCandidate,nt.sourceMsgIds))){
+          deferIdentityDraft(nt,decision,[terminalCandidate.entityId],'insufficient_evidence')
+          continue
         }
-        continue
+        if(exactTerminalSignal&&decision.outcome==='new'){
+          deferIdentityDraft(nt,decision,[exactTerminalSignal.entityId],'insufficient_evidence')
+          continue
+        }
+        if(terminalCandidate&&decision.outcome==='new'&&decision.relationKind!=='recurrence'){
+          deferIdentityDraft(nt,decision,[terminalCandidate.entityId],'insufficient_evidence')
+          continue
+        }
+        if(terminalCandidate&&(decision.outcome==='new'||decision.outcome==='link')&&decision.relationKind==='recurrence'){
+          const times=nt.sourceMsgIds.map((id)=>eventTsById.get(id)).filter((x):x is number=>x!==undefined)
+          const validRecurrence=decision.reasonCode==='fresh_occurrence'&&terminalCandidate.completionEventTs!==null&&times.length===nt.sourceMsgIds.length&&times.every((ts)=>ts>terminalCandidate.completionEventTs!)
+          if(!validRecurrence){deferIdentityDraft(nt,decision,[terminalCandidate.entityId],'insufficient_evidence');continue}
+        }
+        if(candidate&& !terminalCandidate && (decision.outcome==='new'||decision.outcome==='link') && decision.relationKind==='recurrence'){
+          deferIdentityDraft(nt,decision,[candidate.entityId],'insufficient_evidence')
+          continue
+        }
+        if(decision.outcome==='update_existing') {
+          if(!candidate) throw new Error('identity_candidate_missing')
+          const revision=snapshotCandidate(candidate.entityId,'todo')
+          const current=db.prepare('SELECT id,chat_id,status,bucket,title,detail,priority,due_at,source_msg_ids,entity_revision FROM todos WHERE chat_id=? AND id=?').get(chatId,candidate.entityId) as {id:string;chat_id:string;status:TodoDTO['status'];bucket:TodoDTO['bucket'];title:string;detail:string|null;priority:number;due_at:string|null;source_msg_ids:string;entity_revision:number}|undefined
+          if(!current||!revision||current.entity_revision!==revision.revision) throw new Error('identity_candidate_revision_stale')
+          const isTerminal=current.status==='done'||current.status==='dismissed'
+          if(isTerminal&&(decision.reasonCode!=='same_completed_action'||!canUpdateTerminal(candidate,nt.sourceMsgIds))) throw new Error('completed_identity_event_time_unavailable')
+          if(!isTerminal&&(!['pending','waiting_reply','scheduled','suggested_done'].includes(current.status)||decision.reasonCode==='same_completed_action')) {
+            deferIdentityDraft(nt,decision,[current.id],'insufficient_evidence')
+            continue
+          }
+          const existingSourceIds=parseSourceIdJson(current.source_msg_ids)
+          if(isTerminal) {
+            if(existingSourceIds) db.prepare('UPDATE todos SET source_msg_ids=?,updated_at=? WHERE chat_id=? AND id=?').run(JSON.stringify([...new Set([...existingSourceIds,...nt.sourceMsgIds])]),now,chatId,current.id)
+          } else {
+            updateTodo(current.id,{title:nt.title,detail:nt.detail,priority:nt.priority,dueAt:nt.dueAt??current.due_at,bucket:nt.bucket,...(existingSourceIds?{sourceMsgIds:[...new Set([...existingSourceIds,...nt.sourceMsgIds])]}:{})},db)
+            reclassifyTodo(current.id,{bucket:nt.bucket,dueAt:nt.dueAt},db)
+          }
+          insertSourceHistory(current.id,nt.sourceMsgIds);changedTodoIds.add(current.id)
+          const decisionId=createDecisionRow(nt.draftRef!,decision.outcome,nt,[current.id],decision.reasonCode,current.id)
+          addSources(decisionId,decision.evidenceMsgIds);addEvent(decisionId,'updated_existing',{todoId:current.id,sourceEventTs:Math.max(...nt.sourceMsgIds.map((id)=>eventTsById.get(id)??0)),preservedStatus:isTerminal?current.status:null})
+          result.todosMerged+=1;result.updatedIds.push(current.id)
+        } else if(decision.outcome==='defer') {
+          const ids=decision.candidateId?[decision.candidateId]:[]
+          const decisionId=createDecisionRow(nt.draftRef!,decision.outcome,nt,ids,decision.reasonCode,null)
+          addSources(decisionId,decision.evidenceMsgIds);addEvent(decisionId,'deferred',{reasonCode:decision.reasonCode,candidateIds:ids})
+        } else {
+          if(decision.outcome==='link'&&!decision.candidateId) throw new Error('identity_link_target_missing')
+          const created=createCanonicalTodo(nt)
+          changedTodoIds.add(created.id)
+          const canonicalId=created.id
+          const decisionId=createDecisionRow(nt.draftRef!,decision.outcome,nt,decision.candidateId?[decision.candidateId]:[],decision.reasonCode,canonicalId)
+          addSources(decisionId,decision.evidenceMsgIds);insertSourceHistory(canonicalId,nt.sourceMsgIds)
+          if(decision.outcome==='link'||(decision.outcome==='new'&&decision.relationKind==='recurrence')) {
+            const targetId=decision.candidateId!
+            if(decision.candidateType==='todo') {
+              const pair=[canonicalId,targetId].sort()
+              db.prepare(`INSERT OR IGNORE INTO todo_identity_relations(relation_id,chat_id,left_todo_id,right_todo_id,relation_type,status,decision_id,created_at) VALUES(?,?,?,?,?,'proposed',?,?)`)
+                .run(randomUUID(),chatId,pair[0],pair[1],decision.relationKind==='recurrence'?'recurrence':decision.relationKind==='follow_up'?'follow_up':'related_action',decisionId,now)
+            } else if(decision.relationKind==='same_topic') {
+              if(!tableExists(db,'discussion_topics')||!isTopicRelationAllowed(db,chatId,targetId)) throw new Error('todo_topic_candidate_scope_stale')
+              db.prepare(`INSERT OR IGNORE INTO todo_topic_identity_relations(relation_id,chat_id,todo_id,topic_id,relation_type,status,decision_id,revision,created_at) VALUES(?,?,?,?,?,'proposed',?,1,?)`)
+                .run(randomUUID(),chatId,canonicalId,targetId,'same_topic',decisionId,now)
+            } else throw new Error('todo_topic_relation_kind_invalid')
+            addEvent(decisionId,'linked',{canonicalTodoId:canonicalId,candidateId:targetId,relationKind:decision.relationKind})
+          } else addEvent(decisionId,'resolved_new',{canonicalTodoId:canonicalId})
+          result.todosCreated+=1;result.createdIds.push(canonicalId)
+        }
       }
-      const created = createTodo(
-        {
-          chatId,
-          bucket: nt.bucket,
-          status: bucketToActiveStatus(nt.bucket),
-          title: nt.title,
-          detail: nt.detail,
-          priority: nt.priority,
-          dueAt: nt.dueAt,
-          confidence: nt.confidence,
-          sourceMsgIds: nt.sourceMsgIds
-        },
-        db
-      )
-      result.todosCreated += 1
-      result.createdIds.push(created.id)
-      dedupTodos.push(created)
     }
-  }
 
-  // resolved → 完成偵測門檻（§6.6）。
-  const resolvedIdsThisChat = new Set<string>()
-  for (const r of extract.resolved) {
-    const target = openTodos.find((t) => t.id === r.todoId)
-    if (!target) continue // 模型給了不存在 / 不屬此 chat 的 id → 忽略
-    // idempotent guard（H1 抖動修正，§6.6「只降不升、避免抖動」）：
-    // suggested_done 仍被 getOpenTodosByChat 當 open 餵 LLM，若模型每輪重列入 resolved，
-    // 而 target 已是 suggested_done/done，就會每輪重呼 resolveTodo（重寫 updated_at/evidence）、
-    // 重 push resolvedIds → 上游每輪 emit todos-changed → 無限重觸發。
-    // 已結案/建議完成者直接跳過：只有狀態真的轉變才落庫 + push（避免抖動）。
-    if (target.status === 'suggested_done' || target.status === 'done') continue
-    // schedule 且 due_at 仍在未來 → 不自動 done，改 suggested_done（避免把未發生行程判完成）。
-    const toDone = !(target.bucket === 'schedule' && isFuture(target.dueAt, now))
-    const updated = resolveTodo(target.id, r.evidence, toDone, db)
-    if (updated) {
-      result.resolvedIds.push(target.id)
-      resolvedIdsThisChat.add(target.id)
-      if (toDone) result.todosResolvedDone += 1
-      else result.todosSuggestedDone += 1
+    // Existing completion and bucket changes are still accepted only for supplied same-chat open IDs.
+    const resolvedIdsThisChat = new Set<string>()
+    for (const r of strict.resolved) {
+      const target=openTodos.find((todo)=>todo.id===r.todoId)
+      if(!target||target.status==='suggested_done'||target.status==='done') continue
+      const toDone=!(target.bucket==='schedule'&&isFuture(target.dueAt,now))
+      const updated=resolveTodo(target.id,r.evidence,toDone,db)
+      if(updated) {
+        result.resolvedIds.push(target.id);resolvedIdsThisChat.add(target.id);changedTodoIds.add(target.id)
+        if(toDone)result.todosResolvedDone+=1;else result.todosSuggestedDone+=1
+        if(toDone) {
+          const completionIds=r.evidenceMsgIds ?? []
+          const completionEventTs=Math.max(...completionIds.map((id)=>eventTsById.get(id)??0))
+          if(completionIds.length===0||completionIds.some((id)=>!eventTsById.has(id))) throw new Error('completion_source_evidence_missing')
+          const decisionId=createDecisionRow(`complete_${target.id.slice(0,32)}`,'update_existing',{todoId:target.id,evidence:r.evidence,evidenceMsgIds:completionIds},[], 'same_completed_action',target.id)
+          addSources(decisionId,completionIds);addEvent(decisionId,'resolved_existing',{todoId:target.id,completionEventTs})
+          insertSourceHistory(target.id,completionIds)
+        }
+      }
     }
+    for (const u of strict.updates ?? []) {
+      const target=openTodos.find((todo)=>todo.id===u.todoId)
+      if(!target||resolvedIdsThisChat.has(u.todoId)) continue
+      const changed=reclassifyTodo(u.todoId,{bucket:u.bucket,dueAt:u.dueAt},db)
+      if(changed>0){result.updatedIds.push(u.todoId);changedTodoIds.add(u.todoId)}
+    }
+    for(const id of changedTodoIds) refreshTodoIdentityTerms(db,chatId,id,wasIndexReady)
+    markProcessed(msgIds,db)
   }
 
-  // updates → 既有 todo 重新分類（時間確定後 todo/waiting → schedule 升級）。
-  for (const u of extract.updates ?? []) {
-    // 比照 resolved：確認目標屬本 chat（找不到 → 忽略跨 chat / 不存在 id）。
-    const target = openTodos.find((t) => t.id === u.todoId)
-    if (!target) continue
-    if (resolvedIdsThisChat.has(u.todoId)) continue // 跳過本輪已 resolve 的 id，避免覆寫 resolve
-    const changed = reclassifyTodo(u.todoId, { bucket: u.bucket, dueAt: u.dueAt }, db)
-    if (changed > 0) result.updatedIds.push(u.todoId)
+  const identity=ctx.identity
+  if(identity) {
+    if(!identity.sourceLease) throw new Error('todo_identity_source_lease_required')
+    const selectedRows=identity.snapshot.selectedFingerprints.filter((row)=>msgIds.includes(row.msgId))
+    const committed=sharedSourceRows(db).commitLease({
+      lease:identity.sourceLease,selectedRows,
+      fallbackRecent:()=>getRecentByChat(chatId,10,db),
+      apply:()=>{const tx=db.transaction(apply);runImmediateTransaction(tx)}
+    })
+    if(!committed.ok) throw new Error(`todo_identity_commit_${committed.reason}`)
+    return
   }
+  const tx=db.transaction(apply)
+  runImmediateTransaction(tx)
+}
 
-  // 該 chat 訊息標 processed=1。
-  markProcessed(msgIds, db)
+function isTopicRelationAllowed(db:Database,chatId:string,topicId:string):boolean {
+  const row=db.prepare(`SELECT t.topic_id FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
+    LEFT JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.chat_id=? AND t.topic_id=? AND c.is_group=1 AND c.blocked=0 AND p.enabled=1`).get(chatId,topicId)
+  return !!row
+}
+
+function parseSourceIdJson(raw:string):string[]|null {
+  try {
+    const value:unknown=JSON.parse(raw)
+    return Array.isArray(value)&&value.every((item)=>typeof item==='string')?[...new Set(value)]:null
+  } catch { return null }
 }
 
 /**
@@ -332,7 +479,7 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
     | { kind: 'noise'; chatId: string; msgIds: string[] }
     | { kind: 'skipped'; chatId: string }
     | { kind: 'deferred'; chatId: string }
-    | { kind: 'ok'; chatId: string; msgIds: string[]; extract: ExtractResult }
+    | { kind: 'ok'; chatId: string; msgIds: string[]; extract: ExtractResult; input: ChatExtractInput }
     | { kind: 'fail'; chatId: string; msgIds: string[]; error: string }
 
   const settled = await mapLimited<string, ChatOutcome>(
@@ -345,7 +492,10 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
         return { kind: 'skipped', chatId }
       }
 
-      const msgs = byChat.get(chatId)!
+      // The direct provider path keeps a small five-message unit per call. The production outbox
+      // may offer the pending window; ExtractQueue partitions it and refreshes identity context
+      // before each part commits, preserving throughput without reusing stale candidates.
+      const msgs = deps.extractSink ? byChat.get(chatId)! : byChat.get(chatId)!.slice(0,5)
       const msgIds = msgs.map((m) => m.msgId)
 
       // 整批噪音 → 跳過 LLM（仍標 processed，避免下輪重抽）。
@@ -361,6 +511,18 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
         .slice(-cfg.recentContextLimit)
       const openTodos = getOpenTodosByChat(chatId, db)
 
+      // Historical identity indexes are advanced in bounded batches. No provider call or new
+      // canonical write is allowed until both Todo history and any installed Topic history are ready.
+      const todoIndexReady=advanceIdentityIndex(db,chatId,'todo')
+      const topicsInstalled=tableExists(db,'discussion_topics')
+      const topicIndexReady=!topicsInstalled||advanceIdentityIndex(db,chatId,'topic')
+      if(!todoIndexReady||!topicIndexReady) return {kind:'deferred',chatId}
+      const recalled=recallTodoIdentityCandidates(db,chatId,msgs.map((message)=>message.text??''),msgIds)
+      if(!recalled.ready) return {kind:'deferred',chatId}
+      const capturedIdentitySnapshot=captureIdentitySnapshot(db,chatId,msgs,recalled.truncated,recalled.candidateRevisions)
+      const identitySnapshot:ChatExtractInput['identitySnapshot']|null=capturedIdentitySnapshot
+      if(!identitySnapshot) return {kind:'deferred',chatId}
+
       try {
         const classificationCorrections = deps.correctionsForChat?.(chatId) ?? []
         const input: ChatExtractInput = {
@@ -373,6 +535,9 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
           newMessages: msgs,
           recentContext,
           openTodos,
+          identityCandidates:recalled.candidates,
+          identityCandidatesTruncated:recalled.truncated,
+          identitySnapshot,
           classificationCorrections,
           ...(classificationCorrections.length && deps.onCorrectionsPayloadBuilt
             ? { onCorrectionsPayloadBuilt: () => deps.onCorrectionsPayloadBuilt!(chatId, msgIds, classificationCorrections) }
@@ -383,10 +548,16 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
           deps.extractSink.offer(input, msgIds)
           return { kind: 'deferred', chatId }
         }
+        const user=buildUserPayload(input)
+        const sessionFingerprint=createHash('sha256').update(JSON.stringify({system:EXTRACT_SYSTEM_PROMPT,schema:EXTRACT_JSON_SCHEMA.schema,identityQuery:IDENTITY_QUERY_VERSION})).digest('hex')
+        const attempt=beginIdentitySourceAttempt(db,chatId,identitySnapshot,user,sessionFingerprint)
+        if(!attempt.lease) return {kind:'deferred',chatId}
+        identitySnapshot.sourceLease=attempt.lease
         const extract = await deps.extractFn(input)
         deps.onChatSucceeded?.(chatId)
-        return { kind: 'ok', chatId, msgIds, extract }
+        return { kind: 'ok', chatId, msgIds, extract, input }
       } catch (err) {
+        if(identitySnapshot.sourceLease) releaseIdentitySourceAttempt(db,identitySnapshot.sourceLease,true)
         // 原始錯誤物件交給上層（熔斷器要 LlmProviderError.code）；下面的 error 字串只給計數用。
         deps.onChatFailed?.(chatId, err)
         return {
@@ -434,8 +605,19 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
     }
 
     // kind === 'ok'
-    result.chatsProcessed += 1
-    applyChatExtract({ db, cfg, now }, outcome.chatId, outcome.msgIds, outcome.extract, result)
+    try {
+      const input=outcome.input
+      result.chatsProcessed += 1
+      applyChatExtract({db,cfg,now,identity:{
+        snapshot:input.identitySnapshot,sourceLease:input.identitySnapshot.sourceLease,
+        candidates:input.identityCandidates,candidatesTruncated:input.identityCandidatesTruncated,
+        selectedMessageIds:outcome.msgIds,targetType:'todo',allowedTodoIds:input.openTodos.map((todo)=>todo.id)
+      }}, outcome.chatId, outcome.msgIds, outcome.extract, result)
+    } catch {
+      result.chatsProcessed=Math.max(0,result.chatsProcessed-1)
+      result.chatsFailed+=1
+      if(outcome.input.identitySnapshot.sourceLease) releaseIdentitySourceAttempt(db,outcome.input.identitySnapshot.sourceLease,true)
+    }
   }
 
   // ── llm_status 判定 ──────────────────────────────────────

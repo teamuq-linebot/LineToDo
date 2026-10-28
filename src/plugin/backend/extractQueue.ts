@@ -23,10 +23,14 @@ import type { MessageDTO } from '../../main/db/dto'
 import { finishRun, startRun } from '../../main/db/pipeline.repo'
 import { getOpenTodosByChat } from '../../main/db/todos.repo'
 import { EXTRACT_SYSTEM_PROMPT, buildUserPayload } from '../../main/llm/extractPrompt'
-import { validateExtractResult } from '../../main/llm/schema'
+import { EXTRACT_JSON_SCHEMA, validateExtractResult } from '../../main/llm/schema'
 import type { ExtractResult } from '../../main/llm/schema'
 import { applyChatExtract } from '../../main/pipeline/runOnce'
 import type { ApplyTally, ChatExtractInput, ExtractSink, RunOnceResult } from '../../main/pipeline/runOnce'
+import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, recallTodoIdentityCandidates, recordIdentitySourceAttempt, releaseIdentitySourceAttempt, renewIdentitySourceLease, tableExists } from '../../main/db/identity.repo'
+import { getMessagesByChatAndIds, getRecentByChat } from '../../main/db/messages.repo'
+import { IDENTITY_QUERY_VERSION } from '../../shared/identityDecision'
+import type { ChatSourceLease } from '../../main/db/sourceCache'
 
 export const EXTRACT_SYSTEM_SHA256 = createHash('sha256').update(EXTRACT_SYSTEM_PROMPT).digest('hex')
 
@@ -72,7 +76,9 @@ function buildPayload(input: ChatExtractInput, newMessages: MessageDTO[], recent
     newMessages,
     recentContext,
     openTodos,
-    classificationCorrections: input.classificationCorrections
+    classificationCorrections: input.classificationCorrections,
+    identityCandidates:input.identityCandidates,
+    identityCandidatesTruncated:input.identityCandidatesTruncated
     // 刻意不傳 onCorrectionsPayloadBuilt：那個稽核 hook 只在 payload 真的被領走（pull）時才呼叫。
   })
 }
@@ -92,6 +98,17 @@ export function partitionExtractInput(input: ChatExtractInput, opts: { maxChars:
   let openTodos = input.openTodos
   while (openTodos.length > 0 && buildPayload(input, [], [], openTodos).length > maxChars / 2) {
     openTodos = openTodos.slice(0, Math.floor(openTodos.length / 2))
+  }
+  let identityCandidates=input.identityCandidates??[]
+  let identityCandidatesTruncated=input.identityCandidatesTruncated===true
+  while(identityCandidates.length>0&&buildPayload({...input,identityCandidates,identityCandidatesTruncated},[],[],openTodos).length>maxChars/2){
+    identityCandidates=identityCandidates.slice(0,Math.floor(identityCandidates.length/2))
+    identityCandidatesTruncated=true
+  }
+  if(input.identityCandidates){
+    input.identityCandidates=identityCandidates
+    input.identityCandidatesTruncated=identityCandidatesTruncated
+    input.identitySnapshot.candidatesTruncated=identityCandidatesTruncated
   }
 
   /** 上下文佔用的字元數（序列化後，扣掉沒有上下文時的基底）。 */
@@ -177,6 +194,7 @@ export interface ExtractQueueOptions {
   db: Database
   getConfig(): PipelineDefaults
   getSystemSha256?(): string
+  getSessionContext?(): string
   /** commit 落庫後回報一輪結果（外掛接到 `scheduler.recordExternalRun`，沿用 pipeline-run / todos-changed 事件）。 */
   onRun?(result: RunOnceResult): void
   /** 可領取的項目集合有變動（外掛接到事件通道，UI 不必空轉輪詢）。 */
@@ -189,8 +207,8 @@ export interface ExtractQueueOptions {
   /** 同步呼叫端的停滯上限（見 DEFAULT_AWAIT_TIMEOUT_MS）。 */
   awaitTimeoutMs?: number
   /**
-   * 有人在領取嗎（外掛接到 ExtractWorker 是否在跑）。給了就以它為準：沒人領時 `request()` 立刻以 `extract_ui_offline` 失敗，
-   * 不必等「很久沒有人碰佇列」。省略＝照舊用最近一次 pull／commit／release／touch 的時間判斷。
+   * 有人在領取或即將領取嗎（外掛接到 ExtractWorker 是否已跑，或啟動 timer 正在倒數）。給了就以它為準：確定沒有 consumer 時
+   * `request()` 立刻以 `extract_ui_offline` 失敗，不必等「很久沒有人碰佇列」。省略＝照舊用最近一次 pull／commit／release／touch 的時間判斷。
    */
   consumerOnline?(): boolean
   /** 測試用：取代 setTimeout（回傳取消函式）。預設用 unref 的 setTimeout。 */
@@ -213,6 +231,10 @@ export interface PullItem {
   part: number
   parts: number
   truncatedMessages: number
+  /** Cache epoch is backend-private metadata used only to choose fresh versus valid same-epoch Host resume. */
+  sessionEpoch?: number
+  /** Records each additional serialized model request before Host submission; never crosses IPC. */
+  onAdditionalUserPayload?: (serializedUserPayload: string) => boolean
 }
 
 export interface PullResult {
@@ -270,6 +292,9 @@ interface AwaitGroup {
   /** 這個呼叫最近一次有進展（建立、或有片段被領走／回來）的時間。 */
   progressAt: number
   settled: boolean
+  identitySnapshotRef?: ChatExtractInput['identitySnapshot']
+  identityInputRef?: ChatExtractInput
+  sourceLease?: ChatSourceLease
 }
 
 interface Entry {
@@ -290,6 +315,7 @@ interface Entry {
   itemId: string | null
   leaseUntil: number
   group: AwaitGroup | null
+  sourceLease: ChatSourceLease | null
 }
 
 function mergeResults(parts: ExtractResult[]): ExtractResult {
@@ -299,6 +325,7 @@ function mergeResults(parts: ExtractResult[]): ExtractResult {
   return {
     importance,
     newTodos: parts.flatMap((p) => p.newTodos),
+    identityDecisions:parts.flatMap((p)=>p.identityDecisions??[]),
     resolved: parts.flatMap((p) => p.resolved).filter((r) => (seenResolved.has(r.todoId) ? false : (seenResolved.add(r.todoId), true))),
     updates: parts.flatMap((p) => p.updates).filter((u) => (seenUpdated.has(u.todoId) ? false : (seenUpdated.add(u.todoId), true)))
   }
@@ -362,7 +389,7 @@ export class ExtractQueue implements ExtractSink {
       this.entries.set(id, {
         id, chatId, chatName: input.chat.name, msgIds: part.msgIds, input: part.input, user: part.user, truncated: part.truncated,
         partIndex, partCount: parts.length, mode: 'apply', gen: this.gen, attempts: fail?.attempts ?? 0, notBefore: fail?.notBefore ?? 0,
-        state: 'pending', itemId: null, leaseUntil: 0, group: null
+        state: 'pending', itemId: null, leaseUntil: 0, group: null, sourceLease: null
       })
     })
   }
@@ -386,16 +413,16 @@ export class ExtractQueue implements ExtractSink {
     if (offline) return Promise.reject(new Error('extract_ui_offline'))
     const chatId = input.chat.chatId
     const parts = partitionExtractInput(input, { maxChars: this.maxChars, contextLimit: this.opts.getConfig().recentContextLimit })
-    if (parts.length === 0) return Promise.resolve({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
+    if (parts.length === 0) return Promise.resolve({ importance: 'noise', newTodos: [], identityDecisions: [], resolved: [], updates: [] })
     return new Promise<ExtractResult>((resolve, reject) => {
-      const group: AwaitGroup = { resolve, reject, results: new Array(parts.length).fill(undefined), remaining: parts.length, cancel: null, progressAt: this.stallNow(), settled: false }
+      const group: AwaitGroup = { resolve, reject, results: new Array(parts.length).fill(undefined), remaining: parts.length, cancel: null, progressAt: this.stallNow(), settled: false, identitySnapshotRef: input.identitySnapshot, identityInputRef: input }
       const ids: string[] = []
       parts.forEach((part, partIndex) => {
         const id = randomUUID()
         ids.push(id)
         this.entries.set(id, {
           id, chatId, chatName: input.chat.name, msgIds: part.msgIds, input: part.input, user: part.user, truncated: part.truncated,
-          partIndex, partCount: parts.length, mode: 'await', gen: -1, attempts: 0, notBefore: 0, state: 'pending', itemId: null, leaseUntil: 0, group
+          partIndex, partCount: parts.length, mode: 'await', gen: -1, attempts: 0, notBefore: 0, state: 'pending', itemId: null, leaseUntil: 0, group, sourceLease: null
         })
       })
       this.armStall(group, this.awaitTimeoutMs)
@@ -423,6 +450,24 @@ export class ExtractQueue implements ExtractSink {
     this.uiSeenAt = this.stallNow()
   }
 
+  /** Keep a supported in-flight Host turn alive without treating a new lease as progress loss. */
+  progress(itemId: string): void {
+    const entry=[...this.entries.values()].find((value)=>value.itemId===itemId&&value.state==='leased')
+    if(!entry)return
+    const now=this.now()
+    this.uiSeenAt=this.stallNow()
+    entry.leaseUntil=Math.max(entry.leaseUntil,now+(this.opts.leaseMs??DEFAULT_LEASE_MS))
+    if(entry.group&&!entry.group.settled)entry.group.progressAt=this.stallNow()
+    if(entry.sourceLease){
+      const renewed=renewIdentitySourceLease(this.opts.db,entry.sourceLease,new Date())
+      if(renewed){
+        entry.sourceLease=renewed
+        if(entry.input.identitySnapshot)entry.input.identitySnapshot.sourceLease=renewed
+        if(entry.group){entry.group.sourceLease=renewed;if(entry.group.identitySnapshotRef)entry.group.identitySnapshotRef.sourceLease=renewed}
+      }
+    }
+  }
+
   // ── outbox：pull ──
 
   pull(params: { max?: number; leaseMs?: number } = {}): PullResult {
@@ -441,17 +486,67 @@ export class ExtractQueue implements ExtractSink {
       if (e.state !== 'pending') continue
       if (e.notBefore > now) { soonest = soonest === null ? e.notBefore : Math.min(soonest, e.notBefore); continue }
       if (busyChats.has(e.chatId)) continue // 同一個 chat 一次只領一片，後面的片段等前一片回來
-      if (e.mode === 'apply') {
+      if(e.input.identitySnapshot){
+        const sourceRows=getMessagesByChatAndIds(e.chatId,e.msgIds,this.opts.db)
+        if(sourceRows.length!==e.msgIds.length){
+          if(e.group)this.failGroup(e.group,new Error('identity_source_missing'));else this.entries.delete(e.id)
+          continue
+        }
+        const surviving=e.mode==='apply'?sourceRows.filter((row)=>!row.processed):sourceRows
+        if(surviving.length===0){if(e.group)this.failGroup(e.group,new Error('identity_source_no_longer_pending'));else this.entries.delete(e.id);continue}
+        e.msgIds=surviving.map((row)=>row.msgId)
+        e.input.newMessages=surviving
+        const selected=new Set([...this.entries.values()].filter((entry)=>entry.chatId===e.chatId&&entry.state==='pending'&&entry.mode===e.mode&&(e.mode==='apply'?entry.gen===e.gen:entry.group===e.group)).flatMap((entry)=>entry.msgIds))
+        for(const id of e.msgIds)selected.add(id)
+        const contextLimit=this.opts.getConfig().recentContextLimit
+        const recentWindow=getRecentByChat(e.chatId,Math.min(1000,Math.max(contextLimit,contextLimit+selected.size)),this.opts.db)
+        const priorRows=recentWindow.filter((row)=>!selected.has(row.msgId))
+        e.input.recentContext=contextLimit>0?priorRows.slice(-contextLimit):[]
+        e.input.now=new Date(this.now()).toISOString()
+        const todoReady=advanceIdentityIndex(this.opts.db,e.chatId,'todo')
+        const topicReady=!tableExists(this.opts.db,'discussion_topics')||advanceIdentityIndex(this.opts.db,e.chatId,'topic')
+        if(!todoReady||!topicReady){if(e.group)this.failGroup(e.group,new Error('identity_indexing'));else this.entries.delete(e.id);continue}
+        const groupSourceIds=e.group?.identitySnapshotRef?.selectedFingerprints.map((row)=>row.msgId)
+        const identitySourceRows=e.group&&groupSourceIds?.length?getMessagesByChatAndIds(e.chatId,groupSourceIds,this.opts.db):surviving
+        if(identitySourceRows.length!==(e.group&&groupSourceIds?.length?groupSourceIds.length:surviving.length)){
+          if(e.group)this.failGroup(e.group,new Error('identity_source_missing'));else this.entries.delete(e.id)
+          continue
+        }
+        const identitySourceIds=identitySourceRows.map((row)=>row.msgId)
+        const recalled=recallTodoIdentityCandidates(this.opts.db,e.chatId,identitySourceRows.map((row)=>row.text??''),identitySourceIds)
+        if(!recalled.ready){if(e.group)this.failGroup(e.group,new Error('identity_indexing'));else this.entries.delete(e.id);continue}
+        const snapshot=captureIdentitySnapshot(this.opts.db,e.chatId,surviving,recalled.truncated,recalled.candidateRevisions)
+        if(!snapshot){if(e.group)this.failGroup(e.group,new Error('identity_source_stale'));else this.entries.delete(e.id);continue}
+        e.input.identityCandidates=recalled.candidates
+        e.input.identityCandidatesTruncated=recalled.truncated
+        e.input.identitySnapshot=snapshot
+        if(e.group?.identitySnapshotRef){
+          const groupSnapshot=captureIdentitySnapshot(this.opts.db,e.chatId,identitySourceRows,recalled.truncated,recalled.candidateRevisions)
+          if(!groupSnapshot){this.failGroup(e.group,new Error('identity_source_stale'));continue}
+          Object.assign(e.group.identitySnapshotRef,groupSnapshot)
+          if(e.group.identityInputRef){
+            e.group.identityInputRef.identitySnapshot=e.group.identitySnapshotRef
+            e.group.identityInputRef.identityCandidates=recalled.candidates
+            e.group.identityInputRef.identityCandidatesTruncated=recalled.truncated
+            e.group.identityInputRef.newMessages=identitySourceRows
+            e.group.identityInputRef.now=new Date(this.now()).toISOString()
+          }
+        }
+      }
+      if (e.mode === 'apply' || e.input.identitySnapshot) {
         const latestOpenTodos = getOpenTodosByChat(e.chatId, this.opts.db)
+        if(e.group?.identityInputRef)e.group.identityInputRef.openTodos=latestOpenTodos
         const refreshedParts = partitionExtractInput({ ...e.input, openTodos: latestOpenTodos }, { maxChars: this.maxChars, contextLimit: this.opts.getConfig().recentContextLimit })
-        if (refreshedParts.length === 0) continue
+        if (refreshedParts.length === 0) { if(e.group)this.failGroup(e.group,new Error('identity_empty_payload'));else this.entries.delete(e.id);continue }
         if (refreshedParts.length > 1) {
           const additionalParts = refreshedParts.length - 1
           const nextPartCount = e.partCount + additionalParts
           const entries = [...this.entries.entries()]
           const entryIndex = entries.findIndex(([id]) => id === e.id)
+          if(e.group)e.group.results.splice(e.partIndex+1,0,...new Array(additionalParts).fill(undefined))
+          if(e.group)e.group.remaining+=additionalParts
           for (const sibling of this.entries.values()) {
-            if (sibling.id === e.id || sibling.chatId !== e.chatId || sibling.mode !== 'apply' || sibling.state !== 'pending' || sibling.gen !== e.gen) continue
+            if (sibling.id === e.id || sibling.chatId !== e.chatId || sibling.mode !== e.mode || sibling.state !== 'pending' || sibling.group!==e.group || (e.mode==='apply'&&sibling.gen!==e.gen)) continue
             if (sibling.partIndex > e.partIndex) sibling.partIndex += additionalParts
             sibling.partCount = nextPartCount
           }
@@ -481,6 +576,40 @@ export class ExtractQueue implements ExtractSink {
       }
       const size = Buffer.byteLength(JSON.stringify(item))
       if (items.length > 0 && bytes + size > budget) break
+      if (e.input.identitySnapshot) {
+        const reusableLease=e.sourceLease??(e.mode==='await'?(e.group?.sourceLease??e.input.identitySnapshot.sourceLease):undefined)
+        let lease:ChatSourceLease|null=reusableLease??null
+        if(lease){
+          const attempt=recordIdentitySourceAttempt(this.opts.db,lease,e.user)
+          if(!attempt.ok){releaseIdentitySourceAttempt(this.opts.db,lease,true);if(e.group)this.failGroup(e.group,new Error('identity_context_stale'));else this.recordFailure(e,'identity_context_stale');continue}
+          lease=attempt.lease
+        } else {
+          const sessionFingerprint=createHash('sha256').update(JSON.stringify({systemSha256:this.opts.getSystemSha256?.()??EXTRACT_SYSTEM_SHA256,schema:EXTRACT_JSON_SCHEMA.schema,identityQuery:IDENTITY_QUERY_VERSION,sessionContext:this.opts.getSessionContext?.()??''})).digest('hex')
+          const begun=beginIdentitySourceAttempt(this.opts.db,e.chatId,e.input.identitySnapshot,e.user,sessionFingerprint)
+          if(!begun.lease) {
+            if(begun.reason==='lease_busy') {e.notBefore=now+1000;soonest=soonest===null?e.notBefore:Math.min(soonest,e.notBefore);continue}
+            if(e.group) this.failGroup(e.group,new Error('identity_context_stale'))
+            else this.entries.delete(e.id)
+            continue
+          }
+          lease=begun.lease
+        }
+        e.sourceLease=lease
+        e.input.identitySnapshot.sourceLease=lease
+        if(e.group){e.group.sourceLease=lease;if(e.group.identitySnapshotRef)e.group.identitySnapshotRef.sourceLease=lease}
+        item.sessionEpoch=lease.sessionEpoch
+        const leaseId=lease.leaseId
+        item.onAdditionalUserPayload=(serializedUserPayload)=>{
+          const current=e.sourceLease
+          if(!current||current.leaseId!==leaseId)return false
+          const attempt=recordIdentitySourceAttempt(this.opts.db,current,serializedUserPayload,new Date(),false)
+          if(!attempt.ok)return false
+          e.sourceLease=attempt.lease
+          if(e.input.identitySnapshot)e.input.identitySnapshot.sourceLease=attempt.lease
+          if(e.group){e.group.sourceLease=attempt.lease;if(e.group.identitySnapshotRef)e.group.identitySnapshotRef.sourceLease=attempt.lease}
+          return true
+        }
+      }
       e.state = 'leased'
       e.itemId = item.itemId
       e.leaseUntil = now + leaseMs
@@ -518,6 +647,7 @@ export class ExtractQueue implements ExtractSink {
 
       if (!item.ok) {
         const code = typeof item.failCode === 'string' && /^[a-z0-9_]{1,48}$/.test(item.failCode) ? item.failCode : 'ai_failed'
+        if(entry.sourceLease) releaseIdentitySourceAttempt(this.opts.db,entry.sourceLease,true)
         const retryInMs = this.recordFailure(entry, code, item.retryAfterMs)
         tally.chatsFailed += 1
         out.push({ itemId, status: 'failed_recorded', chatId: entry.chatId, code, retryInMs })
@@ -526,8 +656,12 @@ export class ExtractQueue implements ExtractSink {
 
       let extract: ExtractResult
       try {
-        extract = validateExtractResult(item.result)
+        extract = entry.input.identitySnapshot ? validateExtractResult(item.result,{
+          candidates:entry.input.identityCandidates,candidatesTruncated:entry.input.identityCandidatesTruncated,
+          selectedMessageIds:entry.msgIds,targetType:'todo',allowedTodoIds:entry.input.openTodos.map((todo)=>todo.id)
+        }) : validateExtractResult(item.result)
       } catch (error) {
+        if(entry.sourceLease) releaseIdentitySourceAttempt(this.opts.db,entry.sourceLease,true)
         const retryInMs = this.recordFailure(entry, 'invalid_result')
         tally.chatsFailed += 1
         out.push({ itemId, status: 'rejected', chatId: entry.chatId, code: 'invalid_result', issues: issuesOf(error), retryInMs })
@@ -538,6 +672,7 @@ export class ExtractQueue implements ExtractSink {
         const group = entry.group!
         this.entries.delete(entry.id)
         if (!group.settled) {
+          if(group.identitySnapshotRef) group.identitySnapshotRef.sourceLease=entry.sourceLease??undefined
           group.progressAt = this.stallNow()
           group.results[entry.partIndex] = extract
           group.remaining -= 1
@@ -550,7 +685,13 @@ export class ExtractQueue implements ExtractSink {
       try {
         runId ??= startRun(this.opts.db)
         const local: ApplyTally = { todosCreated: 0, todosMerged: 0, todosResolvedDone: 0, todosSuggestedDone: 0, createdIds: [], resolvedIds: [], updatedIds: [] }
-        applyChatExtract({ db: this.opts.db, cfg: this.opts.getConfig(), now: new Date(this.now()).toISOString() }, entry.chatId, entry.msgIds, extract, local)
+        if(entry.input.identitySnapshot&&!entry.sourceLease) throw new Error('identity_source_lease_missing')
+        const identity=entry.input.identitySnapshot&&entry.sourceLease?{
+          snapshot:entry.input.identitySnapshot,sourceLease:entry.sourceLease,candidates:entry.input.identityCandidates,
+          candidatesTruncated:entry.input.identityCandidatesTruncated,selectedMessageIds:entry.msgIds,targetType:'todo' as const,
+          allowedTodoIds:entry.input.openTodos.map((todo)=>todo.id)
+        }:undefined
+        applyChatExtract({ db: this.opts.db, cfg: this.opts.getConfig(), now: new Date(this.now()).toISOString(), ...(identity?{identity}:{}) }, entry.chatId, entry.msgIds, extract, local)
         tally.todosCreated += local.todosCreated
         tally.todosMerged += local.todosMerged
         tally.todosResolvedDone += local.todosResolvedDone
@@ -564,6 +705,7 @@ export class ExtractQueue implements ExtractSink {
         this.chatFail.delete(entry.chatId)
         out.push({ itemId, status: 'applied', chatId: entry.chatId, createdIds: local.createdIds, resolvedIds: local.resolvedIds, updatedIds: local.updatedIds })
       } catch (error) {
+        if(entry.sourceLease) releaseIdentitySourceAttempt(this.opts.db,entry.sourceLease,true)
         const retryInMs = this.recordFailure(entry, 'apply_failed')
         tally.chatsFailed += 1
         out.push({ itemId, status: 'apply_failed', chatId: entry.chatId, code: 'apply_failed', issues: [error instanceof Error ? error.message.slice(0, 200) : 'unknown'], retryInMs })
@@ -600,6 +742,10 @@ export class ExtractQueue implements ExtractSink {
     let released = 0
     for (const e of this.entries.values()) {
       if (e.state === 'leased' && e.itemId && wanted.delete(e.itemId)) {
+        if(e.sourceLease) releaseIdentitySourceAttempt(this.opts.db,e.sourceLease,true)
+        if(e.input.identitySnapshot?.sourceLease===e.sourceLease) e.input.identitySnapshot.sourceLease=undefined
+        if(e.group?.sourceLease===e.sourceLease){e.group.sourceLease=undefined;if(e.group.identitySnapshotRef)e.group.identitySnapshotRef.sourceLease=undefined}
+        e.sourceLease=null
         e.state = 'pending'
         e.itemId = null
         e.leaseUntil = 0
@@ -624,7 +770,10 @@ export class ExtractQueue implements ExtractSink {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
-    for (const e of this.entries.values()) if (e.group && !e.group.settled) this.failGroup(e.group, new Error('extract queue disposed'))
+    for (const e of this.entries.values()) {
+      if(e.sourceLease) releaseIdentitySourceAttempt(this.opts.db,e.sourceLease,true)
+      if (e.group && !e.group.settled) this.failGroup(e.group, new Error('extract queue disposed'))
+    }
     this.entries.clear()
     this.chatFail.clear()
   }
@@ -642,6 +791,10 @@ export class ExtractQueue implements ExtractSink {
     const now = this.now()
     for (const e of this.entries.values()) {
       if (e.state === 'leased' && e.leaseUntil <= now) {
+        if(e.sourceLease) releaseIdentitySourceAttempt(this.opts.db,e.sourceLease,true)
+        if(e.input.identitySnapshot?.sourceLease===e.sourceLease) e.input.identitySnapshot.sourceLease=undefined
+        if(e.group?.sourceLease===e.sourceLease){e.group.sourceLease=undefined;if(e.group.identitySnapshotRef)e.group.identitySnapshotRef.sourceLease=undefined}
+        e.sourceLease=null
         e.state = 'pending'
         e.itemId = null
         e.leaseUntil = 0
@@ -652,6 +805,11 @@ export class ExtractQueue implements ExtractSink {
 
   private recordFailure(entry: Entry, code: string, retryAfterMs?: number): number {
     const now = this.now()
+    if(entry.sourceLease) releaseIdentitySourceAttempt(this.opts.db,entry.sourceLease,true)
+    if(entry.input.identitySnapshot?.sourceLease===entry.sourceLease) entry.input.identitySnapshot.sourceLease=undefined
+    if(entry.group?.sourceLease===entry.sourceLease) entry.group.sourceLease=undefined
+    if(entry.group&&entry.group.identitySnapshotRef?.sourceLease===entry.sourceLease) entry.group.identitySnapshotRef.sourceLease=undefined
+    entry.sourceLease=null
     if (entry.mode === 'await') {
       // 同步呼叫端（回顧）沿用 extractFn throw 語意：整個 chat 失敗，不在佇列內重試。
       this.entries.delete(entry.id)
@@ -700,7 +858,19 @@ export class ExtractQueue implements ExtractSink {
     if (group.settled) return
     group.settled = true
     group.cancel?.()
-    for (const [id, e] of this.entries) if (e.group === group) this.entries.delete(id)
+    const released=new Set<string>()
+    for (const [id, e] of this.entries) if (e.group === group) {
+      if(e.sourceLease&&!released.has(e.sourceLease.leaseId)){
+        releaseIdentitySourceAttempt(this.opts.db,e.sourceLease,true)
+        released.add(e.sourceLease.leaseId)
+      }
+      if(e.input.identitySnapshot?.sourceLease===e.sourceLease)e.input.identitySnapshot.sourceLease=undefined
+      e.sourceLease=null
+      this.entries.delete(id)
+    }
+    if(group.sourceLease&&!released.has(group.sourceLease.leaseId)) releaseIdentitySourceAttempt(this.opts.db,group.sourceLease,true)
+    if(group.identitySnapshotRef&&group.identitySnapshotRef.sourceLease===group.sourceLease)group.identitySnapshotRef.sourceLease=undefined
+    group.sourceLease=undefined
     group.reject(error)
     this.announce()
   }

@@ -16,6 +16,7 @@ import test from 'node:test'
 
 import { createNodeLineFsPort } from '../../src/main/line/engine/nodeLineFsPort.ts'
 import { createPluginBackend } from '../../src/plugin/backend/assemble.ts'
+import { createIdentityE2EFixture } from './identity-e2e-fixture.mjs'
 import { Dispatcher } from '../../src/plugin/backend/dispatcher.ts'
 import { EventHub } from '../../src/plugin/backend/eventHub.ts'
 import { CAPABILITY_API_PATHS, PLUGIN_CAPABILITIES, STANDALONE_CAPABILITIES } from '../../src/renderer/platform/capabilities.ts'
@@ -111,7 +112,8 @@ function fakeLine() {
 
 const okResult = (msgIds, title = '回覆報價單') => ({
   importance: 'action',
-  newTodos: [{ bucket: 'todo', title, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: msgIds.slice(0, 1) }],
+  newTodos: [{ draftRef:`draft_${String(msgIds[0]??'none').replace(/[^a-z0-9_-]/giu,'_')}`, bucket: 'todo', title, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: msgIds.slice(0, 1) }],
+  identityDecisions: msgIds.length ? [{draftRef:`draft_${String(msgIds[0]).replace(/[^a-z0-9_-]/giu,'_')}`,outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'high',evidenceMsgIds:msgIds.slice(0,1)}] : [],
   resolved: [], updates: []
 })
 
@@ -190,6 +192,111 @@ test('adapter: request/response methods reach the backend and return its values 
     assert.equal((await api.pipeline.status()).running, true)
     assert.equal(api.driver, undefined, 'no driver_post in the plugin build')
   })
+})
+
+test('adapter: identity list/inspect/retry/resolve and both relation decisions use the existing allow-listed method groups',async()=>{
+  const calls=[]
+  const target={async call(method,request){
+    calls.push({method,...request})
+    const values={
+      'db.todos.identity.listPending':{items:[]},
+      'db.todos.identity.inspect':null,
+      'db.todos.identity.retry':{ok:false,reason:'provider_unavailable'},
+      'db.todos.identity.resolve':{ok:false,reason:'revision_conflict'},
+      'db.todos.identity.todoTopicRelations':[],
+      'db.todos.identity.resolveTodoTopicRelation':{ok:true,status:'rejected',revision:2},
+      'groupTopics.linkProposals':[],
+      'groupTopics.resolveLinkProposal':{ok:true,status:'rejected',linkRevision:2}
+    }
+    return {ok:true,value:values[request.path]}
+  }}
+  const mock=makeHost({target})
+  const api=createPluginLineTodoApi({host:mock.host,events:{enabled:false}})
+  try{
+    assert.deepEqual(await api.db.todos.identity.listPending({entityType:'todo',chatId:'synthetic-chat'}),{items:[]})
+    assert.equal(await api.db.todos.identity.inspect({entityType:'todo',decisionId:'decision-1'}),null)
+    assert.equal((await api.db.todos.identity.retry({entityType:'todo',decisionId:'decision-1',expectedDecisionRevision:1})).reason,'provider_unavailable')
+    assert.equal((await api.db.todos.identity.resolve({entityType:'todo',decisionId:'decision-1',expectedDecisionRevision:1,expectedCandidateRevisions:[],outcome:'new'})).reason,'revision_conflict')
+    assert.deepEqual(await api.db.todos.identity.todoTopicRelations('synthetic-chat'),[])
+    assert.equal((await api.db.todos.identity.resolveTodoTopicRelation({relationId:'relation-1',expectedRevision:1,expectedTodoRevision:1,expectedTopicRevision:1,choice:'reject'})).status,'rejected')
+    assert.deepEqual(await api.groupTopics.linkProposals('synthetic-chat'),[])
+    assert.equal((await api.groupTopics.resolveLinkProposal({linkId:'link-1',expectedLinkRevision:1,leftTopicRevision:1,rightTopicRevision:1,choice:'reject'})).status,'rejected')
+    assert.ok(calls.filter((call)=>call.path.startsWith('db.todos.identity.')).every((call)=>call.method==='db.todos'))
+    assert.ok(calls.filter((call)=>call.path.startsWith('groupTopics.')).every((call)=>call.method==='groupTopics'))
+  }finally{api.dispose()}
+})
+
+test('adapter/runtime: a real automatic defer is inspectable, explicit retry re-evaluates with fake Host AI, and user resolve creates the canonical Todo',async()=>{
+  const fixture=await createIdentityE2EFixture()
+  const api=fixture.api
+  try{
+    fixture.emitSyntheticMessage('請先確認合成群組的會議時間')
+    const seeded=await fixture.seedDeferredItem()
+    const listed=await asyncUntil(async()=>{const page=await api.db.todos.identity.listPending({entityType:'todo',chatId:'synthetic-group'});return page.items.length===1?page:null},{message:'deferred identity inbox item'})
+    assert.equal(listed.items[0].decisionId,seeded.decisionId)
+    assert.equal(listed.items[0].state,'open')
+    const inspected=await api.db.todos.identity.inspect({entityType:'todo',decisionId:listed.items[0].decisionId})
+    assert.equal(inspected.sourceEvidence[0].text,'請先確認合成群組的會議時間')
+    assert.deepEqual(inspected.item.sourceMsgIds,[listed.items[0].sourceMsgIds[0]])
+    const reevaluated=await api.db.todos.identity.retry({entityType:'todo',decisionId:listed.items[0].decisionId,expectedDecisionRevision:listed.items[0].decisionRevision})
+    assert.equal(reevaluated.ok,true,JSON.stringify(reevaluated))
+    assert.equal(reevaluated.item.suggestedDecision.reasonCode,'fresh_occurrence')
+    assert.equal(reevaluated.item.state,'open','the AI suggestion is reviewable and is not silently committed')
+    const resolved=await api.db.todos.identity.resolve({entityType:'todo',decisionId:reevaluated.item.decisionId,expectedDecisionRevision:reevaluated.item.decisionRevision,expectedCandidateRevisions:reevaluated.item.candidateRevisions,outcome:'new'})
+    assert.equal(resolved.ok,true,JSON.stringify(resolved))
+    assert.equal((await api.db.todos.list()).length,1)
+    assert.equal((await api.db.todos.identity.listPending({entityType:'todo',chatId:'synthetic-group'})).items.length,0)
+    assert.ok(fixture.calls.filter((call)=>call.path==='db.todos.identity.listPending').length>=2)
+    assert.equal(fixture.calls.filter((call)=>call.path==='db.todos.identity.inspect').length,1)
+    assert.equal(fixture.calls.filter((call)=>call.path==='db.todos.identity.retry').length,1)
+    assert.equal(fixture.calls.filter((call)=>call.path==='db.todos.identity.resolve').length,1)
+  }finally{await fixture.dispose()}
+})
+
+test('adapter/runtime: the same synthetic renderer fixture creates and rejects a cross-chat Topic proposal without deleting either Topic',async()=>{
+  const fixture=await createIdentityE2EFixture()
+  try{
+    const proposals=await fixture.seedCrossChatTopicLinks()
+    assert.equal(proposals.length,1)
+    const proposal=proposals[0]
+    assert.equal(proposal.permissionAllowed,true)
+    assert.notEqual(proposal.leftChatId,proposal.rightChatId)
+    const beforeLeft=await fixture.api.groupTopics.list(proposal.leftChatId)
+    const beforeRight=await fixture.api.groupTopics.list(proposal.rightChatId)
+    assert.equal(beforeLeft.topics.length,1)
+    assert.equal(beforeRight.topics.length,1)
+    const rejected=await fixture.api.groupTopics.resolveLinkProposal({linkId:proposal.linkId,expectedLinkRevision:proposal.linkRevision,leftTopicRevision:proposal.leftRevision,rightTopicRevision:proposal.rightRevision,choice:'reject'})
+    assert.equal(rejected.ok,true,JSON.stringify(rejected))
+    assert.equal(rejected.status,'rejected')
+    assert.equal((await fixture.api.groupTopics.list(proposal.leftChatId)).topics.length,1)
+    assert.equal((await fixture.api.groupTopics.list(proposal.rightChatId)).topics.length,1)
+  }finally{await fixture.dispose()}
+})
+
+test('adapter/runtime: a retried Todo may propose an independent Topic link without source-id intersection, and rejecting the link keeps both entities',async()=>{
+  const fixture=await createIdentityE2EFixture({retryOutcome:'link'})
+  const api=fixture.api
+  try{
+    await fixture.seedCrossChatTopicLinks()
+    fixture.emitSyntheticMessage('請預約合成 meeting room reservation',{msgId:'fixture-todo-link',chatId:'synthetic-group',chat:'合成群組'})
+    const deferred=await fixture.seedDeferredItem()
+    const retry=await api.db.todos.identity.retry({entityType:'todo',decisionId:deferred.decisionId,expectedDecisionRevision:deferred.decisionRevision})
+    assert.equal(retry.ok,true,JSON.stringify(retry))
+    if(!retry.ok)throw new Error(retry.reason)
+    const target=retry.item.suggestedDecision
+    assert.equal(target.outcome,'link')
+    assert.equal(target.candidateType,'topic')
+    const resolved=await api.db.todos.identity.resolve({entityType:'todo',decisionId:retry.item.decisionId,expectedDecisionRevision:retry.item.decisionRevision,expectedCandidateRevisions:retry.item.candidateRevisions,outcome:'link',candidateType:'topic',candidateId:target.candidateId,relationKind:'same_topic'})
+    assert.equal(resolved.ok,true,JSON.stringify(resolved))
+    const relations=await api.db.todos.identity.todoTopicRelations('synthetic-group')
+    const relation=relations.find((item)=>item.todoId===resolved.canonicalId&&item.topicId===target.candidateId)
+    assert.ok(relation,'the product relation list exposes the link even when Todo source ids do not intersect the Topic evidence')
+    const rejected=await api.db.todos.identity.resolveTodoTopicRelation({relationId:relation.relationId,expectedRevision:relation.revision,expectedTodoRevision:relation.todoRevision,expectedTopicRevision:relation.topicRevision,choice:'reject'})
+    assert.equal(rejected.ok,true,JSON.stringify(rejected))
+    assert.equal(rejected.status,'rejected')
+    assert.ok(await api.db.todos.get(resolved.canonicalId),'rejecting the relation keeps the Todo')
+    assert.equal((await api.groupTopics.list('synthetic-group')).topics.length,1,'rejecting the relation keeps the Topic')
+  }finally{await fixture.dispose()}
 })
 
 test('adapter: failures are typed — in-band backend errors, host errors, malformed envelopes, bad arguments', async () => {

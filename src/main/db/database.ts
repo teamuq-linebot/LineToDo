@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs'
 import type { Database as Db } from 'better-sqlite3'
 import { migrate } from './migrate'
 import { createBetterSqlite3AppEngine, type AppDbEngine } from './appDbEngine'
+import { bindDatabasePath, unbindDatabasePath } from './databaseScope'
 
 /** 未注入引擎時的預設（standalone 的 better-sqlite3，惰性建立）。 */
 let defaultEngine: AppDbEngine | null = null
@@ -118,6 +119,7 @@ export function openDatabase(options: { dbPath: string; engine?: AppDbEngine }):
     console.error(`[db] migrate failed for ${path}:`, err)
     throw new DbIntegrityError(`DB migration failed for ${path}: ${reason}`)
   }
+  bindDatabasePath(conn,path)
   console.log(`[db] opened ${path} (schema ${from} -> ${to})`)
 
   let closed = false
@@ -127,6 +129,7 @@ export function openDatabase(options: { dbPath: string; engine?: AppDbEngine }):
     close(): void {
       if (closed) return
       closed = true
+      unbindDatabasePath(conn)
       conn.close()
     }
   }

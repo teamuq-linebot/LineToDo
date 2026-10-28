@@ -34,6 +34,8 @@ export interface LlmRequest {
   timeoutMs?: number
   /** 供上層取消（目前無呼叫端使用，但 CLI kill 需要它，先留）。 */
   signal?: AbortSignal
+  /** Internal Host accounting hook; it is not serialized to an AI provider. */
+  onAdditionalUserPayload?(serializedUserPayload: string): boolean
 }
 
 export interface LlmResponse {
@@ -116,6 +118,8 @@ export interface LlmProvider {
   readonly id: LlmProviderId
   readonly kind: LlmProviderKind
   complete(req: LlmRequest): Promise<LlmResponse>
+  /** Stable fingerprint of the actual runtime destination, when provided by a Host adapter. */
+  runtimeFingerprint?(): Promise<string | null>
   /** 設定頁「檢查/測試」用。不得快取結果（登入狀態隨時會變）。 */
   health(): Promise<ProviderHealth>
 }

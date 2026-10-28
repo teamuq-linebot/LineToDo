@@ -73,10 +73,13 @@ try {
       if (!chatsAsked.includes(chatId)) chatsAsked.push(chatId)
       const rank = chatsAsked.indexOf(chatId)
       const first = payload.newMessages[0]
-      if (rank < 3) return JSON.stringify({ importance: 'action', newTodos: [{ bucket: 'todo', title: `跟進 ${payload.chat.name ?? chatId}`, detail: null, priority: 2, dueAt: null, confidence: 0.8, sourceMsgIds: [first.msgId] }], resolved: [], updates: [] })
+      if (rank < 3) {
+        const draftRef=`contract_${String(first.msgId).replace(/[^a-z0-9_-]/giu,'_')}`
+        return JSON.stringify({ importance: 'action', newTodos: [{ draftRef,bucket: 'todo', title: `跟進 ${payload.chat.name ?? chatId}`, detail: null, priority: 2, dueAt: null, confidence: 0.8, sourceMsgIds: [first.msgId] }], identityDecisions:[{draftRef,outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'high',evidenceMsgIds:[first.msgId]}], resolved: [], updates: [] })
+      }
       if (rank === 3) return JSON.stringify({ importance: 'urgent', newTodos: [{ title: 5 }] })
       if (rank === 4) return { fail: 'provider_error' }
-      return JSON.stringify({ importance: 'noise', newTodos: [], resolved: [], updates: [] })
+      return JSON.stringify({ importance: 'noise', newTodos: [], identityDecisions:[], resolved: [], updates: [] })
     }
   })
   // an old Core has no context.residency; cfg.residency makes it a Core that has the feature (scenario 'residency' below)

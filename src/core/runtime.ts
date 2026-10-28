@@ -2,6 +2,8 @@ import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readF
 import { hostname } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { LineTodoApi } from '../shared/api'
+import { createRuntimeOwnerProof, revokeRuntimeOwnerProof } from '../shared/runtimeOwnerProof'
+import type { RuntimeOwnerProof } from '../shared/runtimeOwnerProof'
 
 export const DATA_DIRECTORY_IN_USE = 'DATA_DIRECTORY_IN_USE'
 
@@ -13,7 +15,7 @@ export interface LineTodoHostPorts {
   start?(): Promise<void>
   stop?(): Promise<void>
   dispose?(): Promise<void>
-  initialize?(): Promise<Pick<LineTodoRuntime, 'api' | 'start' | 'stop' | 'dispose'>>
+  initialize?(ownerLockProof:RuntimeOwnerProof): Promise<Pick<LineTodoRuntime, 'api' | 'start' | 'stop' | 'dispose'>>
 }
 
 export type OwnerLockFileSystem = Pick<typeof import('node:fs'),
@@ -108,9 +110,17 @@ const SUBSCRIPTION_METHODS = new Set(['onMessage', 'onStatus', 'onMessagesPersis
 
 export async function createLineTodoRuntime(ports: LineTodoHostPorts): Promise<LineTodoRuntime> {
   const lockFs = ports.ownerLockFs ?? { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync }
-  const releaseLock = acquireOwnerLock(ports.dataDir, lockFs)
+  const releaseOwnerLock = acquireOwnerLock(ports.dataDir, lockFs)
+  const ownerLockProof=createRuntimeOwnerProof(ports.dataDir)
+  let ownerLockReleased=false
+  const releaseLock=():void=>{
+    if(ownerLockReleased)return
+    revokeRuntimeOwnerProof(ownerLockProof)
+    ownerLockReleased=true
+    releaseOwnerLock()
+  }
   let application: Pick<LineTodoRuntime, 'api' | 'start' | 'stop' | 'dispose'> | undefined
-  try { application = await ports.initialize?.() } catch (error) { releaseLock(); throw error }
+  try { application = await ports.initialize?.(ownerLockProof) } catch (error) { releaseLock(); throw error }
   const api = application?.api ?? ports.api
   const startHost = application?.start ?? ports.start
   const stopHost = application?.stop ?? ports.stop

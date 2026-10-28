@@ -20,7 +20,9 @@ export interface AiPortRequest {
   system: string
   user: string
   /** 外掛內部的對話連續性提示；只供 LINE Todo 抽取使用，不會送給 Host AI API。 */
-  conversationScope?: { kind: 'line-chat-extract'; chatId: string }
+  conversationScope?: { kind: 'line-chat-extract'; chatId: string; sessionEpoch?: number }
+  /** Called before every additional serialized host request (repair, retry, or task/session recovery). */
+  onAdditionalUserPayload?(serializedUserPayload: string): boolean
   /** 回覆必須是一個 JSON 物件：port 取出 JSON、用 `validate` 驗證，不合格時最多重問一次。 */
   expectJson: boolean
   validate?: AiJsonCheck
@@ -59,4 +61,6 @@ export class AiPortError extends Error {
 
 export interface AiPort {
   complete(request: AiPortRequest): Promise<AiPortResult>
+  /** Host adapters expose the effective destination after resolving provider defaults. */
+  effectiveSelection?(): Promise<{ providerId: string; modelId: string | null; effort: string | null } | null>
 }

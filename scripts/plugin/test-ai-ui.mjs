@@ -42,7 +42,7 @@ function fakeLine() {
 }
 const raw = (i, text) => { const t = 1_700_000_000_000 + i * 1000; return { msgId: `m${i}`, chat: 'Alice', chatId: 'u-alice', isGroup: false, ts: t, time: new Date(t).toISOString(), direction: 'in', sender: 'Alice', text, contentType: 0 } }
 const fenced = (v) => '```json\n' + JSON.stringify(v) + '\n```'
-const todoFor = (user) => { const p = JSON.parse(user); const f = p.newMessages[0]; return { importance: 'action', newTodos: [{ bucket: 'todo', title: '寄報價單給客戶', detail: 'x', priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [f.msgId] }], resolved: [], updates: [] } }
+const todoFor = (user) => { const p = JSON.parse(user); const f = p.newMessages[0]; const draftRef=`ai_ui_${String(f.msgId).replace(/[^a-z0-9_-]/giu,'_')}`; return { importance: 'action', newTodos: [{ draftRef,bucket: 'todo', title: '寄報價單給客戶', detail: 'x', priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [f.msgId] }], identityDecisions:[{draftRef,outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'high',evidenceMsgIds:[f.msgId]}], resolved: [], updates: [] } }
 const textOf = (container) => walk(container).map((e) => e.textContent).join(' ')
 
 async function withDialog(draftReply, body) {

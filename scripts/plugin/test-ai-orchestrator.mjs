@@ -24,7 +24,7 @@ import { describeStatus as describeBoardStatus } from '../../src/plugin/ui/aiSta
 import { describeStatus } from '../../src/shared/aiStatus.ts'
 import { validateExtractResult } from '../../src/shared/extractResult.ts'
 import { CONTRACT, createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
-import { CORE_AI_CHAT_TITLE, CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, EXPECTED_AI_CHAT_REVOKED_TEXT, EXPECTED_AI_FENCED_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE, namesVersionSpecificPlace } from './lib/fenced-text.mjs'
+import { BACKEND_TRUST_REQUIREMENT, CORE_AI_CHAT_TITLE, CORE_PERMISSIONS_SECTION_TITLE, EXPECTED_AI_CHAT_REVOKED_TEXT, EXPECTED_AI_FENCED_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE, namesVersionSpecificPlace } from './lib/fenced-text.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -471,7 +471,16 @@ test('(e) contentSaved (new turn event in 1.7.15): a turn whose event stream car
   assert.ok(Array.isArray(seen))
 })
 
-test('(e) line-todo does not subscribe to AI turn events anywhere, and nothing in the view or the board calls window.tuqPlugin.ai', () => {
+test('(e) only the backend Host adapter consumes session events; the renderer never calls window.tuqPlugin.ai and replay turns stay filtered', () => {
+  const gatewayPath='src/plugin/backend/hostAi.ts'
+  const hostSessionOffenders=(where,text)=>{
+    const code=text.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm,'')
+    const out=[]
+    if(/tuqPlugin\??\.ai\b/.test(code))out.push(`${where}: window.tuqPlugin.ai`)
+    if(/\.onEvent\(/.test(code)&&where!==gatewayPath)out.push(`${where}: onEvent outside the backend Host adapter`)
+    if(/\bai\??\.openSession\(/.test(code)&&where!==gatewayPath)out.push(`${where}: host.ai.openSession outside the backend Host adapter`)
+    return out
+  }
   const offenders = []
   const walk = (dir) => {
     for (const name of readdirSync(dir)) {
@@ -480,14 +489,17 @@ test('(e) line-todo does not subscribe to AI turn events anywhere, and nothing i
       if (!/\.(ts|tsx)$/.test(name)) continue
       const text = readFileSync(full, 'utf8')
       const where = relative(ROOT, full).split('\\').join('/')
-      if (/tuqPlugin\??\.ai\b/.test(text.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''))) offenders.push(`${where}: window.tuqPlugin.ai`)
-      const code = text.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '')
-      if (/\.onEvent\(/.test(code)) offenders.push(`${where}: onEvent (turn event stream)`)
-      if (/\bai\??\.openSession\(/.test(code)) offenders.push(`${where}: host.ai.openSession`)
+      offenders.push(...hostSessionOffenders(where,text))
     }
   }
   walk(join(ROOT, 'src'))
-  assert.deepEqual(offenders, [], 'only host.ai.complete is used (one turn, no event stream), so contentSaved can never reach line-todo code')
+  const hostAdapter=readFileSync(join(ROOT,'src','plugin','backend','hostAi.ts'),'utf8')
+  assert.match(hostAdapter,/event\.turnId\s*!==\s*turnId/,'events replayed from older resumed turns are ignored')
+  assert.match(hostAdapter,/event\.kind\s*===\s*'textDelta'/,'only the active turn text is accumulated')
+  assert.doesNotMatch(hostAdapter,/event\.kind\s*===\s*'contentSaved'/,'contentSaved is not interpreted as a model result')
+  assert.deepEqual(offenders, [], 'the view has no direct Host AI/event API; backend session replay stays scoped to the active turn')
+  assert.deepEqual(hostSessionOffenders('src/plugin/backend/rogue.ts','session.onEvent(()=>{}); context.host.ai.openSession({})'),['src/plugin/backend/rogue.ts: onEvent outside the backend Host adapter','src/plugin/backend/rogue.ts: host.ai.openSession outside the backend Host adapter'],'a second module cannot bypass the approved HostAiPort gateway')
+  assert.deepEqual(hostSessionOffenders(gatewayPath,'session.onEvent(()=>{}); opts.ai.openSession({})'),[],'the narrow exception is confined to the existing gateway')
 })
 
 // ───────────── port lifecycle ─────────────
@@ -717,12 +729,13 @@ test('describeStatus: every state has a user-facing sentence; AI runs in the bac
   assert.match(text('unavailable', 'provider_unsupported_version'), /版本不支援/)
   assert.doesNotMatch(text('unavailable', 'provider_unsupported_version'), /\d+\.\d+/)
   assert.match(text('paused', 'backend'), /暫時中斷/)
-  assert.ok(text('paused', 'backend_revoked').includes(`「${CORE_BACKEND_INVOKE_TITLE}」`), 'R1-N1: the switch title on TeamUQ\'s settings page')
+  assert.ok(text('paused', 'backend_revoked').includes(BACKEND_TRUST_REQUIREMENT), 'the current Core full-trust requirement')
   assert.doesNotMatch(text('paused', 'backend_revoked'), STALE_PERMISSION_NAME)
   assert.doesNotMatch(text('paused', 'backend_revoked'), /自動繼續|自動恢復/, 'review B1: no promise of resuming by itself')
   assert.doesNotMatch(text('paused', 'backend_revoked'), RECOVERY_PROMISE, 'tester r1 §3.2: no paraphrased promise either')
   assert.equal(text('paused', 'backend_revoked'), EXPECTED_AI_FENCED_TEXT, 'word for word')
-  assert.ok(text('paused', 'backend_revoked').includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，確認「${CORE_PERMISSIONS_SECTION_TITLE}」裡已允許「${CORE_BACKEND_INVOKE_TITLE}」且外掛是啟用的`), '0.1.3: where to go and what to check')
+  assert.ok(text('paused', 'backend_revoked').includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，確認執行範圍是「完全信任級」且外掛已啟用`), '0.1.3: where to go and what to check')
+  assert.doesNotMatch(text('paused','backend_revoked'),/backend:invoke|舊版 manifest 欄位/u,'the legacy field is not an actionable switch')
   assert.doesNotMatch(text('paused', 'backend_revoked'), VERSION_SPECIFIC_PLACE, '0.1.3: no place that only one TeamUQ version has')
   assert.match(text('unavailable', 'no_provider'), /找不到可用/)
   assert.match(text('revoked', 'access_revoked'), /ai:chat/)

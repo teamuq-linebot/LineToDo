@@ -1,8 +1,8 @@
 // TeamUQ plugin developer guide conformance (research-gap-audit G-01…G-07): the view-side modules and the adapter against the real Dispatcher / backend.
 //
 //   G-07  the backend method allow-list: one method per API namespace; Core's allow-list really limits what reaches the backend
-//   G-03  backend:invoke revoked / plugin disabled / call timed out — Core 1.7.1 FENCES the plugin (review B1; Core is played by
-//         scripts/lib/core-invoke-gate-standin.mjs, checked against Core's real gate): a distinct link state and message that names the three
+//   G-03  backend call denied / plugin disabled / call timed out — current Core checks trust and fences on disable/timeout; the stand-in also
+//         keeps a legacy revocable-backend:invoke compatibility scenario: a distinct link state and message that names the causes
 //         causes and the actions that work, no promise of automatic recovery, no busy retries, the event pump probes instead of backing off forever
 //   G-02  every failure becomes a user-facing sentence (lib/backendError.ts) — revoked / unavailable / version mismatch / other
 //   G-05  long tasks: after a backend restart the lost job (job_not_found) is explained with the status the new backend reads back
@@ -23,7 +23,7 @@ import { Dispatcher } from '../../src/plugin/backend/dispatcher.ts'
 import { EventHub } from '../../src/plugin/backend/eventHub.ts'
 import { ReviewCoordinator, ReviewLedger } from '../../src/plugin/backend/reviewRun.ts'
 import { describeLink } from '../../src/plugin/ui/backendLink.ts'
-import { BACKEND_INVOKE_TOGGLE_TITLE, backendErrorText, describeBackendError, guarded } from '../../src/renderer/lib/backendError.ts'
+import { backendErrorText, describeBackendError, guarded } from '../../src/renderer/lib/backendError.ts'
 import { RESUMABLE_REVIEW_STATES, explainInterrupted, longTaskNotes, longTaskPollDelayMs, readLongTasks } from '../../src/renderer/lib/longTasks.ts'
 import { THEME_KEY, applyTheme, readStoredTheme, resolveTheme, systemTheme, toggleChoice } from '../../src/renderer/lib/theme.ts'
 import {
@@ -37,7 +37,7 @@ import { BACKEND_METHODS, buildManifest } from './lib/manifest.mjs'
 import { ROOT } from './lib/paths.mjs'
 import { CORE_INVOKE_LIMITS, createCoreGateStandin } from '../lib/core-invoke-gate-standin.mjs'
 import {
-  BOARD_VIEW_TITLE, CORE_AI_CHAT_TITLE, CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, CORE_PLUGIN_SETTINGS_TAB_LABEL, EXPECTED_FENCED_TEXT,
+  BACKEND_TRUST_REQUIREMENT, BOARD_VIEW_TITLE, CORE_AI_CHAT_TITLE, CORE_PERMISSIONS_SECTION_TITLE, CORE_PLUGIN_SETTINGS_TAB_LABEL, EXPECTED_FENCED_TEXT,
   EXPECTED_NOT_IN_HOST_TEXT, EXPECTED_TIMEOUT_TEXT, EXPECTED_UNDO_HINT_PLUGIN, EXPECTED_UNDO_HINT_STANDALONE, PLUGIN_PAGE_PLACE_TEXT, R1_PLACE_SENTENCES,
   RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE, namesVersionSpecificPlace
 } from './lib/fenced-text.mjs'
@@ -63,9 +63,9 @@ function coreHost(target, { allow = BACKEND_METHODS, timeoutMs } = {}) {
 
 /**
  * Review B1: what the status line / panels say while Core fences the plugin. It must cover all three of Core's fence sources, give the actions that
- * actually work, never promise that allowing the permission again brings it back, and never claim plugin_disabled means "disabled".
+ * actually work, never promise that allowing the legacy permission again brings it back, and never claim plugin_disabled means "disabled".
  * Tester r1 §3.2: the sentence is compared WORD FOR WORD (a paraphrased promise slipped past the old blacklist); only an "<action>失敗：" prefix may
- * precede it. R1-N1: the switch is named the way TeamUQ's settings page names it.
+ * precede it. Current Core marks backend:invoke as legacy metadata and gates calls on full trust, enablement and the method allowlist.
  */
 function assertFencedSentence(text, label) {
   assert.ok(text.endsWith(EXPECTED_FENCED_TEXT), `${label}: the fenced sentence, word for word — got: ${text}`)
@@ -73,8 +73,9 @@ function assertFencedSentence(text, label) {
   assert.doesNotMatch(text, RECOVERY_PROMISE, `${label}: no promise of recovery (Core 1.7.1 keeps the fence when the permission is allowed again)`)
   assert.doesNotMatch(text, STALE_PERMISSION_NAME, `${label}: no switch name that TeamUQ's settings page does not show`)
   assert.doesNotMatch(text, /目前在 TeamUQ 中是停用狀態/, `${label}: plugin_disabled is not asserted to mean "disabled"`)
-  for (const cause of [`「${CORE_BACKEND_INVOKE_TITLE}」權限（backend:invoke）被關閉`, '外掛被停用', '太久沒有回應而被 TeamUQ 隔離']) assert.ok(text.includes(cause), `${label}: names the fence source ${cause}`)
-  assert.ok(text.includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，確認「${CORE_PERMISSIONS_SECTION_TITLE}」裡已允許「${CORE_BACKEND_INVOKE_TITLE}」，而且外掛是啟用的`), `${label}: where to go and what to check, with the names TeamUQ 1.6.8 and 1.7.1 both show`)
+  for (const cause of [`不是「${BACKEND_TRUST_REQUIREMENT}」`, '外掛已停用', '後端太久沒有回應而被 TeamUQ 隔離']) assert.ok(text.includes(cause), `${label}: names the fence source ${cause}`)
+  assert.ok(text.includes(`請到 ${PLUGIN_PAGE_PLACE_TEXT}，確認執行範圍是「完全信任級」且外掛已啟用`), `${label}: where to go and what to check`)
+  assert.doesNotMatch(text, /backend:invoke|舊版 manifest 欄位/u, `${label}: does not tell users to change the non-revocable legacy field`)
   // the sentence itself, not the "<action>失敗：" prefix (「讀取設定失敗：」 is about the plugin's own settings)
   assert.doesNotMatch(text.slice(text.length - EXPECTED_FENCED_TEXT.length), VERSION_SPECIFIC_PLACE, `${label}: 0.1.3 — no place that only one TeamUQ version has (「我的 AI › 外掛」 is 1.7.1 only, 「設定 › 外掛」 1.6.8 only)`)
   assert.match(text, /停用再啟用，或重新啟動 TeamUQ/, `${label}: what actually lifts the fence`)
@@ -150,7 +151,7 @@ test('G-07: the manifest allow-list is the method groups; every adapter call use
 
 // ───────────── G-03 (review B1: Core 1.7.1 fences the plugin) ─────────────
 
-test('G-03 / B1: Core fences on revoke — the call in flight ends plugin_permission_denied, every later call plugin_disabled (no busy retries); allowing the permission again does NOT recover, only activate (disable → enable) does; the status line never promises automatic recovery', async () => {
+test('G-03 / B1 compatibility: a legacy permission revoke fences in-flight calls, while disable → enable activates; current Core trust behavior is checked by check:core-gate-conformance', async () => {
   await withRealBackend(async ({ backend }) => {
     const held = []
     let hold = false
@@ -166,7 +167,7 @@ test('G-03 / B1: Core fences on revoke — the call in flight ends plugin_permis
       await api.ping()
       assert.deepEqual(api.plugin.backendLink(), { state: 'ok', code: null })
 
-      // 1. the user turns backend:invoke off in 我的 AI › 外掛 while a call is in flight
+      // Compatibility scenario for earlier Core builds that treated backend:invoke as revocable.
       hold = true
       const inFlight = api.db.todos.list({}).then(() => null, (e) => e)
       await until(() => core.inFlight === 1, { message: 'db.todos.list in flight' })
@@ -249,13 +250,13 @@ test('G-03 / B1: Core fences on revoke — the call in flight ends plugin_permis
   })
 })
 
-test('G-03 / B1: the event pump under Core fencing — fixed-interval probes (no endless backoff) that keep getting plugin_disabled after the permission is allowed again (no resync, the line stays); the board resyncs only after activate', async () => {
+test('G-03 / B1 compatibility: the event pump under a legacy backend:invoke fence keeps fixed-interval probes until activate', async () => {
   await withRealBackend(async ({ backend }) => {
     const core = coreHost(backend)
     const diagnostics = []
     // Tester r1 §3.3: the two regimes must be told apart. The fixed probe (accessProbeMs 60) and the ordinary failure backoff (1000 ms here) are
-    // far apart, so a pump that backs off while fenced makes no probe at all in the 300 ms window, and one that loops faster than the probe
-    // interval shows up in the gaps between probes.
+    // far apart. Use a 1.2 s wall-clock sample so OS scheduling under the full package suite does not hide the fixed probe cadence;
+    // the lower/upper count and inter-probe gaps still reject a 1 s failure backoff and a busy loop.
     const PROBE_MS = 60
     const api = createPluginLineTodoApi({ host: core.host, events: { ...FAST_EVENTS, backoffBaseMs: 1000, backoffMaxMs: 1000, accessProbeMs: PROBE_MS, onDiagnostic: (d) => diagnostics.push({ ...d, at: Date.now() }) } })
     const changed = []
@@ -267,10 +268,10 @@ test('G-03 / B1: the event pump under Core fencing — fixed-interval probes (no
       await until(() => diagnostics.some((d) => d.kind === 'access'), { message: 'the pump noticing the fence' })
       const atFence = eventCalls().length
       const accessAtFence = diagnostics.filter((d) => d.kind === 'access').length
-      await sleep(300)
+      await sleep(1200)
       const probes = eventCalls().length - atFence
-      // fixed 60 ms probe: ~5 calls in 300 ms; the 1000 ms failure backoff: none; a busy loop: dozens
-      assert.ok(probes >= 3 && probes <= 7, `fixed-interval probes, not the failure backoff: ${probes} probes in 300 ms`)
+      // fixed 60 ms probe: about 20 calls in 1.2 s; the 1000 ms failure backoff: about 1; a busy loop: too many or gaps below 45 ms
+      assert.ok(probes >= 6 && probes <= 32, `fixed-interval probes, not the failure backoff: ${probes} probes in 1200 ms`)
       const accessTimes = diagnostics.filter((d) => d.kind === 'access').slice(accessAtFence - 1).map((d) => d.at)
       const gaps = accessTimes.slice(1).map((t, i) => t - accessTimes[i])
       assert.ok(gaps.length >= 3 && gaps.every((gap) => gap >= PROBE_MS - 15), `one probe per accessProbeMs (${PROBE_MS} ms), gaps: ${gaps.join(',')}`)
@@ -279,7 +280,7 @@ test('G-03 / B1: the event pump under Core fencing — fixed-interval probes (no
       assert.ok(diagnostics.filter((d) => d.kind === 'access').every((d) => ['plugin_permission_denied', 'plugin_disabled'].includes(d.detail)))
       assert.equal(api.plugin.backendLink().state, 'revoked')
 
-      // allowed again in 我的 AI › 外掛: Core keeps the fence → still plugin_disabled, no resync, the status line stays
+      // The old grant may be allowed again, but an already-installed fence stays until activate.
       core.setBackendInvokeRevoked(false)
       const changedBefore = changed.length
       const atAllow = eventCalls().length
@@ -356,9 +357,10 @@ test('G-02: every failure becomes one user-facing sentence: revoked / unavailabl
   assert.equal(await guarded(async () => 7, () => assert.fail('no error')), 7)
 })
 
-test('R1-N1: the plugin names the backend:invoke switch the way TeamUQ\'s settings page does (「讓畫面和它的背景程式溝通」), nowhere 「後端呼叫」', () => {
-  assert.equal(BACKEND_INVOKE_TOGGLE_TITLE, CORE_BACKEND_INVOKE_TITLE, 'Core pluginText.ts PERMISSION_TEXT["backend:invoke"].title')
+test('current Core backend errors point users to trust and enablement, not the non-revocable backend:invoke legacy field', () => {
+  assert.equal(BACKEND_TRUST_REQUIREMENT,'完全信任級')
   assert.equal(describeBackendError({ code: 'plugin_disabled' }).text, EXPECTED_FENCED_TEXT)
+  assert.doesNotMatch(EXPECTED_FENCED_TEXT,/backend:invoke|舊版 manifest 欄位/u)
   // static: no user-facing string in the plugin sources still calls the switch 「後端呼叫」
   const offenders = []
   const scan = (dir) => {

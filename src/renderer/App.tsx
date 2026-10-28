@@ -2,6 +2,7 @@ import { MessageStream } from './components/MessageStream'
 import { KanbanBoard } from './components/Board/KanbanBoard'
 import { SettingsPanel } from './components/Settings/SettingsPanel'
 import { GroupTopicsPanel } from './features/groupTopics/GroupTopicsPanel'
+import { IdentityInboxPanel } from './features/identity/IdentityInboxPanel'
 import { useHostCapabilities } from './platform/LineTodoApi'
 import { useTheme } from './lib/theme'
 import { parseOneOf, usePersistentState } from './lib/uiState'
@@ -17,8 +18,8 @@ import { parseOneOf, usePersistentState } from './lib/uiState'
  * 目前分頁（G-04）：外掛版存進 UI 狀態（lib/uiState.ts），view 重新建立後回到同一個分頁；standalone 不保存（與原本相同）。
  */
 
-type Tab = 'board' | 'stream' | 'topics' | 'settings'
-const parseTab = parseOneOf<Tab>(['board', 'stream', 'topics', 'settings'])
+type Tab = 'board' | 'stream' | 'topics' | 'identity' | 'settings'
+const parseTab = parseOneOf<Tab>(['board', 'stream', 'topics', 'identity', 'settings'])
 
 function App(): JSX.Element {
   const caps = useHostCapabilities()
@@ -51,6 +52,12 @@ function App(): JSX.Element {
           >
             群組議題
           </button>
+          <button
+            className={`tab ${tab === 'identity' ? 'active' : ''}`}
+            onClick={() => setTab('identity')}
+          >
+            待確認
+          </button>
           {caps.settingsTab && (
             <button
               className={`tab ${tab === 'settings' ? 'active' : ''}`}
@@ -74,6 +81,7 @@ function App(): JSX.Element {
         {tab === 'board' && <KanbanBoard />}
         {tab === 'stream' && <MessageStream />}
         {tab === 'topics' && <GroupTopicsPanel />}
+        {tab === 'identity' && <IdentityInboxPanel />}
         {tab === 'settings' && caps.settingsTab && <SettingsPanel />}
       </main>
     </div>

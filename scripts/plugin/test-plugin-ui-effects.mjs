@@ -703,3 +703,45 @@ test('N1 (effects): the draft-reply dialog restores a saved draft without an AI 
   })
   assert.deepEqual(unhandled, [])
 })
+
+test('identity inbox (effects): synthetic source, failed CAS retention, explicit re-evaluation and relation rejection stay visible',async()=>{
+  const sourceId='synthetic-source-1'
+  const item={entityType:'todo',decisionId:'synthetic-decision-1',chatId:'synthetic-group',sourceDigest:'digest',draftRef:'draft_one',outcome:'defer',state:'open',canonicalId:null,decisionRevision:1,sourceEpoch:2,scopeRevision:1,identityRevision:2,topicIdentityRevision:1,draft:{draftRef:'draft_one',title:'預約合成會議室',detail:'週五前確認時段',sourceMsgIds:[sourceId]},reasonCodes:['insufficient_evidence'],candidates:[{entityType:'todo',entityId:'todo-old',title:'過往會議室預約',summary:'舊任務',status:'done',bucket:'todo',dueAt:null,sourceMsgIds:[],recallReasons:['exact_title'],completionEventTs:10}],candidateRevisions:[{entityType:'todo',entityId:'todo-old',revision:3}],sourceMsgIds:[sourceId],updatedAt:'2026-10-28T05:00:00.000Z'}
+  const modelSuggestion={draftRef:'draft_one',outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'fresh_occurrence',confidenceBand:'medium',evidenceMsgIds:[sourceId]}
+  const relation={relationId:'synthetic-relation',chatId:'synthetic-group',todoId:'todo-old',todoTitle:'過往會議室預約',todoStatus:'done',todoRevision:3,topicId:'topic-current',topicTitle:'群組會議',topicRevision:2,relationType:'same_topic',status:'proposed',revision:1,decisionId:'synthetic-decision-1',sourceMsgIds:[sourceId]}
+  const link={linkId:'synthetic-link',leftTopicId:'topic-a',leftChatId:'synthetic-group',leftChatName:'合成群組',leftTitle:'群組會議',leftRevision:2,rightTopicId:'topic-b',rightChatId:'synthetic-group-b',rightChatName:'另一合成群組',rightTitle:'週會安排',rightRevision:4,relation:'related',identityEvidence:'unknown',status:'proposed',stale:false,eventEvidenceMsgIds:[],linkRevision:1,permissionAllowed:true}
+  const state={item:{...item},resolved:0,topicRelation:'proposed',topicLink:'proposed',failNextResolve:true}
+  const api={
+    db:{
+      chats:{list:async()=>[{chatId:'synthetic-group',name:'合成群組',isGroup:true,blocked:false},{chatId:'synthetic-group-b',name:'另一合成群組',isGroup:true,blocked:false}]},
+      todos:{identity:{
+        listPending:async()=>({items:state.resolved?[]:[state.item]}),
+        inspect:async()=>({item:state.item,sourceEvidence:[{msgId:sourceId,ts:100,timeIso:'2026-10-28T05:00:00.000Z',direction:'in',sender:'合成成員',text:'請協助預約合成會議室'}]}),
+        retry:async()=>{state.item={...state.item,decisionRevision:2,suggestedDecision:modelSuggestion};return{ok:true,item:state.item}},
+        resolve:async(input)=>{if(state.failNextResolve){state.failNextResolve=false;return{ok:false,reason:'revision_conflict'}}state.resolved+=1;return{ok:true,canonicalId:'todo-new',state:'resolved',decisionRevision:input.expectedDecisionRevision+1}},
+        todoTopicRelations:async()=>state.topicRelation==='proposed'?[relation]:[],
+        resolveTodoTopicRelation:async(input)=>{state.topicRelation=input.choice==='reject'?'rejected':'confirmed';return{ok:true,status:state.topicRelation,revision:2}}
+      }}
+    },
+    groupTopics:{linkProposals:async()=>state.topicLink==='proposed'?[link]:[],resolveLinkProposal:async(input)=>{state.topicLink=input.choice==='reject'?'rejected':'accepted';return{ok:true,status:state.topicLink,linkRevision:2}}}
+  }
+  const view=ui.mount(ui.identityInboxScene(api))
+  try{
+    await until(()=>view.container.textContent.includes('請協助預約合成會議室')&&view.container.textContent.includes('過往會議室預約'),{message:'source evidence and history candidate rendered'})
+    const button=(label)=>walk(view.container).find((el)=>el.localName==='button'&&el.textContent.trim()===label)
+    reactProps(button('重新判斷')).onClick()
+    await until(()=>view.container.textContent.includes('重新判斷完成')&&view.container.textContent.includes('可能是新一輪工作'),{message:'explicit retry suggestion rendered'})
+    reactProps(button('採用建議')).onClick()
+    await until(()=>view.container.textContent.includes('這項工作已被更新')&&view.container.textContent.includes('請協助預約合成會議室'),{message:'failed CAS keeps source and work visible'})
+    reactProps(button('採用建議')).onClick()
+    await until(()=>state.resolved===1&&view.container.textContent.includes('已處理延期身份'),{message:'user-confirmed resolution refreshes the inbox'})
+    assert.equal(state.topicRelation,'proposed','resolving a Todo does not implicitly confirm a separate relation')
+    assert.equal(state.topicLink,'proposed','resolving a Todo does not implicitly accept a cross-chat Topic link')
+    reactProps(button('拒絕關聯')).onClick()
+    await until(()=>state.topicRelation==='rejected',{message:'Todo–Topic relation rejection sent'})
+    assert.equal(state.resolved,1,'relation rejection leaves the canonical Todo untouched')
+    reactProps(button('拒絕跨群關聯')).onClick()
+    await until(()=>state.topicLink==='rejected',{message:'cross-chat relation rejection sent'})
+    assert.equal(state.resolved,1,'cross-chat relation rejection leaves both Topics untouched')
+  }finally{view.unmount()}
+})

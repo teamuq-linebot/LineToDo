@@ -10,6 +10,7 @@
  * 這些是使用者按按鈕觸發的前景工作，不重試、不退避；失敗就把原因（`AiPortError.code`）轉成 `LlmProviderError`，由 UI 顯示給使用者。
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { createHash } from 'node:crypto'
 import { AiPortError } from '../../core/aiPort'
 import type { AiPort } from '../../core/aiPort'
 import { LlmProviderError } from '../../main/llm/provider/types'
@@ -121,7 +122,7 @@ export function createPortAiProvider(port: AiPort, options: PortAiProviderOption
       try {
         const system = req.jsonSchema ? `${req.system}\n\n${outputContractFor(req.jsonSchema.schema)}` : req.system
         const user = fitUserPayload(req.user, AI_TASK_MAX_USER_CHARS)
-        const result = await port.complete({ system, user, expectJson, priority: 'user' })
+        const result = await port.complete({ system, user, expectJson, priority: 'user', ...(req.onAdditionalUserPayload ? { onAdditionalUserPayload: req.onAdditionalUserPayload } : {}) })
         return { text: result.text, meta: { provider: id, model: result.model, durationMs: Date.now() - started } }
       } catch (error) {
         throw toProviderError(error)
@@ -131,6 +132,10 @@ export function createPortAiProvider(port: AiPort, options: PortAiProviderOption
       return options.usable?.() === false
         ? { ok: false, code: 'invalid_config', summary: 'TeamUQ 的 AI 目前無法使用', details: {} }
         : { ok: true, summary: 'AI 由 TeamUQ 的 ai:chat 提供（外掛背景程式經 host.ai.complete 執行）', details: {} }
+    },
+    async runtimeFingerprint() {
+      const selection = await port.effectiveSelection?.()
+      return selection ? createHash('sha256').update(JSON.stringify(selection), 'utf8').digest('hex') : null
     }
   }
 }

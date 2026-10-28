@@ -205,7 +205,7 @@ const NOT_ACCEPTED: ReadonlySet<string> = new Set([
 export const isTransientAiCode = (code: string): boolean =>
   code === 'rate_limited' || code === 'quota_exhausted' || code === 'interrupted' || code === 'backend_stopped' || code === 'plugin_host_unavailable'
   || ACCESS_CODES.has(code) || PROVIDER_CODES.has(code) || BUSY_CODES.has(code)
-  || code === 'continuity_store_unavailable'
+  || code === 'continuity_store_unavailable' || code === 'session_budget_exhausted'
 // 注意 `plugin_host_timeout`（一次 complete 等了 310 s host 都沒回）不列在這裡：它是「這一輪」的失敗。列為暫時性的話，一個每次都讓模型卡死的聊天室會一直被放回佇列、
 // 每次再占 5 分鐘，後面的聊天室永遠輪不到；當成該項失敗才會套用聊天室的指數退避（30 秒 → 30 分鐘）。`getOptions` 的逾時另外處理（見 ensureOptions）。
 
@@ -288,6 +288,10 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
   const blockers = { rate: 0, quota: 0, provider: 0, busy: 0 }
   let rateAttempts = 0
   let lastStatusKey = ''
+  const userPayloadForAttempt = (input: Parameters<PluginBackendAiApiV1['complete']>[0]): string => {
+    const transcript=(input as {transcript?:Array<{text:string}>}).transcript??[]
+    return [...transcript.map((line)=>line.text),input.text].join('\n')
+  }
 
   // ── 狀態 ──
   const gate = (at: number): { reason: 'rate_limited' | 'quota_exhausted' | 'provider' | 'busy'; until: number } | null => {
@@ -553,9 +557,10 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
     })()
   })
 
-  const callHost = async (input: Parameters<PluginBackendAiApiV1['complete']>[0], session?: PluginBackendAiSessionV1): Promise<string> => {
+  const callHost = async (input: Parameters<PluginBackendAiApiV1['complete']>[0], session?: PluginBackendAiSessionV1, recordAttempt?: (input: Parameters<PluginBackendAiApiV1['complete']>[0], session?: PluginBackendAiSessionV1) => boolean): Promise<string> => {
     for (let attempt = 0; ; attempt += 1) {
       if (stopped) throw new AiPortError('interrupted')
+      if (recordAttempt && !recordAttempt(input, session)) throw new AiPortError('session_budget_exhausted')
       const at = now()
       turnWindow.record(at)
       inFlight = true
@@ -582,15 +587,15 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
   }
 
   /** 帶上 Task 呼叫 host；Task 被刪了（`task_not_found`）就忘掉它、重建後再送一次（`task_not_found` 不算進配額視窗）。 */
-  const callOnTask = async (input: Parameters<PluginBackendAiApiV1['complete']>[0]): Promise<string> => {
+  const callOnTask = async (input: Parameters<PluginBackendAiApiV1['complete']>[0], recordAttempt?: (input: Parameters<PluginBackendAiApiV1['complete']>[0], session?: PluginBackendAiSessionV1) => boolean): Promise<string> => {
     const taskId = await opts.task?.resolve() ?? null
     try {
-      return await callHost(taskId === null ? input : { ...input, taskId })
+      return await callHost(taskId === null ? input : { ...input, taskId }, undefined, recordAttempt)
     } catch (error) {
       if (taskId === null || codeOf(error) !== 'task_not_found') throw error
       opts.task!.forget(taskId)
       const next = await opts.task!.resolve()
-      return await callHost(next === null ? input : { ...input, taskId: next })
+      return await callHost(next === null ? input : { ...input, taskId: next }, undefined, recordAttempt)
     }
   }
 
@@ -621,8 +626,9 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
     }
   }
 
-  const continuityFingerprint = (chatId: string, system: string, effective: AiSessionMapRecord['effective']): string => createHash('sha256').update(JSON.stringify({
+  const continuityFingerprint = (chatId: string, system: string, effective: AiSessionMapRecord['effective'], sessionEpoch = 0): string => createHash('sha256').update(JSON.stringify({
     chatId,
+    sessionEpoch,
     providerId: effective.providerId,
     modelId: effective.modelId,
     effort: effective.effort,
@@ -635,7 +641,8 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
     fingerprint: string,
     expected: AiSessionMapRecord['effective'],
     base: { system: string; providerId: string; modelId?: string; effort?: HostAiEffort },
-    runTurns: (send: (input: Parameters<PluginBackendAiApiV1['complete']>[0]) => Promise<string>) => Promise<AiPortResult>
+    runTurns: (send: (input: Parameters<PluginBackendAiApiV1['complete']>[0]) => Promise<string>) => Promise<AiPortResult>,
+    recordAttempt: (input: Parameters<PluginBackendAiApiV1['complete']>[0], session?: PluginBackendAiSessionV1) => boolean
   ): Promise<AiPortResult> => {
     const store = opts.sessionMapStore
     if (store === undefined) throw new AiPortError('continuity_store_unavailable')
@@ -675,22 +682,24 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
           if (SESSION_IDENTITY_CODES.has(code)) {
             await removeChatMapping(chatId, store)
             throw new AiPortError('continuity_lost')
+          } else {
+            throw await classify(code)
           }
-          throw await classify(code)
         }
-        if (session.sessionId !== mapping.hostSessionId || !sameEffective(session.effective, mapping.effective) || !sameEffective(session.effective, expected)) {
+        if (session !== null && mapping !== null && (session.sessionId !== mapping.hostSessionId || !sameEffective(session.effective, mapping.effective) || !sameEffective(session.effective, expected))) {
           if (session.sessionId === mapping.hostSessionId) await closeChatSession(session)
           await removeChatMapping(chatId, store)
           session = null
           throw new AiPortError('continuity_lost')
         }
-        if (session.turn !== null && session.turn.terminal === null) {
+        if (session !== null && session.turn !== null && session.turn.terminal === null) {
           await closeChatSession(session)
           session = null
           throw new AiPortError('busy', cfg.busyBackoffMs)
         }
-        activeMapping = mapping
-      } else {
+        if(session!==null&&mapping!==null) activeMapping = mapping
+      }
+      if (mapping === null) {
         session = await openFreshChatSession(base)
         if (session.sessionId === '' || !sameEffective(session.effective, expected)) {
           await closeChatSession(session)
@@ -708,7 +717,7 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
       }
 
       const send = async (input: Parameters<PluginBackendAiApiV1['complete']>[0]): Promise<string> => {
-        try { return await callHost(input, session!) } catch (error) {
+        try { return await callHost(input, session!, recordAttempt) } catch (error) {
           if (SESSION_IDENTITY_CODES.has(codeOf(error)) && activeMapping !== null) {
             await removeChatMapping(chatId, store)
             activeMapping = null
@@ -726,6 +735,12 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
   // ── 一個工作 ──
   const run = async (job: Job): Promise<AiPortResult> => {
     const req = job.req
+    let hostRequestCount = 0
+    const recordHostAttempt = (input: Parameters<PluginBackendAiApiV1['complete']>[0], session?: PluginBackendAiSessionV1): boolean => {
+      hostRequestCount += 1
+      if (hostRequestCount === 1 || !req.onAdditionalUserPayload) return true
+      return req.onAdditionalUserPayload(session ? input.text : userPayloadForAttempt(input))
+    }
     await ensureOptions()
     if (req.system.length > limits.systemChars) throw new AiPortError('system_too_large')
     if (req.user.length > limits.inputChars) throw new AiPortError('input_too_large')
@@ -778,10 +793,10 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
     }
 
     if (req.conversationScope?.kind === 'line-chat-extract' && closedSessionResume) {
-      const fingerprint = continuityFingerprint(req.conversationScope.chatId, req.system, expected)
-      return runWithChatSession(req.conversationScope.chatId, fingerprint, expected, base, runTurns)
+      const fingerprint = continuityFingerprint(req.conversationScope.chatId, req.system, expected, req.conversationScope.sessionEpoch ?? 0)
+      return runWithChatSession(req.conversationScope.chatId, fingerprint, expected, base, runTurns, recordHostAttempt)
     }
-    return runTurns((input) => callOnTask(input))
+    return runTurns((input) => callOnTask(input, recordHostAttempt))
   }
 
   const pick = (): Job | undefined => {
@@ -820,6 +835,11 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
         if (req.priority === 'user') userArrived?.()
         void pump()
       })
+    },
+    async effectiveSelection() {
+      try { await ensureOptions() } catch { return null }
+      if (!choice) return null
+      return { providerId: choice.providerId, modelId: choice.modelId, effort: choice.effort ?? selectedDefaultEffort }
     },
     async ready(force = false) {
       try { await ensureOptions(force); return true } catch { return false }

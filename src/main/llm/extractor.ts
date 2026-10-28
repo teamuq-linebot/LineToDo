@@ -21,6 +21,41 @@ export interface ExtractOptions {
   timeoutMs?: number
 }
 
+function requestSchemaForInput(input:BuildUserPayloadInput):unknown {
+  const schema=EXTRACT_JSON_SCHEMA.schema as {properties:Record<string,unknown>}
+  const properties=schema.properties as Record<string,Record<string,unknown>>
+  const selectedIds=input.newMessages.map((message)=>message.msgId)
+  const todoIds=input.openTodos.map((todo)=>todo.id)
+  const todos=properties.newTodos as {items:{properties:Record<string,Record<string,unknown>>}}
+  const newTodoProperties=todos.items.properties
+  const resolved=properties.resolved as {items:{properties:Record<string,Record<string,unknown>>}}
+  const resolvedProperties=resolved.items.properties
+  const updates=properties.updates as {items:{properties:Record<string,Record<string,unknown>>}}
+  const updateProperties=updates.items.properties
+  const decisions=properties.identityDecisions as {items:{properties:Record<string,Record<string,unknown>>}}
+  const decisionProperties=decisions.items.properties
+  const candidateTypes=[...new Set((input.identityCandidates??[]).map((candidate)=>candidate.entityType))]
+  const candidateIds=(input.identityCandidates??[]).map((candidate)=>candidate.entityId)
+  return {
+    ...EXTRACT_JSON_SCHEMA,
+    schema:{
+      ...schema,
+      properties:{
+        ...properties,
+        newTodos:{...todos,items:{...todos.items,properties:{...newTodoProperties,sourceMsgIds:{...newTodoProperties.sourceMsgIds,items:{type:'string',enum:selectedIds}}}}},
+        resolved:{...resolved,items:{...resolved.items,properties:{...resolvedProperties,todoId:{...resolvedProperties.todoId,...(todoIds.length?{enum:todoIds}:{})},evidenceMsgIds:{...resolvedProperties.evidenceMsgIds,items:{type:'string',enum:selectedIds}}}}},
+        updates:{...updates,items:{...updates.items,properties:{...updateProperties,todoId:{...updateProperties.todoId,...(todoIds.length?{enum:todoIds}:{})}}}},
+        identityDecisions:{...decisions,items:{...decisions.items,properties:{
+          ...decisionProperties,
+          candidateType:{...decisionProperties.candidateType,enum:[null,...candidateTypes]},
+          candidateId:{...decisionProperties.candidateId,enum:[null,...candidateIds]},
+          evidenceMsgIds:{...decisionProperties.evidenceMsgIds,items:{type:'string',enum:selectedIds}}
+        }}}
+      }
+    }
+  }
+}
+
 /**
  * 對單一 chat 做抽取。input 同 buildUserPayload 的入參。
  * 回傳已驗證的 ExtractResult。任何階段失敗 throw。
@@ -36,11 +71,17 @@ export async function extractTodos(
     system: EXTRACT_SYSTEM_PROMPT,
     user,
     temperature: opts.temperature ?? 0.1,
-    jsonSchema: EXTRACT_JSON_SCHEMA,
+    jsonSchema: requestSchemaForInput(input) as typeof EXTRACT_JSON_SCHEMA,
     timeoutMs: opts.timeoutMs
   })
 
   // provider 原生回物件時直接用（省一次 stringify→parse 往返）；否則 parse 文字。
   const value = res.structured !== undefined ? res.structured : (JSON.parse(res.text) as unknown)
-  return validateExtractResult(value)
+  return validateExtractResult(value, {
+    candidates: input.identityCandidates ?? [],
+    candidatesTruncated: input.identityCandidatesTruncated === true,
+    selectedMessageIds: input.newMessages.map((message) => message.msgId),
+    targetType: 'todo',
+    allowedTodoIds: input.openTodos.map((todo) => todo.id)
+  })
 }

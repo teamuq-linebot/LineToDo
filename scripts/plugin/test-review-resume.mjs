@@ -95,9 +95,12 @@ function reviewMessages({ chats, slices = 2, perSlice = 1, base = Date.now() }) 
 function modelReply(user) {
   const payload = JSON.parse(user)
   const first = payload.newMessages[0]
-  return { importance: 'action', newTodos: [{ bucket: 'todo', title: `處理${payload.chat.name}的報價問題 ${first.msgId}`, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], resolved: [], updates: [] }
+  const draftRef = `draft_${first.msgId.replace(/[^a-z0-9_-]/giu, '_')}`
+  const candidate = payload.historicalCandidates?.find((item) => item.entityType === 'todo')
+  const defer = payload.historicalCandidatesTruncated === true
+  return { importance: 'action', newTodos: [{ draftRef, bucket: 'todo', title: `處理${payload.chat.name}的報價問題 ${first.msgId}`, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], identityDecisions: [{ draftRef, outcome: defer ? 'defer' : candidate ? 'update_existing' : 'new', candidateType: defer ? null : candidate ? 'todo' : null, candidateId: defer ? null : candidate?.entityId ?? null, relationKind: null, reasonCode: defer ? 'candidate_cap' : candidate ? 'same_active_action' : 'insufficient_evidence', confidenceBand: defer ? 'low' : 'high', evidenceMsgIds: [first.msgId] }], resolved: [], updates: [] }
 }
-const fyiReply = { importance: 'fyi', newTodos: [], resolved: [], updates: [] }
+const fyiReply = { importance: 'fyi', newTodos: [], identityDecisions: [], resolved: [], updates: [] }
 const asReply = (value) => '```json\n' + JSON.stringify(value) + '\n```'
 
 /** A mock `context.host.ai` on the shared fake clock; `turns` = what reached the host, `maxInWindow` = the most turns in any 60 s window. */
@@ -110,9 +113,10 @@ function makeHostAi(clock, { reply = (user) => modelReply(user) } = {}) {
   }
 }
 
-async function startBackend({ dir, messages, clock, extract = {}, line, host }) {
+async function startBackend({ dir, messages, clock, extract = {}, line, host, startupDelayMs }) {
   return createPluginBackend({
     pluginId: 'tuqdev.line-todo', version: 'repair', dataDir: dir, line: line ?? fakeLine(messages),
+    ...(startupDelayMs === undefined ? {} : { watcher: { startupDelayMs } }),
     extract: { now: clock.now, schedule: clock.schedule, ...extract },
     review: { now: clock.now },
     dispatcher: { softDeadlineMs: 3_600_000 }, // the test awaits the review call itself (no job polling needed)
@@ -300,7 +304,8 @@ test('AI unavailable mid-review (Codex logged out): the review pauses (not a mas
     assert.ok(doneChats >= 60 && doneChats < 190, `${doneChats} chats were completed before the pause`)
     assert.ok(paused.chatsFailed >= 190 - doneChats - 4, `the rest failed fast (${paused.chatsFailed})`)
     assert.ok(paused.todosCreated + paused.todosMerged >= turnsBeforeHide - 4, 'finished work is persisted (todos from the answered turns exist)')
-    const todosAfterPause = (await call('db.todos.list', {})).length
+    const todosAtPause = await call('db.todos.list', {})
+    const todosAfterPause = todosAtPause.length
     assert.ok(todosAfterPause >= 60)
 
     const status = await call('review.status')
@@ -308,9 +313,16 @@ test('AI unavailable mid-review (Codex logged out): the review pauses (not a mas
     assert.equal(status.state, 'paused')
     assert.equal(status.chatsDone, doneChats)
     assert.equal(status.chatsTotal, 190)
-    assert.match(status.summary, /^回顧暫停：已完成 \d+\/190 個聊天，AI 恢復後再按一次「回顧」即可接續/)
+    assert.match(status.summary, /^回顧暫停：已完成 \d+\/190 個聊天。原因：/)
+    assert.match(status.summary, /extract_await_timeout/u)
+    assert.match(status.summary, /上次進度時間 .*Z（UTC）/u)
     assert.ok(status.resumableMessages >= turnsBeforeHide - 4, `ledger remembers ${status.resumableMessages} messages`)
     assert.equal(existsSync(join(dir, 'review-ledger.json')), true, 'the ledger is on disk')
+    const pendingRows = (await call('db.messages.list', { limit: 1000 })).filter((message) => !message.processed)
+    assert.ok(pendingRows.length > 0, 'source messages in failed chats remain unprocessed and queryable')
+    const checkpointIds = new Set(JSON.parse(readFileSync(join(dir, 'review-ledger.json'), 'utf8')).done)
+    const checkpointedPending = pendingRows.filter((message) => checkpointIds.has(message.msgId)).map((message) => message.msgId)
+    assert.equal(checkpointedPending.length, 0, 'the apply receipt keeps every uncommitted source out of the resume ledger')
 
     // while Codex is out, a new review does not even start (immediate, explained)
     const refused = (await call('pipeline.reviewLastDays', 3))
@@ -327,6 +339,7 @@ test('AI unavailable mid-review (Codex logged out): the review pauses (not a mas
     assert.equal(resumed.ok, true, JSON.stringify(resumed).slice(0, 300))
     assert.equal(resumed.chatsProcessed, 190)
     assert.equal(resumed.chatsFailed, 0)
+    assert.equal((await call('db.messages.list', { limit: 1000 })).filter((message) => !message.processed).length, 0, 'resumed review processes the retained source rows')
     const turns = host.turns()
     const secondTurns = turns.slice(turnsBefore)
     assert.ok(secondTurns.length <= 380 - turnsBeforeHide + 6, `the second pass sent ${secondTurns.length} turns, only what was left (380 - ${turnsBeforeHide})`)
@@ -345,6 +358,68 @@ test('AI unavailable mid-review (Codex logged out): the review pauses (not a mas
   })
 })
 
+test('a review request made during the scheduled worker startup waits for the consumer instead of recording a false offline pause', async () => {
+  const clock = makeClock(Date.now())
+  const messages = reviewMessages({ chats: 1, slices: 1, base: clock.now() })
+  await withBackend({ messages, clock, startupDelayMs: 500 }, async ({ backend, host, driver, call }) => {
+    const first = trackSettled(reviewCall(backend))
+    await new Promise((resolve, reject) => {
+      const deadline = Date.now() + 400
+      const timer = setInterval(() => {
+        if (backend.diagnostics().extract.awaiting === 1) { clearInterval(timer); resolve() }
+        else if (Date.now() >= deadline) { clearInterval(timer); reject(new Error('review request is queued while the worker startup timer is pending')) }
+      }, 5)
+    })
+    assert.equal(first.settled, false)
+    await realSleep(520) // let the scheduled worker start before the fake-clock stall timer advances
+    await driver.drive(() => first.settled)
+
+    assert.equal(first.error, null)
+    assert.equal(first.value.ok, true)
+    assert.equal(first.value.value.ok, true, JSON.stringify(first.value.value))
+    assert.equal(first.value.value.chatsProcessed, 1, JSON.stringify(first.value.value))
+    assert.equal(first.value.value.todosCreated, 1, 'the real review caller and worker path committed the controlled todo')
+    assert.equal(host.stats.completes, 1, 'the message reached the worker after its scheduled start')
+    const todos = await call('db.todos.list', {})
+    assert.equal(todos.length, 1)
+    assert.deepEqual(todos[0].sourceMsgIds, ['i:c1s0k0'])
+    const status = await call('review.status')
+    assert.equal(status.state, 'done')
+  })
+})
+
+test('a resumed paused status exposes its exact offline or timeout reason, timestamp, and retained progress', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'plugin-review-status-reason-'))
+  try {
+    const clock = makeClock(Date.parse('2026-10-25T07:07:05.921Z'))
+    const ledgerFile = join(dir, 'review-ledger.json')
+    const statusFile = join(dir, 'review-status.json')
+    const review = new ReviewCoordinator({ ledger: new ReviewLedger({ file: ledgerFile, now: clock.now }), statusFile, now: clock.now })
+    const wrapped = review.wrapExtract(async (input) => {
+      if (input.newMessages[0].msgId === 'offline') throw new Error('extract_ui_offline')
+      return { importance: 'noise', newTodos: [], identityDecisions:[], resolved: [], updates: [] }
+    })
+    const input = (msgId) => ({ now: '2026-10-25T07:07:00.000Z', chat: { chatId: 'chat', name: 'chat', isGroup: false }, newMessages: [{ msgId }], recentContext: [], openTodos: [] })
+    const result = await review.run(2, async () => {
+      const doneInput=input('done')
+      await wrapped(doneInput)
+      doneInput.onIdentityApplied?.() // model success counts only after the owning apply reports its commit receipt
+      await assert.rejects(wrapped(input('offline')), /extract_ui_offline/u)
+      return { ok: true, hasApiKey: true, days: 2, sinceMs: 0, newMsgs: 2, chatsSeen: 2, chatsProcessed: 1, chatsSkippedNoise: 0, chatsFailed: 1, todosCreated: 0, todosMerged: 0, todosResolvedDone: 0, todosSuggestedDone: 0, createdIds: [], resolvedIds: [], updatedIds: [], note: null }
+    })
+    assert.equal(result.ok, false)
+    assert.match(result.note, /extract_ui_offline/u)
+    const restored = new ReviewCoordinator({ ledger: new ReviewLedger({ file: ledgerFile, now: clock.now }), statusFile, now: clock.now }).status()
+    assert.equal(restored.pausedReason, 'extract_ui_offline')
+    assert.equal(restored.finishedAt, Date.parse('2026-10-25T07:07:05.921Z'))
+    assert.equal(restored.resumableMessages, 1)
+    assert.match(restored.summary, /extract_ui_offline/u)
+    assert.match(restored.summary, /2026-10-25T07:07:05\.921Z/u)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('Core\'s hard cap of 400 turns per hour: a review that needs more never sends more than 400 in any hour (no host rate_limited), pauses with an explained note, and the next review after the window frees finishes only what is left', async () => {
   const messages = reviewMessages({ chats: 250, slices: 2 }) // 500 turns
   await withBackend({ messages }, async ({ backend, clock, host, call, driver }) => {
@@ -353,7 +428,7 @@ test('Core\'s hard cap of 400 turns per hour: a review that needs more never sen
     const paused = first.value.value
     assert.equal(paused.ok, false)
     assert.match(paused.note, /^回顧暫停：已完成 \d+\/250 個聊天/)
-    assert.match(paused.note, /呼叫上限/, 'the note names the limit as a possible reason, not only the login')
+    assert.match(paused.note, /15 分鐘沒有結果回報（extract_await_timeout）/u, 'the note names the queue no-progress timeout observed by this run')
     const sent = host.stats.completes
     // 0.2.0 (review F5): background work keeps extractHourReserve (20) of the 400 turns an hour for the user's own actions
     assert.ok(sent >= 375 && sent <= 380, `${sent} turns went out before the hourly cap (400 - 20 kept for the user) held the rest back`)
@@ -550,11 +625,13 @@ test('ReviewCoordinator: failed chats that are not a pause keep ok:true but say 
   const ledger = new ReviewLedger({ now: clock.now })
   const review = new ReviewCoordinator({ ledger, now: clock.now })
   const calls = []
-  const wrapped = review.wrapExtract(async (input) => { calls.push(input.newMessages.map((m) => m.msgId)); if (input.chat.chatId === 'bad') throw new Error('invalid_json'); return { importance: 'noise', newTodos: [], resolved: [], updates: [] } })
+  const wrapped = review.wrapExtract(async (input) => { calls.push(input.newMessages.map((m) => m.msgId)); if (input.chat.chatId === 'bad') throw new Error('invalid_json'); return { importance: 'noise', newTodos: [], identityDecisions:[], resolved: [], updates: [] } })
   const input = (chatId, ids) => ({ now: 'n', chat: { chatId, name: chatId, isGroup: false }, newMessages: ids.map((id) => ({ msgId: id })), recentContext: [], openTodos: [] })
   const base = { ok: true, hasApiKey: true, days: 3, sinceMs: 0, newMsgs: 0, chatsSkippedNoise: 0, todosCreated: 0, todosMerged: 0, todosResolvedDone: 0, todosSuggestedDone: 0, createdIds: [], resolvedIds: [], updatedIds: [], note: null }
   const first = await review.run(3, async () => {
-    await wrapped(input('good', ['a1']))
+    const goodInput=input('good', ['a1'])
+    await wrapped(goodInput)
+    goodInput.onIdentityApplied?.() // stand-in for a successful atomic backfill apply
     await assert.rejects(wrapped(input('bad', ['b1'])), /invalid_json/)
     return { ...base, chatsSeen: 2, chatsProcessed: 1, chatsFailed: 1 }
   })
@@ -582,7 +659,7 @@ test('ReviewCoordinator: failed chats that are not a pause keep ok:true but say 
 const config = { ...DEFAULTS, concurrency: 2 }
 const dto = (i, text) => ({ msgId: `m${i}`, chatId: 'u-big', ts: 1_700_000_000_000 + i, timeIso: new Date(1_700_000_000_000 + i).toISOString(), direction: 'in', sender: 'Alice', text, contentType: 0, processed: false, ingestedAt: '', origFilename: null, fileSize: null, unsent: false })
 const inputOf = (messages, chatId = 'u-big') => ({ now: '2026-10-01T10:00:00.000', chat: { chatId, name: chatId, isGroup: false }, newMessages: messages.map((m) => ({ ...m, chatId })), recentContext: [], openTodos: [] })
-const fyi = { importance: 'fyi', newTodos: [], resolved: [], updates: [] }
+const fyi = { importance: 'fyi', newTodos: [], identityDecisions: [], resolved: [], updates: [] }
 
 function queueWithClock(extra = {}) {
   const clock = makeClock()

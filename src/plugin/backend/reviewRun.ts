@@ -6,8 +6,8 @@
  * 照搬到外掛會變成：停了一次就整批失敗，再按一次又從頭把已經完成的聊天室重送一遍（再燒一次配額）。
  *
  * 做法（不動 core 的行為）：
- *   - 包住 core 呼叫的 extractFn（`wrapExtract`）：每個「日片段」成功拿到 AI 結果後，把片段的 msgId 記進帳本（ledger）；
- *     下一次回顧遇到「整片都已完成」的片段，直接回一個空結果（不送 AI、不花輪數），core 照常把該 chat 的訊息標 processed。
+ *   - 包住 core 呼叫的 extractFn（`wrapExtract`）：模型回覆成功後等待 backfill apply receipt，再把已提交片段的 msgId 記進帳本（ledger）；
+ *     下一次回顧遇到「整片都已提交」的片段，直接回一個空結果（不送 AI、不花輪數），core 照常把該 chat 的訊息標 processed。
  *     已落庫的 todo 本來就在 DB 裡（回顧用 DB 的 openTodos 去重），所以空結果不會重複建立任何東西。
  *   - 佇列回報「沒人在領／領了也沒有進展」（`extract_ui_offline`／`extract_await_timeout`：AI 不可用、授權被關、額度用完太久）＝暫停：之後的片段立刻失敗（不再各自等 15 分鐘），
  *     core 很快收尾，結果標明「已完成 N/M，再按一次接續」。帳本保留 → 下一次回顧從沒做完的地方繼續。
@@ -33,7 +33,19 @@ const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000
 const MAX_LEDGER_IDS = 400_000
 const FLUSH_EVERY_MS = 5_000
 
-const EMPTY_RESULT: ExtractResult = Object.freeze({ importance: 'noise', newTodos: [], resolved: [], updates: [] }) as unknown as ExtractResult
+const EMPTY_RESULT: ExtractResult = Object.freeze({ importance: 'noise', newTodos: [], identityDecisions: [], resolved: [], updates: [] }) as unknown as ExtractResult
+
+function pauseReasonText(reason: string | null): string {
+  switch (reason) {
+    case 'extract_ui_offline': return '背景抽取端未回報在線（extract_ui_offline；記錄未包含更細的 runtime 子因）'
+    case 'extract_await_timeout': return '抽取佇列超過 15 分鐘沒有結果回報（extract_await_timeout）'
+    default: return reason ? `抽取暫停原因：${reason}` : '抽取暫停原因未記錄'
+  }
+}
+
+function progressTimeText(timestamp: number | null): string {
+  return timestamp === null ? '進度時間未記錄' : `上次進度時間 ${new Date(timestamp).toISOString()}（UTC）`
+}
 
 /** 這些錯誤代表「AI 整理停住了」（沒人領、或很久沒有結果交回）：整個回顧該暫停，而不是這個聊天室壞了。 */
 const PAUSE_ERRORS = new Set(['extract_ui_offline', 'extract_await_timeout'])
@@ -219,19 +231,25 @@ export class ReviewCoordinator {
     this.persistStatus()
   }
 
-  /** 包住 core 用的 extractFn：帳本略過、記錄、偵測 AI 整理停住。 */
+  /** 包住 core 用的 extractFn：帳本略過、apply commit receipt 後記錄 msgIds、偵測 AI 整理停住。 */
   wrapExtract(inner: (input: ChatExtractInput) => Promise<ExtractResult>): (input: ChatExtractInput) => Promise<ExtractResult> {
     return async (input) => {
       if (this.pausedReason) throw new Error(this.pausedReason)
       const ids = input.newMessages.map((m: MessageDTO) => m.msgId)
-      if (ids.length > 0 && ids.every((id) => this.ledger.has(id))) {
+      if (ids.length > 0 && ids.every((id) => this.ledger.has(id)) && (input.isIdentityLedgerApplied?.() ?? true)) {
         this.slicesSkipped += 1
         this.updatedAt = this.now()
+        input.identityLedgerSkip=true
         return EMPTY_RESULT
+      }
+      const onApplied=input.onIdentityApplied
+      input.onIdentityApplied=()=>{
+        this.ledger.add(ids)
+        this.ledger.flush()
+        onApplied?.()
       }
       try {
         const result = await inner(input)
-        this.ledger.add(ids)
         this.slicesSent += 1
         this.updatedAt = this.now()
         return result
@@ -300,7 +318,7 @@ export class ReviewCoordinator {
       return {
         ...result,
         ok: false,
-        note: `回顧暫停：已完成 ${done}/${result.chatsSeen} 個聊天（新增 ${result.todosCreated}、合併 ${result.todosMerged}）。AI 整理需要 Codex 可用（已登入、授權未關閉），並且沒有用完 TeamUQ 的 AI 額度與呼叫上限；${resume}`
+        note: `回顧暫停：已完成 ${done}/${result.chatsSeen} 個聊天（新增 ${result.todosCreated}、合併 ${result.todosMerged}）。原因：${pauseReasonText(this.pausedReason)}；${resume}`
       }
     }
     return { ...result, note: `尚有 ${result.chatsFailed} 個聊天未完成（已完成 ${done}/${result.chatsSeen}）。${resume}` }
@@ -316,9 +334,9 @@ export class ReviewCoordinator {
       case 'running':
         summary = this.phase === 'fetching' || this.chatsTotal === 0 ? '回顧進行中：撈取訊息…' : `回顧進行中：已處理 ${this.chatsDone}/${this.chatsTotal} 個聊天`
         break
-      case 'done': summary = `回顧已完成：${this.chatsDone}/${this.chatsTotal} 個聊天`; break
-      case 'paused': summary = `回顧暫停：已完成 ${this.chatsDone}/${this.chatsTotal} 個聊天，AI 恢復後再按一次「回顧」即可接續`; break
-      case 'incomplete': summary = `回顧未全部完成：已完成 ${this.chatsDone}/${this.chatsTotal} 個聊天，再按一次「回顧」即可接續`; break
+      case 'done': summary = `回顧已完成：${this.chatsDone}/${this.chatsTotal} 個聊天；${progressTimeText(this.finishedAt)}`; break
+      case 'paused': summary = `回顧暫停：已完成 ${this.chatsDone}/${this.chatsTotal} 個聊天。原因：${pauseReasonText(this.pausedReason)}；${progressTimeText(this.finishedAt)}；已保留進度，再按一次「回顧」即可接續`; break
+      case 'incomplete': summary = `回顧未全部完成：已完成 ${this.chatsDone}/${this.chatsTotal} 個聊天；${progressTimeText(this.finishedAt)}；再按一次「回顧」即可接續`; break
       default: summary = resumable > 0 ? `上次回顧尚未做完（已記住 ${resumable} 則訊息），再按一次「回顧」即可接續` : '尚未回顧'
     }
     return {
