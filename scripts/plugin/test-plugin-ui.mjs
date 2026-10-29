@@ -212,6 +212,7 @@ test('bundle: only renderer / shared / plugin-ui / react code is inside (no main
   const { analysis, metafiles } = await getBuilt()
   const inputs = [...new Set(metafiles.flatMap((m) => Object.keys(m.inputs).map((i) => i.replace(/\\/g, '/'))))]
   assert.ok(inputs.some((i) => i === 'src/plugin/ui/main.tsx') && inputs.some((i) => i === 'src/plugin/ui/settings.tsx'))
+  assert.ok(!inputs.includes('src/plugin/ui/AiStatusBar.tsx'), 'the persistent AI status chip is not mounted in the plugin UI bundle')
   assert.ok(inputs.includes('src/renderer/platform/pluginApi.ts'))
   assert.ok(inputs.includes('src/plugin/ui/stubs/defaultEndpoint.ts') && !inputs.includes('src/renderer/lib/defaultEndpoint.ts'), 'the standalone endpoint placeholder was replaced by the stub')
   assert.ok(!inputs.some((i) => /^src\/(?:main|core|preload|plugin\/backend)\//.test(i)), 'no main/core/backend code')

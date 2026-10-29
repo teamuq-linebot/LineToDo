@@ -104,31 +104,6 @@ test('草擬回覆 (AI refuses): a message is shown, no fake draft, and the dial
   })
 })
 
-test('F10 status bar: it asks the backend again when the board becomes visible again (events of the hidden time may have been missed), not while hidden', async () => {
-  const running = { state: 'running', reason: null, resumeAt: null, busy: false, provider: null, counters: {} }
-  let current = running
-  let asked = 0
-  const source = { snapshot: () => null, aiStatus: async () => { asked += 1; return current }, onAiStatus: () => () => undefined, backendLink: () => ({ state: 'ok' }), onBackendLink: () => () => undefined }
-  const view = ui.mount(ui.statusBarScene(source))
-  const fire = () => { for (const listener of [...(dom.document.listeners.get('visibilitychange') ?? [])]) listener({ type: 'visibilitychange' }) }
-  try {
-    await until(() => /已就緒/.test(textOf(view.container)), { message: 'the first status' })
-    assert.equal(asked, 1)
-    assert.ok((dom.document.listeners.get('visibilitychange')?.size ?? 0) >= 1, 'the bar listens for visibilitychange')
-    current = { ...running, state: 'paused', reason: 'rate_limited_hour', resumeAt: Date.now() + 12 * 60_000, turnsPerHour: 400 }
-    dom.document.visibilityState = 'hidden'
-    fire()
-    await sleep(60)
-    assert.equal(asked, 1, 'hidden: no query')
-    assert.match(textOf(view.container), /已就緒/, 'still the old line')
-    dom.document.visibilityState = 'visible'
-    fire()
-    await until(() => /每小時 400 次/.test(textOf(view.container)), { message: 'the refreshed status' })
-    assert.equal(asked, 2)
-  } finally { view.unmount(); delete dom.document.visibilityState }
-  assert.equal(dom.document.listeners.get('visibilitychange')?.size ?? 0, 0, 'unmount removes the listener')
-})
-
 test('F8 settings: the page says the conversations the AI organises are recorded in TeamUQ\'s AI history', async () => {
   await withDialog(() => 'x', async ({ api }) => {
     const view = ui.mount(ui.settingsScene(api))

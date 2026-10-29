@@ -48,7 +48,7 @@ function useResidency(source: ResidencyViewSource, options: UseResidencyOptions)
   return { snapshot, link, refresh }
 }
 
-/** backend 連不上時不知道實際狀態（連線問題由 BackendStatusBar／AiStatusBar 說明），所以不顯示背景執行。 */
+/** backend 連不上時不知道實際狀態（連線問題由 BackendStatusBar 說明），所以不顯示背景執行。 */
 const reachable = (link: BackendLink): boolean => link.state !== 'revoked' && link.state !== 'unavailable'
 
 /** 看板左下角、AI 狀態列上面的一行。沒有要求背景執行（沒宣告權限）或舊 Core 時不顯示。 */

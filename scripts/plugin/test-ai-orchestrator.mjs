@@ -766,42 +766,6 @@ test('codeOf: the host\'s Error carries `.code`; wrapped messages and unknown sh
   assert.equal(codeOf(null), 'unavailable')
 })
 
-// ───────────── the status line the board shows ─────────────
-
-test('AiStatusBar: the board shows one plain-text line with the AI state (runs without the board, pause reason, unavailable / revoked, backend fenced) and nothing before the first status', async () => {
-  const { build } = await import('esbuild')
-  const { mkdtempSync, rmSync } = await import('node:fs')
-  const { tmpdir } = await import('node:os')
-  const { pathToFileURL } = await import('node:url')
-  const work = mkdtempSync(join(tmpdir(), 'ai-status-bar-'))
-  try {
-    const outfile = join(work, 'bar.mjs')
-    await build({
-      stdin: { contents: "import { renderToStaticMarkup } from 'react-dom/server'\nimport { AiStatusBar } from './src/plugin/ui/AiStatusBar'\nexport const render = (source) => renderToStaticMarkup(<AiStatusBar source={source} />)\n", resolveDir: ROOT, loader: 'tsx', sourcefile: 'bar-entry.tsx' },
-      outfile, bundle: true, format: 'esm', platform: 'node', target: 'node24', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' }, logLevel: 'error', absWorkingDir: ROOT,
-      banner: { js: "import { createRequire as __r } from 'node:module'; const require = __r(import.meta.url);" }
-    })
-    const { render } = await import(pathToFileURL(outfile).href)
-    const noop = () => () => undefined
-    const source = (status, link = { state: 'ok' }) => ({ snapshot: () => status, aiStatus: async () => status, onAiStatus: noop, backendLink: () => link, onBackendLink: noop })
-    const base = { busy: false, provider: null, counters: {}, resumeAt: null }
-    assert.equal(render(source(null)), '', 'before the first status: nothing is drawn')
-    const running = render(source({ ...base, state: 'running', reason: null }))
-    assert.match(running, /role="status"/)
-    assert.match(running, /data-ai-state="running"/)
-    assert.match(running, /看板不需要開著/)
-    assert.match(render(source({ ...base, state: 'running', reason: null, busy: true })), /正在整理新訊息/)
-    assert.match(render(source({ ...base, state: 'paused', reason: 'rate_limited', resumeAt: Date.now() + 30_000, turnsPerMinute: 20 })), /每分鐘 20 次/)
-    assert.match(render(source({ ...base, state: 'unavailable', reason: 'provider_not_logged_in' })), /所選 AI 尚未登入/)
-    assert.match(render(source({ ...base, state: 'revoked', reason: 'access_revoked' })), /ai:chat/)
-    assert.match(render(source({ ...base, state: 'running', reason: null, provider: { providerId: 'codex', modelId: 'gpt-5-codex' } })), /gpt-5-codex/)
-    // the board cannot reach the backend: the backend cannot report, so the board says so (and the fenced sentence stays locked word for word)
-    assert.match(render(source({ ...base, state: 'running', reason: null }, { state: 'unavailable', code: 'plugin_backend_unavailable' })), /data-ai-reason="backend"[^>]*>[^<]*暫時中斷/)
-    assert.ok(render(source({ ...base, state: 'running', reason: null }, { state: 'revoked', code: 'plugin_permission_denied' })).includes('TeamUQ 目前不讓這個外掛呼叫後端'))
-    assert.doesNotMatch(running, /<(?:script|iframe|img|a)\b|on[a-z]+=/i, 'text only: nothing that could load or run anything')
-  } finally { rmSync(work, { recursive: true, force: true }) }
-})
-
 // ───────────── review / test-report fixes (step-fix): F1 F2 F3 F4 F5 F6 F7 F9 ─────────────
 
 test('F1 port: a getOptions that never answers is given up after optionsGuardMs (far below the host\'s 30 s), one probe at a time; the status says the host does not answer — not "no provider" — and the port recovers by itself', async () => {

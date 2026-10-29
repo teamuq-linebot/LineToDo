@@ -16,8 +16,6 @@ import { NotMineReviewPanel } from '../../../src/renderer/components/Board/NotMi
 import { ReviewControls } from '../../../src/renderer/components/Board/KanbanBoard'
 import { DraftReplyDialog } from '../../../src/renderer/components/DraftReplyDialog'
 import { IdentityInboxPanel } from '../../../src/renderer/features/identity/IdentityInboxPanel'
-import { AiStatusBar } from '../../../src/plugin/ui/AiStatusBar'
-import type { AiStatusSource } from '../../../src/plugin/ui/AiStatusBar'
 import { ResidencyNotice, ResidencyStatusBar } from '../../../src/plugin/ui/ResidencyStatus'
 import type { ResidencyViewSource } from '../../../src/plugin/ui/ResidencyStatus'
 import { UiStateProvider, createLocalUiState } from '../../../src/renderer/lib/uiState'
@@ -78,11 +76,6 @@ export function notMineScene(api: Api): ReactElement {
 
 export function reviewControlsScene(api: Api, props: { onRefresh: () => Promise<boolean>; pollDelayMs: (failures: number) => number }): ReactElement {
   return <Host api={api}><ReviewControls api={api} onRefresh={props.onRefresh} onShowNotMine={() => undefined} pollDelayMs={props.pollDelayMs} /></Host>
-}
-
-/** the board's one-line AI status (src/plugin/ui/AiStatusBar.tsx) over a status source the test controls */
-export function statusBarScene(source: AiStatusSource): ReactElement {
-  return <AiStatusBar source={source} />
 }
 
 /** the board's one-line background-execution status (src/plugin/ui/ResidencyStatus.tsx) over a source the test controls */
