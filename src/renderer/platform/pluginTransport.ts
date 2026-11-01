@@ -145,6 +145,24 @@ export interface TransportOptions {
 
 export const DEFAULT_MAX_CONCURRENT_CALLS = 3
 
+/**
+ * 分段結果在 backend 已經不在了（`result_expired`：被擠掉、TTL 到期，或 backend 重新啟動後換了一個新的 dispatcher）時，
+ * 唯讀路徑整個重取的最多次數（不含第一次）。寫入類路徑不重送：結果過期不代表那次呼叫沒生效。
+ */
+export const RESULT_REPLAYS = 2
+
+/** 重送沒有副作用的路徑：清單／單筆讀取、狀態查詢。其餘（update／move／draft／mark／resolve／run／analyze／setXxx…）一律不是。 */
+const REPLAY_SAFE_PATHS: ReadonlySet<string> = new Set([
+  'messages.recent', 'line.status', 'settings.get',
+  'db.messages.list', 'db.messages.recentByChat', 'db.messages.byChatSince', 'db.messages.count',
+  'db.chats.list', 'db.chats.get',
+  'db.todos.list', 'db.todos.get', 'db.todos.openByChat', 'db.todos.listNotMine', 'db.todos.listNotMineCorrections', 'db.todos.getNotMineReview',
+  'db.todos.identity.listPending', 'db.todos.identity.inspect', 'db.todos.identity.todoTopicRelations',
+  'groupTopics.list', 'groupTopics.linkCandidates', 'groupTopics.todoRefs', 'groupTopics.linkProposals', 'groupTopics.pendingCount', 'groupTopics.crossChatEnabled',
+  'pipeline.status', 'pipeline.loadStats'
+])
+export function isReplaySafePath(path: string): boolean { return REPLAY_SAFE_PATHS.has(path) }
+
 export class PluginTransport {
   private readonly host: TuqPluginHost
   private readonly limiter: Limiter
@@ -152,6 +170,7 @@ export class PluginTransport {
   private readonly retry: Required<BusyRetryOptions>
   private closed = false
   private busyRetries = 0
+  private resultReplays = 0
   private maxActive = 0
   private linkState: BackendLink = { state: 'unknown', code: null }
   private readonly linkListeners = new Set<(link: BackendLink) => void>()
@@ -187,14 +206,25 @@ export class PluginTransport {
   }
   get isClosed(): boolean { return this.closed }
   /** `active`／`waiting`：目前在飛／排隊的 host 呼叫；`maxActive`：歷來同時在飛的最大值；`busyRetries`：因忙碌而重試的次數。 */
-  stats(): { active: number; waiting: number; maxActive: number; busyRetries: number; limit: number } {
-    return { ...this.limiter.stats(), maxActive: this.maxActive, busyRetries: this.busyRetries, limit: this.limiter.limit }
+  stats(): { active: number; waiting: number; maxActive: number; busyRetries: number; resultReplays: number; limit: number } {
+    return { ...this.limiter.stats(), maxActive: this.maxActive, busyRetries: this.busyRetries, resultReplays: this.resultReplays, limit: this.limiter.limit }
   }
 
-  /** 一般請求：每一次 host 呼叫（含 job 輪詢、分段取回）各自佔用一個併發名額，名額不跨輪詢持有。 */
-  invoke(path: string, args: readonly unknown[] = []): Promise<unknown> {
-    if (this.closed) return Promise.reject(new PluginApiError('disposed', path, 'the plugin API was disposed'))
-    return this.envelope(path, args).then((env) => this.unwrap(path, env))
+  /**
+   * 一般請求：每一次 host 呼叫（含 job 輪詢、分段取回）各自佔用一個併發名額，名額不跨輪詢持有。
+   * 唯讀路徑的分段結果中途過期（`result_expired`）時整個重取，最多 `RESULT_REPLAYS` 次；其他錯誤與寫入類路徑照常往外丟。
+   */
+  async invoke(path: string, args: readonly unknown[] = []): Promise<unknown> {
+    if (this.closed) throw new PluginApiError('disposed', path, 'the plugin API was disposed')
+    for (let replay = 0; ; replay += 1) {
+      try {
+        return await this.unwrap(path, await this.envelope(path, args))
+      } catch (error) {
+        const expired = error instanceof PluginApiError && error.code === 'result_expired'
+        if (!expired || replay >= RESULT_REPLAYS || this.closed || !isReplaySafePath(path)) throw error
+        this.resultReplays += 1
+      }
+    }
   }
 
   /** 事件長輪詢（`events.*`）：與一般請求共用同一個併發預算（長輪詢佔 1 個名額，每次最久 waitMs）。 */

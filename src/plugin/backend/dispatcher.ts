@@ -139,7 +139,12 @@ interface StoredResult {
   chunks: string[]
   expiresAt: number
   bytes: number
+  /** 已被讀走的段（index）；全部讀完＝view 已經拿到整筆結果，只是還留在記憶體等 TTL。 */
+  served: Set<number>
 }
+
+/** 同時暫存的分段結果筆數上限（含已讀完、等 TTL 的）。超過時 `prune()` 先淘汰已讀完的，再淘汰最久沒被讀的。 */
+const DEFAULT_MAX_RESULTS = 32
 
 export class Dispatcher {
   private readonly opts: DispatcherOptions
@@ -366,7 +371,7 @@ export class Dispatcher {
     }
     this.prune()
     const resultId = randomBytes(12).toString('hex')
-    this.results.set(resultId, { chunks, expiresAt: this.now() + (this.opts.resultTtlMs ?? 60_000), bytes: Buffer.byteLength(text) })
+    this.results.set(resultId, { chunks, expiresAt: this.now() + (this.opts.resultTtlMs ?? 60_000), bytes: Buffer.byteLength(text), served: new Set() })
     return { ok: true, chunked: true, resultId, chunks: chunks.length, bytes: Buffer.byteLength(text) }
   }
 
@@ -378,15 +383,30 @@ export class Dispatcher {
     const index = Math.floor(raw.index)
     if (!(index >= 0 && index < stored.chunks.length)) return fail('invalid_args', 'chunk index out of range')
     stored.expiresAt = this.now() + (this.opts.resultTtlMs ?? 60_000)
+    stored.served.add(index)
     return { ok: true, value: { index, last: index === stored.chunks.length - 1, data: stored.chunks[index] } }
   }
 
-  /** 惰性清理（不用 timer，deactivate 後不留 handle）。 */
+  /**
+   * 惰性清理（不用 timer，deactivate 後不留 handle）。
+   * 超過筆數上限時的淘汰順序：已讀完的（view 已經拿到整筆）先走，其次是最久沒被讀的（`expiresAt` 在每次讀取時更新，所以最小的就是最久沒動的）。
+   * 以前是照建立順序淘汰最舊的一筆：聊天頁一開就取 1000 則訊息（數十段），這段期間其他呼叫陸續產生並讀完新的分段結果，
+   * 最舊的那筆（正在讀的訊息清單）反而先被擠掉，下一段就是 `result_expired`。
+   */
   private prune(): void {
     const now = this.now()
     for (const [id, r] of this.results) if (r.expiresAt <= now) this.results.delete(id)
-    const cap = this.opts.maxResults ?? 16
-    while (this.results.size > cap) this.results.delete(this.results.keys().next().value as string)
+    const cap = this.opts.maxResults ?? DEFAULT_MAX_RESULTS
+    while (this.results.size > cap) {
+      let victim: string | null = null
+      let victimKey: [number, number] | null = null // [已讀完 0／未讀完 1, expiresAt]
+      for (const [id, r] of this.results) {
+        const key: [number, number] = [r.served.size >= r.chunks.length ? 0 : 1, r.expiresAt]
+        if (victimKey === null || key[0] < victimKey[0] || (key[0] === victimKey[0] && key[1] < victimKey[1])) { victim = id; victimKey = key }
+      }
+      if (victim === null) break
+      this.results.delete(victim)
+    }
     for (const [id, j] of this.jobs) if (j.state === 'done' && j.expiresAt <= now) this.jobs.delete(id)
   }
 
