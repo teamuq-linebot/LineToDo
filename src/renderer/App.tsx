@@ -4,6 +4,7 @@ import { SettingsPanel } from './components/Settings/SettingsPanel'
 import { GroupTopicsPanel } from './features/groupTopics/GroupTopicsPanel'
 import { IdentityInboxPanel } from './features/identity/IdentityInboxPanel'
 import { useHostCapabilities } from './platform/LineTodoApi'
+import { APP_VERSION } from './lib/appVersion'
 import { useTheme } from './lib/theme'
 import { parseOneOf, usePersistentState } from './lib/uiState'
 
@@ -33,6 +34,7 @@ function App(): JSX.Element {
     <div className="app-shell">
       <header className="app-header">
         <h1>line-todo</h1>
+        {APP_VERSION && <span className="app-version" title={`外掛版本 ${APP_VERSION}`}>v{APP_VERSION}</span>}
         <nav className="app-tabs">
           <button
             className={`tab ${tab === 'board' ? 'active' : ''}`}

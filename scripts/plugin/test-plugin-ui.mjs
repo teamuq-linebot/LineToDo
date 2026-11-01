@@ -11,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { build } from 'esbuild'
 
-import { ROOT, analyzeUiBundle, buildPluginUi } from './build-ui.mjs'
+import { ROOT, analyzeUiBundle, buildPluginUi, pluginVersion } from './build-ui.mjs'
 import { BACKEND_TRUST_REQUIREMENT, EXPECTED_FENCED_TEXT, EXPECTED_TIMEOUT_TEXT, PLUGIN_PAGE_PLACE_TEXT, RECOVERY_PROMISE, STALE_PERMISSION_NAME, VERSION_SPECIFIC_PLACE } from './lib/fenced-text.mjs'
 
 const work = mkdtempSync(join(tmpdir(), 'plugin-ui-test-'))
@@ -24,7 +24,7 @@ function renderer() {
     await build({
       entryPoints: [resolve(ROOT, 'scripts', 'plugin', 'fixtures', 'ui-render-entry.tsx')],
       outfile, bundle: true, format: 'esm', platform: 'node', target: 'node24', jsx: 'automatic',
-      define: { 'process.env.NODE_ENV': '"production"' }, loader: { '.css': 'empty' }, logLevel: 'error', absWorkingDir: ROOT,
+      define: { 'process.env.NODE_ENV': '"production"', __LINE_TODO_PLUGIN_VERSION__: JSON.stringify(pluginVersion()) }, loader: { '.css': 'empty' }, logLevel: 'error', absWorkingDir: ROOT,
       banner: { js: "import { createRequire as __r } from 'node:module'; const require = __r(import.meta.url);" },
     })
     const caps = await import(pathToFileURL(resolve(ROOT, 'src', 'renderer', 'platform', 'capabilities.ts')).href)
@@ -85,6 +85,20 @@ test('board: plugin and standalone both expose the shared settings tab; standalo
   try {
     assert.deepEqual(tabs(renderApp(STANDALONE)), ['待辦', '聊天', '群組議題', '待確認', '設定'])
     assert.deepEqual(tabs(renderApp(PLUGIN)), ['待辦', '聊天', '群組議題', '待確認', '設定'])
+  } finally { delete globalThis.document }
+})
+
+test('header: the title row shows the plugin version, taken from package.json (the manifest/backend source), in plugin and standalone', async () => {
+  const { renderApp, PLUGIN, STANDALONE } = await renderer()
+  const version = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
+  assert.match(version, /^\d+\.\d+\.\d+/)
+  globalThis.document = { documentElement: { dataset: {} } }
+  try {
+    for (const caps of [PLUGIN, STANDALONE]) {
+      const header = /<header class="app-header">([\s\S]*?)<\/header>/.exec(renderApp(caps))?.[1] ?? ''
+      assert.match(header, /<h1>line-todo<\/h1>/)
+      assert.ok(header.includes(`<span class="app-version" title="外掛版本 ${version}">v${version}</span>`), `the version sits in the title row: ${header.slice(0, 200)}`)
+    }
   } finally { delete globalThis.document }
 })
 
@@ -206,6 +220,8 @@ test('bundle: the JavaScript has no outbound network API, no linemedia://, no wi
   assert.ok(!files['main.js'].includes("'api.invoke'") && !files['main.js'].includes('"api.invoke"'), 'the single api.invoke method is gone')
   for (const group of ['db.todos', 'pipeline', 'events', 'extract']) assert.ok(files['main.js'].includes(`"${group}"`) || files['main.js'].includes(`'${group}'`), `the method group ${group} is in the bundle`)
   assert.ok(files['main.js'].includes('events.pull'), 'and the long-poll event channel')
+  // the header version is injected from package.json at build time (never a literal in src/)
+  assert.ok(files['main.js'].includes(`"${pluginVersion()}"`), 'main.js carries the package.json version for the title row')
 })
 
 test('bundle: only renderer / shared / plugin-ui / react code is inside (no main-process, core, backend, preload, electron, native or provider module)', async () => {

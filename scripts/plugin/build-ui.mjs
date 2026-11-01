@@ -140,7 +140,11 @@ export function copyTextAsLf(from, to) {
   writeFileSync(to, toLf(readFileSync(from, 'utf8')))
 }
 
+/** The plugin version shown in the header: the same `package.json` version the manifest and the backend bundle use (never a literal in source). */
+export const pluginVersion = () => JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
+
 export async function buildPluginUi({ outDir }) {
+  const version = pluginVersion()
   rmSync(outDir, { recursive: true, force: true })
   mkdirSync(outDir, { recursive: true })
   const metafiles = []
@@ -157,7 +161,7 @@ export async function buildPluginUi({ outDir }) {
       legalComments: 'none',
       charset: 'utf8',
       // react / react-dom branch on process.env.NODE_ENV; the browser has no `process`.
-      define: { 'process.env.NODE_ENV': '"production"' },
+      define: { 'process.env.NODE_ENV': '"production"', __LINE_TODO_PLUGIN_VERSION__: JSON.stringify(version) },
       plugins: [stubPlugin()],
       metafile: true,
       logLevel: 'error',

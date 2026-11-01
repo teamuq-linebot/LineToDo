@@ -1,6 +1,10 @@
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
+
+// 標題列顯示的版本號：package.json 的 version（與外掛 manifest、backend 同一個來源；src/renderer/lib/appVersion.ts）。
+const appVersion = (JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8')) as { version: string }).version
 
 export default defineConfig({
   main: {
@@ -30,6 +34,9 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
+    define: {
+      __LINE_TODO_PLUGIN_VERSION__: JSON.stringify(appVersion)
+    },
     resolve: {
       alias: {
         '@renderer': resolve(__dirname, 'src/renderer')
