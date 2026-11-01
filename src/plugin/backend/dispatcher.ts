@@ -28,6 +28,7 @@ import type { PromptRefinementRequest } from '../../shared/promptSettings'
 import type { ExtractQueue } from './extractQueue'
 import type { EventHub } from './eventHub'
 import type { PluginMedia } from './media'
+import type { PluginAvatars } from './avatar'
 import type { ReviewCoordinator } from './reviewRun'
 import type { LongTaskTracker } from './taskStatus'
 import type { Envelope, JsonValue } from './types'
@@ -98,6 +99,8 @@ export interface DispatcherOptions {
   prompts?: PromptService
   /** 媒體服務（`media.prepare`）；省略＝回 media_unavailable。 */
   media?: PluginMedia
+  /** LINE profile/Square avatars; all locators remain backend-only. */
+  avatars?: PluginAvatars
   /** 回顧的續跑／single-flight／進度（`pipeline.reviewLastDays`、`review.status`）；省略＝直接呼叫 core（單元測試）。 */
   review?: ReviewCoordinator
   /** 「補媒體金鑰」的 single-flight 與可查詢狀態（`pipeline.backfillMediaKeys`、`tasks.status`）；省略＝直接呼叫 core。 */
@@ -192,6 +195,8 @@ export class Dispatcher {
       // 長任務的狀態（G-05）：回顧與補媒體金鑰；backend 重新啟動後由狀態檔讀回（taskStatus.ts、reviewRun.ts）。
       case 'tasks.status': return this.finalize({ review: this.opts.review ? this.opts.review.status() : null, mediaBackfill: this.opts.mediaBackfill ? this.opts.mediaBackfill.status() : null })
       case 'media.prepare': return this.mediaPrepare(args[0])
+      case 'media.avatar.prepareChats': return this.opts.avatars ? this.settle(this.opts.avatars.prepareChats(args[0])) : fail('avatar_unavailable')
+      case 'media.avatar.prepareMessages': return this.opts.avatars ? this.settle(this.opts.avatars.prepareMessages(args[0], args[1])) : fail('avatar_unavailable')
       case 'result.chunk': return this.chunk(args[0])
       case 'job.poll': return this.pollJob(args[0])
       default: break

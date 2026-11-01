@@ -150,6 +150,113 @@ test('chat search finds senders and older messages that are loaded in the select
   }
 })
 
+test('avatar renderer fixture shows the same chat image in list/header and a sender image beside the message', async () => {
+  const chatId = 'm-square-fixture'
+  const ts = Date.UTC(2026, 9, 30, 3, 0, 0)
+  const chat = { chatId, name: chatId, isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts).toISOString() }
+  const offscreenChatId = 'm-square-offscreen-fixture'
+  const offscreenChat = { ...chat, chatId: offscreenChatId, name: offscreenChatId, firstSeenAt: new Date(ts - 86400000).toISOString(), lastSeenAt: new Date(ts - 86400000).toISOString() }
+  const message = { msgId: 'i:42', chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender: '未知發話者', text: 'fixture message', contentType: 0, processed: true, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: false }
+  const called = []
+  const { backend, api } = plugin({
+    ...settingsHandlers(),
+    'db.chats.list': () => [chat, offscreenChat],
+    'db.messages.list': () => [],
+    'db.messages.recentByChat': () => [message],
+    'media.avatar.prepareChats': (ids) => { called.push(['chat', ids]); return { paths: { [chatId]: 'avatar-cache/chat.jpg' }, names: { [chatId]: 'Square 聊天室' } } },
+    'media.avatar.prepareMessages': (requestedChatId, ids) => { called.push(['messages', requestedChatId, ids]); return { paths: { 'i:42': 'avatar-cache/member.jpg' }, names: { 'i:42': 'Square 成員' } } },
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 })
+  })
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => {
+      const imgs = walk(scene.container).filter((el) => el.localName === 'img')
+      return imgs.length === 3 && scene.container.textContent.includes('Square 聊天室') && scene.container.textContent.includes('Square 成員')
+    }, { message: 'chat/list/header/sender avatar fixture rendered' })
+    const imageSources = walk(scene.container).filter((el) => el.localName === 'img').map((el) => el.getAttribute('src'))
+    assert.deepEqual(imageSources, [
+      'tuqplugin://tuqdev.line-todo/data/avatar-cache/chat.jpg',
+      'tuqplugin://tuqdev.line-todo/data/avatar-cache/chat.jpg',
+      'tuqplugin://tuqdev.line-todo/data/avatar-cache/member.jpg'
+    ])
+    const requestedChatIds = called.filter(([kind]) => kind === 'chat').flatMap(([, ids]) => ids)
+    assert.ok(requestedChatIds.includes(chatId), 'the active/visible chat avatar is prepared')
+    assert.equal(requestedChatIds.includes(offscreenChatId), false, 'initialization does not prepare an offscreen chat avatar')
+    assert.equal(called.some(([kind, id]) => kind === 'messages' && id === chatId), true)
+    assert.equal(called.some(([kind]) => kind.startsWith('pipeline')), false, 'avatar metadata refresh does not call the AI/pipeline API')
+    assert.equal(backend.unknown.includes('media.avatar.prepareChats') || backend.unknown.includes('media.avatar.prepareMessages'), false)
+  } finally {
+    scene?.unmount()
+    api.dispose()
+  }
+})
+
+test('real img error switches to text fallback and failed source is not retried after remount', async () => {
+  const chatId = 'm-image-error-fixture'
+  const ts = Date.UTC(2026, 9, 30, 3, 30, 0)
+  const chat = { chatId, name: '404 測試群組', isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts).toISOString() }
+  const message = { msgId: 'i:404', chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender: '404 成員', text: 'image error fixture', contentType: 0, processed: true, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: false }
+  const calls = { chats: 0, messages: 0 }
+  const { api } = plugin({
+    ...settingsHandlers(),
+    'db.chats.list': () => [chat],
+    'db.messages.list': () => [],
+    'db.messages.recentByChat': () => [message],
+    'media.avatar.prepareChats': () => { calls.chats++; return { paths: { [chatId]: 'avatar-cache/404.jpg' }, names: { [chatId]: chat.name } } },
+    'media.avatar.prepareMessages': () => { calls.messages++; return { paths: { [message.msgId]: 'avatar-cache/404.jpg' }, names: { [message.msgId]: message.sender } } },
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 })
+  })
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => walk(scene.container).filter((el) => el.localName === 'img').length === 3, { message: 'actual img nodes mounted' })
+    const brokenImage = walk(scene.container).find((el) => el.localName === 'img' && el.getAttribute('src').endsWith('/avatar-cache/404.jpg'))
+    assert.ok(brokenImage)
+    const callsBeforeError = { ...calls }
+    const props = reactProps(brokenImage)
+    assert.equal(typeof props.onError, 'function')
+    props.onError({ currentTarget: brokenImage })
+    assert.deepEqual(calls, callsBeforeError, 'the img error handler itself does not call the avatar backend')
+    await until(() => !walk(scene.container).includes(brokenImage), { message: 'img error replaces failed node with text fallback' })
+    assert.equal(scene.container.textContent.includes('404 測試群組'), true)
+    scene.unmount()
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => scene.container.textContent.includes('404 測試群組'), { message: 'fallback survives renderer remount' })
+    assert.equal(walk(scene.container).some((el) => el.localName === 'img' && el.getAttribute('src').endsWith('/avatar-cache/404.jpg')), false)
+    assert.equal(walk(scene.container).some((el) => el.localName === 'img' && el.getAttribute('src').endsWith('/avatar-cache/404.jpg')), false)
+  } finally {
+    scene?.unmount()
+    api.dispose()
+  }
+})
+
+test('avatar fixture keeps readable fallback labels when source images are unavailable', async () => {
+  const chatId = 'm-no-avatar-fixture'
+  const ts = Date.UTC(2026, 9, 30, 4, 0, 0)
+  const chat = { chatId, name: chatId, isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts).toISOString() }
+  const message = { msgId: 'i:43', chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender: '未知發話者', text: 'fallback message', contentType: 0, processed: true, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: false }
+  const { api } = plugin({
+    ...settingsHandlers(),
+    'db.chats.list': () => [chat],
+    'db.messages.list': () => [],
+    'db.messages.recentByChat': () => [message],
+    'media.avatar.prepareChats': () => ({ paths: {}, names: {} }),
+    'media.avatar.prepareMessages': () => ({ paths: {}, names: {} }),
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 })
+  })
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => scene.container.textContent.includes('未命名群組') && scene.container.textContent.includes('未知發話者'), { message: 'avatar fallback labels rendered' })
+    assert.equal(walk(scene.container).some((el) => el.localName === 'img'), false)
+    assert.equal(scene.container.textContent.includes(chatId), false, 'opaque room id stays hidden')
+  } finally {
+    scene?.unmount()
+    api.dispose()
+  }
+})
+
 test('recalled persistence refresh covers all 1001 loaded rows with bounded pages and keeps late updates inside their chat', async () => {
   const ts0 = Date.UTC(2026, 9, 26, 3, 0, 0)
   const chatId = 'c-f1-history-fixture'
@@ -488,8 +595,8 @@ test('settings entry interaction: plugin App opens the shared settings panel, re
     await until(() => savedView.pollIntervalSec === 45, { message: 'settings.update persisted the edit' })
     assert.ok(settingsCalls.some((entry) => Array.isArray(entry) && entry[0] === 'update' && entry[1].pollIntervalSec === 45), 'the existing settings.update API receives the patch')
 
-    reactProps(tab('彙整')).onClick()
-    await until(() => !view.container.textContent.includes('輪詢頻率（秒）') && tab('彙整'), { message: 'return to board' })
+    reactProps(tab('待辦')).onClick()
+    await until(() => !view.container.textContent.includes('輪詢頻率（秒）') && tab('待辦'), { message: 'return to board' })
     reactProps(tab('設定')).onClick()
     await until(() => view.container.textContent.includes('輪詢頻率（秒）') && pollInput() && reactProps(pollInput()).value === 45, { message: 'saved settings read back after reopening' })
     assert.ok(settingsCalls.filter((entry) => entry === 'get').length >= 2, 'reopening reads settings.get again')
@@ -744,4 +851,157 @@ test('identity inbox (effects): synthetic source, failed CAS retention, explicit
     await until(()=>state.topicLink==='rejected',{message:'cross-chat relation rejection sent'})
     assert.equal(state.resolved,1,'cross-chat relation rejection leaves both Topics untouched')
   }finally{view.unmount()}
+})
+
+test('chat todos (effects): direct and group panes stay scoped; loading, failure, retry, empty and late-response states render correctly', async () => {
+  const direct = { chatId: 'synthetic-direct', name: '合成單人聊天室', isGroup: false, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T01:00:00.000Z' }
+  const group = { chatId: 'synthetic-group', name: '合成群組聊天室', isGroup: true, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
+  const directTopic = { topicId: 'direct-topic', chatId: direct.chatId, title: '單人聊天室的既有議題', summary: '只屬於單人聊天室的摘要。', evidenceCount: 1, evidenceMsgIds: ['synthetic-direct-source'], userParticipation: 'unknown', relevance: 'unknown', relevanceEvidence: [], participantLowerBound: null, observation: 'unknown', heat: 'unvalidated', trend: 'unknown' }
+  const groupTopic = { topicId: 'group-topic', chatId: group.chatId, title: '群組聊天室的既有議題', summary: '只屬於群組聊天室的摘要。', evidenceCount: 1, evidenceMsgIds: ['synthetic-group-source'], userParticipation: 'unknown', relevance: 'unknown', relevanceEvidence: [], participantLowerBound: null, observation: 'unknown', heat: 'unvalidated', trend: 'unknown' }
+  let directTopicsEnabled = false
+  let deferGroupTopics = false
+  let resolveGroupTopicRequest
+  const pendingGroupTopicRequest = new Promise((resolve) => { resolveGroupTopicRequest = resolve })
+  const topicListQueries = []
+  const topicEnableQueries = []
+  const topicAnalyzeQueries = []
+  const crossTopicQueries = []
+  const topicLinkQueries = []
+  const todo = (id, chatId, title, status = 'pending') => ({
+    id, chatId, bucket: status === 'waiting_reply' ? 'waiting' : 'todo', status, title,
+    detail: `合成細節：${title}`, priority: 1, dueAt: null, sourceMsgIds: [`synthetic-source-${id}`],
+    confidence: 0.9, completionEvidence: status === 'suggested_done' ? '合成完成線索' : null,
+    createdAt: '2026-10-29T00:00:00.000Z', updatedAt: '2026-10-30T00:00:00.000Z', resolvedAt: null
+  })
+  const directTodo = todo('direct-1', direct.chatId, '單人聊天室的既有待辦')
+  const staleDirectTodo = todo('direct-late', direct.chatId, '延遲的單人聊天室舊回應')
+  const groupTodo = todo('group-1', group.chatId, '群組聊天室的既有待辦', 'waiting_reply')
+  let resolveDirectRefresh
+  let directCalls = 0
+  let groupCalls = 0
+  const todoQueries = []
+  const pendingDirectRefresh = new Promise((resolve) => { resolveDirectRefresh = resolve })
+  const { api } = plugin({
+    'db.chats.list': () => [direct, group],
+    'db.messages.list': () => [],
+    'db.messages.recentByChat': () => [],
+    'groupTopics.list': (chatId) => {
+      topicListQueries.push(chatId)
+      if (chatId === direct.chatId) return { ok: directTopicsEnabled, topics: directTopicsEnabled ? [directTopic] : [] }
+      if (deferGroupTopics && chatId === group.chatId) return pendingGroupTopicRequest
+      return { ok: true, topics: [groupTopic] }
+    },
+    'groupTopics.setEnabled': (chatId, enabled) => {
+      topicEnableQueries.push({ chatId, enabled })
+      if (chatId === direct.chatId) directTopicsEnabled = enabled
+      return { ok: true }
+    },
+    'groupTopics.analyze': (chatId) => { topicAnalyzeQueries.push(chatId); return { ok: true, count: 1, analyzedCount: 1 } },
+    'groupTopics.crossChatEnabled': (chatId) => { crossTopicQueries.push(`cross:${chatId}`); return false },
+    'groupTopics.linkCandidates': (chatId) => { topicLinkQueries.push(chatId); return [] },
+    'groupTopics.pendingCount': (chatId) => { crossTopicQueries.push(`pending:${chatId}`); return chatId === direct.chatId && !directTopicsEnabled ? 1 : 0 },
+    'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'db.todos.openByChat': (chatId) => {
+      todoQueries.push(chatId)
+      if (chatId === direct.chatId) {
+        directCalls += 1
+        if (directCalls === 1) return [directTodo]
+        if (directCalls === 2) return pendingDirectRefresh
+        return []
+      }
+      groupCalls += 1
+      if (groupCalls === 1) throw Object.assign(new Error('synthetic group todo failure'), { code: 'internal' })
+      return [groupTodo]
+    }
+  })
+  const unhandled = await collectingUnhandled(async () => {
+    const view = ui.mount(ui.messageStreamScene(api))
+    const hasClass = (element, name) => (element.getAttribute('class') ?? '').split(/\s+/).includes(name)
+    const paneButton = (label) => walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === label && element.hasAttribute('aria-pressed'))
+    const chatButton = (name) => walk(view.container).find((element) => hasClass(element, 'chat-list-item') && element.textContent.includes(name))
+    const click = (button) => reactProps(button).onClick({ currentTarget: button })
+    try {
+      await until(() => chatButton(direct.name) && chatButton(group.name), { message: 'both synthetic chats are listed' })
+      assert.ok(paneButton('待辦'), 'the chat header has a todo pane')
+      assert.ok(paneButton('議題'), 'a direct chat has its own topics pane')
+      assert.equal(paneButton('訊息').getAttribute('aria-pressed'), 'true')
+
+      click(paneButton('議題'))
+      await until(() => topicListQueries.includes(direct.chatId) && view.container.textContent.includes('啟用此聊天室議題分析'), { message: 'direct topics load from the selected chat and offer opt-in enable' })
+      assert.ok(view.container.textContent.includes('此聊天室的議題'))
+      assert.equal(view.container.textContent.includes('跨群語意候選'), false, 'direct topics do not expose cross-group controls')
+      assert.deepEqual(topicAnalyzeQueries, [], 'opening the topic pane does not auto-analyze')
+      assert.deepEqual(topicEnableQueries, [], 'opening the topic pane does not auto-enable')
+      const directEnable = walk(view.container).find((element) => element.localName === 'input' && element.getAttribute('type') === 'checkbox')
+      assert.ok(directEnable, 'the direct topic enable control renders')
+      reactProps(directEnable).onChange({ target: { checked: true } })
+      await until(() => topicEnableQueries.some((entry) => entry.chatId === direct.chatId && entry.enabled) && view.container.textContent.includes(directTopic.title), { message: 'enabling direct topics reads existing results for that chat' })
+      const directAnalyzeButton = walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === '分析最近聊天室訊息')
+      assert.ok(directAnalyzeButton, 'manual analysis is available for a direct chat')
+      click(directAnalyzeButton)
+      await until(() => topicAnalyzeQueries.includes(direct.chatId) && view.container.textContent.includes('已整理 1 則新訊息'), { message: 'manual direct chat analysis calls the topic API for the selected chat' })
+      assert.deepEqual(topicAnalyzeQueries, [direct.chatId])
+      assert.ok(view.container.textContent.includes(directTopic.title))
+      assert.deepEqual(crossTopicQueries.filter((value) => value.startsWith('cross:')), [], 'direct chats never query cross-group authorization')
+
+      click(paneButton('待辦'))
+      await until(() => view.container.textContent.includes(directTodo.title), { message: 'direct chat todos render' })
+      assert.equal(paneButton('待辦').getAttribute('aria-pressed'), 'true')
+      assert.ok(view.container.textContent.includes('待辦'))
+      assert.ok(view.container.textContent.includes('來源訊息 1 則'))
+      assert.ok(view.container.textContent.includes(directTodo.detail), 'complete detail is available on demand')
+      assert.ok(paneButton('議題'), 'the direct chat keeps its topics pane while viewing todos')
+
+      click(paneButton('訊息'))
+      await until(() => paneButton('訊息')?.getAttribute('aria-pressed') === 'true', { message: 'message pane is selected before reopening todos' })
+      click(paneButton('待辦'))
+      await until(() => directCalls === 2 && view.container.textContent.includes('正在載入「合成單人聊天室」的待辦'), { message: 'direct refresh enters loading before its delayed reply' })
+      click(chatButton(group.name))
+      await until(() => groupCalls === 1 && view.container.textContent.includes('讀取此聊天室待辦失敗'), { message: 'group-scoped request failure is shown as an error' })
+      assert.ok(view.container.textContent.includes('synthetic group todo failure'), 'the backend failure reason remains visible')
+      assert.equal(view.container.textContent.includes(directTodo.title), false, 'the previous chat data is cleared on chat switch')
+      assert.equal(paneButton('待辦').getAttribute('aria-pressed'), 'true', 'todo pane follows the selected chat')
+      assert.ok(paneButton('議題'), 'group chat keeps its topics pane')
+
+      click(walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === '重試'))
+      await until(() => groupCalls === 2 && view.container.textContent.includes(groupTodo.title), { message: 'retry loads the selected group todos' })
+      assert.ok(view.container.textContent.includes('等回覆'), 'existing status semantics remain visible')
+      resolveDirectRefresh([staleDirectTodo])
+      await sleep(20)
+      assert.ok(view.container.textContent.includes(groupTodo.title), 'the current chat remains displayed after the old response arrives')
+      assert.equal(view.container.textContent.includes(staleDirectTodo.title), false, 'a late response cannot replace the selected chat data')
+
+      click(chatButton(direct.name))
+      await until(() => directCalls === 3 && view.container.textContent.includes('此聊天室目前沒有未完成待辦。'), { message: 'a successful empty result has its own state' })
+      assert.equal(view.container.textContent.includes(groupTodo.title), false, 'the group todos do not remain after switching back')
+
+      click(chatButton(group.name))
+      await until(() => groupCalls === 3 && view.container.textContent.includes(groupTodo.title), { message: 'switching back to the group refreshes its todos' })
+      deferGroupTopics = true
+      click(paneButton('議題'))
+      await until(() => topicListQueries.includes(group.chatId) && view.container.textContent.includes('正在載入「合成群組聊天室」的議題'), { message: 'the group topic request is pending for the selected group' })
+      assert.ok(view.container.textContent.includes(groupTopic.title) === false, 'the delayed group result has not appeared early')
+      click(chatButton(direct.name))
+      await until(() => topicListQueries.filter((chatId) => chatId === direct.chatId).length >= 3 && view.container.textContent.includes(directTopic.title), { message: 'switching back opens the direct chat topics for its own chat id' })
+      resolveGroupTopicRequest({ ok: true, topics: [groupTopic] })
+      await sleep(20)
+      assert.ok(view.container.textContent.includes(directTopic.title), 'the current direct chat topic remains visible after a late group response')
+      assert.equal(view.container.textContent.includes(groupTopic.title), false, 'a late group response cannot replace direct chat topics')
+      assert.ok(topicListQueries.includes(group.chatId) && topicListQueries.includes(direct.chatId), 'both requests use their chat-scoped ids')
+      assert.equal(crossTopicQueries.filter((value) => value.startsWith('cross:')).includes(`cross:${direct.chatId}`), false)
+      assert.equal(topicLinkQueries.includes(direct.chatId), false, 'direct chat topics never request cross-group candidates')
+      click(paneButton('訊息'))
+      await until(() => walk(view.container).some((element) => hasClass(element, 'chat-message-log')), { message: 'the existing message pane still opens' })
+      assert.deepEqual(todoQueries, [direct.chatId, direct.chatId, group.chatId, group.chatId, direct.chatId, group.chatId], 'every read is scoped to the selected chat id')
+      assert.ok(crossTopicQueries.filter((value) => value.startsWith('cross:')).every((value) => value === `cross:${group.chatId}`), 'group cross-chat checks remain group-only')
+      assert.ok(topicLinkQueries.every((chatId) => chatId === group.chatId), 'group cross-chat candidate reads remain group-only')
+
+      const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
+      assert.match(css, /\.chat-todos-content\s*\{[^}]*overflow:\s*auto/s, 'the todo pane scrolls within the chat area')
+      assert.match(css, /\.chat-todos-content\s*\{[^}]*padding:\s*16px clamp\(14px, 3vw, 34px\)/s, 'the content padding adapts to viewport width')
+      assert.match(css, /\.chat-todo-card\s*\{[^}]*cursor:\s*default[^}]*user-select:\s*text/s, 'read-only todo cards do not advertise drag actions')
+    } finally { view.unmount(); api.dispose() }
+  })
+  assert.deepEqual(unhandled, [], 'no unhandled rejection from chat todo loading or the late response')
 })

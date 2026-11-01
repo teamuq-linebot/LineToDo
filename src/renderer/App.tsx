@@ -8,7 +8,7 @@ import { useTheme } from './lib/theme'
 import { parseOneOf, usePersistentState } from './lib/uiState'
 
 /**
- * App（M3：代辦看板）。
+ * App（M3：待辦看板）。
  * 頂部分頁切換：彙整 / 聊天 / 群組議題 / 設定。
  *   - 彙整：四欄（待辦 / 等回覆 / 行程 / 已完成）+ 今日摘要。
  *   - 聊天：LINE 聊天室、訊息與對話內群組議題。
@@ -38,7 +38,7 @@ function App(): JSX.Element {
             className={`tab ${tab === 'board' ? 'active' : ''}`}
             onClick={() => setTab('board')}
           >
-            彙整
+            待辦
           </button>
           <button
             className={`tab ${tab === 'stream' ? 'active' : ''}`}

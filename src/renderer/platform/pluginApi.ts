@@ -18,7 +18,7 @@
  * 不依賴 React／DOM（node:test 以 mock `window.tuqPlugin` 驗證）。
  */
 import type {
-  DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult
+  AvatarUrlBatchDTO, DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult
 } from '../../shared/api'
 import { PLUGIN_CAPABILITIES, type HostCapabilities } from './capabilities'
 import { normalizeHostAiSelection, type HostAiSelection } from '../../shared/hostAi'
@@ -159,6 +159,29 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
     }
   }
 
+  const avatarUrlBatch = async (path: 'media.avatar.prepareChats' | 'media.avatar.prepareMessages', args: unknown[]): Promise<AvatarUrlBatchDTO> => {
+    try {
+      const prepared = await call<{ paths?: unknown; names?: unknown }>(path, ...args)
+      const urls: Record<string, string> = {}
+      if (prepared?.paths && typeof prepared.paths === 'object') {
+        for (const [key, value] of Object.entries(prepared.paths as Record<string, unknown>)) {
+          if (typeof value !== 'string') continue
+          const url = host.assets?.url(value)
+          if (url) urls[key] = url
+        }
+      }
+      const names: Record<string, string> = {}
+      if (prepared?.names && typeof prepared.names === 'object') {
+        for (const [key, value] of Object.entries(prepared.names as Record<string, unknown>)) {
+          if (typeof value === 'string' && value.trim()) names[key] = value
+        }
+      }
+      return { urls, names }
+    } catch {
+      return { urls: {}, names: {} }
+    }
+  }
+
   const extract: PluginExtractApi = {
     stats: () => call('extract.stats')
   }
@@ -260,7 +283,9 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
     media: {
       open: (msgId) => orUnsupported(() => call('media.open', msgId), (e) => ({ ok: false, error: unsupportedText(e) })),
       saveAs: (msgId) => orUnsupported(() => call('media.saveAs', msgId), (e) => ({ ok: false, error: unsupportedText(e) })),
-      assetUrl
+      assetUrl,
+      avatarUrls: (chatIds) => avatarUrlBatch('media.avatar.prepareChats', [chatIds]),
+      messageAvatarUrls: (chatId, msgIds) => avatarUrlBatch('media.avatar.prepareMessages', [chatId, msgIds])
     },
     groupTopics: {
       setEnabled: (chatId, enabled) => call('groupTopics.setEnabled', chatId, enabled),

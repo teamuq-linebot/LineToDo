@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChatDTO, GroupTopicDTO, GroupTopicLinkCandidateDTO } from '../../../shared/api'
 import { useHostCapabilities, useLineTodoApi } from '../../platform/LineTodoApi'
+import { loadGroupTopicsOverview, type GroupTopicsOverviewEntry } from './groupTopicsOverview'
+
+const ALL_GROUPS = '__all_groups__'
 
 const relevanceText: Record<GroupTopicDTO['relevance'], string> = {
   action: '行動相關', awareness: '知會相關', unrelated: '無關', unknown: '不確定'
@@ -37,22 +40,32 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 interface Props {
-  /** 提供時固定顯示此對話的議題，並隱藏全域群組選單。 */
+  /** 提供時固定顯示此聊天室的議題，並隱藏全域群組選單。 */
   chatId?: string
+  /** 嵌入聊天時指定聊天室類型；全域群組面板固定為群組。 */
+  chatIsGroup?: boolean
+  /** 嵌入聊天時顯示當前聊天室名稱。 */
+  chatName?: string | null
   /** 嵌入聊天時使用較緊湊的標題與內容區。 */
   embedded?: boolean
 }
 
-export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Props = {}): JSX.Element {
+export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, chatName, embedded = false }: Props = {}): JSX.Element {
   const lineTodoApi = useLineTodoApi()
   const caps = useHostCapabilities()
   const api = lineTodoApi.groupTopics
   const [chats, setChats] = useState<ChatDTO[]>([])
-  const [globalChatId, setGlobalChatId] = useState('')
-  const chatId = scopedChatId ?? globalChatId
+  const [globalChatId, setGlobalChatId] = useState(ALL_GROUPS)
+  const isOverview = !scopedChatId && globalChatId === ALL_GROUPS
+  const chatId = scopedChatId ?? (isOverview ? '' : globalChatId)
+  const selectedChatIsGroup = scopedChatId ? chatIsGroup : true
+  const chatLabel = selectedChatIsGroup ? '群組' : '聊天室'
   const [enabled, setEnabled] = useState(false)
   const [crossEnabled, setCrossEnabled] = useState(false)
   const [topics, setTopics] = useState<GroupTopicDTO[]>([])
+  const [overviewGroups, setOverviewGroups] = useState<GroupTopicsOverviewEntry[]>([])
+  const [overviewLoading, setOverviewLoading] = useState(false)
+  const [overviewError, setOverviewError] = useState('')
   const [links, setLinks] = useState<GroupTopicLinkCandidateDTO[]>([])
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -69,12 +82,34 @@ export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Pro
       if (!active) return
       const groups = rows.filter((chat) => chat.isGroup && !chat.blocked)
       setChats(groups)
-      setGlobalChatId((current) => current || groups[0]?.chatId || '')
+      setGlobalChatId((current) => current || ALL_GROUPS)
     }).catch((loadError: unknown) => {
       if (active) setError(errorMessage(loadError, '讀取群組清單失敗'))
     })
     return () => { active = false }
   }, [lineTodoApi])
+
+  useEffect(() => {
+    let active = true
+    if (!isOverview || !api || chats.length === 0) {
+      setOverviewGroups([])
+      setOverviewLoading(false)
+      setOverviewError('')
+      return () => { active = false }
+    }
+
+    setOverviewGroups([])
+    setOverviewError('')
+    setOverviewLoading(true)
+    void loadGroupTopicsOverview(chats, api.list).then((groups) => {
+      if (active) setOverviewGroups(groups)
+    }).catch((loadError: unknown) => {
+      if (active) setOverviewError(errorMessage(loadError, '群組議題總覽載入失敗'))
+    }).finally(() => {
+      if (active) setOverviewLoading(false)
+    })
+    return () => { active = false }
+  }, [api, chats, isOverview])
 
   useEffect(() => {
     const version = ++requestVersion.current
@@ -95,8 +130,8 @@ export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Pro
     setLoading(true)
     void Promise.all([
       api.list(chatId),
-      api.crossChatEnabled(chatId),
-      api.linkCandidates(chatId),
+      selectedChatIsGroup ? api.crossChatEnabled(chatId) : Promise.resolve(false),
+      selectedChatIsGroup ? api.linkCandidates(chatId) : Promise.resolve([]),
       api.pendingCount(chatId)
     ]).then(([result, cross, candidates, pendingCount]) => {
       if (requestVersion.current !== version) return
@@ -106,13 +141,13 @@ export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Pro
       setLinks(candidates)
       setPending(pendingCount)
     }).catch((loadError: unknown) => {
-      if (requestVersion.current === version) setError(errorMessage(loadError, '議題資料載入失敗；可重新選取群組後重試'))
+      if (requestVersion.current === version) setError(errorMessage(loadError, '議題資料載入失敗；可重新選取聊天室後重試'))
     }).finally(() => {
       if (requestVersion.current === version) setLoading(false)
     })
 
     return () => { if (requestVersion.current === version) requestVersion.current += 1 }
-  }, [api, chatId])
+  }, [api, chatId, selectedChatIsGroup])
 
   function stillShowing(chatIdAtStart: string, versionAtStart: number): boolean {
     return requestVersion.current === versionAtStart && currentChatId.current === chatIdAtStart
@@ -121,7 +156,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Pro
   async function refresh(chatIdAtStart: string, versionAtStart: number): Promise<void> {
     if (!api || !chatIdAtStart) return
     const [result, candidates, pendingCount] = await Promise.all([
-      api.list(chatIdAtStart), api.linkCandidates(chatIdAtStart), api.pendingCount(chatIdAtStart)
+      api.list(chatIdAtStart), selectedChatIsGroup ? api.linkCandidates(chatIdAtStart) : Promise.resolve([]), api.pendingCount(chatIdAtStart)
     ])
     if (!stillShowing(chatIdAtStart, versionAtStart)) return
     setEnabled(result.ok)
@@ -141,11 +176,11 @@ export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Pro
       const result = await api.setEnabled(target, value)
       if (!stillShowing(target, version)) return
       if (!result.ok) {
-        setError('僅可為未封鎖群組啟用議題分析。')
+        setError('僅可為未封鎖聊天室啟用議題分析。')
         return
       }
       setEnabled(value)
-      setNotice(value ? '已為此群組啟用議題分析' : '已停用；既有本機議題保留')
+      setNotice(value ? `已為此${chatLabel}啟用議題分析` : '已停用；既有本機議題保留')
       if (!value) {
         setTopics([])
         setLinks([])
@@ -166,7 +201,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Pro
     const version = requestVersion.current
     setBusy(true)
     setError('')
-    setNotice('正在分析此群最近訊息…')
+    setNotice(`正在分析此${chatLabel}最近訊息…`)
     try {
       const result = await api.analyze(target)
       if (!stillShowing(target, version)) return
@@ -177,7 +212,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Pro
       } else if (result.failure) {
         setError(safeFailureNotice(result.failure))
       } else if (result.reason?.startsWith('unsupported_in_plugin')) {
-        setError('群組議題的 AI 分析由 TeamUQ 的 ai:chat 提供，外掛尚未接上；既有議題與訊息不受影響')
+        setError('議題的 AI 分析由 TeamUQ 的 ai:chat 提供，外掛尚未接上；既有議題與訊息不受影響')
       } else if (result.reason === 'provider_unavailable') {
         setError('AI provider 不可用；訊息仍待處理，可稍後重試')
       } else {
@@ -192,7 +227,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Pro
   }
 
   async function toggleCrossChat(value: boolean): Promise<void> {
-    if (!api || !chatId || busy || !enabled) return
+    if (!api || !chatId || busy || !enabled || !selectedChatIsGroup) return
     const target = chatId
     const version = requestVersion.current
     setBusy(true)
@@ -218,17 +253,17 @@ export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Pro
     }
   }
 
-  async function openSourceGroup(): Promise<void> {
+  async function openSourceChat(): Promise<void> {
     if (!chatId) return
     const target = chatId
     const version = requestVersion.current
     try {
       const result = await lineTodoApi.db.chats.openOriginal(target)
       if (!stillShowing(target, version)) return
-      if (!result.ok) setError(result.error ? `無法開啟來源群組：${result.error}` : '無法開啟來源群組')
-      else setNotice('已開啟來源群組')
+      if (!result.ok) setError(result.error ? `無法開啟來源聊天室：${result.error}` : '無法開啟來源聊天室')
+      else setNotice('已開啟來源聊天室')
     } catch (actionError) {
-      if (stillShowing(target, version)) setError(errorMessage(actionError, '無法開啟來源群組'))
+      if (stillShowing(target, version)) setError(errorMessage(actionError, '無法開啟來源聊天室'))
     }
   }
 
@@ -245,51 +280,88 @@ export function GroupTopicsPanel({ chatId: scopedChatId, embedded = false }: Pro
     }
   }
 
-  const heading = embedded ? '此群組的議題' : '群組議題'
-  const currentGroupName = chats.find((chat) => chat.chatId === chatId)?.name ?? chatId
+  const heading = embedded ? `此${chatLabel}的議題` : '群組議題'
+  const currentChatName = chatName ?? chats.find((chat) => chat.chatId === chatId)?.name ?? chatId
 
   return (
     <section className={`settings-section group-topics-panel${embedded ? ' embedded' : ''}`} aria-label={heading}>
       {!embedded && <h2>{heading}</h2>}
-      {!embedded && <p>議題分析需逐群啟用並手動執行。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>}
-      {embedded && <div className="group-topics-head"><h3>{heading}</h3><span>{currentGroupName}</span></div>}
+      {!embedded && <details className="group-topics-help">
+        <summary>議題分析說明與群組設定</summary>
+        <p>議題分析需逐群啟用並手動執行。所有群組總覽只讀取各群既有結果，不會自動啟用或分析群組。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>
+      </details>}
+      {embedded && <div className="group-topics-head"><h3>{heading}</h3><span>{currentChatName}</span></div>}
       {!api && <p className="muted">此版本未提供議題分析功能。</p>}
       {!embedded && chats.length === 0 && <p className="muted">目前沒有可用群組。</p>}
-      {embedded && !chatId && <p className="muted">目前沒有選取中的群組。</p>}
+      {embedded && !chatId && <p className="muted">目前沒有選取中的聊天室。</p>}
       {!embedded && chats.length > 0 && (
         <label className="group-topics-group-select">群組
-          <select value={chatId} onChange={(event) => setGlobalChatId(event.target.value)}>
+          <select value={globalChatId} onChange={(event) => setGlobalChatId(event.target.value)}>
+            <option value={ALL_GROUPS}>所有群組</option>
             {chats.map((chat) => <option key={chat.chatId} value={chat.chatId}>{chat.name ?? '未命名群組'}</option>)}
           </select>
         </label>
       )}
+      {error && !chatId && <p className="group-topics-error" role="alert">{error}</p>}
+      {isOverview && chats.length > 0 && (
+        <section className="group-topics-overview" aria-label="所有群組議題總覽">
+          <h3>所有群組議題</h3>
+          {overviewLoading && <p className="muted" role="status">正在彙整 {chats.length} 個群組的既有議題…</p>}
+          {overviewError && <p className="group-topics-error" role="alert">{overviewError}</p>}
+          {!overviewLoading && !overviewError && overviewGroups.length > 0 && !overviewGroups.some((group) => group.status === 'failed' || group.topics.length > 0) && <p className="muted">目前沒有已啟用且已有議題結果的群組。</p>}
+          {!overviewLoading && overviewGroups.map((group) => (
+            <section className="group-topics-overview-group" key={group.chat.chatId} aria-label={group.chat.name ?? '未命名群組'}>
+              <header>
+                <h4>{group.chat.name ?? '未命名群組'}</h4>
+                <span>{group.status === 'enabled' ? `議題 ${group.topics.length} 項` : group.status === 'disabled' ? '未啟用' : '載入失敗'}</span>
+              </header>
+              {group.status === 'failed' && <p className="group-topics-error" role="alert">讀取「{group.chat.name ?? '未命名群組'}」議題失敗：{group.error ?? '未知錯誤'}</p>}
+              {group.status === 'disabled' && <p className="muted">此群尚未啟用議題分析，未加入議題總覽。</p>}
+              {group.status === 'enabled' && group.topics.length === 0 && <p className="muted">此群已啟用，但尚無分析結果。</p>}
+              {group.status === 'enabled' && group.topics.map((topic) => (
+                <article className="group-topic-card group-topic-card-overview" key={topic.topicId}>
+                  <span className="group-topic-group-label">{group.chat.name ?? '未命名群組'}</span>
+                  <strong>{topic.title}</strong>
+                  <p>{topic.summary}</p>
+                  <small>已連結訊息 {topic.evidenceCount} 則；已知參與者下界 {topic.participantLowerBound ?? '不明'}。熱度：未校準；趨勢：不確定。</small>
+                  <details>
+                    <summary>議題細節與來源（{topic.evidenceMsgIds.length}）</summary>
+                    <small>本人參與：{topic.userParticipation === 'i_participated' ? '來源含本人送出的訊息' : '不確定'}。模型相關性描述（未驗證）：{topic.relevanceEvidence.length ? topic.relevanceEvidence.map((item) => `${relevanceText[item.relevance]}（參照 ${item.evidenceMsgIds.length} 則）`).join('、') : relevanceText[topic.relevance]}。觀測完整性未校準。</small>
+                    {topic.evidenceMsgIds.length > 0 ? <ul>{topic.evidenceMsgIds.map((id) => <li key={id}><code>{id}</code></li>)}</ul> : <p className="muted">目前沒有可列出的來源訊息參照。</p>}
+                  </details>
+                </article>
+              ))}
+            </section>
+          ))}
+        </section>
+      )}
       {chatId && (
         <>
-          {loading && <p className="muted" role="status">正在載入「{currentGroupName}」的議題…</p>}
+          {loading && <p className="muted" role="status">正在載入「{currentChatName}」的議題…</p>}
           {error && <p className="group-topics-error" role="alert">{error}</p>}
           {notice && <p className="group-topics-notice" role="status">{notice}</p>}
           {!loading && api && (
             <>
               <div className="group-topics-controls">
-                <label><input type="checkbox" checked={enabled} disabled={!api || busy} onChange={(event) => void toggleEnabled(event.target.checked)} /> 啟用此群議題分析</label>
-                <label><input type="checkbox" checked={crossEnabled} disabled={!api || !enabled || busy} onChange={(event) => void toggleCrossChat(event.target.checked)} /> 顯示跨群語意候選（人物一致性不會由此確認）</label>
-                <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '分析中…' : '分析最近群組訊息'}</button>
+                <label><input type="checkbox" checked={enabled} disabled={!api || busy} onChange={(event) => void toggleEnabled(event.target.checked)} /> 啟用此{chatLabel}議題分析</label>
+                {selectedChatIsGroup && <label><input type="checkbox" checked={crossEnabled} disabled={!api || !enabled || busy} onChange={(event) => void toggleCrossChat(event.target.checked)} /> 顯示跨群語意候選（人物一致性不會由此確認）</label>}
+                <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '分析中…' : `分析最近${chatLabel}訊息`}</button>
               </div>
               {enabled && <p className="group-topics-pending">{busy ? '目前每批最多整理 20 則；若仍有待整理訊息，可再次執行。' : pending > 100 ? '有 100 則以上新訊息待整理；每批最多整理 20 則。' : pending > 0 ? `有 ${pending} 則新訊息待整理；每批最多整理 20 則。` : '沒有新增訊息待處理，既有議題結果已保留。'}</p>}
               {enabled && (
                 <div className="group-topics-results">
-                  <h3>此群近期議題</h3>
+                  <h3>此{chatLabel}近期議題</h3>
                   {topics.length === 0 ? <p className="muted">尚無分析結果。</p> : topics.map((topic) => (
                     <article key={topic.topicId} className="group-topic-card">
                       <strong>{topic.title}</strong>
                       <p>{topic.summary}</p>
                       <small>本人參與：{topic.userParticipation === 'i_participated' ? '來源含本人送出的訊息' : '不確定'}。模型相關性描述（未驗證）：{topic.relevanceEvidence.length ? topic.relevanceEvidence.map((item) => `${relevanceText[item.relevance]}（參照 ${item.evidenceMsgIds.length} 則）`).join('、') : relevanceText[topic.relevance]}。已連結訊息 {topic.evidenceCount} 則（可能含重貼）；已知參與者下界 {topic.participantLowerBound ?? '不明'}。熱度：未校準；趨勢：不確定。</small>
                       {topic.evidenceMsgIds.length > 0 && <details><summary>來源訊息參照（{topic.evidenceMsgIds.length}）</summary><ul>{topic.evidenceMsgIds.map((id) => <li key={id}><code>{id}</code></li>)}</ul></details>}
-                      {caps.openOriginalChat && <button type="button" className="ghost" onClick={() => void openSourceGroup()}>開啟來源群組</button>}
+                      {caps.openOriginalChat && <button type="button" className="ghost" onClick={() => void openSourceChat()}>開啟來源聊天室</button>}
                       <button type="button" className="ghost" onClick={() => void showTodoRefs(topic)}>檢查既有待辦關聯</button>
                     </article>
                   ))}
-                  {crossEnabled && <section className="group-topic-cross-chat" aria-label="跨群候選">
+                  {selectedChatIsGroup && crossEnabled && <section className="group-topic-cross-chat" aria-label="跨群候選">
                     <h3>跨群候選</h3>
                     {links.length === 0 ? <p className="muted">目前沒有足夠語意候選。</p> : links.map((link) => <p key={link.linkId}>{link.otherChatName ?? '其他群組'}：{link.topicTitle} — 關係不確定、人物一致性不確定（候選證據 {link.eventEvidenceCount} 則：{link.eventEvidenceMsgIds.join('、')}）</p>)}
                   </section>}

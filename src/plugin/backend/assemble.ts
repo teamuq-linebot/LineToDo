@@ -37,7 +37,7 @@ import { configureLineEnginePorts } from '../../main/line/engine/enginePorts'
 import type { LineEnginePorts } from '../../main/line/engine/enginePorts'
 import { RecoverGuard } from '../../main/line/engine/linekey'
 import type { GetKeyOptions, RecoverGuardOptions } from '../../main/line/engine/linekey'
-import { getLineImportBatch, getMessagesSince } from '../../main/line/engine/watchEngine'
+import { getAvatarMetadata, getLineImportBatch, getMessagesSince } from '../../main/line/engine/watchEngine'
 import type { LineImportBatch } from '../../main/line/importTypes'
 import type { ParticipantIdentityProvider } from '../../main/line/identity'
 import type { LineFsPort } from '../../main/line/engine/fsPort'
@@ -68,6 +68,9 @@ import { createResidencyTracker } from './residency'
 import { createTeamuqTaskBinding } from './teamuqTask'
 import { createPluginMedia } from './media'
 import type { MediaDb } from './media'
+import { createAvatarCache } from './avatarCache'
+import { createPluginAvatars } from './avatar'
+import type { AvatarDb } from './avatar'
 import { ReviewCoordinator, ReviewLedger } from './reviewRun'
 import { LongTaskTracker } from './taskStatus'
 import type { BackendDiagnostics, JsonValue, PluginBackendHandler, SessionChannel, SessionInfo } from './types'
@@ -191,13 +194,18 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   const getQwenConfig = createQwenConfig({ readApiKey: () => null, readBaseUrl: () => null }, {})
   if (options.linePorts) configureLineEnginePorts(options.linePorts)
 
+  // Avatar source reads use the same async key recovery and Win32/WASM ports as LINE imports.
+  const keyGuard = new RecoverGuard(options.keyRecovery?.guard)
+  const keyOpts: GetKeyOptions = { cacheFile: join(dataDir, '.linekey'), recoverGuard: keyGuard, ...(options.keyRecovery?.scanner ? { scanner: options.keyRecovery.scanner } : {}) }
+  const engineOptions = { stateFile: join(dataDir, '.watch_json_state'), keyOpts }
+
   const hub = new EventHub(options.hub)
   const mediaFs = options.media?.fs ?? options.linePorts?.fs
   const dbDir = options.linePorts?.dbDir
   const cacheDir = options.media?.cacheDir
     ?? (dbDir && basename(dirname(dbDir)).toLowerCase() === 'data' ? join(dirname(dirname(dbDir)), 'Cache') : undefined)
   const decryptor = cacheDir ? createMediaDecryptor({ ...(mediaFs ? { fs: mediaFs } : {}), cacheDir }) : null
-  let appDbForMedia: MediaDb | null = null
+  let appDbForMedia: (MediaDb & AvatarDb) | null = null
   const media = createPluginMedia({
     dataDir,
     getDb: () => appDbForMedia,
@@ -205,6 +213,12 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     maxCacheBytes: options.media?.maxCacheBytes,
     reindexMinIntervalMs: options.media?.reindexMinIntervalMs,
     now: options.media?.now
+  })
+  const avatarCache = createAvatarCache({ dataDir })
+  const avatars = createPluginAvatars({
+    cache: avatarCache,
+    reader: { read: (input) => getAvatarMetadata(input, engineOptions) },
+    getDb: () => appDbForMedia
   })
   const reconcileWired = options.reconcile !== false && (options.reconcile !== undefined || options.linePorts !== undefined)
   const reconcileOverrides: Partial<ReconcileDeps> = options.reconcile && typeof options.reconcile === 'object' ? options.reconcile : {}
@@ -220,9 +234,6 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   // ── LINE port ──
   // recoverGuard：金鑰擷取走協作式路徑（掃記憶體時讓出事件迴圈、single-flight、失敗退避、dispose 時取消）。cacheFile 一律明確指到 dataDir
   // （reconcile 的預設路徑也經由 keyOpts 帶進來，不再依賴 host 的 cwd 剛好是 dataDir；review F6）。
-  const keyGuard = new RecoverGuard(options.keyRecovery?.guard)
-  const keyOpts: GetKeyOptions = { cacheFile: join(dataDir, '.linekey'), recoverGuard: keyGuard, ...(options.keyRecovery?.scanner ? { scanner: options.keyRecovery.scanner } : {}) }
-  const engineOptions = { stateFile: join(dataDir, '.watch_json_state'), keyOpts }
   const startupDelayMs = options.watcher?.startupDelayMs ?? (options.linePorts ? DEFAULT_STARTUP_DELAY_MS : 0)
   let watcher: LineWatcher | null = null
   let line = options.line
@@ -465,6 +476,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     residency: () => residency.snapshot(),
     prompts,
     media,
+    avatars,
     review,
     mediaBackfill,
     info: (): Record<string, JsonValue> => ({

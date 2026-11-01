@@ -79,4 +79,7 @@ scripts/tester/bridge_out.ndjson
 /CLAUDE.md
 # TeamUQ runtime paste attachments
 .teamuq/pasted/
+# Preserved output from the cancelled LineTodo HMR task; local authoring artifacts only.
+/build/dev-plugin/
+/build/hmr-scratch/
 # TeamUQ shared scripts live in .teamuq/scripts/; legacy agent script folders migrate there.

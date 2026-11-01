@@ -41,6 +41,12 @@ export interface ChatDTO {
   lastSeenAt: string
 }
 
+/** Renderer-safe results from on-demand avatar lookups; values are host-owned asset URLs. */
+export interface AvatarUrlBatchDTO {
+  urls: Record<string, string>
+  names: Record<string, string>
+}
+
 export interface MessageDTO {
   msgId: string
   chatId: string
@@ -673,6 +679,10 @@ export interface LineTodoApi {
      * (its CSP has no `linemedia:`). Resolves null when the image is not available (not downloaded in LINE yet, key mismatch, ...).
      */
     assetUrl?(msgId: string): Promise<string | null>
+    /** Plugin-host-only, on-demand chat avatars. Source locators and LINE MIDs stay in the backend. */
+    avatarUrls?(chatIds: string[]): Promise<AvatarUrlBatchDTO>
+    /** Plugin-host-only, on-demand sender avatars for the given imported message ids. */
+    messageAvatarUrls?(chatId: string, msgIds: string[]): Promise<AvatarUrlBatchDTO>
   }
   /** Optional main-owned group discussion projection. Never carries LINE participant keys or raw source identities. */
   groupTopics?: {

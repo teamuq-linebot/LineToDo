@@ -12,6 +12,7 @@ import { completedInputExists, countPendingMessages, GROUP_TOPICS_VALIDATOR_VERS
 import { GROUP_TOPICS_JSON_SCHEMA, GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_SCHEMA_HASH } from '../src/main/features/groupTopics/prompts/bundle.ts'
 import { makeHttpProvider } from '../src/main/llm/provider/httpOpenAi.ts'
 import { LlmProviderError } from '../src/main/llm/provider/types.ts'
+import { loadGroupTopicsOverview } from '../src/renderer/features/groupTopics/groupTopicsOverview.ts'
 
 function dbFixture(filename = ':memory:') {
   const db = new NativeDatabase(filename)
@@ -72,7 +73,6 @@ test('group topic analysis is opt-in, chat-local, fail-closed, and never writes 
   const providerA = fakeProvider(analysisA, (req) => { calls++; assert.match(req.system,/ONE group chat/); assert.equal(JSON.parse(req.user).messages[0].msgId,'a1'); assert.equal(Object.hasOwn(JSON.parse(req.user).messages[0],'sender'),false); assert.equal(/participant_key|sender_mid|account_mid|_from/i.test(req.user),false) })
   assert.deepEqual(await service.analyze('group-a',()=>providerA),{ok:false,reason:'disabled'})
   assert.equal(calls,0)
-  assert.deepEqual(service.enable('dm',true),{ok:false})
   assert.deepEqual(service.enable('group-a',true),{ok:true})
   assert.deepEqual(await service.analyze('group-a',()=>providerA),{ok:true,count:2,analyzedCount:2})
   assert.equal(calls,1)
@@ -88,6 +88,68 @@ test('group topic analysis is opt-in, chat-local, fail-closed, and never writes 
   assert.equal(service.list('group-b').topics.length,0)
   assert.deepEqual(await service.analyze('group-a',()=>providerA),{ok:true,count:2,analyzedCount:0})
   assert.equal(calls,1)
+  db.close()
+})
+
+test('direct chat topics are opt-in, stay chat-local, retain todo references, and never enter group candidates', async () => {
+  const db=dbFixture(); const service=createGroupTopicsService(db)
+  const directResult={topics:[{ref:'direct-orion',title:'Project Orion in a private chat',summary:'A private discussion about the Orion launch.'}],assignments:[
+    {msgId:'d1',topicRef:'direct-orion',relation:'about',confidence:.8,relevance:'unknown',relevanceEvidenceMsgIds:[]}
+  ]}
+  let directCalls=0
+  const directProvider=fakeProvider(directResult,(req)=>{
+    directCalls++
+    const input=JSON.parse(req.user)
+    assert.deepEqual(input.messages.map((message)=>message.msgId),['d1'])
+    assert.equal(req.user.includes('a1'),false)
+    assert.equal(req.user.includes('b1'),false)
+  })
+  assert.deepEqual(service.list('dm'),{ok:false,topics:[]})
+  assert.equal(service.pendingCount('dm'),0)
+  assert.deepEqual(await service.analyze('dm',()=>directProvider),{ok:false,reason:'disabled'})
+  assert.equal(directCalls,0)
+  assert.deepEqual(service.enable('dm',true),{ok:true})
+  assert.equal(service.pendingCount('dm'),1)
+  const todo=db.prepare(`INSERT INTO todos(id,chat_id,bucket,title,source_msg_ids,created_at,updated_at)
+    VALUES('todo-dm','dm','todo','私人聊天室的既有待辦','["d1"]','now','now')`)
+  todo.run()
+  assert.deepEqual(await service.analyze('dm',()=>directProvider),{ok:true,count:1,analyzedCount:1})
+  assert.equal(directCalls,1)
+  const ownTopic=service.list('dm')
+  assert.equal(ownTopic.ok,true)
+  assert.equal(ownTopic.topics.length,1)
+  assert.equal(ownTopic.topics[0].chatId,'dm')
+  assert.deepEqual(service.todoRefs(ownTopic.topics[0].topicId),[{todoId:'todo-dm',status:'pending',bucket:'todo',matchedMsgIds:['d1']}])
+  assert.deepEqual(service.list('group-a'),{ok:false,topics:[]})
+  assert.deepEqual(service.enableCrossChat('dm',true),{ok:false})
+  assert.equal(service.crossChatEnabled('dm'),false)
+  assert.deepEqual(service.listLinkCandidates('dm'),[])
+
+  service.enable('group-a',true); service.enableCrossChat('group-a',true)
+  service.enable('group-b',true); service.enableCrossChat('group-b',true)
+  await service.analyze('group-a',()=>fakeProvider(analysisA))
+  await service.analyze('group-b',()=>fakeProvider({topics:[{ref:'budget',title:'Orion budget',summary:'Project Orion budget timeline.'}],assignments:[
+    {msgId:'b1',topicRef:'budget',relation:'about',confidence:.7,relevance:'unknown',relevanceEvidenceMsgIds:[]}
+  ]}))
+  const groupCandidates=service.listLinkCandidates('group-b')
+  assert.equal(groupCandidates.length,1)
+  assert.equal(groupCandidates[0].otherChatName,'群甲')
+  assert.deepEqual(groupCandidates[0].eventEvidenceMsgIds.sort(),['a1','b1'])
+  assert.equal(groupCandidates[0].eventEvidenceMsgIds.includes('d1'),false)
+
+  service.enable('dm',false)
+  assert.deepEqual(service.list('dm'),{ok:false,topics:[]})
+  assert.equal(service.pendingCount('dm'),0)
+  assert.deepEqual(service.enable('dm',true),{ok:true})
+  db.prepare("UPDATE chats SET blocked=1 WHERE chat_id='dm'").run()
+  assert.deepEqual(service.enable('dm',true),{ok:false})
+  assert.deepEqual(service.list('dm'),{ok:false,topics:[]})
+  assert.equal(service.pendingCount('dm'),0)
+  assert.deepEqual(await service.analyze('dm',()=>{throw new Error('blocked chat must not resolve a provider')}),{ok:false,reason:'unsupported_chat'})
+  assert.deepEqual(service.enable('missing-chat',true),{ok:false})
+  assert.deepEqual(service.list('missing-chat'),{ok:false,topics:[]})
+  assert.equal(service.pendingCount('missing-chat'),0)
+  assert.deepEqual(await service.analyze('missing-chat',()=>{throw new Error('missing chat must not resolve a provider')}),{ok:false,reason:'unsupported_chat'})
   db.close()
 })
 
@@ -530,4 +592,26 @@ test('file-backed SQLite close and reopen preserves topics, decisions, checkpoin
     if (db?.open) db.close()
     rmSync(dir,{recursive:true,force:true})
   }
+})
+
+test('renderer overview requests every group and keeps disabled and failed groups distinct', async () => {
+  const calls = []
+  const topic = { topicId: 'topic-a', chatId: 'group-a', title: '群甲議題', summary: '測試摘要。', evidenceCount: 1, evidenceMsgIds: [] }
+  const overview = await loadGroupTopicsOverview([
+    { chatId: 'group-a', name: '群甲' },
+    { chatId: 'group-b', name: '群乙' },
+    { chatId: 'group-c', name: '群丙' }
+  ], async (chatId) => {
+    calls.push(chatId)
+    if (chatId === 'group-a') return { ok: true, topics: [topic] }
+    if (chatId === 'group-b') return { ok: false, topics: [] }
+    throw new Error('synthetic query failure')
+  })
+
+  assert.deepEqual(calls, ['group-a', 'group-b', 'group-c'])
+  assert.deepEqual(overview.map(({ chat, status, topics, error }) => ({ chatId: chat.chatId, status, topics: topics.length, error })), [
+    { chatId: 'group-a', status: 'enabled', topics: 1, error: undefined },
+    { chatId: 'group-b', status: 'disabled', topics: 0, error: undefined },
+    { chatId: 'group-c', status: 'failed', topics: 0, error: 'synthetic query failure' }
+  ])
 })

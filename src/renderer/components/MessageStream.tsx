@@ -5,7 +5,9 @@ import { backendErrorText } from '../lib/backendError'
 import { formatCallRecord } from '../lib/callRecord'
 import { hasSavedMessageText, mergeMessageCopies, recalledMessageNotice, recalledMessageText } from '../lib/recalledMessage'
 import { useLineTodoApi } from '../platform/LineTodoApi'
+import { displayChatName } from '../lib/displayChatName'
 import { GroupTopicsPanel } from '../features/groupTopics/GroupTopicsPanel'
+import { ChatTodosPanel } from '../features/chatTodos/ChatTodosPanel'
 import { MediaFileActions, MediaImage } from './MediaView'
 
 interface ConversationEntry {
@@ -19,7 +21,7 @@ interface ConversationEntry {
 }
 
 type ListFilter = 'active' | 'ignored'
-type PaneView = 'messages' | 'topics'
+type PaneView = 'messages' | 'topics' | 'todos'
 
 const HISTORY_PAGE_SIZE = 100
 
@@ -71,6 +73,58 @@ function avatarMark(label: string, isGroup: boolean): string {
   return [...label.trim()][0] ?? '友'
 }
 
+// A failed host asset must remain a text avatar for this renderer session. Keeping
+// the failed source outside the component also prevents remounts (for example,
+// scrolling a row out and back in) from showing Chromium's broken-image glyph.
+const failedAvatarSources = new Set<string>()
+const MAX_FAILED_AVATAR_SOURCES = 256
+
+function sameIds(current: string[], next: string[]): boolean {
+  return current.length === next.length && current.every((id, index) => id === next[index])
+}
+
+function mergeRecord(current: Record<string, string>, incoming: Record<string, string>): Record<string, string> {
+  let changed = false
+  for (const [key, value] of Object.entries(incoming)) {
+    if (current[key] !== value) { changed = true; break }
+  }
+  return changed ? { ...current, ...incoming } : current
+}
+
+function rememberFailedAvatarSource(source: string): void {
+  failedAvatarSources.delete(source)
+  failedAvatarSources.add(source)
+  if (failedAvatarSources.size > MAX_FAILED_AVATAR_SOURCES) {
+    const oldest = failedAvatarSources.values().next().value
+    if (oldest) failedAvatarSources.delete(oldest)
+  }
+}
+
+function AvatarGlyph({ url, label, isGroup }: { url?: string; label: string; isGroup: boolean }): JSX.Element | string {
+  const [failedSource, setFailedSource] = useState<string | null>(() =>
+    url && failedAvatarSources.has(url) ? url : null
+  )
+
+  useEffect(() => {
+    setFailedSource(url && failedAvatarSources.has(url) ? url : null)
+  }, [url])
+
+  if (!url || failedSource === url || failedAvatarSources.has(url)) return avatarMark(label, isGroup)
+  return (
+    <img
+      src={url}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      draggable={false}
+      onError={() => {
+        rememberFailedAvatarSource(url)
+        setFailedSource(url)
+      }}
+    />
+  )
+}
+
 function previewText(message: RawLineMessage): string {
   if (message.unsent) return '已收回訊息'
   if (message.contentType === 1) return '圖片'
@@ -78,11 +132,11 @@ function previewText(message: RawLineMessage): string {
   return formatCallRecord(message.text)?.replace(/\s+/g, ' ').trim() || '訊息'
 }
 
-function fromMessageDTO(message: MessageDTO, chat: ChatDTO | undefined): RawLineMessage {
+function fromMessageDTO(message: MessageDTO, chat: ChatDTO | undefined, chatNameOverride?: string): RawLineMessage {
   return {
     msgId: message.msgId,
     chatId: message.chatId,
-    chat: chat?.name || message.chatId,
+    chat: displayChatName(chatNameOverride ?? chat?.name, message.chatId, chat?.isGroup ?? false),
     isGroup: chat?.isGroup ?? false,
     ts: message.ts,
     time: message.timeIso,
@@ -186,18 +240,26 @@ function MessageContent({
 
 function MessageRow({
   m,
-  onOpenLightbox
+  onOpenLightbox,
+  avatarUrl,
+  senderOverride
 }: {
   m: RawLineMessage
   onOpenLightbox: (url: string) => void
+  avatarUrl?: string
+  senderOverride?: string
 }): JSX.Element {
   const incoming = m.direction === 'in'
-  const sender = m.sender || (incoming ? '對方' : '我')
+  const sender = senderOverride || m.sender || (incoming ? '對方' : '我')
   return (
-    <li className={`chat-message ${incoming ? 'incoming' : 'outgoing'}`}>
+    <li
+      className={`chat-message ${incoming ? 'incoming' : 'outgoing'}`}
+      data-avatar-message-id={incoming && m.msgId?.startsWith('i:') ? m.msgId : undefined}
+      data-avatar-message-chat-id={incoming && m.msgId?.startsWith('i:') ? m.chatId : undefined}
+    >
       {incoming && (
         <span className="chat-message-avatar" aria-hidden="true" title={sender}>
-          {avatarMark(sender, false)}
+          <AvatarGlyph url={avatarUrl} label={sender} isGroup={false} />
         </span>
       )}
       <div className="chat-message-content">
@@ -220,6 +282,12 @@ export function MessageStream(): JSX.Element {
   const st = statusLabel(status)
   const [chats, setChats] = useState<ChatDTO[]>([])
   const [recentRows, setRecentRows] = useState<MessageDTO[]>([])
+  const [chatAvatarUrls, setChatAvatarUrls] = useState<Record<string, string>>({})
+  const [chatDisplayNames, setChatDisplayNames] = useState<Record<string, string>>({})
+  const [messageAvatarUrls, setMessageAvatarUrls] = useState<Record<string, string>>({})
+  const [messageDisplayNames, setMessageDisplayNames] = useState<Record<string, string>>({})
+  const [visibleChatAvatarIds, setVisibleChatAvatarIds] = useState<string[]>([])
+  const [visibleMessageAvatarIds, setVisibleMessageAvatarIds] = useState<string[]>([])
   const [chatLoadError, setChatLoadError] = useState('')
   const [historyLoadError, setHistoryLoadError] = useState('')
   const [loadingChats, setLoadingChats] = useState(true)
@@ -277,14 +345,14 @@ export function MessageStream(): JSX.Element {
   const loadedMessages = useMemo(() => {
     const byKey = new Map<string, RawLineMessage>()
     for (const message of recentRows) {
-      const raw = fromMessageDTO(message, chatById.get(message.chatId))
+      const raw = fromMessageDTO(message, chatById.get(message.chatId), chatDisplayNames[message.chatId])
       const key = messageKey(raw)
       const previous = byKey.get(key)
       byKey.set(key, previous ? mergeMessageCopies(previous, raw) : raw)
     }
     for (const rows of Object.values(historyByChat)) {
       for (const message of rows) {
-        const raw = fromMessageDTO(message, chatById.get(message.chatId))
+        const raw = fromMessageDTO(message, chatById.get(message.chatId), chatDisplayNames[message.chatId])
         const key = messageKey(raw)
         const previous = byKey.get(key)
         byKey.set(key, previous ? mergeMessageCopies(previous, raw) : raw)
@@ -297,7 +365,7 @@ export function MessageStream(): JSX.Element {
       byKey.set(key, previous ? mergeMessageCopies(previous, message) : message)
     }
     return [...byKey.values()].sort(compareMessages)
-  }, [chatById, historyByChat, messages, recentRows])
+  }, [chatById, chatDisplayNames, historyByChat, messages, recentRows])
 
   const loadedRowsByChat = useMemo(() => {
     const byChat = new Map<string, Map<string, MessageDTO>>()
@@ -322,7 +390,7 @@ export function MessageStream(): JSX.Element {
     for (const chat of chats) {
       byChat.set(chat.chatId, {
         chatId: chat.chatId,
-        name: chat.name || chat.chatId,
+        name: displayChatName(chatDisplayNames[chat.chatId] ?? chat.name, chat.chatId, chat.isGroup),
         isGroup: chat.isGroup,
         blocked: chat.blocked,
         lastSeenAt: chat.lastSeenAt,
@@ -335,7 +403,7 @@ export function MessageStream(): JSX.Element {
       if (!entry) {
         entry = {
           chatId: message.chatId,
-          name: message.chat || message.chatId,
+          name: displayChatName(message.chat, message.chatId, message.isGroup),
           isGroup: message.isGroup,
           blocked: false,
           lastSeenAt: message.time,
@@ -356,7 +424,7 @@ export function MessageStream(): JSX.Element {
       const bTs = b.latest?.ts ?? (Date.parse(b.lastSeenAt) || 0)
       return bTs - aTs || a.name.localeCompare(b.name)
     })
-  }, [chatById, chats, loadedMessages])
+  }, [chatById, chatDisplayNames, chats, loadedMessages])
 
   useEffect(() => {
     if (selectedChatId && conversations.some((chat) => chat.chatId === selectedChatId)) return
@@ -371,6 +439,79 @@ export function MessageStream(): JSX.Element {
     if (!activeChatId) return []
     return loadedMessages.filter((message) => message.chatId === activeChatId).sort(compareMessages)
   }, [activeChatId, loadedMessages])
+  const activeAvatarMessageIds = useMemo(
+    () => activeMessages.filter((message) => message.direction === 'in' && message.msgId?.startsWith('i:')).slice(-200).map((message) => message.msgId as string),
+    [activeMessages],
+  )
+
+  useEffect(() => {
+    const nodes = typeof document.querySelectorAll === 'function'
+      ? Array.from(document.querySelectorAll<HTMLElement>('[data-avatar-chat-id],[data-avatar-message-id]'))
+      : []
+    const visible = new Set<Element>()
+    const publish = (): void => {
+      const chatsVisible = new Set<string>(activeChatId ? [activeChatId] : [])
+      const messagesVisible = new Set<string>()
+      for (const node of visible) {
+        const chat = node.getAttribute('data-avatar-chat-id')
+        const msg = node.getAttribute('data-avatar-message-id')
+        if (chat) chatsVisible.add(chat)
+        if (msg) messagesVisible.add(msg)
+      }
+      const nextChats = [...chatsVisible]
+      const nextMessages = [...messagesVisible].slice(-200)
+      setVisibleChatAvatarIds((current) => sameIds(current, nextChats) ? current : nextChats)
+      setVisibleMessageAvatarIds((current) => sameIds(current, nextMessages) ? current : nextMessages)
+    }
+    if (typeof IntersectionObserver === 'undefined') {
+      // The native browser path observes viewport visibility; the renderer unit fixture has no observer.
+      setVisibleChatAvatarIds(activeChatId ? [activeChatId] : [])
+      setVisibleMessageAvatarIds(activeAvatarMessageIds)
+      return
+    }
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting && entry.intersectionRatio > 0) visible.add(entry.target)
+        else visible.delete(entry.target)
+      }
+      publish()
+    }, { rootMargin: '80px' })
+    for (const node of nodes) observer.observe(node)
+    publish()
+    return () => observer.disconnect()
+  }, [activeChatId, activeAvatarMessageIds, conversations])
+
+  useEffect(() => {
+    const prepare = api.media?.avatarUrls
+    if (!prepare || visibleChatAvatarIds.length === 0) {
+      setChatAvatarUrls({})
+      setChatDisplayNames({})
+      return
+    }
+    let active = true
+    void prepare(visibleChatAvatarIds).then((batch) => {
+      if (!active) return
+      setChatAvatarUrls((current) => mergeRecord(current, batch.urls))
+      setChatDisplayNames((current) => mergeRecord(current, batch.names))
+    })
+    return () => { active = false }
+  }, [api, visibleChatAvatarIds])
+
+  useEffect(() => {
+    const prepare = api.media?.messageAvatarUrls
+    if (!prepare || !activeChatId || visibleMessageAvatarIds.length === 0) {
+      setMessageAvatarUrls({})
+      setMessageDisplayNames({})
+      return
+    }
+    let active = true
+    void prepare(activeChatId, visibleMessageAvatarIds).then((batch) => {
+      if (!active) return
+      setMessageAvatarUrls((current) => mergeRecord(current, batch.urls))
+      setMessageDisplayNames((current) => mergeRecord(current, batch.names))
+    })
+    return () => { active = false }
+  }, [api, activeChatId, visibleMessageAvatarIds])
   const latestActiveMessage = activeMessages[activeMessages.length - 1] ?? null
 
   const searchableMessageTextByChat = useMemo(() => {
@@ -673,10 +814,11 @@ export function MessageStream(): JSX.Element {
             {shownConversations.map((chat) => {
               const active = chat.chatId === activeChatId
               const menuOpen = openMenuChatId === chat.chatId
-              const previewSender = chat.latest?.direction === 'out' ? '我' : chat.latest?.sender
+              const previewSender = chat.latest?.direction === 'out' ? '我' : chat.latest?.msgId ? (messageDisplayNames[chat.latest.msgId] ?? chat.latest.sender) : chat.latest?.sender
               return (
                 <li
                   key={chat.chatId}
+                  data-avatar-chat-id={chat.chatId}
                   ref={menuOpen ? menuRootRef : null}
                   className={`chat-list-row${active ? ' active' : ''}${menuOpen ? ' menu-open' : ''}`}
                   onContextMenu={(event) => {
@@ -690,7 +832,6 @@ export function MessageStream(): JSX.Element {
                     aria-pressed={active}
                     onClick={() => {
                       setSelectedChatId(chat.chatId)
-                      setPaneView('messages')
                       setMobileView('conversation')
                     }}
                     onKeyDown={(event) => {
@@ -701,7 +842,7 @@ export function MessageStream(): JSX.Element {
                     }}
                   >
                     <span className={`chat-avatar${chat.isGroup ? ' group' : ''}`} aria-hidden="true">
-                      {avatarMark(chat.name, chat.isGroup)}
+                      <AvatarGlyph url={chatAvatarUrls[chat.chatId]} label={chat.name} isGroup={chat.isGroup} />
                     </span>
                     <span className="chat-list-copy">
                       <span className="chat-list-line">
@@ -754,24 +895,29 @@ export function MessageStream(): JSX.Element {
             <>
               <header className="chat-pane-header">
                 <button type="button" className="chat-back-button" onClick={() => setMobileView('list')} aria-label="返回聊天室列表">‹ <span>聊天室</span></button>
-                <span className={`chat-avatar chat-pane-avatar${activeConversation.isGroup ? ' group' : ''}`} aria-hidden="true">
-                  {avatarMark(activeConversation.name, activeConversation.isGroup)}
+                <span className={`chat-avatar chat-pane-avatar${activeConversation.isGroup ? ' group' : ''}`} data-avatar-chat-id={activeConversation.chatId} aria-hidden="true">
+                  <AvatarGlyph url={chatAvatarUrls[activeConversation.chatId]} label={activeConversation.name} isGroup={activeConversation.isGroup} />
                 </span>
                 <div className="chat-pane-title">
                   <h2>{activeConversation.name}</h2>
-                  <span>{activeConversation.isGroup ? '群組' : '私人聊天'} · {activeConversation.loadedCount} 則已載入訊息</span>
+                  <span>{activeConversation.isGroup ? '群組' : '聊天室'} · {activeConversation.loadedCount} 則已載入訊息</span>
                 </div>
-                {activeConversation.isGroup && (
-                  <div className="chat-pane-view-toggle" role="group" aria-label="群組檢視">
-                    <button type="button" className={paneView === 'messages' ? 'selected' : ''} aria-pressed={paneView === 'messages'} onClick={() => setPaneView('messages')}>訊息</button>
-                    <button type="button" className={paneView === 'topics' ? 'selected' : ''} aria-pressed={paneView === 'topics'} onClick={() => setPaneView('topics')}>議題</button>
-                  </div>
-                )}
+                <div className="chat-pane-view-toggle" role="group" aria-label="聊天室檢視">
+                  <button type="button" className={paneView === 'messages' ? 'selected' : ''} aria-pressed={paneView === 'messages'} onClick={() => setPaneView('messages')}>訊息</button>
+                  <button type="button" className={paneView === 'topics' ? 'selected' : ''} aria-pressed={paneView === 'topics'} onClick={() => setPaneView('topics')}>議題</button>
+                  <button type="button" className={paneView === 'todos' ? 'selected' : ''} aria-pressed={paneView === 'todos'} onClick={() => setPaneView('todos')}>待辦</button>
+                </div>
               </header>
-              {paneView === 'topics' && activeConversation.isGroup ? (
+              {paneView === 'topics' ? (
                 <div className="chat-topics-content">
-                  <GroupTopicsPanel chatId={activeConversation.chatId} embedded />
+                  <GroupTopicsPanel key={activeConversation.chatId} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} embedded />
                 </div>
+              ) : paneView === 'todos' ? (
+                <ChatTodosPanel
+                  key={activeConversation.chatId}
+                  chatId={activeConversation.chatId}
+                  chatName={activeConversation.name}
+                />
               ) : (
                 <div
                   className="chat-message-log"
@@ -808,7 +954,7 @@ export function MessageStream(): JSX.Element {
                       return (
                         <Fragment key={messageKey(message)}>
                           {day && day !== previousDay && <li className="chat-date-divider"><span>{dayDividerLabel(day)}</span></li>}
-                          <MessageRow m={message} onOpenLightbox={setLightboxSrc} />
+                          <MessageRow m={message} onOpenLightbox={setLightboxSrc} avatarUrl={message.msgId ? messageAvatarUrls[message.msgId] : undefined} senderOverride={message.msgId ? messageDisplayNames[message.msgId] : undefined} />
                         </Fragment>
                       )
                     })}

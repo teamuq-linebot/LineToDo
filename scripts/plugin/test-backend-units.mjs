@@ -668,6 +668,22 @@ test('dispatcher: routes allow-listed paths, passes args, and returns in-band en
   dispose()
 })
 
+test('dispatcher: avatar batches stay in the media group and return only data-scope asset paths/names', async () => {
+  const calls = []
+  const avatars = {
+    prepareChats: async (ids) => { calls.push(['chats', ids]); return { paths: { c1: 'avatar-cache/a.jpg' }, names: { c1: 'Chat name' } } },
+    prepareMessages: async (chatId, ids) => { calls.push(['messages', chatId, ids]); return { paths: { 'i:1': 'avatar-cache/b.jpg' }, names: { 'i:1': 'Sender name' } } }
+  }
+  const { d, dispose } = makeDispatcher(fakeApi(), { avatars })
+  assert.deepEqual(await inv(d, 'media.avatar.prepareChats', ['c1']), { ok: true, value: { paths: { c1: 'avatar-cache/a.jpg' }, names: { c1: 'Chat name' } } })
+  assert.deepEqual(await inv(d, 'media.avatar.prepareMessages', 'c1', ['i:1']), { ok: true, value: { paths: { 'i:1': 'avatar-cache/b.jpg' }, names: { 'i:1': 'Sender name' } } })
+  assert.deepEqual(calls, [['chats', ['c1']], ['messages', 'c1', ['i:1']]])
+  dispose()
+  const withoutAvatars = makeDispatcher(fakeApi())
+  assert.equal((await inv(withoutAvatars.d, 'media.avatar.prepareChats', ['c1'])).code, 'avatar_unavailable')
+  withoutAvatars.dispose()
+})
+
 test('dispatcher: only allow-listed paths run; prototype tricks, malformed paths, subscriptions and unavailable features are refused', async () => {
   const { d, dispose } = makeDispatcher(fakeApi())
   for (const path of ['__proto__', 'constructor', 'db.todos.constructor', 'db.__proto__.x', 'toString', 'line.onMessage', 'db.todos', 'a..b', '', 'db/todos/list', 'x'.repeat(200)]) {
@@ -691,7 +707,7 @@ test('dispatcher (G-07): the method must be the method group of the path; driver
   assert.equal(new Set(BACKEND_METHOD_GROUPS).size, BACKEND_METHOD_GROUPS.length)
   for (const group of BACKEND_METHOD_GROUPS) assert.match(group, /^[A-Za-z0-9._@-]{1,64}$/)
   // every path the backend serves (and every path it refuses in-band) belongs to exactly one declared group
-  for (const path of [...SUPPORTED_API_PATHS, ...Object.keys(UNSUPPORTED_API_PATHS), 'backend.info', 'review.status', 'tasks.status', 'events.open', 'events.pull', 'events.close', 'extract.stats', 'ai.status', 'ai.options', 'media.prepare', 'result.chunk', 'job.poll']) {
+  for (const path of [...SUPPORTED_API_PATHS, ...Object.keys(UNSUPPORTED_API_PATHS), 'backend.info', 'review.status', 'tasks.status', 'events.open', 'events.pull', 'events.close', 'extract.stats', 'ai.status', 'ai.options', 'media.prepare', 'media.avatar.prepareChats', 'media.avatar.prepareMessages', 'result.chunk', 'job.poll']) {
     assert.ok(BACKEND_METHOD_GROUPS.includes(backendMethodFor(path)), `${path} has a declared method group`)
   }
   assert.equal(backendMethodFor('db.todos.list'), 'db.todos')

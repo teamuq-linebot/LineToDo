@@ -87,7 +87,13 @@ export async function collectPackageFiles({ workDir }) {
   add('LICENSES/zod-LICENSE.txt', fs.readFileSync(nodeModule('zod', 'LICENSE')), 'asset')
   add('LICENSES/react-LICENSE.txt', fs.readFileSync(nodeModule('react', 'LICENSE')), 'asset')
 
-  return { files, backendAnalysis: backend.analysis, uiAnalysis: ui.analysis }
+  return {
+    files,
+    backendAnalysis: backend.analysis,
+    uiAnalysis: ui.analysis,
+    backendMetafile: backend.metafile,
+    uiMetafiles: ui.metafiles,
+  }
 }
 
 /** The tool's default integrity kind for a staged file (packages/platform/plugin-artifact/src/authoring/stageFiles.ts): .mjs/.js/.cjs = code, else asset. */

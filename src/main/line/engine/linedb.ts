@@ -178,6 +178,18 @@ export function chatName(con: Db, chatId: string): string | null {
     .get(chatId) as { _chatName: string | null } | undefined
   if (g && g._chatName) return g._chatName
 
+  // LINE Square chats are represented by _squareChat, not _square. Their chat
+  // MID is still the canonical _chat._id, so keep the same key and resolve the
+  // actual display name from the source row.
+  try {
+    const squareChat = con
+      .prepare('SELECT _name FROM _squareChat WHERE _squareChatMid=?')
+      .get(chatId) as { _name: string | null } | undefined
+    if (squareChat?._name?.trim()) return squareChat._name
+  } catch {
+    // Older LINE schemas may not include Square tables.
+  }
+
   try {
     const sq = con.prepare('SELECT _name FROM _square WHERE _mid=?').get(chatId) as
       | { _name: string | null }
@@ -212,6 +224,91 @@ export function chatName(con: Db, chatId: string): string | null {
     }
   }
   return null
+}
+
+/** Resolve a sender's Square display name in the context of the active Square chat. */
+export function squareMemberName(con: Db, chatId: string, senderMid: string): string | null {
+  try {
+    const row = con
+      .prepare(
+        'SELECT sm._displayName FROM _squareChat sc JOIN _squareMember sm ' +
+          'ON sm._squareMid=sc._squareMid WHERE sc._squareChatMid=? AND sm._squareMemberMid=? LIMIT 1',
+      )
+      .get(chatId, senderMid) as { _displayName: string | null } | undefined
+    return row?._displayName?.trim() ? row._displayName : null
+  } catch {
+    // Square tables are optional across LINE client versions.
+    return null
+  }
+}
+
+/** Resolve a sender using chat-scoped Square metadata before global contact names. */
+export function senderName(con: Db, chatId: string, senderMid: string): string | null {
+  return squareMemberName(con, chatId, senderMid) ?? chatName(con, senderMid)
+}
+
+export interface LineAvatarSource {
+  /** Canonical LINE entity id; retained only in the main-process call path. */
+  identity: string
+  /** Profile path or the Square OBS hash. The caller validates/builds the final URL. */
+  locator: string | null
+  displayName: string | null
+  source: 'profile' | 'square' | null
+}
+
+const SQUARE_OBS_HASH = /^0h[A-Za-z0-9_-]+$/u
+
+function profileSource(con: Db, identity: string): LineAvatarSource {
+  for (const table of ['_contact', '_profile'] as const) {
+    try {
+      const row = table === '_contact'
+        ? con.prepare('SELECT _picturePath FROM _contact WHERE _mid=?').get(identity) as { _picturePath?: string | null } | undefined
+        : con.prepare('SELECT _picturePath FROM _profile WHERE _mid=?').get(identity) as { _picturePath?: string | null } | undefined
+      if (typeof row?._picturePath === 'string' && row._picturePath.trim()) {
+        return { identity, locator: row._picturePath, displayName: chatName(con, identity), source: 'profile' }
+      }
+    } catch {
+      // Older schemas can omit one of these optional tables/columns.
+    }
+  }
+  return { identity, locator: null, displayName: chatName(con, identity), source: null }
+}
+
+/** Read chat image metadata without changing or deriving the canonical chat id. */
+export function chatAvatarSource(con: Db, chatId: string): LineAvatarSource {
+  try {
+    const group = con.prepare('SELECT _picturePath FROM _groupChat WHERE _chatMid=?').get(chatId) as { _picturePath?: string | null } | undefined
+    if (typeof group?._picturePath === 'string' && group._picturePath.trim()) {
+      return { identity: chatId, locator: group._picturePath, displayName: chatName(con, chatId), source: 'profile' }
+    }
+  } catch { /* optional LINE group schema */ }
+  try {
+    const square = con.prepare('SELECT _chatImageObsHash FROM _squareChat WHERE _squareChatMid=?').get(chatId) as { _chatImageObsHash?: string | null } | undefined
+    if (typeof square?._chatImageObsHash === 'string' && SQUARE_OBS_HASH.test(square._chatImageObsHash)) {
+      return { identity: chatId, locator: square._chatImageObsHash, displayName: chatName(con, chatId), source: 'square' }
+    }
+  } catch { /* optional LINE Square schema */ }
+  return profileSource(con, chatId)
+}
+
+/** Read a sender image in the active chat's membership scope before general profile metadata. */
+export function senderAvatarSource(con: Db, chatId: string, senderMid: string): LineAvatarSource {
+  try {
+    const member = con.prepare(
+      'SELECT sm._displayName,sm._profileImageObsHash FROM _squareChat sc JOIN _squareMember sm ' +
+        'ON sm._squareMid=sc._squareMid WHERE sc._squareChatMid=? AND sm._squareMemberMid=? LIMIT 1',
+    ).get(chatId, senderMid) as { _displayName?: string | null; _profileImageObsHash?: string | null } | undefined
+    if (member) {
+      const hash = member._profileImageObsHash
+      return {
+        identity: senderMid,
+        locator: typeof hash === 'string' && SQUARE_OBS_HASH.test(hash) ? hash : null,
+        displayName: typeof member._displayName === 'string' && member._displayName.trim() ? member._displayName : null,
+        source: typeof hash === 'string' && SQUARE_OBS_HASH.test(hash) ? 'square' : null,
+      }
+    }
+  } catch { /* optional LINE Square schema */ }
+  return profileSource(con, senderMid)
 }
 
 /**

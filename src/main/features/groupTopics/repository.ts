@@ -204,8 +204,8 @@ export function ensureGroupTopicsSchema(db: Database): void {
 }
 
 export function setEnabled(db: Database, chatId: string, enabled: boolean): boolean {
-  const chat = db.prepare('SELECT is_group,blocked FROM chats WHERE chat_id=?').get(chatId) as { is_group: number; blocked: number } | undefined
-  if (!chat || chat.is_group !== 1 || chat.blocked === 1) return false
+  const chat = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as { blocked: number } | undefined
+  if (!chat || chat.blocked === 1) return false
   db.prepare(`INSERT INTO group_topic_preferences(chat_id,enabled,updated_at) VALUES(?,?,?)
     ON CONFLICT(chat_id) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at`).run(chatId, Number(enabled), new Date().toISOString())
   return true
@@ -287,7 +287,7 @@ export function saveAnalysis(db: Database, chatId: string, input: TopicMessageIn
     if(identity) assertIdentitySnapshotCurrent(db,chatId,identity.snapshot,'topic')
     const active = db.prepare(`SELECT c.is_group,c.blocked,p.enabled FROM chats c
       LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {is_group:number;blocked:number;enabled:number|null}|undefined
-    if (!active || active.is_group !== 1 || active.blocked === 1 || active.enabled !== 1) return 'inactive' as const
+    if (!active || active.blocked === 1 || active.enabled !== 1) return 'inactive' as const
     const existing = db.prepare('SELECT state FROM topic_analysis_runs WHERE chat_id=? AND input_digest=?').get(chatId,digest) as { state: string } | undefined
     if (existing?.state === 'complete') return false
     db.prepare(`INSERT INTO topic_analysis_runs(run_id,chat_id,input_digest,prompt_version,prompt_hash,schema_version,schema_hash,state,error_code,created_at)
@@ -399,7 +399,7 @@ export function saveAnalysis(db: Database, chatId: string, input: TopicMessageIn
       .run(chatId,firstInput.ts,firstInput.msgId)
     // Candidate recall only: this lexical overlap cannot verify either participant identity
     // or that two groups mean the same occurrence. Persist as unknown/proposed with local evidence refs.
-    if (crossChatIsEnabled(db, chatId)) {
+    if (active.is_group === 1 && crossChatIsEnabled(db, chatId)) {
       const tokenize = (text: string): Set<string> => new Set((text.toLocaleLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? []).filter((w) => !['這個','那個','我們','可以','今天','明天','目前','問題','群組','有人','about','from','with'].includes(w)))
       const current = result.topics.map((t) => ({ id: refs.get(t.ref)!, words: tokenize(`${t.title} ${t.summary}`) })).filter((x) => x.words.size >= 2)
       const enabledRows = db.prepare(`SELECT t.topic_id,t.chat_id,t.title,t.summary FROM discussion_topics t
@@ -506,9 +506,9 @@ export function listLinkCandidates(db: Database, chatId: string): Array<{linkId:
 }
 
 export function todoRefs(db: Database, topicId: string): Array<{todoId:string;status:string;bucket:string;matchedMsgIds:string[]}> {
-  const topic = db.prepare(`SELECT t.chat_id,c.is_group,c.blocked,p.enabled FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
-    JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.topic_id=?`).get(topicId) as {chat_id:string;is_group:number;blocked:number;enabled:number}|undefined
-  if(!topic || topic.is_group!==1 || topic.blocked===1 || topic.enabled!==1) return []
+  const topic = db.prepare(`SELECT t.chat_id,c.blocked,p.enabled FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
+    JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.topic_id=?`).get(topicId) as {chat_id:string;blocked:number;enabled:number}|undefined
+  if(!topic || topic.blocked===1 || topic.enabled!==1) return []
   const rows = db.prepare('SELECT id,status,bucket,source_msg_ids FROM todos WHERE chat_id=?').all(topic.chat_id) as Array<{id:string;status:string;bucket:string;source_msg_ids:string}>
   const sourceIds = new Set((db.prepare('SELECT msg_id FROM topic_evidence WHERE topic_id=?').all(topicId) as Array<{msg_id:string}>).map((r)=>r.msg_id))
   return rows.map((todo)=>({todo,matched: (JSON.parse(todo.source_msg_ids) as string[]).filter((id)=>sourceIds.has(id))})).filter(({matched})=>matched.length>0)

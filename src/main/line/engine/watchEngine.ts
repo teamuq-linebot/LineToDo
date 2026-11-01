@@ -43,7 +43,7 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 import { getLineEnginePorts } from './enginePorts'
-import { chatName, findDb, iso, myMid, newMessagesAfter, openDb } from './linedb'
+import { chatAvatarSource, chatName, findDb, iso, myMid, newMessagesAfter, openDb, senderAvatarSource, senderName, type LineAvatarSource } from './linedb'
 import { getKey, getKeyAsync, type GetKeyOptions } from './linekey'
 import { rowToObj } from './rowToObj'
 import type { RawLineMessage } from '../types'
@@ -266,7 +266,7 @@ export async function getLineImportBatch(
       const message = rowToObj({ chatId: r.chatId, createdTime: r.createdTime, from: r.from ?? '', text: r.text,
         contentType: r.contentType, id: r.msgId, contentMetadata: r.contentMetadata, contentInfo: r.contentInfo,
         attribute: r.attribute }, {
-        myMid: accountMid, iso: (ts) => iso(ts), chatName: chatName(con, r.chatId), senderName: r.from ? chatName(con, r.from) : null
+        myMid: accountMid, iso: (ts) => iso(ts), chatName: chatName(con, r.chatId), senderName: r.from ? senderName(con, r.chatId, r.from) : null
       })
       return { message, sourceRowId: r.rowId, senderMid: r.from, accountMid }
     })
@@ -276,6 +276,52 @@ export async function getLineImportBatch(
   } finally {
     cleanup()
   }
+}
+
+export interface LineAvatarMetadataBatch {
+  chats: Record<string, LineAvatarSource>
+  messages: Record<string, LineAvatarSource>
+}
+
+/**
+ * Read only the requested visible chat identities and source message ids for avatar/name enrichment.
+ * The caller keeps source ids/locators in the main process and sends only generated asset paths to UI.
+ */
+export async function getAvatarMetadata(
+  input: { chatIds?: readonly string[]; chatId?: string; msgIds?: readonly string[] },
+  opts: Pick<WatchEngineOptions, 'dbPath' | 'keyOpts'> = {},
+): Promise<LineAvatarMetadataBatch> {
+  const chatIds = [...new Set((input.chatIds ?? []).filter((id) => typeof id === 'string' && id.length > 0 && id.length <= 128))].slice(0, 100)
+  const chatId = typeof input.chatId === 'string' && input.chatId.length > 0 && input.chatId.length <= 128 ? input.chatId : null
+  const msgIds = [...new Set((input.msgIds ?? []).filter((id) => typeof id === 'string' && /^i:.{1,160}$/u.test(id)))].slice(0, 200)
+  const result: LineAvatarMetadataBatch = { chats: {}, messages: {} }
+  if (chatIds.length === 0 && (!chatId || msgIds.length === 0)) return result
+
+  const dbPath = opts.dbPath ?? findDb()
+  if (!dbPath) return result
+  // Avatar refreshes never persist/read env or .linekey secrets; keep the validated key in process memory only.
+  const avatarKeyOpts: GetKeyOptions = { ...opts.keyOpts, skipEnv: true, skipCache: true, cache: false }
+  const key = avatarKeyOpts.recoverGuard
+    ? await resolveKeyCooperative(dbPath, avatarKeyOpts)
+    : resolveKeyOrThrow(dbPath, avatarKeyOpts)
+  const { con, cleanup } = openDb(key, dbPath)
+  try {
+    for (const id of chatIds) result.chats[id] = chatAvatarSource(con, id)
+    if (chatId && msgIds.length > 0) {
+      const bySourceId = new Map<string, string>()
+      for (const localId of msgIds) bySourceId.set(localId.slice(2), localId)
+      for (const [sourceId, localId] of bySourceId) {
+        let row: { _from: string | null } | undefined
+        try {
+          row = con.prepare('SELECT _from FROM _message WHERE _chatId=? AND CAST(_id AS TEXT)=? LIMIT 1').get(chatId, sourceId) as { _from: string | null } | undefined
+        } catch { /* malformed or legacy source schema */ }
+        if (row?._from) result.messages[localId] = senderAvatarSource(con, chatId, row._from)
+      }
+    }
+  } finally {
+    cleanup()
+  }
+  return result
 }
 
 export type AcknowledgeOptions = Pick<WatchEngineOptions, 'stateFile' | 'dbPath'> & {
