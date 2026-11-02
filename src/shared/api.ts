@@ -307,6 +307,7 @@ export interface SettingsView {
   codexCli: CliProviderSettings
   pluginAi?: HostAiSelection
   pluginPrompt?: string | null
+  pluginMyName?: string | null
   /** 草稿填入 LINE 設定。 */
   driverPost: DriverPostSettings
   /** AI 引擎是否已就緒（http=有金鑰；CLI=設定無誤）。欄位名沿用歷史，語意見 main scheduler。 */
@@ -334,6 +335,7 @@ export type SettingsPatch = Partial<{
   codexCli: Partial<CliProviderSettings>
   pluginAi: HostAiSelection
   pluginPrompt: string | null
+  pluginMyName: string | null
   /** 部分更新草稿填入 LINE 設定（mode 一律正規化成 fillOnly）。 */
   driverPost: Partial<DriverPostSettings>
 }>

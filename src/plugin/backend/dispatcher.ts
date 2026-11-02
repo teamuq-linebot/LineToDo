@@ -79,7 +79,8 @@ export const UNSUPPORTED_API_PATHS: Readonly<Record<string, { route: 'none'; mes
 export const INTERNAL_API_PATHS: readonly string[] = Object.freeze([
   'backend.info', 'backend.residency',
   'events.open', 'events.pull', 'events.close',
-  'settings.prompt.get', 'settings.prompt.save', 'settings.prompt.reset', 'settings.prompt.refine',
+  'settings.prompt.get', 'settings.prompt.save', 'settings.prompt.reset', 'settings.prompt.refine', 'settings.prompt.saveName',
+  'settings.chatPrompt.get', 'settings.chatPrompt.save', 'settings.chatPrompt.reset', 'settings.chatPrompt.list',
   'ai.status', 'ai.options', 'extract.stats', 'review.status', 'tasks.status',
   'media.prepare', 'media.avatar.prepareChats', 'media.avatar.prepareMessages',
   'result.chunk', 'job.poll'
@@ -231,6 +232,25 @@ export class Dispatcher {
       case 'settings.prompt.refine':
         if (!this.opts.prompts || !plain(args[0])) return fail('invalid_args')
         return this.settle(this.opts.prompts.refine(args[0] as unknown as PromptRefinementRequest))
+      case 'settings.prompt.saveName':
+        if (!this.opts.prompts) return fail('prompt_unavailable')
+        if (!plain(args[0]) || !Object.hasOwn(args[0], 'myName')) return fail('invalid_args')
+        try { return this.finalize(this.opts.prompts.saveName(args[0].myName, args[0].expectedNameRevision)) } catch (error) { return mapError(error) }
+      case 'settings.chatPrompt.get':
+        if (!this.opts.prompts) return fail('prompt_unavailable')
+        if (!plain(args[0]) || typeof args[0].chatId !== 'string') return fail('invalid_args')
+        try { return this.finalize(this.opts.prompts.chatState(args[0].chatId)) } catch (error) { return mapError(error) }
+      case 'settings.chatPrompt.save':
+        if (!this.opts.prompts) return fail('prompt_unavailable')
+        if (!plain(args[0]) || typeof args[0].chatId !== 'string' || !Object.hasOwn(args[0], 'prompt') || !Object.hasOwn(args[0], 'myName')) return fail('invalid_args')
+        try { return this.finalize(this.opts.prompts.chatSave(args[0].chatId, { prompt: args[0].prompt, myName: args[0].myName }, args[0].expectedRevision)) } catch (error) { return mapError(error) }
+      case 'settings.chatPrompt.reset':
+        if (!this.opts.prompts) return fail('prompt_unavailable')
+        if (!plain(args[0]) || typeof args[0].chatId !== 'string') return fail('invalid_args')
+        try { return this.finalize(this.opts.prompts.chatReset(args[0].chatId, args[0].expectedRevision)) } catch (error) { return mapError(error) }
+      case 'settings.chatPrompt.list':
+        if (!this.opts.prompts) return fail('prompt_unavailable')
+        try { return this.finalize({ items: this.opts.prompts.chatList() }) } catch (error) { return mapError(error) }
       case 'ai.status': return this.aiStatus(args[0])
       case 'ai.options': return this.aiOptions()
       case 'extract.stats': return this.finalize(this.opts.queue.stats())

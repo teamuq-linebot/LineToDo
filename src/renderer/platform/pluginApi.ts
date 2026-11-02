@@ -25,7 +25,7 @@ import { normalizeHostAiSelection, type HostAiSelection } from '../../shared/hos
 import type { AiStatus } from '../../shared/aiStatus'
 import { parseResidencyView } from '../../shared/residency'
 import type { ResidencySnapshot } from '../../shared/residency'
-import type { PromptSuggestion } from '../../shared/promptSettings'
+import type { ChatPromptSummary, PromptSuggestion } from '../../shared/promptSettings'
 import { PluginEventPump, type PluginEventPumpOptions, type PluginEventType } from './pluginEvents'
 import { PluginApiError, PluginTransport, PluginUnsupportedError, type BackendLink, type BusyRetryOptions, type TuqPluginHost } from './pluginTransport'
 
@@ -260,6 +260,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
         get: () => call('settings.prompt.get'),
         save: (prompt, expectedRevision) => call('settings.prompt.save', { prompt, expectedRevision }),
         reset: (expectedRevision) => call('settings.prompt.reset', { expectedRevision }),
+        saveName: (myName, expectedNameRevision) => call('settings.prompt.saveName', { myName, expectedNameRevision }),
         refine: async (request) => {
           if (refiningPrompt) throw new Error('prompt_busy')
           refiningPrompt = true
@@ -267,6 +268,12 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
             return await call<PromptSuggestion>('settings.prompt.refine', request)
           } finally { refiningPrompt = false }
         }
+      },
+      chatPrompts: {
+        get: (chatId) => call('settings.chatPrompt.get', { chatId }),
+        save: (chatId, input, expectedRevision) => call('settings.chatPrompt.save', { chatId, prompt: input.prompt, myName: input.myName, expectedRevision }),
+        reset: (chatId, expectedRevision) => call('settings.chatPrompt.reset', { chatId, expectedRevision }),
+        list: async () => (await call<{ items: ChatPromptSummary[] }>('settings.chatPrompt.list')).items
       },
       getOptions: () => call('ai.options'),
       getSelection: async () => normalizeHostAiSelection((await call<{ pluginAi?: HostAiSelection }>('settings.get')).pluginAi),

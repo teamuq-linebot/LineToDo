@@ -25,7 +25,7 @@ export const PLUGIN_SETTINGS_TAB_LABEL = '設定'
 /** 看板 view 在 TeamUQ 側邊欄的標籤＝manifest `contributes.views[board].title`（scripts/plugin/lib/manifest.mjs；測試核對兩者相同）。 */
 export const BOARD_VIEW_TITLE = 'LINE 待辦'
 
-/** 本外掛的設定 view 在 TeamUQ 裡的位置（外掛版的看板沒有「設定」分頁）。 */
+/** 本外掛的設定 view 在 TeamUQ 裡的位置（只用在看板自己沒有「設定」分頁的宿主；外掛版 `capabilities.settingsTab` 是 true，看板有自己的「設定」分頁）。 */
 export const PLUGIN_SETTINGS_PLACE = `${PLUGIN_PAGE_PLACE}打開這個外掛後的「${PLUGIN_SETTINGS_TAB_LABEL}」分頁`
 
 /** 要使用者重新允許 `ai:chat` 時的做法（看板狀態列與 backend 的錯誤訊息共用）。 */
@@ -47,4 +47,9 @@ export const NOT_IN_HOST_TEXT = `這個頁面要在 TeamUQ 裡開啟：看板在
  */
 export function undoInSettingsHint(boardHasSettingsTab: boolean): string {
   return boardHasSettingsTab ? '（可到設定頁解除）' : `（可到 ${PLUGIN_SETTINGS_PLACE}解除）`
+}
+
+/** 「預設值在哪裡改」這句：看板有「設定」分頁（`settingsTab`，standalone 與外掛版都是）就指向它，否則指向 TeamUQ 裡本外掛的設定分頁。 */
+export function defaultsInSettingsHint(boardHasSettingsTab: boolean): string {
+  return boardHasSettingsTab ? '預設值可到看板的「設定」分頁修改。' : `預設值在${PLUGIN_SETTINGS_PLACE}修改。`
 }

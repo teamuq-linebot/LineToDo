@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, renameSync } from 'node:fs'
 import { DEFAULTS, type BlocklistRules } from './defaults'
 import { normalizeHostAiSelection, type HostAiSelection } from '../../shared/hostAi'
-import { PROMPT_MAX_CHARS } from '../../shared/promptSettings'
+import { PROMPT_MAX_CHARS, normalizeMyName } from '../../shared/promptSettings'
 
 /**
  * settings.ts — App 設定持久化（IMPLEMENTATION_PLAN.md §7）。
@@ -114,6 +114,8 @@ export interface AppSettings {
   codexCli: CliProviderSettings
   pluginAi?: HostAiSelection
   pluginPrompt?: string | null
+  /** 預設的「我的名字」（各對話可個別覆寫）；null／缺席＝未設定。 */
+  pluginMyName?: string | null
   /** 草稿填入 LINE（driver_post）設定。 */
   driverPost: DriverPostSettings
 }
@@ -147,6 +149,7 @@ export type SettingsPatch = Partial<{
   codexCli: Partial<CliProviderSettings>
   pluginAi: HostAiSelection
   pluginPrompt: string | null
+  pluginMyName: string | null
   /** 部分更新草稿填入 LINE 設定（mode 一律正規化成 fillOnly）。 */
   driverPost: Partial<DriverPostSettings>
 }>
@@ -377,6 +380,7 @@ function normalize(input: Partial<AppSettings>): AppSettings {
     codexCli: normalizeCli(input.codexCli, d.codexCli),
     pluginAi: normalizeHostAiSelection(input.pluginAi),
     pluginPrompt: typeof input.pluginPrompt === 'string' && input.pluginPrompt.trim() && input.pluginPrompt.length <= PROMPT_MAX_CHARS ? input.pluginPrompt.replace(/\r\n?/g, '\n').trim() : null,
+    pluginMyName: normalizeMyName(input.pluginMyName),
     // 缺席（舊 settings.json）→ 預設；已存的 fillAndSend 一律改成 fillOnly。
     driverPost: normalizeDriverPost(input.driverPost, d.driverPost)
   }

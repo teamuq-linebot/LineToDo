@@ -565,13 +565,13 @@ function makeQueue(clock, { items = 1 } = {}) {
   return { store, queue, add, states: () => store.items.map((i) => i.state) }
 }
 
-function workerSetup({ items = 1, reply = () => goodText, config = {}, workerConfig = {} } = {}) {
+function workerSetup({ items = 1, reply = () => goodText, config = {}, workerConfig = {}, system = () => 'SYSTEM+FORMAT' } = {}) {
   const clock = new FakeClock()
   const mock = createMockTuqAi({ now: clock.now, reply })
   const port = createHostAiPort({ ai: mock.ai, clock, config })
   const q = makeQueue(clock, { items })
   const logs = []
-  const worker = createExtractWorker({ queue: q.queue, port, system: () => 'SYSTEM+FORMAT', clock, config: { pollIntervalMs: 15_000, ...workerConfig }, log: (event, detail) => logs.push([event, detail]) })
+  const worker = createExtractWorker({ queue: q.queue, port, system, clock, config: { pollIntervalMs: 15_000, ...workerConfig }, log: (event, detail) => logs.push([event, detail]) })
   return { clock, mock, port, q, worker, logs, settle: () => flush() }
 }
 
@@ -588,6 +588,26 @@ test('(a) worker: pending items are drained in the backend through host.ai.compl
   assert.deepEqual(ctx.worker.counters(), { extracted: 3, rejected: 0, failed: 0, released: 0 })
   assert.ok(ctx.q.store.touches >= 3, 'the queue is told its consumer is alive')
   assert.equal(ctx.mock.control.liveSessions(), 0)
+  ctx.worker.stop()
+})
+
+test('(a) A11 worker: every item is sent with the system of its own chat (system(chatId)); a resolver that cannot answer fails that chat and never falls back to another chat prompt', async () => {
+  const asked = []
+  const ctx = workerSetup({
+    items: 3,
+    system: (chatId) => {
+      asked.push(chatId)
+      if (chatId === 'c2') throw Object.assign(new Error('chat_prompt_unavailable'), { code: 'chat_prompt_unavailable' })
+      return `SYSTEM FOR ${chatId}`
+    }
+  })
+  ctx.worker.start()
+  await ctx.settle()
+  assert.deepEqual(asked, ['c1', 'c2', 'c3'], 'resolved once per item, in lease order, with the chat of that item')
+  assert.deepEqual(ctx.mock.stats.turns.map((turn) => turn.system), ['SYSTEM FOR c1', 'SYSTEM FOR c3'], 'c2 was never sent to the host')
+  assert.deepEqual(ctx.q.store.commits.filter((commit) => !commit.ok).map((commit) => commit.failCode), ['chat_prompt_unavailable'])
+  assert.deepEqual(ctx.q.states(), ['done', 'pending', 'done'])
+  assert.deepEqual(ctx.worker.counters(), { extracted: 2, rejected: 0, failed: 1, released: 0 })
   ctx.worker.stop()
 })
 

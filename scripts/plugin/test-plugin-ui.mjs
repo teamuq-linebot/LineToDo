@@ -235,6 +235,14 @@ test('bundle: only renderer / shared / plugin-ui / react code is inside (no main
   assert.equal(analysis.ok, true)
 })
 
+test('A18 bundle: the production board bundle mounts the per-chat AI settings (ChatPromptPanel, the "AI 設定" tab, the chatPrompt paths) and the settings bundle has the name field and the per-chat list', async () => {
+  const { files, metafiles } = await getBuilt()
+  const inputs = [...new Set(metafiles.flatMap((m) => Object.keys(m.inputs).map((i) => i.replaceAll(String.fromCharCode(92), '/'))))]
+  assert.ok(inputs.includes('src/renderer/features/chatPrompt/ChatPromptPanel.tsx'), 'ChatPromptPanel is part of the production bundle')
+  assert.ok(files['main.js'].includes('AI 設定') && files['main.js'].includes('chat-prompt-panel') && files['main.js'].includes('settings.chatPrompt.save'), 'board bundle: tab, panel and paths')
+  assert.ok(files['settings.js'].includes('default-my-name') && files['settings.js'].includes('chat-overrides') && files['settings.js'].includes('settings.prompt.saveName'), 'settings bundle: name field, per-chat list, saveName path')
+})
+
 test('the bundle guard really flags forbidden content (it is not vacuous)', () => {
   const bad = analyzeUiBundle({
     files: {

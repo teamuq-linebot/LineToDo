@@ -226,6 +226,41 @@ test('adapter: identity list/inspect/retry/resolve and both relation decisions u
   }finally{api.dispose()}
 })
 
+test('A15 adapter: hostAi.chatPrompts and prompts.saveName map to the settings method group with the exact paths and args; the read paths are replay-safe, the write paths are not',async()=>{
+  const calls=[]
+  const summary={chatId:'u-alice',hasPrompt:true,myName:'阿華',revision:'r1'}
+  const target={async call(method,request){
+    calls.push({method,path:request.path,args:request.args})
+    const values={
+      'settings.prompt.saveName':{myName:'王小明',nameRevision:'n2'},
+      'settings.chatPrompt.get':{chatId:'u-alice',revision:'r0'},
+      'settings.chatPrompt.save':{chatId:'u-alice',revision:'r1'},
+      'settings.chatPrompt.reset':{chatId:'u-alice',revision:'r0'},
+      'settings.chatPrompt.list':{items:[summary]}
+    }
+    return {ok:true,value:values[request.path]}
+  }}
+  const mock=makeHost({target})
+  const api=createPluginLineTodoApi({host:mock.host,events:{enabled:false}})
+  try{
+    assert.equal((await api.hostAi.prompts.saveName('王小明','n1')).nameRevision,'n2')
+    assert.equal((await api.hostAi.chatPrompts.get('u-alice')).revision,'r0')
+    assert.equal((await api.hostAi.chatPrompts.save('u-alice',{prompt:'P',myName:null},'r0')).revision,'r1')
+    assert.equal((await api.hostAi.chatPrompts.reset('u-alice','r1')).revision,'r0')
+    assert.deepEqual(await api.hostAi.chatPrompts.list(),[summary],'list unwraps { items }')
+    assert.deepEqual(calls,[
+      {method:'settings',path:'settings.prompt.saveName',args:[{myName:'王小明',expectedNameRevision:'n1'}]},
+      {method:'settings',path:'settings.chatPrompt.get',args:[{chatId:'u-alice'}]},
+      {method:'settings',path:'settings.chatPrompt.save',args:[{chatId:'u-alice',prompt:'P',myName:null,expectedRevision:'r0'}]},
+      {method:'settings',path:'settings.chatPrompt.reset',args:[{chatId:'u-alice',expectedRevision:'r1'}]},
+      {method:'settings',path:'settings.chatPrompt.list',args:[]}
+    ])
+    const transport=await import('../../src/renderer/platform/pluginTransport.ts')
+    for(const path of ['settings.chatPrompt.get','settings.chatPrompt.list'])assert.equal(transport.isReplaySafePath(path),true,path)
+    for(const path of ['settings.chatPrompt.save','settings.chatPrompt.reset','settings.prompt.saveName'])assert.equal(transport.isReplaySafePath(path),false,path)
+  }finally{api.dispose()}
+})
+
 test('adapter/runtime: a real automatic defer is inspectable, explicit retry re-evaluates with fake Host AI, and user resolve creates the canonical Todo',async()=>{
   const fixture=await createIdentityE2EFixture()
   const api=fixture.api

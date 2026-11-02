@@ -1005,3 +1005,244 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
   })
   assert.deepEqual(unhandled, [], 'no unhandled rejection from chat todo loading or the late response')
 })
+
+// ───────────── per-chat prompt / my name (A16, A17, A18) ─────────────
+
+const hasClassName = (element, name) => (element.getAttribute('class') ?? '').split(/\s+/).includes(name)
+
+test('A16 settings: the default name field is always there and saves through saveName without touching an unsaved prompt draft; "各對話的個別設定" is collapsed and does not call list before it is opened', async () => {
+  const chatAlice = { chatId: 'u-alice', name: 'Alice', isGroup: false, blocked: false, blockReason: null, firstSeenAt: '2026-11-01T00:00:00.000Z', lastSeenAt: '2026-11-01T00:00:00.000Z' }
+  let promptState = { initialPrompt: '初始待辦判斷規則', activePrompt: '初始待辦判斷規則', customized: false, revision: 'initial', maxChars: 12000, outputFormat: '固定格式', myName: '舊名字', nameRevision: 'n1', maxNameChars: 40 }
+  const nameSaves = []
+  const listCalls = []
+  const resets = []
+  let items = [
+    { chatId: 'u-alice', hasPrompt: true, myName: null, revision: 'ra' },
+    { chatId: 'u-gone', hasPrompt: false, myName: '阿華', revision: 'rg' }
+  ]
+  const { backend, api } = plugin(settingsHandlers({
+    'settings.prompt.get': () => promptState,
+    'settings.prompt.saveName': ({ myName, expectedNameRevision }) => {
+      nameSaves.push({ myName, expectedNameRevision })
+      promptState = { ...promptState, myName, nameRevision: 'n2' }
+      return promptState
+    },
+    'db.chats.list': () => [chatAlice],
+    'settings.chatPrompt.list': () => { listCalls.push(1); return { items } },
+    'settings.chatPrompt.reset': ({ chatId, expectedRevision }) => {
+      resets.push({ chatId, expectedRevision })
+      items = items.filter((item) => item.chatId !== chatId)
+      return { chatId, revision: 'r0' }
+    }
+  }))
+  const data = new Map()
+  const storage = { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value), removeItem: (key) => data.delete(key) }
+  const scene = ui.mount(ui.settingsDraftScene(api, storage))
+  const field = (name) => byAttr(scene.container, 'data-testid', name)
+  try {
+    await until(() => field('default-my-name') && !reactProps(field('default-my-name')).disabled, { message: 'name field loaded' })
+    assert.equal(reactProps(field('default-my-name')).value, '舊名字')
+    assert.equal(reactProps(field('save-my-name')).disabled, true, 'unchanged name: nothing to save')
+    assert.equal(reactProps(field('default-my-name')).maxLength, 40)
+    assert.ok(scene.container.textContent.includes('各對話可以個別改'))
+
+    reactProps(field('active-extract-prompt')).onChange({ target: { value: '尚未儲存的 prompt' } })
+    await until(() => data.has('lt-ui:prompt.editor.draft'), { message: 'prompt draft persisted' })
+    reactProps(field('default-my-name')).onChange({ target: { value: '  新   名字 ' } })
+    await until(() => reactProps(field('save-my-name')).disabled === false, { message: 'changed name can be saved' })
+    reactProps(field('save-my-name')).onClick()
+    await until(() => nameSaves.length === 1 && scene.container.textContent.includes('已儲存名字'), { message: 'name saved' })
+    assert.deepEqual(nameSaves, [{ myName: '新 名字', expectedNameRevision: 'n1' }], 'trimmed, runs of spaces collapsed, with the name revision')
+    assert.equal(reactProps(field('default-my-name')).value, '新 名字')
+    assert.equal(reactProps(field('active-extract-prompt')).value, '尚未儲存的 prompt', 'the unsaved prompt draft survives a name save')
+    assert.ok(data.has('lt-ui:prompt.editor.draft'))
+    assert.equal(reactProps(field('save-my-name')).disabled, true)
+
+    reactProps(field('default-my-name')).onChange({ target: { value: '   ' } })
+    await until(() => reactProps(field('default-my-name')).value === '   ' && reactProps(field('save-my-name')).disabled === false, { message: 'blank name can be saved' })
+    reactProps(field('save-my-name')).onClick()
+    await until(() => nameSaves.length === 2, { message: 'blank clears the name' })
+    assert.deepEqual(nameSaves[1], { myName: null, expectedNameRevision: 'n2' })
+
+    const details = field('chat-overrides')
+    assert.ok(details, 'the section is present')
+    assert.equal(details.getAttribute('open'), null, 'collapsed by default')
+    await sleep(60)
+    assert.equal(listCalls.length, 0, 'list is not called before the section is opened')
+    assert.equal(field('chat-overrides-list'), null)
+    reactProps(details).onToggle({ currentTarget: { open: true } })
+    await until(() => field('chat-overrides-list'), { message: 'list rendered after opening' })
+    assert.equal(listCalls.length, 1)
+    reactProps(details).onToggle({ currentTarget: { open: true } })
+    await sleep(30)
+    assert.equal(listCalls.length, 1, 'opening again does not reload')
+    const rows = field('chat-overrides-list').textContent
+    assert.ok(rows.includes('Alice') && rows.includes('專屬 Prompt'))
+    assert.ok(rows.includes('（已不在清單）') && rows.includes('名字：阿華'))
+    reactProps(field('reset-chat-override-u-alice')).onClick()
+    await until(() => resets.length === 1 && !field('chat-override-u-alice'), { message: 'one override reset' })
+    assert.deepEqual(resets, [{ chatId: 'u-alice', expectedRevision: 'ra' }], 'resets with the revision shown in the list')
+    reactProps(field('reset-chat-override-u-gone')).onClick()
+    await until(() => field('chat-overrides-empty'), { message: 'empty state' })
+    assert.ok(field('chat-overrides-empty').textContent.includes('AI 設定'))
+    assert.deepEqual(backend.unknown.filter((path) => path.startsWith('settings.')), [])
+  } finally { scene.unmount(); api.dispose() }
+})
+
+test('A16 settings: an older backend (no myName / nameRevision in the state) still renders, the name cannot be saved, and without chatPrompts the per-chat section is not rendered', async () => {
+  const { api } = plugin(settingsHandlers())
+  const withoutChatPrompts = { ...api, hostAi: { ...api.hostAi, chatPrompts: undefined } }
+  const scene = ui.mount(ui.settingsScene(withoutChatPrompts))
+  const field = (name) => byAttr(scene.container, 'data-testid', name)
+  try {
+    await until(() => field('active-extract-prompt') && !reactProps(field('active-extract-prompt')).disabled, { message: 'legacy prompt state rendered' })
+    assert.equal(reactProps(field('default-my-name')).value, '')
+    assert.equal(reactProps(field('default-my-name')).disabled, true)
+    assert.equal(reactProps(field('save-my-name')).disabled, true)
+    assert.equal(field('chat-overrides'), null, 'no chatPrompts: no per-chat section')
+  } finally { scene.unmount(); api.dispose() }
+})
+
+function boardChat(chatId, name) {
+  return { chatId, name, isGroup: false, blocked: false, blockReason: null, firstSeenAt: new Date(1700000000000).toISOString(), lastSeenAt: new Date(1700000003000).toISOString() }
+}
+const noOverride = (extra = {}) => ({
+  chatId: 'bni', revision: 'r0', overridePrompt: null, overrideName: null, effectivePrompt: '預設的抽取規則', effectiveName: '預設名', promptSource: 'default', nameSource: 'default',
+  defaultName: '預設名', maxChars: 12000, maxNameChars: 40, corrupt: false, ...extra
+})
+
+test('A17/A18 board: the chat pane has a fourth "AI 設定" tab, marked only when the chat has an override; the editor stays closed until asked for; save sends the whole pair; conflicts and validation errors read in Chinese; reset returns to "沿用預設"', async () => {
+  let state = noOverride()
+  let listItems = []
+  const saves = []
+  const resets = []
+  let nextSaveError = null
+  const { backend, api } = plugin({
+    'db.chats.list': () => [boardChat('bni', 'BNI 商會')],
+    'db.messages.list': () => [],
+    'db.messages.recentByChat': () => [],
+    'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'settings.chatPrompt.list': () => ({ items: listItems }),
+    'settings.chatPrompt.get': ({ chatId }) => { assert.equal(chatId, 'bni'); return state },
+    'settings.chatPrompt.save': (input) => {
+      if (nextSaveError) { const error = nextSaveError; nextSaveError = null; throw error }
+      saves.push(input)
+      state = noOverride({ revision: 'r1', overridePrompt: input.prompt, overrideName: input.myName, effectivePrompt: input.prompt ?? '預設的抽取規則', effectiveName: input.myName ?? '預設名', promptSource: input.prompt === null ? 'default' : 'chat', nameSource: input.myName === null ? 'default' : 'chat' })
+      return state
+    },
+    'settings.chatPrompt.reset': (input) => { resets.push(input); state = noOverride({ revision: 'r0' }); return state }
+  })
+  const scene = ui.mount(ui.messageStreamScene(api))
+  const field = (name) => byAttr(scene.container, 'data-testid', name)
+  const toggleButtons = () => walk(scene.container).filter((element) => element.localName === 'button' && element.parentNode && hasClassName(element.parentNode, 'chat-pane-view-toggle'))
+  const aiTab = () => toggleButtons().find((button) => button.textContent.includes('AI 設定'))
+  try {
+    await until(() => aiTab(), { message: 'chat pane header with the AI settings tab' })
+    assert.deepEqual(toggleButtons().map((button) => button.textContent.trim()), ['訊息', '議題', '待辦', 'AI 設定'], 'fourth tab after 待辦')
+    await sleep(30)
+    assert.equal(field('ai-settings-customized'), null, 'no override: no mark')
+    assert.equal(field('chat-prompt-panel'), null, 'the message view stays the default')
+
+    reactProps(aiTab()).onClick()
+    await until(() => field('chat-prompt-panel') && field('chat-prompt-source'), { message: 'panel loaded' })
+    assert.equal(field('chat-prompt-text'), null, 'the prompt editor is not rendered while the chat follows the default')
+    assert.equal(field('chat-prompt-source').textContent, '沿用預設')
+    assert.equal(reactProps(field('chat-prompt-name')).placeholder, '預設名')
+    assert.ok(field('chat-prompt-name-source').textContent.includes('沿用預設：預設名'))
+    assert.equal(reactProps(field('save-chat-prompt')).disabled, true, 'nothing changed')
+    assert.equal(reactProps(field('reset-chat-prompt')).disabled, true, 'nothing to reset')
+    assert.equal(field('chat-prompt-defaults-hint').textContent, '預設值可到看板的「設定」分頁修改。', 'tells where the defaults live: the board has its own 設定 tab')
+
+    reactProps(field('customize-chat-prompt')).onClick()
+    await until(() => field('chat-prompt-text'), { message: 'editor opened on request' })
+    assert.equal(reactProps(field('chat-prompt-text')).value, '預設的抽取規則', 'pre-filled with the effective prompt')
+    assert.ok(field('chat-prompt-panel').textContent.includes('此對話使用專屬 Prompt，不受預設變更影響'))
+    assert.equal(reactProps(field('save-chat-prompt')).disabled, true, 'opening the editor without a change is not a change')
+
+    reactProps(field('chat-prompt-text')).onChange({ target: { value: '   ' } })
+    nextSaveError = Object.assign(new Error('prompt_empty'), { code: 'prompt_empty' })
+    reactProps(field('save-chat-prompt')).onClick()
+    await until(() => field('chat-prompt-error'), { message: 'validation error shown' })
+    assert.equal(field('chat-prompt-error').textContent, 'Prompt 不可留空。')
+
+    reactProps(field('chat-prompt-text')).onChange({ target: { value: '這個對話專屬的規則' } })
+    reactProps(field('chat-prompt-name')).onChange({ target: { value: ' 阿華 ' } })
+    nextSaveError = Object.assign(new Error('prompt_conflict'), { code: 'prompt_conflict' })
+    reactProps(field('save-chat-prompt')).onClick()
+    await until(() => field('chat-prompt-error') && field('chat-prompt-error').textContent.includes('已在另一個畫面變更'), { message: 'conflict shown in Chinese' })
+    assert.equal(saves.length, 0)
+
+    reactProps(field('save-chat-prompt')).onClick()
+    await until(() => saves.length === 1 && field('chat-prompt-message'), { message: 'saved' })
+    assert.deepEqual(saves, [{ chatId: 'bni', prompt: '這個對話專屬的規則', myName: '阿華', expectedRevision: 'r0' }], 'the whole pair in one call, with the revision that was read')
+    assert.ok(field('chat-prompt-message').textContent.includes('這個對話的下一項抽取工作會使用新設定'))
+    assert.equal(field('chat-prompt-error'), null)
+    await until(() => field('ai-settings-customized'), { message: 'tab marked once the chat has an override' })
+    assert.equal(field('ai-settings-customized').getAttribute('aria-label'), '已自訂')
+    assert.ok(field('chat-prompt-text'), 'a chat with its own prompt shows the editor')
+    assert.ok(field('chat-prompt-name-source').textContent.includes('此對話自訂'))
+
+    reactProps(field('reset-chat-prompt')).onClick()
+    await until(() => resets.length === 1 && !field('chat-prompt-text') && field('chat-prompt-source'), { message: 'reset returns to the default view' })
+    assert.deepEqual(resets, [{ chatId: 'bni', expectedRevision: 'r1' }])
+    assert.equal(field('chat-prompt-source').textContent, '沿用預設')
+    assert.equal(field('ai-settings-customized'), null, 'the mark is gone after the reset')
+    assert.deepEqual(backend.unknown.filter((path) => path.startsWith('settings.')), [])
+  } finally { scene.unmount(); api.dispose() }
+})
+
+test('A18 board: the mark shows for a chat whose override already exists when the board opens; a backend without chatPrompts hides the tab', async () => {
+  const { api } = plugin({
+    'db.chats.list': () => [boardChat('bni', 'BNI 商會')],
+    'db.messages.list': () => [], 'db.messages.recentByChat': () => [], 'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'settings.chatPrompt.list': () => ({ items: [{ chatId: 'bni', hasPrompt: false, myName: '阿華', revision: 'rx' }] })
+  })
+  const toggleLabels = (scene) => walk(scene.container).filter((element) => element.localName === 'button' && element.parentNode && hasClassName(element.parentNode, 'chat-pane-view-toggle')).map((button) => button.textContent.trim())
+  let scene = ui.mount(ui.messageStreamScene(api))
+  try {
+    await until(() => byAttr(scene.container, 'data-testid', 'ai-settings-customized'), { message: 'mark for the chat that already has an override' })
+    assert.deepEqual(toggleLabels(scene), ['訊息', '議題', '待辦', 'AI 設定'])
+  } finally { scene.unmount() }
+  scene = ui.mount(ui.messageStreamScene({ ...api, hostAi: { ...api.hostAi, chatPrompts: undefined } }))
+  try {
+    await until(() => toggleLabels(scene).length > 0, { message: 'pane header without chatPrompts' })
+    assert.deepEqual(toggleLabels(scene), ['訊息', '議題', '待辦'])
+  } finally { scene.unmount(); api.dispose() }
+})
+
+
+test('m1/n4 board: the AI settings panel names the board "設定" tab as the place for the defaults (the plugin board has one), and "恢復沿用預設 Prompt" says it takes effect after saving', async () => {
+  const state = noOverride({ revision: 'r1', overridePrompt: '這個對話專屬的規則', effectivePrompt: '這個對話專屬的規則', promptSource: 'chat' })
+  const saves = []
+  const { api } = plugin({
+    'db.chats.list': () => [boardChat('bni', 'BNI 商會')],
+    'db.messages.list': () => [], 'db.messages.recentByChat': () => [], 'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'settings.chatPrompt.list': () => ({ items: [{ chatId: 'bni', hasPrompt: true, myName: null, revision: 'r1' }] }),
+    'settings.chatPrompt.get': () => state,
+    'settings.chatPrompt.save': (input) => { saves.push(input); return noOverride({ revision: 'r2' }) }
+  })
+  const scene = ui.mount(ui.messageStreamScene(api))
+  const field = (name) => byAttr(scene.container, 'data-testid', name)
+  const aiTab = () => walk(scene.container).filter((element) => element.localName === 'button' && element.parentNode && hasClassName(element.parentNode, 'chat-pane-view-toggle')).find((button) => button.textContent.includes('AI 設定'))
+  try {
+    await until(() => aiTab(), { message: 'chat pane header with the AI settings tab' })
+    reactProps(aiTab()).onClick()
+    await until(() => field('chat-prompt-text') && field('chat-prompt-defaults-hint'), { message: 'panel with the editor open' })
+    assert.equal(field('chat-prompt-defaults-hint').textContent, '預設值可到看板的「設定」分頁修改。', 'the plugin board has its own 設定 tab, so the hint points there')
+    assert.ok(!field('chat-prompt-panel').textContent.includes('打開這個外掛後'), 'it no longer sends the user to the TeamUQ plugin page')
+    assert.equal(field('chat-prompt-message'), null, 'no message before anything is clicked')
+
+    reactProps(field('restore-default-chat-prompt')).onClick()
+    await until(() => field('chat-prompt-message'), { message: 'restore message' })
+    assert.equal(field('chat-prompt-message').textContent, '已改回沿用預設 Prompt，按「儲存」後生效。')
+    assert.equal(field('chat-prompt-text'), null, 'the editor closes')
+    assert.equal(saves.length, 0, 'restoring in the form alone saves nothing')
+    assert.equal(reactProps(field('save-chat-prompt')).disabled, false, 'the pending change can be saved')
+    reactProps(field('save-chat-prompt')).onClick()
+    await until(() => saves.length === 1, { message: 'saved' })
+    assert.deepEqual(saves, [{ chatId: 'bni', prompt: null, myName: null, expectedRevision: 'r1' }])
+  } finally { scene.unmount(); api.dispose() }
+})

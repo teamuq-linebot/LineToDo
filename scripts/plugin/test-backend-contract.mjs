@@ -356,6 +356,16 @@ test('the backend bundle contains no child_process / worker_threads / better-sql
   assert.equal(existsSync(join(run.installDir, 'backend', 'native', 'win32-x64', 'better_sqlite3.node')), true)
 })
 
+test('A20 the production backend bundle carries the per-chat prompt feature: the chatPrompt / saveName paths, the app_settings key prefix, and still no forbidden module', async () => {
+  const { run } = await getSetup()
+  const { built } = run
+  for (const needle of ['settings.chatPrompt.get', 'settings.chatPrompt.save', 'settings.chatPrompt.reset', 'settings.chatPrompt.list', 'settings.prompt.saveName', 'line-todo.chat-prompt.v1.', 'chat_override_corrupt']) {
+    assert.ok(built.text.includes(needle), `bundle contains ${needle}`)
+  }
+  assert.equal(built.analysis.ok, true)
+  assert.deepEqual(built.analysis.problems, [])
+})
+
 test('the bundle analysis really flags forbidden content (guard is not vacuous)', () => {
   const metafile = {
     inputs: { 'src/plugin/backend/index.ts': {}, 'node_modules/better-sqlite3-plugin/lib/index.js': {}, 'src/plugin/backend/stubs/llmProvider.ts': {}, 'node_modules/better-sqlite3-multiple-ciphers/lib/util.js': {}, 'src/main/llm/cli/run.ts': {} },

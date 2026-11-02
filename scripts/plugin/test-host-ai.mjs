@@ -183,3 +183,106 @@ test('the AI port sends every turn (repair turns too) with the Task, and recreat
     } finally { bare.close() }
   } finally { host.close() }
 })
+
+// ───────────── per-chat system (A13): a changed system for one chat makes the Host close the old session and open a new one ─────────────
+
+function sessionAwareHost() {
+  const sessions = new Map()
+  const operations = []
+  let nextId = 0
+  const active = () => [...sessions.values()].filter((session) => session.active).length
+  const failure = (code) => Object.assign(new Error(code), { code })
+  const sessionFor = (row) => {
+    const listeners = new Set()
+    const publish = (event) => { for (const listener of [...listeners]) listener(event) }
+    return {
+      sessionId: row.id,
+      effective: row.effective,
+      turn: null,
+      async send({ text }) {
+        if (!row.active) throw failure('session_closed')
+        const turnId = (++row.turns).toString(16).padStart(16, '0')
+        const output = JSON.stringify({ importance: 'noise', newTodos: [], identityDecisions: [], resolved: [], updates: [] })
+        row.sends.push(text)
+        if (row.lastTurnId !== null) {
+          publish({ turnId: row.lastTurnId, kind: 'textDelta', text: row.lastOutput })
+          publish({ turnId: row.lastTurnId, kind: 'completed' })
+        }
+        publish({ turnId, kind: 'textDelta', text: output })
+        publish({ turnId, kind: 'completed' })
+        row.lastTurnId = turnId
+        row.lastOutput = output
+        return { turnId }
+      },
+      onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+      async interrupt() { return undefined },
+      async close() { row.active = false }
+    }
+  }
+  const api = {
+    async getOptions() {
+      return {
+        providers: [{ id: 'codex', label: 'Mock Codex', state: 'ready', models: [{ id: 'model-a', label: 'Model A', efforts: ['low', 'medium'], defaultEffort: 'medium', supportsImages: false, isDefault: true }] }],
+        defaultProviderId: 'codex',
+        limits: { systemChars: 16_000, transcriptLines: 40, transcriptChars: 60_000, inputChars: 8_000, imageBytes: 2 * 1024 * 1024, turnsPerMinute: 20 },
+        quota: { state: 'ok', retryAfterMs: null },
+        capabilities: { closedSessionResume: true }
+      }
+    },
+    async complete() { throw new Error('the extraction path must use sessions') },
+    async openSession(input) {
+      if ('resume' in input) {
+        operations.push({ op: 'resume', id: input.resume })
+        const existing = sessions.get(input.resume)
+        if (existing === undefined) throw failure('session_not_found')
+        if (existing.active || active() > 0) throw failure('session_limit')
+        existing.active = true
+        return sessionFor(existing)
+      }
+      if (active() > 0) throw failure('session_limit')
+      const id = String(++nextId)
+      const row = { id, effective: { providerId: 'codex', modelId: 'model-a', effort: 'medium' }, active: true, turns: 0, sends: [], lastTurnId: null, lastOutput: null }
+      sessions.set(id, row)
+      operations.push({ op: 'fresh', id, system: input.system })
+      return sessionFor(row)
+    }
+  }
+  return { api, sessions, operations }
+}
+
+test('A13 the Host session of a chat is replaced when that chat\'s effective system changes, and only that chat\'s', async () => {
+  const { createChatPromptStore } = await import('../../src/plugin/backend/chatPromptStore.ts')
+  const { createPromptService } = await import('../../src/plugin/backend/promptService.ts')
+  const { createHostAiPort } = await import('../../src/plugin/backend/hostAi.ts')
+  const { openDatabase } = await import('../../src/main/db/database.ts')
+  const dir = mkdtempSync(join(tmpdir(), 'line-todo-host-ai-chat-prompt-'))
+  const opened = openDatabase({ dbPath: ':memory:' })
+  for (const chatId of ['u-alice', 'u-bob']) opened.db.prepare('INSERT INTO chats(chat_id, name, is_group, blocked, first_seen_at, last_seen_at) VALUES (?, ?, 0, 0, ?, ?)').run(chatId, chatId, '2026-11-02T00:00:00.000Z', '2026-11-02T00:00:00.000Z')
+  const records = new Map()
+  const sessionMapStore = {
+    async get(chatId) { return structuredClone(records.get(chatId) ?? null) },
+    async put(record) { records.set(record.chatId, structuredClone(record)) },
+    async remove(chatId) { records.delete(chatId) }
+  }
+  const host = sessionAwareHost()
+  const prompts = createPromptService(createSettingsStore({ userDataDir: dir, secrets: noSecrets }), { complete: async () => { throw new Error('unused') } }, { chatStore: createChatPromptStore({ getDatabase: () => opened.db }) })
+  const port = createHostAiPort({ ai: host.api, selection: () => ({ providerId: 'codex', modelId: 'model-a', effort: 'medium' }), sessionMapStore })
+  const extract = (chatId) => port.complete({ system: prompts.extractSystem(chatId), user: JSON.stringify({ chatId, newMessages: [] }), expectJson: true, validate: (value) => ({ ok: true, value }), priority: 'background', conversationScope: { kind: 'line-chat-extract', chatId } })
+  const history = () => host.operations.map(({ op, id }) => `${op}:${id}`)
+  try {
+    await extract('u-alice')
+    await extract('u-bob')
+    await extract('u-alice')
+    assert.deepEqual(history(), ['fresh:1', 'fresh:2', 'resume:1'], 'same system: the chat\'s session is resumed')
+    const bobSession = records.get('u-bob').hostSessionId
+    prompts.chatSave('u-alice', { prompt: null, myName: '阿華' }, prompts.chatState('u-alice').revision)
+    await extract('u-alice')
+    assert.equal(host.operations.at(-1).op, 'fresh', 'a new name for alice changed her system: a new Host session, the old one is not resumed')
+    assert.ok(host.operations.at(-1).system.includes('"阿華"'), 'the new session was opened with alice\'s own system')
+    await extract('u-bob')
+    assert.equal(host.operations.at(-1).op, 'resume', 'bob is untouched by alice\'s override')
+    assert.equal(host.operations.at(-1).id, bobSession)
+    assert.equal(records.get('u-bob').hostSessionId, bobSession)
+    assert.notEqual(records.get('u-alice').hostSessionId, '1')
+  } finally { port.stop(); opened.db.close(); rmSync(dir, { recursive: true, force: true }) }
+})

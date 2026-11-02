@@ -58,8 +58,8 @@ export interface ExtractWorker {
 export interface ExtractWorkerDeps {
   queue: ExtractQueue
   port: ExtractWorkerPort
-  /** 抽取的 system prompt（含固定輸出格式）。每次領到項目時才讀，所以設定頁改 prompt 馬上生效。 */
-  system(): string
+  /** 抽取的 system prompt（含固定輸出格式），依項目所屬對話解析生效值。每次領到項目時才讀，所以設定頁改 prompt 馬上生效。 */
+  system(chatId: string): string
   clock?: Clock
   config?: Partial<ExtractWorkerConfig>
   log?: (event: string, detail?: Record<string, unknown>) => void
@@ -104,7 +104,7 @@ export function createExtractWorker(deps: ExtractWorkerDeps): ExtractWorker {
     }
     heartbeat=clock.setTimeout(keepAlive,30_000)
     try {
-      const result = await deps.port.complete({ system: deps.system(), user: item.user, conversationScope: { kind: 'line-chat-extract', chatId: item.chatId, ...(item.sessionEpoch!==undefined?{sessionEpoch:item.sessionEpoch}:{}) }, ...(item.onAdditionalUserPayload?{onAdditionalUserPayload:item.onAdditionalUserPayload}:{}), expectJson: true, validate, priority: 'background' })
+      const result = await deps.port.complete({ system: deps.system(item.chatId), user: item.user, conversationScope: { kind: 'line-chat-extract', chatId: item.chatId, ...(item.sessionEpoch!==undefined?{sessionEpoch:item.sessionEpoch}:{}) }, ...(item.onAdditionalUserPayload?{onAdditionalUserPayload:item.onAdditionalUserPayload}:{}), expectJson: true, validate, priority: 'background' })
       if (stopped) return null
       const committed = deps.queue.commit({ results: [{ itemId: item.itemId, ok: true, result: result.value }] })
       const status = committed.results[0]?.status

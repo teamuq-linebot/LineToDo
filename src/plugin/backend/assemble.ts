@@ -28,6 +28,8 @@ import { createPipelineConfig } from '../../main/config/defaults'
 import { createQwenConfig } from '../../main/config/qwen'
 import { createSettingsStore } from '../../main/config/settings'
 import { createPromptService } from './promptService'
+import { createChatPromptStore } from './chatPromptStore'
+import type { ChatPromptDatabase } from './chatPromptStore'
 import type { SettingsSecretStorage } from '../../main/config/settings'
 import type { AppDbEngine } from '../../main/db/appDbEngine'
 import { createBetterSqlite3AppEngine } from '../../main/db/appDbEngine'
@@ -290,7 +292,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
 
   // ── AI port（host.ai.complete）+ 供料佇列 + 背景 worker + scheduler ──
   // HostAiPort 先於 app DB 組裝；session map store 延後讀取，只有 runtime 初始化完成後才碰 app_settings。
-  let appDb: AiSessionMapDatabase | null = null
+  let appDb: (AiSessionMapDatabase & ChatPromptDatabase) | null = null
   const aiSessionMapStore = createAiSessionMapStore({ getDatabase: () => appDb })
   let queue!: ExtractQueue
   let worker = null as ExtractWorker | null
@@ -311,7 +313,11 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       log: (event, detail) => log(`[ai] ${event} ${JSON.stringify(detail ?? {})}`)
     })
     : createNoHostAiPort()
-  const prompts = createPromptService(settings, aiPort)
+  // 逐對話的 prompt／名字覆寫放在 app DB 的 app_settings；同樣用 lazy getter，DB 開起來之前讀寫都丟 chat_prompt_unavailable。
+  const prompts = createPromptService(settings, aiPort, {
+    chatStore: createChatPromptStore({ getDatabase: () => appDb }),
+    log: (event) => log(`[prompt] ${event}`)
+  })
   // 草擬回覆／誤判分析／群組議題分析：core 照 standalone 的邏輯跑，provider.complete() 直接經 AI port 呼叫 host.ai.complete（使用者動作，排在背景抽取之前）。
   const aiProvider = createPortAiProvider(aiPort, { usable: () => { const state = aiPort.status().state; return state !== 'unavailable' && state !== 'revoked' && state !== 'stopped' } })
   // ai-status 事件：最多每秒一則（trailing）。每一輪 AI 呼叫都會讓 busy 翻兩次，不節流會擠掉與 line-message 共用的 512 則事件環。
@@ -378,7 +384,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
           ...options.extract,
           db,
           getConfig: getDefaults,
-          getSystemSha256: prompts.revision,
+          getSystemSha256: (chatId) => prompts.systemSha256(chatId),
           getSessionContext: () => JSON.stringify(settings.get().pluginAi),
           onRun: (result) => scheduler?.recordExternalRun(result),
           onPending: () => worker?.kick(),
@@ -390,7 +396,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
         worker = createExtractWorker({
           queue,
           port: aiPort,
-          system: prompts.extractSystem,
+          system: (chatId) => prompts.extractSystem(chatId),
           ...(options.ai?.clock ? { clock: options.ai.clock } : {}),
           ...(options.ai?.worker ? { config: options.ai.worker } : {}),
           log: (event, detail) => log(`[extract] ${event} ${JSON.stringify(detail ?? {})}`)

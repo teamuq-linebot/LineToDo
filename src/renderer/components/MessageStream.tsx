@@ -8,6 +8,7 @@ import { useLineTodoApi } from '../platform/LineTodoApi'
 import { displayChatName } from '../lib/displayChatName'
 import { GroupTopicsPanel } from '../features/groupTopics/GroupTopicsPanel'
 import { ChatTodosPanel } from '../features/chatTodos/ChatTodosPanel'
+import { ChatPromptPanel } from '../features/chatPrompt/ChatPromptPanel'
 import { MediaFileActions, MediaImage } from './MediaView'
 
 interface ConversationEntry {
@@ -21,7 +22,7 @@ interface ConversationEntry {
 }
 
 type ListFilter = 'active' | 'ignored'
-type PaneView = 'messages' | 'topics' | 'todos'
+type PaneView = 'messages' | 'topics' | 'todos' | 'aiSettings'
 
 const HISTORY_PAGE_SIZE = 100
 
@@ -300,6 +301,7 @@ export function MessageStream(): JSX.Element {
   const [filter, setFilter] = useState<ListFilter>('active')
   const [search, setSearch] = useState('')
   const [paneView, setPaneView] = useState<PaneView>('messages')
+  const [customizedChatIds, setCustomizedChatIds] = useState<ReadonlySet<string>>(new Set())
   const [mobileView, setMobileView] = useState<'list' | 'conversation'>('list')
   const [openMenuChatId, setOpenMenuChatId] = useState<string | null>(null)
   const [actionBusyChatId, setActionBusyChatId] = useState<string | null>(null)
@@ -434,6 +436,17 @@ export function MessageStream(): JSX.Element {
 
   const activeConversation = conversations.find((chat) => chat.chatId === selectedChatId) ?? null
   const activeChatId = activeConversation?.chatId ?? null
+
+  const chatPrompts = api.hostAi?.chatPrompts
+  useEffect(() => {
+    if (!chatPrompts || !activeChatId) return
+    let cancelled = false
+    chatPrompts.list().then(
+      (items) => { if (!cancelled) setCustomizedChatIds(new Set(items.map((item) => item.chatId))) },
+      () => { /* 標記只是提示：讀不到就不顯示 */ }
+    )
+    return () => { cancelled = true }
+  }, [chatPrompts, activeChatId])
 
   const activeMessages = useMemo(() => {
     if (!activeChatId) return []
@@ -906,6 +919,12 @@ export function MessageStream(): JSX.Element {
                   <button type="button" className={paneView === 'messages' ? 'selected' : ''} aria-pressed={paneView === 'messages'} onClick={() => setPaneView('messages')}>訊息</button>
                   <button type="button" className={paneView === 'topics' ? 'selected' : ''} aria-pressed={paneView === 'topics'} onClick={() => setPaneView('topics')}>議題</button>
                   <button type="button" className={paneView === 'todos' ? 'selected' : ''} aria-pressed={paneView === 'todos'} onClick={() => setPaneView('todos')}>待辦</button>
+                  {chatPrompts && (
+                    <button type="button" className={paneView === 'aiSettings' ? 'selected' : ''} aria-pressed={paneView === 'aiSettings'} onClick={() => setPaneView('aiSettings')}>
+                      AI 設定
+                      {customizedChatIds.has(activeConversation.chatId) && <span className="pane-tab-dot" data-testid="ai-settings-customized" role="img" aria-label="已自訂" />}
+                    </button>
+                  )}
                 </div>
               </header>
               {paneView === 'topics' ? (
@@ -917,6 +936,19 @@ export function MessageStream(): JSX.Element {
                   key={activeConversation.chatId}
                   chatId={activeConversation.chatId}
                   chatName={activeConversation.name}
+                />
+              ) : paneView === 'aiSettings' && chatPrompts ? (
+                <ChatPromptPanel
+                  key={activeConversation.chatId}
+                  chatId={activeConversation.chatId}
+                  chatName={activeConversation.name}
+                  control={chatPrompts}
+                  onChanged={(next) => setCustomizedChatIds((current) => {
+                    const updated = new Set(current)
+                    if (next.overridePrompt !== null || next.overrideName !== null) updated.add(next.chatId)
+                    else updated.delete(next.chatId)
+                    return updated
+                  })}
                 />
               ) : (
                 <div

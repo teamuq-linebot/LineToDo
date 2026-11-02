@@ -1,5 +1,6 @@
 export const PROMPT_MAX_CHARS = 12_000
 export const PROMPT_GOAL_MAX_CHARS = 2_000
+export const MY_NAME_MAX_CHARS = 40
 
 export interface PromptState {
   initialPrompt: string
@@ -8,6 +9,11 @@ export interface PromptState {
   revision: string
   maxChars: number
   outputFormat: string
+  /** 預設的「我的名字」；null＝未設定。 */
+  myName: string | null
+  /** 預設名字的 CAS token（`sha256(JSON.stringify({myName}))`），與 prompt 的 `revision` 各自獨立。 */
+  nameRevision: string
+  maxNameChars: number
 }
 export interface PromptRefinementRequest { prompt: string; goal: string }
 export interface PromptSuggestion { prompt: string; changes: string[]; modelId: string | null }
@@ -15,7 +21,31 @@ export interface PromptControl {
   get(): Promise<PromptState>
   save(prompt: string, expectedRevision: string): Promise<PromptState>
   reset(expectedRevision: string): Promise<PromptState>
+  saveName(myName: string | null, expectedNameRevision: string): Promise<PromptState>
   refine(request: PromptRefinementRequest): Promise<PromptSuggestion>
+}
+
+export interface ChatPromptState {
+  chatId: string
+  /** 此對話覆寫的 CAS token。 */
+  revision: string
+  overridePrompt: string | null
+  overrideName: string | null
+  effectivePrompt: string
+  effectiveName: string | null
+  promptSource: 'default' | 'chat'
+  nameSource: 'default' | 'chat' | 'none'
+  defaultName: string | null
+  maxChars: number
+  maxNameChars: number
+  corrupt: boolean
+}
+export interface ChatPromptSummary { chatId: string; hasPrompt: boolean; myName: string | null; revision: string }
+export interface ChatPromptControl {
+  get(chatId: string): Promise<ChatPromptState>
+  save(chatId: string, input: { prompt: string | null; myName: string | null }, expectedRevision: string): Promise<ChatPromptState>
+  reset(chatId: string, expectedRevision: string): Promise<ChatPromptState>
+  list(): Promise<ChatPromptSummary[]>
 }
 
 export class PromptError extends Error {
@@ -28,6 +58,23 @@ export function validatePrompt(value: unknown): string {
   const text = value.replace(/\r\n?/g, '\n').trim()
   if (text.length > PROMPT_MAX_CHARS) throw new PromptError('prompt_too_long')
   return text
+}
+
+/** 「我的名字」驗證：null／空白＝清除（回傳 null）；含控制字元或換行丟 my_name_invalid，超過 MY_NAME_MAX_CHARS（code point）丟 my_name_too_long。 */
+export function validateMyName(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'string') throw new PromptError('my_name_invalid')
+  const text = value.trim()
+  if (text === '') return null
+  if (/\p{C}/u.test(text)) throw new PromptError('my_name_invalid')
+  const name = text.replace(/\s+/gu, ' ')
+  if ([...name].length > MY_NAME_MAX_CHARS) throw new PromptError('my_name_too_long')
+  return name
+}
+
+/** settings.json 讀取用：不合法一律視為未設定。 */
+export function normalizeMyName(value: unknown): string | null {
+  try { return validateMyName(value) } catch { return null }
 }
 
 export function promptRefinementInput(request: PromptRefinementRequest, outputFormat: string): { system: string; user: string } {

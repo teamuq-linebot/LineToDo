@@ -26,6 +26,9 @@ import { EXTRACT_SYSTEM_SHA256, ExtractQueue, partitionExtractInput } from '../.
 import { createPluginBackend } from '../../src/plugin/backend/assemble.ts'
 import { AI_SESSION_MAP_KEY_PREFIX, AiSessionMapStoreError, createAiSessionMapStore } from '../../src/plugin/backend/aiSessionMapStore.ts'
 import { createExtractWorker } from '../../src/plugin/backend/extractWorker.ts'
+import { createChatPromptStore } from '../../src/plugin/backend/chatPromptStore.ts'
+import { createPromptService } from '../../src/plugin/backend/promptService.ts'
+import { createSettingsStore } from '../../src/main/config/settings.ts'
 import { createHostAiPort } from '../../src/plugin/backend/hostAi.ts'
 import { BACKEND_METHOD_GROUPS, backendMethodFor } from '../../src/shared/pluginWire.ts'
 import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
@@ -1382,4 +1385,175 @@ test('production assembly resumes each LINE chat across A→B→A and backend re
     persistedDb.close()
     rmSync(dataDir, { recursive: true, force: true })
   }
+})
+
+// ───────────── per-chat prompt / my name (A12, A14) ─────────────
+
+const chatPromptSetup = (db) => {
+  const dir = mkdtempSync(join(tmpdir(), 'line-todo-units-prompt-'))
+  const settings = createSettingsStore({ userDataDir: dir, secrets: { isEncryptionAvailable: () => false, encryptString: () => { throw new Error('unused') }, decryptString: () => { throw new Error('unused') } } })
+  const prompts = createPromptService(settings, { complete: async () => { throw new Error('unused') } }, { chatStore: createChatPromptStore({ getDatabase: () => db }) })
+  return { prompts, settings, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('A12 ExtractQueue fingerprints each chat with its own effective system; an override change moves only that chat to a new session epoch', async () => {
+  const { db } = freshDb()
+  const { prompts, cleanup } = chatPromptSetup(db)
+  const { queue } = makeQueue(db, { getSystemSha256: (chatId) => prompts.systemSha256(chatId) })
+  const stateOf = (chatId) => readChatSourceState(db, chatId)
+  const drain = () => {
+    const { items } = queue.pull({ max: 2 })
+    assert.equal(items.length, 2)
+    for (const item of items) {
+      const msgIds = JSON.parse(item.user).newMessages.map((message) => message.msgId)
+      assert.equal(queue.commit({ results: [{ itemId: item.itemId, ok: true, result: okResult(msgIds) }] }).results[0].status, 'applied')
+    }
+  }
+  try {
+    await cycle(db, queue, [raw(1, { chatId: 'u-alice', chat: 'Alice' }), raw(2, { chatId: 'u-bob', chat: 'Bob' })])
+    drain()
+    const first = { alice: stateOf('u-alice'), bob: stateOf('u-bob') }
+    assert.ok(first.alice.sessionFingerprint && first.bob.sessionFingerprint)
+    assert.equal(first.alice.sessionFingerprint, first.bob.sessionFingerprint, 'no overrides: both chats share one effective system')
+
+    prompts.chatSave('u-alice', { prompt: 'ALICE ONLY PROMPT', myName: null }, prompts.chatState('u-alice').revision)
+    await cycle(db, queue, [raw(3, { chatId: 'u-alice', chat: 'Alice' }), raw(4, { chatId: 'u-bob', chat: 'Bob' })])
+    drain()
+    const second = { alice: stateOf('u-alice'), bob: stateOf('u-bob') }
+    assert.notEqual(second.alice.sessionFingerprint, first.alice.sessionFingerprint, 'the overridden chat has a new fingerprint')
+    assert.ok(second.alice.sessionEpoch > first.alice.sessionEpoch, 'and a new session epoch')
+    assert.equal(second.bob.sessionFingerprint, first.bob.sessionFingerprint)
+    assert.equal(second.bob.sessionEpoch, first.bob.sessionEpoch, 'the other chat keeps its session')
+    assert.notEqual(second.alice.sessionFingerprint, second.bob.sessionFingerprint, 'two chats, two different fingerprints')
+
+    assert.equal(queue.pull({ max: 1 }).systemSha256, prompts.revision(), 'the pull summary stays the default (no chat) value')
+  } finally { queue.dispose(); db.close(); cleanup() }
+})
+
+test('A14 the chatPrompt and saveName paths run through the dispatcher: results, in-band errors, invalid_args and prompt_unavailable', async () => {
+  const { db } = freshDb()
+  for (const chatId of ['u-alice', 'u-bob']) db.prepare('INSERT INTO chats(chat_id, name, is_group, blocked, first_seen_at, last_seen_at) VALUES (?, ?, 0, 0, ?, ?)').run(chatId, chatId, '2026-11-02T00:00:00.000Z', '2026-11-02T00:00:00.000Z')
+  const { prompts, cleanup } = chatPromptSetup(db)
+  const { d, dispose } = makeDispatcher(fakeApi(), { prompts })
+  const bare = makeDispatcher(fakeApi())
+  try {
+    for (const path of ['settings.prompt.saveName', 'settings.chatPrompt.get', 'settings.chatPrompt.save', 'settings.chatPrompt.reset', 'settings.chatPrompt.list']) {
+      assert.equal((await inv(bare.d, path, { chatId: 'u-alice' })).code, 'prompt_unavailable', `${path} without a prompt service`)
+    }
+    const state = await inv(d, 'settings.prompt.get')
+    assert.equal(state.value.myName, null)
+    assert.equal(state.value.maxNameChars, 40)
+    const named = await inv(d, 'settings.prompt.saveName', { myName: '王小明', expectedNameRevision: state.value.nameRevision })
+    assert.equal(named.value.myName, '王小明')
+    assert.equal((await inv(d, 'settings.prompt.saveName', { myName: 'x', expectedNameRevision: state.value.nameRevision })).code, 'prompt_conflict')
+    assert.equal((await inv(d, 'settings.prompt.saveName', { myName: 'a\nb', expectedNameRevision: named.value.nameRevision })).code, 'my_name_invalid')
+    assert.equal((await inv(d, 'settings.prompt.saveName', { myName: 'y'.repeat(41), expectedNameRevision: named.value.nameRevision })).code, 'my_name_too_long')
+    assert.equal((await inv(d, 'settings.prompt.saveName')).code, 'invalid_args')
+
+    const got = await inv(d, 'settings.chatPrompt.get', { chatId: 'u-alice' })
+    assert.deepEqual([got.ok, got.value.promptSource, got.value.nameSource, got.value.effectiveName], [true, 'default', 'default', '王小明'])
+    const saved = await inv(d, 'settings.chatPrompt.save', { chatId: 'u-alice', prompt: 'ALICE', myName: '阿華', expectedRevision: got.value.revision })
+    assert.deepEqual([saved.ok, saved.value.overridePrompt, saved.value.overrideName], [true, 'ALICE', '阿華'])
+    assert.equal((await inv(d, 'settings.chatPrompt.save', { chatId: 'u-alice', prompt: 'LATE', myName: null, expectedRevision: got.value.revision })).code, 'prompt_conflict')
+    assert.equal((await inv(d, 'settings.chatPrompt.save', { chatId: 'u-alice', prompt: ' ', myName: null, expectedRevision: saved.value.revision })).code, 'prompt_empty')
+    assert.equal((await inv(d, 'settings.chatPrompt.get', { chatId: 'u-ghost' })).code, 'chat_unknown')
+    const listed = await inv(d, 'settings.chatPrompt.list')
+    assert.deepEqual(listed.value, { items: [{ chatId: 'u-alice', hasPrompt: true, myName: '阿華', revision: saved.value.revision }] })
+    for (const bad of [undefined, null, 'u-alice', { chatId: 42 }, {}]) {
+      for (const path of ['settings.chatPrompt.get', 'settings.chatPrompt.save', 'settings.chatPrompt.reset']) assert.equal((await d.call(backendMethodFor(path), { path, args: bad === undefined ? [] : [bad] })).code, 'invalid_args', `${path} ${JSON.stringify(bad)}`)
+    }
+    const reset = await inv(d, 'settings.chatPrompt.reset', { chatId: 'u-alice', expectedRevision: saved.value.revision })
+    assert.deepEqual([reset.ok, reset.value.overridePrompt, reset.value.promptSource], [true, null, 'default'])
+    assert.deepEqual((await inv(d, 'settings.chatPrompt.list')).value, { items: [] })
+    db.close()
+    const closed = await inv(d, 'settings.chatPrompt.list')
+    assert.equal(closed.code, 'chat_prompt_unavailable', 'a closed app DB is reported, never answered with an empty list')
+  } finally { dispose(); bare.dispose(); cleanup() }
+})
+
+
+// ───────────── M1: per-chat session fingerprint through the production assembly ─────────────
+
+test('M1 production assembly: an override saved for one chat moves only that chat to a new session_fingerprint and session_epoch in chat_context_cache (assemble.ts getSystemSha256 wiring)', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'line-todo-chat-fingerprint-'))
+  const line = fakeLine()
+  const host = makeSessionAwareHost()
+  const createBackend = () => createPluginBackend({
+    pluginId: 'tuqdev.line-todo', version: '9.9.9', dataDir, line: line.port,
+    extract: { retryBaseMs: 1000, retryMaxMs: 5000 },
+    hostAi: host.api,
+    ai: { config: { optionsTtlMs: 20 }, worker: { pollIntervalMs: 20 } },
+  })
+  const waitUntil = async (probe, label, max = 600) => {
+    for (let attempt = 0; attempt < max; attempt += 1) {
+      if (await probe()) return
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    assert.fail(`timeout: ${label}`)
+  }
+  const readStates = () => {
+    const { db } = openDatabase({ dbPath: join(dataDir, 'line-todo.db') })
+    try { return { alice: readChatSourceState(db, 'u-alice'), bob: readChatSourceState(db, 'u-bob') } } finally { db.close() }
+  }
+  const runRound = async (emitIds, prepare) => {
+    const backend = await createBackend()
+    try {
+      const call = (path, ...args) => backend.call(backendMethodFor(path), { path, args })
+      if (prepare) await prepare(call)
+      line.emit(raw(emitIds[0], { chatId: 'u-alice', chat: 'Alice', text: 'A 的訊息' }))
+      line.emit(raw(emitIds[1], { chatId: 'u-bob', chat: 'Bob', text: 'B 的訊息' }))
+      await call('pipeline.runOnce')
+      await waitUntil(async () => (await call('ai.status')).value.counters.extracted === 2, 'both chats extracted')
+    } finally { await backend.dispose() }
+    return readStates()
+  }
+  try {
+    const first = await runRound([4101, 4201])
+    assert.ok(first.alice?.sessionFingerprint && first.bob?.sessionFingerprint, 'both chats have a recorded session fingerprint')
+    assert.equal(first.alice.sessionFingerprint, first.bob.sessionFingerprint, 'no override: the two chats share one effective system')
+
+    const second = await runRound([4102, 4202], async (call) => {
+      const current = (await call('settings.chatPrompt.get', { chatId: 'u-alice' })).value
+      const saved = await call('settings.chatPrompt.save', { chatId: 'u-alice', prompt: 'ALICE ONLY PROMPT M1', myName: null, expectedRevision: current.revision })
+      assert.equal(saved.ok, true, 'the override is saved through the dispatcher')
+    })
+    assert.notEqual(second.alice.sessionFingerprint, first.alice.sessionFingerprint, 'the overridden chat gets a new fingerprint')
+    assert.ok(second.alice.sessionEpoch > first.alice.sessionEpoch, 'and a new session epoch')
+    assert.equal(second.bob.sessionFingerprint, first.bob.sessionFingerprint, 'the other chat keeps its fingerprint')
+    assert.equal(second.bob.sessionEpoch, first.bob.sessionEpoch, 'and its session epoch')
+  } finally { rmSync(dataDir, { recursive: true, force: true }) }
+})
+
+
+test('m2 saveName and chatPrompt.save need their keys present: an absent key is invalid_args and never clears the stored override or default name; an explicit null still clears', async () => {
+  const { db } = freshDb()
+  db.prepare('INSERT INTO chats(chat_id, name, is_group, blocked, first_seen_at, last_seen_at) VALUES (?, ?, 0, 0, ?, ?)').run('u-alice', 'u-alice', '2026-11-02T00:00:00.000Z', '2026-11-02T00:00:00.000Z')
+  const { prompts, cleanup } = chatPromptSetup(db)
+  const { d, dispose } = makeDispatcher(fakeApi(), { prompts })
+  try {
+    const state = (await inv(d, 'settings.prompt.get')).value
+    const named = (await inv(d, 'settings.prompt.saveName', { myName: '王小明', expectedNameRevision: state.nameRevision })).value
+    assert.equal(named.myName, '王小明')
+    const missingName = await inv(d, 'settings.prompt.saveName', { expectedNameRevision: named.nameRevision })
+    assert.equal(missingName.code, 'invalid_args')
+    assert.equal((await inv(d, 'settings.prompt.get')).value.myName, '王小明', 'the default name survives a save without myName')
+
+    const base = (await inv(d, 'settings.chatPrompt.get', { chatId: 'u-alice' })).value
+    const saved = (await inv(d, 'settings.chatPrompt.save', { chatId: 'u-alice', prompt: 'ALICE', myName: '阿華', expectedRevision: base.revision })).value
+    assert.deepEqual([saved.overridePrompt, saved.overrideName], ['ALICE', '阿華'])
+    assert.equal((await inv(d, 'settings.chatPrompt.save', { chatId: 'u-alice', myName: '阿華', expectedRevision: saved.revision })).code, 'invalid_args', 'no prompt key')
+    assert.equal((await inv(d, 'settings.chatPrompt.save', { chatId: 'u-alice', prompt: 'ALICE', expectedRevision: saved.revision })).code, 'invalid_args', 'no myName key')
+    assert.equal((await inv(d, 'settings.chatPrompt.save', { chatId: 'u-alice', expectedRevision: saved.revision })).code, 'invalid_args', 'neither key')
+    const after = (await inv(d, 'settings.chatPrompt.get', { chatId: 'u-alice' })).value
+    assert.deepEqual([after.overridePrompt, after.overrideName, after.revision], ['ALICE', '阿華', saved.revision], 'the stored override is untouched by the rejected saves')
+
+    assert.throws(() => prompts.chatSave('u-alice', { prompt: undefined, myName: '阿華' }, saved.revision), /invalid_args/)
+    assert.throws(() => prompts.chatSave('u-alice', { prompt: 'ALICE', myName: undefined }, saved.revision), /invalid_args/)
+    assert.throws(() => prompts.saveName(undefined, named.nameRevision), /invalid_args/)
+
+    const cleared = (await inv(d, 'settings.chatPrompt.save', { chatId: 'u-alice', prompt: null, myName: null, expectedRevision: saved.revision })).value
+    assert.deepEqual([cleared.overridePrompt, cleared.overrideName], [null, null], 'an explicit null is a value and clears')
+    const noName = (await inv(d, 'settings.prompt.saveName', { myName: null, expectedNameRevision: named.nameRevision })).value
+    assert.equal(noName.myName, null, 'an explicit null clears the default name')
+  } finally { dispose(); cleanup() }
 })
