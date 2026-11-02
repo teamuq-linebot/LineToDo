@@ -18,8 +18,10 @@
  *     `media.prepare`（解密圖片寫進 dataDir，回相對路徑給 view 的 `assets.url()`）、`result.chunk`、`job.poll`。
  *     草擬回覆／誤判分析／群組議題分析就是一般的 `db.todos.draftReply`／`db.todos.analyzeNotMine`／`groupTopics.analyze` 路徑，耗時久所以走 settle（超過 soft deadline 轉成 job）。
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomBytes } from 'node:crypto'
 import type { LineTodoApi } from '../../shared/api'
+import type { InvokeTrace, TraceCall, TraceInfo } from './invokeTrace'
 import { AI_RUN_PATHS, runAs } from './aiProvider'
 import type { AiTaskKind } from './aiProvider'
 import type { PromptService } from './promptService'
@@ -69,6 +71,22 @@ export const UNSUPPORTED_API_PATHS: Readonly<Record<string, { route: 'none'; mes
   'media.open': { route: 'none', message: '外掛版以 assets.url 顯示媒體' },
   'media.saveAs': { route: 'none', message: '外掛版以 UI 端下載取代另存新檔' }
 })
+
+/**
+ * `Dispatcher.dispatch` 的 `switch (path)` 直接處理的內部路徑（不在 `SUPPORTED_API_PATHS`）。呼叫紀錄的已知路徑集合用到它；
+ * test-invoke-trace.mjs 會解析 `switch` 的 `case`，漏列任何一個就紅燈，所以新增內部路徑時一定要同步加在這裡。
+ */
+export const INTERNAL_API_PATHS: readonly string[] = Object.freeze([
+  'backend.info', 'backend.residency',
+  'events.open', 'events.pull', 'events.close',
+  'settings.prompt.get', 'settings.prompt.save', 'settings.prompt.reset', 'settings.prompt.refine',
+  'ai.status', 'ai.options', 'extract.stats', 'review.status', 'tasks.status',
+  'media.prepare', 'media.avatar.prepareChats', 'media.avatar.prepareMessages',
+  'result.chunk', 'job.poll'
+])
+
+/** 呼叫紀錄允許原樣寫出的 path：dispatcher 真的認得的路徑（支援的、明確不支援的、內部的）。其他字串一律記 `?`。 */
+const KNOWN_TRACE_PATHS: ReadonlySet<string> = new Set([...SUPPORTED_API_PATHS, ...Object.keys(UNSUPPORTED_API_PATHS), ...INTERNAL_API_PATHS])
 
 const METHOD_GROUPS: ReadonlySet<string> = new Set(BACKEND_METHOD_GROUPS)
 const AI_KIND_BY_PATH: ReadonlyMap<string, AiTaskKind> = new Map((Object.entries(AI_RUN_PATHS) as Array<[AiTaskKind, string]>).map(([kind, path]) => [path, kind]))
@@ -120,9 +138,16 @@ export interface DispatcherOptions {
   maxJobs?: number
   maxJobWaitMs?: number
   now?(): number
+  /**
+   * 呼叫紀錄（invokeTrace.ts）：每次 `call` 在進入 handler 之前同步寫 `start`、回傳時寫 `end`（耗時、結果碼）。純觀測：省略＝不記錄，
+   * 有也不改變任何回應、逾時或 job 轉換。紀錄只含 method／path 名稱、序號、時間、耗時、結果碼與參數大小，沒有參數值。
+   */
+  trace?: InvokeTrace
 }
 
 const DEADLINE = Symbol('deadline')
+/** 目前這個 `call` 的紀錄把手；`startJob` 靠它把「轉成 job」的呼叫在 job 做完時補一筆 `job_end`。 */
+const traceStore = new AsyncLocalStorage<TraceCall>()
 const fail = (code: string, message?: string, route?: string): Envelope => ({ ok: false, code, ...(message ? { message } : {}), ...(route ? { route } : {}) })
 const plain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
 
@@ -165,6 +190,19 @@ export class Dispatcher {
   private get budget(): number { return this.opts.responseBudgetBytes ?? BACKEND_LIMITS.invokeBytes - 8 * 1024 }
 
   async call(method: string, params: unknown): Promise<Envelope> {
+    const trace = this.opts.trace
+    if (!trace) return this.dispatch(method, params)
+    // 先寫 `start`（同步落檔），之後才進 handler：backend 之後同步卡死或被強殺，最後一筆「已開始、未結束」仍在磁碟上。
+    const handle = trace.begin(traceInfo(method, params))
+    return traceStore.run(handle, async () => {
+      let envelope: Envelope
+      try { envelope = await this.dispatch(method, params) } catch (error) { handle.fail(error); throw error }
+      handle.end(envelopeResult(envelope), envelope.ok && 'chunked' in envelope ? { bytes: envelope.bytes } : undefined)
+      return envelope
+    })
+  }
+
+  private async dispatch(method: string, params: unknown): Promise<Envelope> {
     if (this.disposed) return fail('backend_stopped', 'backend is stopped')
     if (typeof method !== 'string' || !METHOD_GROUPS.has(method)) return fail('method_unknown', String(method).slice(0, 64))
     if (!plain(params) || typeof params.path !== 'string') return fail('invalid_args', 'params.path is required')
@@ -314,7 +352,9 @@ export class Dispatcher {
     if (this.jobs.size >= (this.opts.maxJobs ?? 32)) return fail('too_many_jobs', 'too many long-running calls')
     const job: Job = { id: randomBytes(12).toString('hex'), startedAt: this.now(), state: 'running', outcome: null, expiresAt: Number.POSITIVE_INFINITY, wake: null }
     this.jobs.set(job.id, job)
+    const jobDone = traceStore.getStore()?.background()
     void outcome.then((result) => {
+      try { jobDone?.(result.ok ? 'ok' : envelopeResult(mapError(result.error))) } catch { /* 紀錄失敗不影響 job */ }
       job.outcome = result
       job.state = 'done'
       job.expiresAt = this.now() + (this.opts.jobTtlMs ?? 10 * 60_000)
@@ -441,6 +481,31 @@ function reviewNotConnected(days: number | undefined, note: string): ReviewLastD
     ok: false, hasApiKey: true, days: window, sinceMs: Date.now() - window * 86_400_000, newMsgs: 0, chatsSeen: 0, chatsProcessed: 0, chatsSkippedNoise: 0,
     chatsFailed: 0, todosCreated: 0, todosMerged: 0, todosResolvedDone: 0, todosSuggestedDone: 0, createdIds: [], resolvedIds: [], updatedIds: [], note
   }
+}
+
+/**
+ * 紀錄用的 method／path 標籤與參數大小。path 只在「屬於已知路徑集合（`KNOWN_TRACE_PATHS`）」時原樣記錄，其餘一律記 `?`：
+ * 只通過格式檢查或組名前綴的字串（例如 `db.chats.AliceWang1234.Secret`）可能夾帶呼叫端塞進來的任意文字，不能寫進檔案。參數只量大小，不記值。絕不 throw。
+ */
+function traceInfo(method: unknown, params: unknown): TraceInfo {
+  const info: TraceInfo = { method: typeof method === 'string' && METHOD_GROUPS.has(method) ? method : '?', path: '?', argc: -1, argBytes: -1 }
+  try {
+    if (!plain(params)) return info
+    if (typeof params.path === 'string' && KNOWN_TRACE_PATHS.has(params.path)) info.path = params.path
+    if (params.args === undefined) { info.argc = 0; info.argBytes = 0 } else if (Array.isArray(params.args)) {
+      info.argc = params.args.length
+      info.argBytes = params.args.length <= MAX_ARGS ? Buffer.byteLength(JSON.stringify(params.args) ?? '') : -1
+    }
+  } catch { /* 量不到就維持 -1 */ }
+  return info
+}
+
+/** 回應的結果碼：`ok`／`pending`（轉成 job）／`chunked`，失敗＝envelope 的錯誤碼（整理成只含英數與底線）。不含 message。 */
+function envelopeResult(envelope: Envelope): string {
+  if (!envelope.ok) return /^[A-Za-z0-9_]{1,64}$/.test(envelope.code) ? envelope.code : 'other'
+  if ('pending' in envelope) return 'pending'
+  if ('chunked' in envelope) return 'chunked'
+  return 'ok'
 }
 
 function numberOr(value: unknown): number | undefined {

@@ -198,6 +198,22 @@ test('fake LINE source -> koffi snapshot + WASM -> app DB (better-sqlite3 13.0.2
   assert.ok(r.afterDispose.dataDir.includes('.watch_json_state'))
 })
 
+test('invoke trace under the real permission model (Electron 44 + 1.6.8 flags): dataDir/logs/invoke-trace.log is written, ends with stop, has no unfinished call and only whitelisted fields / plain tokens', async () => {
+  const { run } = await getSetup()
+  const t = run.result.afterDispose.invokeTrace
+  assert.ok(run.result.afterDispose.dataDir.includes('logs'), 'the logs directory exists in dataDir')
+  assert.ok(t, 'the trace file exists')
+  assert.ok(t.events.boot >= 1 && t.events.start > 10 && t.events.start === t.events.end, `every start has an end: ${JSON.stringify(t.events)}`)
+  assert.equal(t.last, 'stop', 'a clean dispose ends the log with stop')
+  assert.equal(t.unfinished, 0)
+  assert.ok(t.results.includes('ok') && t.results.includes('chunked') && t.results.includes('path_unknown'), `result codes: ${t.results}`)
+  assert.equal(t.badLines, 0)
+  assert.equal(t.badValues, 0, 'every string value in the log is a plain token (no message text, names or paths with content)')
+  const { ALLOWED_FIELDS } = await import('../../src/plugin/backend/invokeTrace.ts')
+  assert.deepEqual(t.keys.filter((k) => !ALLOWED_FIELDS.has(k)), [], 'no field outside the whitelist')
+  assert.ok(t.size < 1024 * 1024)
+})
+
 test('the 64 KiB invoke limit is never exceeded in either direction', async () => {
   const { run } = await getSetup()
   const { wire } = run.result

@@ -36,6 +36,35 @@ const viewCall = (call, path, args) => call(backendMethodFor(path), { path, args
 const init = JSON.parse(Buffer.from(process.argv[2], 'base64url').toString('utf8'))
 const cfg = JSON.parse(Buffer.from(process.argv[3], 'base64url').toString('utf8'))
 
+/** Summary of the backend's invoke trace (dataDir/logs/invoke-trace.log): proves the log was written under the real permission model, without shipping the whole file. */
+function summarizeInvokeTrace(file) {
+  if (!fs.existsSync(file)) return null
+  const TOKEN = /^[A-Za-z0-9_.:+\-?]*$/
+  const keys = new Set()
+  const events = {}
+  const results = new Set()
+  const starts = new Set()
+  const ended = new Set()
+  let badValues = 0
+  let badLines = 0
+  let last = null
+  const walk = (value) => {
+    if (Array.isArray(value)) { value.forEach(walk); return }
+    if (value !== null && typeof value === 'object') { for (const [k, v] of Object.entries(value)) { keys.add(k); walk(v) } return }
+    if (typeof value === 'string' && !TOKEN.test(value)) badValues += 1
+  }
+  for (const line of fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)) {
+    let record
+    try { record = JSON.parse(line) } catch { badLines += 1; continue }
+    walk(record)
+    events[record.ev] = (events[record.ev] ?? 0) + 1
+    last = record.ev
+    if (record.ev === 'start') starts.add(record.seq)
+    if (record.ev === 'end') { ended.add(record.seq); results.add(record.res) }
+  }
+  return { size: fs.statSync(file).size, keys: [...keys], events, results: [...results], last, badValues, badLines, unfinished: [...starts].filter((s) => !ended.has(s)).length }
+}
+
 const out = { runtime: { electron: process.versions.electron, node: process.version, abi: process.versions.modules }, argvFlags: process.execArgv, steps: [] }
 const logs = []
 for (const level of ['log', 'info', 'warn', 'error']) console[level] = (...args) => logs.push(`${level}: ${args.map(String).join(' ')}`.slice(0, 300))
@@ -416,6 +445,7 @@ try {
     dataDir: fs.readdirSync(init.dataDir).sort(),
     lineEngineDir: fs.existsSync(join(init.dataDir, 'line-engine')) ? fs.readdirSync(join(init.dataDir, 'line-engine')) : null,
     ownerLock: fs.existsSync(join(init.dataDir, '.line-todo-owner.lock')),
+    invokeTrace: summarizeInvokeTrace(join(init.dataDir, 'logs', 'invoke-trace.log')),
     residencyListeners: residencyStandin.listeners(),
     residencyStats: { ...residencyStandin.stats },
   }

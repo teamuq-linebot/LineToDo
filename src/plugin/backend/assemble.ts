@@ -54,6 +54,8 @@ import { createPortAiProvider } from './aiProvider'
 import { Dispatcher } from './dispatcher'
 import type { AiRuntime, DispatcherOptions } from './dispatcher'
 import { EventHub } from './eventHub'
+import { InvokeTrace } from './invokeTrace'
+import type { InvokeTraceOptions } from './invokeTrace'
 import type { EventHubOptions } from './eventHub'
 import { ExtractQueue } from './extractQueue'
 import type { ExtractQueueOptions } from './extractQueue'
@@ -148,9 +150,16 @@ export interface PluginBackendOptions {
   ai?: { clock?: Clock; config?: Partial<HostAiConfig>; worker?: Partial<ExtractWorkerConfig> }
   hub?: EventHubOptions
   dispatcher?: Partial<Pick<DispatcherOptions, 'softDeadlineMs' | 'aiDeadlineMs' | 'responseBudgetBytes' | 'resultTtlMs' | 'maxResults' | 'maxResultBytes' | 'jobTtlMs' | 'maxJobs' | 'maxJobWaitMs'>>
+  /**
+   * 呼叫紀錄（invokeTrace.ts）：預設開啟，寫到 `<dataDir>/logs/invoke-trace.log`（輪替檔 `.1`）。傳 false＝關閉；傳物件＝覆寫門檻／上限／時鐘（測試用）。
+   */
+  trace?: false | Partial<InvokeTraceOptions>
   /** 啟動後不自動 `runtime.start()`（單元測試要自己控制時序時用）。 */
   autoStart?: boolean
 }
+
+/** 呼叫紀錄檔相對於 dataDir 的位置（診斷與文件引用這個路徑）。 */
+export const INVOKE_TRACE_RELATIVE_FILE = join('logs', 'invoke-trace.log')
 
 const EVENT_BRIDGE: Array<[string, (api: LineTodoApi, emit: (payload: unknown) => void) => () => void]> = [
   ['line-message', (api, emit) => api.line.onMessage(emit)],
@@ -464,8 +473,16 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   }))
 
   let disposed = false
+  // 每個 backend 呼叫的開始／結束／耗時／結果碼與事件迴圈卡頓（invokeTrace.ts）。純觀測；寫入失敗只在 recentLog 留一行，不影響呼叫。
+  const trace = options.trace === false ? null : new InvokeTrace({
+    file: join(dataDir, INVOKE_TRACE_RELATIVE_FILE),
+    version: options.version,
+    onError: (code) => log(`[trace] write_failed ${code}`),
+    ...options.trace
+  })
   const dispatcher: Dispatcher = new Dispatcher({
     ...options.dispatcher,
+    ...(trace ? { trace } : {}),
     getApi: () => {
       if (disposed) throw new Error('Line Todo runtime is disposed')
       return runtime.api
@@ -521,6 +538,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     offResidency()
     residency.dispose()
     dispatcher.dispose()
+    trace?.stop()
     hub.dispose()
     if (workerStartTimer) clearTimeout(workerStartTimer)
     worker?.stop()
@@ -556,9 +574,14 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       hub.dispose()
       queue.dispose()
       review.dispose()
-      await runtime.dispose()
-      // 讓進行中的 poll／掃描收尾（刪掉暫存快照、關 handle）；等不到就放手，殘留的快照目錄會在下次啟動時清掉。
-      await Promise.race([Promise.all([watcher?.idle(), keyGuard.idle()]), new Promise<void>((resolve) => { setTimeout(resolve, DISPOSE_IDLE_WAIT_MS).unref?.() })])
+      try {
+        await runtime.dispose()
+        // 讓進行中的 poll／掃描收尾（刪掉暫存快照、關 handle）；等不到就放手，殘留的快照目錄會在下次啟動時清掉。
+        await Promise.race([Promise.all([watcher?.idle(), keyGuard.idle()]), new Promise<void>((resolve) => { setTimeout(resolve, DISPOSE_IDLE_WAIT_MS).unref?.() })])
+      } finally {
+        // 最後才寫 `stop`：被 dispose 喚醒的長輪詢等呼叫的 `end` 都已落檔，檔尾是 `stop` 就代表正常結束。
+        trace?.stop()
+      }
     },
     diagnostics: (): BackendDiagnostics => ({
       appDbOpen: appDb ? isOpen(appDb) : false,
