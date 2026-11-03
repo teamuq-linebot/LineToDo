@@ -743,3 +743,33 @@ test('queue: when no UI has touched the queue for 15 minutes a NEW request fails
   assert.equal(box.state, 'pending')
   queue.dispose()
 })
+test('queue: a scheduled-cycle offer never re-sends messages a running review (await) already holds, queued or leased — the watcher tick that fires mid-review must not double-send', async () => {
+  for (const leaseFirst of [false, true]) {
+    const { queue } = queueWithClock({ maxUserChars: 900 })
+    const messages = Array.from({ length: 12 }, (_, i) => dto(i + 1, `訊息${i + 1}：` + '很長的內容'.repeat(12)))
+    const review = track(queue.request(inputOf(messages)))
+    const sent = []
+    let leased = null
+    if (leaseFirst) { const { items } = queue.pull(); assert.equal(items.length, 1); sent.push(items[0].user); leased = items[0] }
+    queue.beginCycle()
+    queue.offer(inputOf(messages), messages.map((m) => m.msgId))
+    queue.endCycle()
+    for (let guard = 0; guard < 40; guard += 1) {
+      const { items } = queue.pull({ max: 16 })
+      if (items.length === 0) break
+      for (const item of items) { sent.push(item.user); queue.commit({ results: [{ itemId: item.itemId, ok: true, result: fyi }] }) }
+    }
+    if (leased) queue.commit({ results: [{ itemId: leased.itemId, ok: true, result: fyi }] })
+    for (let guard = 0; guard < 40; guard += 1) {
+      const { items } = queue.pull({ max: 16 })
+      if (items.length === 0) break
+      for (const item of items) { sent.push(item.user); queue.commit({ results: [{ itemId: item.itemId, ok: true, result: fyi }] }) }
+    }
+    await tick()
+    assert.equal(review.state, 'resolved', `leaseFirst=${leaseFirst}`)
+    const ids = sent.flatMap((user) => messages.filter((m) => user.includes(m.text)).map((m) => m.msgId))
+    assert.equal(ids.length, 12, `leaseFirst=${leaseFirst}: ${ids.length} message sends for 12 messages`)
+    assert.equal(new Set(ids).size, 12)
+    queue.dispose()
+  }
+})

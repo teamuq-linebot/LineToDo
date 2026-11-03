@@ -458,7 +458,8 @@ export class ExtractQueue implements ExtractSink {
     const wanted = new Set(msgIds)
     // 已被領走（租約中）的訊息不重複供料；其餘訊息照常排隊。
     const inflight = new Set<string>()
-    for (const e of this.entries.values()) if (e.chatId === chatId && e.mode === 'apply' && e.state === 'leased') for (const id of e.msgIds) inflight.add(id)
+    // 回顧（await）正在處理的訊息（排隊或租約中）也算：回顧要幾十分鐘，期間定時輪詢會再把同一批尚未標記 processed 的訊息供料，同一則訊息就會送 AI 兩次。
+    for (const e of this.entries.values()) if (e.chatId === chatId && (e.mode === 'await' || e.state === 'leased')) for (const id of e.msgIds) inflight.add(id)
     for (const [id, e] of this.entries) if (e.chatId === chatId && e.mode === 'apply' && e.state === 'pending') this.entries.delete(id)
     const fresh = input.newMessages.filter((m) => wanted.has(m.msgId) && !inflight.has(m.msgId))
     if (fresh.length === 0) return
