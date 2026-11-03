@@ -9,6 +9,8 @@ export type GroupTopicsOverviewEntry = {
   chat: GroupTopicsOverviewChat
   status: 'enabled' | 'disabled' | 'failed'
   topics: GroupTopicDTO[]
+  topicCount?: number
+  compacted?: boolean
   error?: string
 }
 
@@ -39,7 +41,9 @@ export function overviewToEntries(rows: GroupTopicsOverviewDTO[]): GroupTopicsOv
   return rows.map((row) => ({
     chat: { chatId: row.chatId, name: row.name },
     status: row.enabled ? 'enabled' : 'disabled',
-    topics: row.topics
+    topics: row.topics,
+    topicCount: row.topicCount,
+    compacted: row.compacted
   }))
 }
 

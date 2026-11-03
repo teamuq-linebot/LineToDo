@@ -733,6 +733,10 @@ export interface GroupTopicsOverviewDTO {
   name: string | null
   enabled: boolean
   topics: GroupTopicDTO[]
+  /** 該群議題真實總數（topics 可能因筆數或回應大小上限而較少）。 */
+  topicCount?: number
+  /** true：為控制回應大小，topics 內的標題、摘要或證據 id 已縮短；完整內容請進單群詳情。 */
+  compacted?: boolean
   pendingCount: number
   backlogCount: number
 }

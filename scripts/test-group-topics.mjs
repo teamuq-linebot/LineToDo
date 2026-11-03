@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import NativeDatabase from 'better-sqlite3-plugin'
 import test from 'node:test'
 import { SCHEMA_DDL } from '../src/main/db/schema.ts'
-import { createGroupTopicsService, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT } from '../src/main/features/groupTopics/service.ts'
+import { createGroupTopicsService, GROUP_TOPICS_OVERVIEW_BYTE_LIMIT, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT } from '../src/main/features/groupTopics/service.ts'
 import { ensureGroupTopicsSchema } from '../src/main/features/groupTopics/repository.ts'
 import { ensureLineImportSchema } from '../src/main/db/lineImport.repo.ts'
 import { completedInputExists, countPendingMessages, GROUP_TOPICS_VALIDATOR_VERSION, loadMessages, listTopics, saveAnalysis, todoRefs } from '../src/main/features/groupTopics/repository.ts'
@@ -614,6 +614,73 @@ test('renderer overview requests every group and keeps disabled and failed group
     { chatId: 'group-b', status: 'disabled', topics: 0, error: undefined },
     { chatId: 'group-c', status: 'failed', topics: 0, error: 'synthetic query failure' }
   ])
+})
+
+function seedHeavyGroup(db, chatId, name, { topics = 30, summaryChars = 300, evidence = 8, tsBase = 1_766_000_000_000 } = {}) {
+  db.pragma('foreign_keys=OFF')
+  db.prepare("INSERT OR IGNORE INTO chats(chat_id,name,is_group,blocked,first_seen_at,last_seen_at) VALUES(?,?,1,0,'2026-09-30','2026-09-30')").run(chatId, name)
+  const insertTopic = db.prepare('INSERT INTO discussion_topics(topic_id,chat_id,local_ref,title,summary,created_at,last_source_ts) VALUES(?,?,?,?,?,?,?)')
+  const insertMsg = db.prepare("INSERT INTO messages(msg_id,chat_id,ts,time_iso,direction,sender,text,content_type,processed,ingested_at) VALUES(?,?,?,?,'in','x','t',0,1,'2026-09-30')")
+  const insertEvidence = db.prepare("INSERT INTO topic_evidence(topic_id,msg_id,relation,confidence,relevance,relevance_evidence_msg_ids,run_id) VALUES(?,?,'about',0.9,'action',?,'heavy-run')")
+  for (let t = 0; t < topics; t += 1) {
+    const topicId = 'topic-' + chatId + '-' + String(t).padStart(3, '0') + '-' + 'x'.repeat(24)
+    insertTopic.run(topicId, chatId, 'ref-' + t, '議'.repeat(25), '摘'.repeat(summaryChars), '2026-09-30', tsBase + t)
+    const ids = Array.from({ length: evidence }, (_, k) => chatId + '-m' + String(t).padStart(3, '0') + String(k) + '1'.repeat(14))
+    for (const id of ids) { insertMsg.run(id, chatId, tsBase + t, '2026-09-30T00:00:00Z'); insertEvidence.run(topicId, id, JSON.stringify(ids)) }
+  }
+}
+
+const OVERVIEW_BYTE_CEILING = 56 * 1024
+
+test('overview stays under the dispatcher response budget at realistic volume (many groups x 30 topics x 300-char summaries x 8 evidence ids) and says what was trimmed', () => {
+  const db = dbFixture()
+  const service = createGroupTopicsService(db)
+  const names = ['群丙', '群丁', '群戊', '群己', '群庚']
+  names.forEach((name, i) => { seedHeavyGroup(db, 'heavy-' + i, name, { tsBase: 1_766_000_000_000 + i * 1000 }); service.enable('heavy-' + i, true) })
+  const rows = service.overview()
+  const bytes = Buffer.byteLength(JSON.stringify(rows))
+  assert.ok(bytes <= GROUP_TOPICS_OVERVIEW_BYTE_LIMIT, 'serialized overview ' + bytes + ' B must be <= ' + GROUP_TOPICS_OVERVIEW_BYTE_LIMIT)
+  assert.ok(GROUP_TOPICS_OVERVIEW_BYTE_LIMIT < OVERVIEW_BYTE_CEILING, 'the limit sits below the dispatcher budget (64 KiB - 8 KiB)')
+  const heavy = rows.filter((row) => row.chatId.startsWith('heavy-'))
+  assert.equal(heavy.length, 5, 'every group stays listed even when its topics are trimmed')
+  for (const row of heavy) {
+    assert.equal(row.topicCount, 30, 'the true topic total is reported so the UI can say how many were left out')
+    assert.ok(row.topics.length <= 30)
+    for (const topic of row.topics) assert.ok(topic.evidenceCount === 8, 'evidenceCount keeps the true count')
+  }
+  const total = heavy.reduce((n, row) => n + row.topics.length, 0)
+  assert.ok(total < 150, 'something had to be trimmed at this volume')
+  assert.ok(heavy.some((row) => row.compacted === true), 'compaction is flagged')
+  const kept = heavy.flatMap((row) => row.topics.map((topic) => topic.lastSourceTs))
+  const dropped = heavy.reduce((n, row) => n + (row.topicCount - row.topics.length), 0)
+  assert.ok(dropped > 0 || heavy.every((row) => row.compacted))
+  if (dropped > 0) {
+    const newestDropped = Math.max(...heavy.flatMap((row) => service.list(row.chatId).topics.filter((t) => !row.topics.some((k) => k.topicId === t.topicId)).map((t) => t.lastSourceTs)))
+    assert.ok(newestDropped <= Math.min(...kept), 'only the oldest topics are dropped')
+  }
+  assert.equal(service.list('heavy-0').topics[0].summary.length, 300, 'the single-group detail is never trimmed')
+  assert.equal(service.list('heavy-0').topics[0].evidenceMsgIds.length, 8)
+  db.close()
+})
+
+test('overview probe from review: 2 groups x 30 topics x 300-char summaries is within the limit', () => {
+  const db = dbFixture()
+  const service = createGroupTopicsService(db)
+  for (const [i, name] of ['群丙', '群丁'].entries()) { seedHeavyGroup(db, 'probe-' + i, name, { evidence: 8 }); service.enable('probe-' + i, true) }
+  const bytes = Buffer.byteLength(JSON.stringify(service.overview()))
+  assert.ok(bytes <= GROUP_TOPICS_OVERVIEW_BYTE_LIMIT, 'serialized overview ' + bytes + ' B')
+  db.close()
+})
+
+test('overview that already fits is returned untouched (no compaction flag, full evidence)', () => {
+  const db = dbFixture()
+  const service = createGroupTopicsService(db)
+  seedHeavyGroup(db, 'small', '小群', { topics: 3, summaryChars: 40, evidence: 2 }); service.enable('small', true)
+  const row = service.overview().find((r) => r.chatId === 'small')
+  assert.equal(row.compacted, undefined)
+  assert.equal(row.topics.length, 3)
+  assert.deepEqual(row.topics, service.list('small').topics)
+  db.close()
 })
 
 test('overview aggregates every unblocked group in one read: enabled flag, capped recent topics, pending counts; disabled groups carry no topics; blocked and direct chats are left out', async () => {

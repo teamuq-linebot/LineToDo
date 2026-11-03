@@ -14,6 +14,7 @@ export const GROUP_TOPICS_BATCH_SIZE = 20
 export const GROUP_TOPICS_USER_CHAR_LIMIT=7500
 /** 總覽每群最多回傳的議題數（回應大小上限）；單群詳情仍走 list。 */
 export const GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT=30
+export const GROUP_TOPICS_OVERVIEW_BYTE_LIMIT=48*1024
 
 function fitTopicRequestPayload(existingLocalTopics:Array<{ref:string;title:string;summary:string}>,candidates:IdentityCandidate[],messages:Array<{msgId:string;ts:number;direction:'in'|'out';text:string}>,candidateTruncated:boolean):{user:string;candidates:IdentityCandidate[];candidateTruncated:boolean} {
   let local=[...existingLocalTopics]
@@ -33,11 +34,15 @@ function fitTopicRequestPayload(existingLocalTopics:Array<{ref:string;title:stri
   return {user,candidates:history,candidateTruncated:truncated}
 }
 
+type TopicRow = ReturnType<typeof listTopics>[number]
+
 export interface GroupTopicsOverviewRow {
   chatId: string
   name: string | null
   enabled: boolean
   topics: ReturnType<typeof listTopics>
+  topicCount?: number
+  compacted?: boolean
   pendingCount: number
   backlogCount: number
 }
@@ -68,6 +73,57 @@ function requestSchemaForBatch(messages:Array<{msgId:string}>,candidates:Identit
   return {...GROUP_TOPICS_JSON_SCHEMA,properties:{...properties,
     identityDecisions:{...identity,maxItems:30,items:{...identityItems,properties:{...identityProperties,candidateId:{...identityProperties.candidateId,enum:[null,...candidateIds]},evidenceMsgIds:{...identityProperties.evidenceMsgIds,maxItems:Math.min(20,msgIds.length),items:{type:'string',enum:msgIds}}}}},
     assignments:{...assignments,minItems:msgIds.length,maxItems:msgIds.length,items:{...items,properties:{...itemProperties,msgId:{...itemProperties.msgId,enum:msgIds},relevanceEvidenceMsgIds:{...itemProperties.relevanceEvidenceMsgIds,maxItems:msgIds.length,items:{type:'string',enum:msgIds}}}}}}}
+}
+
+const COMPACT_TITLE_CHARS=60
+const COMPACT_SUMMARY_CHARS=120
+const COMPACT_EVIDENCE_IDS=3
+
+function clip(text:string,max:number):string {
+  const chars=Array.from(text)
+  return chars.length<=max?text:chars.slice(0,max).join('')+'…'
+}
+
+function compactTopic(topic:TopicRow):TopicRow {
+  const ids=(list:string[])=>list.slice(0,COMPACT_EVIDENCE_IDS)
+  return {...topic,title:clip(topic.title,COMPACT_TITLE_CHARS),summary:clip(topic.summary,COMPACT_SUMMARY_CHARS),evidenceMsgIds:ids(topic.evidenceMsgIds),relevanceEvidenceMsgIds:ids(topic.relevanceEvidenceMsgIds),relevanceEvidence:topic.relevanceEvidence.map((item)=>({...item,evidenceMsgIds:ids(item.evidenceMsgIds)}))}
+}
+
+const byteLength=(value:unknown):number=>Buffer.byteLength(JSON.stringify(value))
+
+/**
+ * 把 overview 裁到 limit 位元組以內（小於 dispatcher 的單次回應預算，所以不會被分段）。
+ * 規則：1. 放得下就原樣回傳；2. 全部議題縮短（標題、摘要、證據 id 只留前幾筆），該群標 compacted；
+ * 3. 還是太大就從所有群中最舊的議題開始整筆丟掉（依 lastSourceTs），topicCount 保留真實總數；
+ * 4. 議題丟光仍超過才丟群：先未啟用的，再最後一個。
+ */
+export function fitOverviewToBudget(rows:GroupTopicsOverviewRow[],limit:number):GroupTopicsOverviewRow[] {
+  if (byteLength(rows)<=limit) return rows
+  let fitted=rows.map((row)=>{
+    const topics=row.topics.map(compactTopic)
+    const changed=topics.some((topic,i)=>byteLength(topic)<byteLength(row.topics[i]))
+    return changed?{...row,topics,compacted:true}:row
+  })
+  let size=byteLength(fitted)
+  while (size>limit) {
+    let victim=-1
+    for (let i=0;i<fitted.length;i+=1) {
+      const topics=fitted[i].topics
+      if (!topics.length) continue
+      if (victim<0 || topics[topics.length-1].lastSourceTs<fitted[victim].topics[fitted[victim].topics.length-1].lastSourceTs) victim=i
+    }
+    if (victim<0) break
+    const topics=fitted[victim].topics
+    size-=byteLength(topics[topics.length-1])+1
+    fitted=fitted.map((row,i)=>i===victim?{...row,topics:topics.slice(0,-1)}:row)
+  }
+  while (size>limit && fitted.length>0) {
+    let drop=fitted.findIndex((row)=>!row.enabled)
+    if (drop<0) drop=fitted.length-1
+    size-=byteLength(fitted[drop])+1
+    fitted=fitted.filter((_,i)=>i!==drop)
+  }
+  return fitted
 }
 
 function safeProviderKind(value:unknown):TopicProviderKind {
@@ -101,11 +157,13 @@ export function createGroupTopicsService(db: Database): GroupTopicsService {
       return { ok: true, topics: listTopics(db, chatId) }
     },
     overview() {
-      return listChats({}, db).filter((chat) => chat.isGroup && !chat.blocked).map((chat) => {
+      const rows = listChats({}, db).filter((chat) => chat.isGroup && !chat.blocked).map((chat): GroupTopicsOverviewRow => {
         const enabled = isEnabled(db, chat.chatId)
         const pendingCount = enabled ? countPendingMessages(db, chat.chatId) : 0
-        return { chatId: chat.chatId, name: chat.name, enabled, topics: enabled ? listTopics(db, chat.chatId).slice(0, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT) : [], pendingCount, backlogCount: pendingCount }
+        const all = enabled ? listTopics(db, chat.chatId) : []
+        return { chatId: chat.chatId, name: chat.name, enabled, topics: all.slice(0, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT), topicCount: all.length, pendingCount, backlogCount: pendingCount }
       })
+      return fitOverviewToBudget(rows, GROUP_TOPICS_OVERVIEW_BYTE_LIMIT)
     },
     todoRefs(topicId) { return todoRefs(db, topicId) },
     async analyze(chatId, resolveProvider) {

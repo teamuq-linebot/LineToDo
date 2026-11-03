@@ -273,3 +273,10 @@ test('the plugin entry points are plain files in the repo (no template magic): t
   assert.match(readFileSync(join(ui, 'settings.html'), 'utf8'), /<script src="settings\.js"><\/script>/)
   writeFileSync(join(work, 'probe.txt'), 'ok')
 })
+
+test('L2: the first paint of the overview topics section shows loading, never the empty-group sentence', async () => {
+  const { renderGroupTopicsFirstPaint, PLUGIN } = await renderer()
+  const html = renderGroupTopicsFirstPaint(PLUGIN)
+  assert.ok(html.includes('正在彙整'), 'loading line on first paint')
+  assert.equal(html.includes('目前沒有可用群組'), false, 'no empty-group sentence before the first reply')
+})

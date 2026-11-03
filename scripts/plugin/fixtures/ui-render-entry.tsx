@@ -10,6 +10,7 @@ import { MediaFileActions, MediaImage } from '../../../src/renderer/components/M
 import App from '../../../src/renderer/App'
 import { NO_UI_STATE, UiStateProvider, createLocalUiState } from '../../../src/renderer/lib/uiState'
 import { BackendStatusBar } from '../../../src/plugin/ui/BackendStatusBar'
+import { GroupTopicsPanel } from '../../../src/renderer/features/groupTopics/GroupTopicsPanel'
 
 const never = (): Promise<never> => new Promise(() => undefined)
 
@@ -94,4 +95,14 @@ export function renderAppWithState(caps: HostCapabilities, saved: Record<string,
 /** G-03: the backend status line for a given link state. */
 export function renderBackendBar(link: { state: 'unknown' | 'ok' | 'revoked' | 'unavailable'; code: string | null }): string {
   return renderToStaticMarkup(<BackendStatusBar source={{ backendLink: () => link, onBackendLink: () => () => undefined }} />)
+}
+
+/** L2: the very first paint of the global group topics panel (no effect has run, no reply has arrived). */
+export function renderGroupTopicsFirstPaint(caps: HostCapabilities): string {
+  const api = { ...stubApi(), groupTopics: { overview: never, list: never } } as unknown as Api
+  return renderToStaticMarkup(
+    <LineTodoApiProvider api={api} capabilities={caps}>
+      <GroupTopicsPanel hideTitle />
+    </LineTodoApiProvider>
+  )
 }

@@ -1464,6 +1464,7 @@ test('overview tab: mounting the board and the group topics section stays within
     await until(() => view.container.textContent.includes('總覽議題0') && view.container.textContent.includes('總覽議題2'), { message: 'the topics section shows the aggregate result' })
     await sleep(60)
     const paths = log.map((entry) => entry.path)
+    // 6 is the deliberate ceiling from design R10 (host call queue), not a measured value: a new mount-phase call must be justified, not just allowed here.
     assert.ok(log.length <= 6, `mount-phase host calls: ${log.length} (${paths.join(', ')})`)
     assert.equal(paths.filter((path) => path === 'groupTopics.overview').length, 1, 'one aggregate read')
     assert.equal(paths.filter((path) => path === 'groupTopics.list').length, 0, 'no per-group list')
@@ -1572,4 +1573,129 @@ test('overview refresher: bursts of requests collapse into one load, loads are a
   finish(); await sleep(0)
   refresher.request(); now = 9000; fire()
   assert.deepEqual(loads, [0, 2000], 'nothing runs after dispose')
+})
+
+test('M2 sharedRead: a failed read does not stick, the next read issues a new call', async () => {
+  const owner = {}
+  let calls = 0
+  const read = () => { calls += 1; return calls === 1 ? Promise.reject(new Error('boom')) : Promise.resolve('v' + calls) }
+  await assert.rejects(ui.sharedRead(owner, 'k', read), /boom/)
+  assert.equal(calls, 1)
+  assert.equal(await ui.sharedRead(owner, 'k', read), 'v2')
+  assert.equal(calls, 2, 'the read after the failure went out again')
+})
+
+test('M2 sharedRead: after a successful read completes, the next read issues a new call (no stale cache)', async () => {
+  const owner = {}
+  let calls = 0
+  const read = () => { calls += 1; return Promise.resolve('v' + calls) }
+  assert.equal(await ui.sharedRead(owner, 'k', read), 'v1')
+  await sleep(0)
+  assert.equal(await ui.sharedRead(owner, 'k', read), 'v2')
+  assert.equal(calls, 2)
+})
+
+test('M2 sharedRead: concurrent reads of the same key share one call and one promise; other keys and other owners do not share', async () => {
+  const owner = {}
+  let calls = 0
+  const finishers = []
+  const read = () => { calls += 1; return new Promise((resolve) => { finishers.push(resolve) }) }
+  const a = ui.sharedRead(owner, 'k', read)
+  const b = ui.sharedRead(owner, 'k', read)
+  assert.equal(a, b, 'same promise while in flight')
+  assert.equal(calls, 1)
+  const otherKey = ui.sharedRead(owner, 'other', read)
+  const otherOwner = ui.sharedRead({}, 'k', read)
+  assert.equal(calls, 3, 'a different key and a different owner each get their own call')
+  for (const finish of finishers) finish('x')
+  await Promise.all([a, b, otherKey, otherOwner])
+})
+
+function groupTopicsApi(log, extra = {}, { onRun } = {}) {
+  const { api } = plugin(overviewHandlers(log, extra))
+  if (!onRun) return api
+  return { ...api, pipeline: { ...api.pipeline, onRun: (callback) => { onRun(callback); return () => undefined } } }
+}
+
+test('L1 overview: the first load goes through the refresher, so a pipeline-run right after it still waits for the 2 s spacing', async () => {
+  const log = []
+  let fireRun
+  const api = groupTopicsApi(log, {}, { onRun: (callback) => { fireRun = callback } })
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  try {
+    await until(() => log.some((entry) => entry.path === 'groupTopics.overview') && fireRun, { message: 'first overview read' })
+    const first = Date.now()
+    fireRun({})
+    fireRun({})
+    await sleep(600)
+    assert.equal(log.filter((entry) => entry.path === 'groupTopics.overview').length, 1, 'no second read inside the 2 s window')
+    await until(() => log.filter((entry) => entry.path === 'groupTopics.overview').length === 2, { timeout: 4000, message: 'the follow-up read after the spacing' })
+    const gap = Date.now() - first
+    assert.ok(gap >= 1500, 'second read came ' + gap + ' ms after the first')
+    await sleep(80)
+    assert.equal(log.filter((entry) => entry.path === 'groupTopics.overview').length, 2, 'the two run events coalesced into one read')
+  } finally { view.unmount(); api.dispose() }
+})
+
+test('L2 overview: a first load that fails shows only the error, not the empty-group sentence', async () => {
+  const log = []
+  const api = groupTopicsApi(log, { 'groupTopics.overview': () => { throw new Error('synthetic overview failure') } })
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  try {
+    await until(() => view.container.textContent.includes('群組議題總覽載入失敗'), { message: 'the error is shown' })
+    assert.equal(view.container.textContent.includes('目前沒有可用群組'), false, 'error and empty sentence never together')
+    assert.equal(view.container.textContent.includes('正在彙整'), false, 'not stuck on loading')
+  } finally { view.unmount(); api.dispose() }
+})
+
+test('L2/I2 overview: back from a single group the overview shows loading (not the previous error or stale groups) until the new read lands', async () => {
+  const log = []
+  let calls = 0
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const api = groupTopicsApi(log, {
+    'groupTopics.overview': () => { calls += 1; if (calls === 1) return overviewRows(); if (calls === 2) return Promise.reject(new Error('second read failed')); return gate.then(() => overviewRows()) },
+    'groupTopics.list': () => ({ ok: false, topics: [] }),
+    'groupTopics.crossChatEnabled': () => false,
+    'groupTopics.linkCandidates': () => [],
+    'groupTopics.pendingCount': () => 0
+  }, { onRun: () => undefined })
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  const select = () => walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
+  try {
+    await until(() => view.container.textContent.includes('總覽議題0'), { message: 'first read shown' })
+    reactProps(select()).onChange({ target: { value: 'ov-group-1' } })
+    await until(() => view.container.textContent.includes('啟用此群組議題分析'), { message: 'single-group detail' })
+    reactProps(select()).onChange({ target: { value: '__all_groups__' } })
+    await until(() => view.container.textContent.includes('second read failed'), { message: 'second read fails and the error is shown' })
+    reactProps(select()).onChange({ target: { value: 'ov-group-1' } })
+    await until(() => view.container.textContent.includes('啟用此群組議題分析'), { message: 'single-group detail again' })
+    reactProps(select()).onChange({ target: { value: '__all_groups__' } })
+    await until(() => calls === 3, { timeout: 5000, message: 'third read pending behind the 2 s spacing' })
+    const text = view.container.textContent
+    assert.ok(text.includes('正在彙整'), 'loading shown while the new read is pending')
+    assert.equal(text.includes('second read failed'), false, 'old error cleared on return')
+    assert.equal(text.includes('總覽議題0'), false, 'stale groups hidden while loading')
+    release()
+    await until(() => view.container.textContent.includes('總覽議題0'), { message: 'new read lands' })
+  } finally { release(); view.unmount(); api.dispose() }
+})
+
+test('M1 overview UI: trimmed rows say so, how many topics are shown out of the total and that text was shortened', async () => {
+  const log = []
+  const rows = overviewRows()
+  rows[0] = { ...rows[0], topicCount: 31, compacted: true }
+  const api = groupTopicsApi(log, { 'groupTopics.overview': () => rows })
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  try {
+    await until(() => view.container.textContent.includes('總覽議題0'), { message: 'overview shown' })
+    const text = view.container.textContent
+    assert.ok(text.includes('只顯示最近 1 項（共 31 項）'), 'shown / total hint')
+    assert.ok(text.includes('已縮短'), 'compaction hint')
+    assert.equal(text.split('只顯示最近').length - 1, 1, 'only the trimmed group carries the hint')
+  } finally { view.unmount(); api.dispose() }
 })

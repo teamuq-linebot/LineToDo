@@ -58,7 +58,6 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   const api = lineTodoApi.groupTopics
   const [chats, setChats] = useState<GroupTopicsOverviewChat[]>([])
   const viaOverview = !scopedChatId && !embedded && typeof api?.overview === 'function'
-  const overviewLoadedOnce = useRef(false)
   const [globalChatId, setGlobalChatId] = useState(ALL_GROUPS)
   const isOverview = !scopedChatId && globalChatId === ALL_GROUPS
   const chatId = scopedChatId ?? (isOverview ? '' : globalChatId)
@@ -68,7 +67,8 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   const [crossEnabled, setCrossEnabled] = useState(false)
   const [topics, setTopics] = useState<GroupTopicDTO[]>([])
   const [overviewGroups, setOverviewGroups] = useState<GroupTopicsOverviewEntry[]>([])
-  const [overviewLoading, setOverviewLoading] = useState(false)
+  const [legacyOverviewLoading, setOverviewLoading] = useState(false)
+  const [overviewLoaded, setOverviewLoaded] = useState(false)
   const [overviewError, setOverviewError] = useState('')
   const [links, setLinks] = useState<GroupTopicLinkCandidateDTO[]>([])
   const [busy, setBusy] = useState(false)
@@ -124,20 +124,18 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
       try {
         const rows = await api.overview!()
         if (!active) return
-        overviewLoadedOnce.current = true
         setChats(rows.map((row) => ({ chatId: row.chatId, name: row.name })))
         setOverviewGroups(overviewToEntries(rows))
         setOverviewError('')
+        setOverviewLoaded(true)
       } catch (loadError) {
         if (active) setOverviewError(errorMessage(loadError, '群組議題總覽載入失敗'))
-      } finally {
-        if (active) setOverviewLoading(false)
       }
     }
     setOverviewError('')
-    if (!overviewLoadedOnce.current) setOverviewLoading(true)
-    void load()
+    setOverviewLoaded(false)
     const refresher = createOverviewRefresher(load)
+    refresher.request()
     const stopListening = lineTodoApi.pipeline.onRun(() => refresher.request())
     return () => {
       active = false
@@ -315,6 +313,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     }
   }
 
+  const overviewLoading = viaOverview ? isOverview && !overviewLoaded && !overviewError : legacyOverviewLoading
   const heading = embedded ? `此${chatLabel}的議題` : '群組議題'
   const currentChatName = chatName ?? chats.find((chat) => chat.chatId === chatId)?.name ?? chatId
 
@@ -327,7 +326,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
       </details>}
       {embedded && <div className="group-topics-head"><h3>{heading}</h3><span>{currentChatName}</span></div>}
       {!api && <p className="muted">此版本未提供議題分析功能。</p>}
-      {!embedded && chats.length === 0 && !overviewLoading && <p className="muted">目前沒有可用群組。</p>}
+      {!embedded && chats.length === 0 && !overviewLoading && !overviewError && <p className="muted">目前沒有可用群組。</p>}
       {embedded && !chatId && <p className="muted">目前沒有選取中的聊天室。</p>}
       {!embedded && chats.length > 0 && (
         <label className="group-topics-group-select">群組
@@ -348,11 +347,13 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
             <section className="group-topics-overview-group" key={group.chat.chatId} aria-label={group.chat.name ?? '未命名群組'}>
               <header>
                 <h4>{group.chat.name ?? '未命名群組'}</h4>
-                <span>{group.status === 'enabled' ? `議題 ${group.topics.length} 項` : group.status === 'disabled' ? '未啟用' : '載入失敗'}</span>
+                <span>{group.status === 'enabled' ? `議題 ${group.topicCount ?? group.topics.length} 項` : group.status === 'disabled' ? '未啟用' : '載入失敗'}</span>
               </header>
               {group.status === 'failed' && <p className="group-topics-error" role="alert">讀取「{group.chat.name ?? '未命名群組'}」議題失敗：{group.error ?? '未知錯誤'}</p>}
               {group.status === 'disabled' && <p className="muted">此群尚未啟用議題分析，未加入議題總覽。</p>}
               {group.status === 'enabled' && group.topics.length === 0 && <p className="muted">此群已啟用，但尚無分析結果。</p>}
+              {group.status === 'enabled' && group.topicCount !== undefined && group.topicCount > group.topics.length && <p className="muted" role="note">只顯示最近 {group.topics.length} 項（共 {group.topicCount} 項）；選取此群可查看全部議題。</p>}
+              {group.status === 'enabled' && group.compacted && <p className="muted" role="note">為控制回應大小，此群議題的標題、摘要與來源參照已縮短；選取此群可查看完整內容。</p>}
               {group.status === 'enabled' && group.topics.map((topic) => (
                 <article className="group-topic-card group-topic-card-overview" key={topic.topicId}>
                   <span className="group-topic-group-label">{group.chat.name ?? '未命名群組'}</span>
@@ -360,8 +361,8 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
                   <p>{topic.summary}</p>
                   <small>已連結訊息 {topic.evidenceCount} 則；已知參與者下界 {topic.participantLowerBound ?? '不明'}。熱度：未校準；趨勢：不確定。</small>
                   <details>
-                    <summary>議題細節與來源（{topic.evidenceMsgIds.length}）</summary>
-                    <small>本人參與：{topic.userParticipation === 'i_participated' ? '來源含本人送出的訊息' : '不確定'}。模型相關性描述（未驗證）：{topic.relevanceEvidence.length ? topic.relevanceEvidence.map((item) => `${relevanceText[item.relevance]}（參照 ${item.evidenceMsgIds.length} 則）`).join('、') : relevanceText[topic.relevance]}。觀測完整性未校準。</small>
+                    <summary>議題細節與來源（{group.compacted ? topic.evidenceCount : topic.evidenceMsgIds.length}）</summary>
+                    <small>本人參與：{topic.userParticipation === 'i_participated' ? '來源含本人送出的訊息' : '不確定'}。模型相關性描述（未驗證）：{topic.relevanceEvidence.length ? topic.relevanceEvidence.map((item) => `${relevanceText[item.relevance]}${group.compacted ? '' : `（參照 ${item.evidenceMsgIds.length} 則）`}`).join('、') : relevanceText[topic.relevance]}。觀測完整性未校準。</small>
                     {topic.evidenceMsgIds.length > 0 ? <ul>{topic.evidenceMsgIds.map((id) => <li key={id}><code>{id}</code></li>)}</ul> : <p className="muted">目前沒有可列出的來源訊息參照。</p>}
                   </details>
                 </article>
