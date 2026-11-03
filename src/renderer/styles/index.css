@@ -1124,6 +1124,35 @@ button:disabled {
   height: 100%;
 }
 
+/* 總覽頁：上方看板、下方可摺疊的群組議題區；整頁捲動，看板欄內的捲動維持原樣 */
+.overview-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 100%;
+}
+.overview-page > .board-wrap {
+  flex: 0 0 auto;
+  height: max(480px, calc(100vh - 150px));
+}
+.overview-topics {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.overview-topics-toggle {
+  background: transparent;
+  border: none;
+  padding: 4px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: inherit;
+  cursor: pointer;
+}
+.overview-topics .group-topics-panel {
+  margin-top: 8px;
+}
+
 /* 看板頂部工具列（回顧最近 2 天） */
 .board-toolbar {
   display: flex;

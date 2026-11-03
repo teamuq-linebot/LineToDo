@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import NativeDatabase from 'better-sqlite3-plugin'
 import test from 'node:test'
 import { SCHEMA_DDL } from '../src/main/db/schema.ts'
-import { createGroupTopicsService } from '../src/main/features/groupTopics/service.ts'
+import { createGroupTopicsService, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT } from '../src/main/features/groupTopics/service.ts'
 import { ensureGroupTopicsSchema } from '../src/main/features/groupTopics/repository.ts'
 import { ensureLineImportSchema } from '../src/main/db/lineImport.repo.ts'
 import { completedInputExists, countPendingMessages, GROUP_TOPICS_VALIDATOR_VERSION, loadMessages, listTopics, saveAnalysis, todoRefs } from '../src/main/features/groupTopics/repository.ts'
@@ -614,4 +614,32 @@ test('renderer overview requests every group and keeps disabled and failed group
     { chatId: 'group-b', status: 'disabled', topics: 0, error: undefined },
     { chatId: 'group-c', status: 'failed', topics: 0, error: 'synthetic query failure' }
   ])
+})
+
+test('overview aggregates every unblocked group in one read: enabled flag, capped recent topics, pending counts; disabled groups carry no topics; blocked and direct chats are left out', async () => {
+  const db = dbFixture()
+  const service = createGroupTopicsService(db)
+  db.prepare("INSERT INTO chats(chat_id,name,is_group,blocked,first_seen_at,last_seen_at) VALUES('group-blocked','封鎖群',1,1,'2026-09-30','2026-09-30')").run()
+  assert.deepEqual(service.overview().map((row) => [row.chatId, row.enabled, row.topics.length, row.pendingCount, row.backlogCount]).sort(), [['group-a', false, 0, 0, 0], ['group-b', false, 0, 0, 0]])
+  service.enable('group-a', true)
+  const before = service.overview().find((row) => row.chatId === 'group-a')
+  assert.equal(before.enabled, true)
+  assert.equal(before.pendingCount, 2, 'two undecided messages are pending')
+  assert.equal(before.backlogCount, before.pendingCount, 'phase 1: the backlog equals the pending count')
+  await service.analyze('group-a', () => fakeProvider(analysisA))
+  const rows = service.overview()
+  const a = rows.find((row) => row.chatId === 'group-a')
+  assert.deepEqual(a.topics, service.list('group-a').topics, 'the aggregate carries exactly what list returns for the group')
+  assert.equal(a.pendingCount, 0)
+  assert.equal(rows.find((row) => row.chatId === 'group-b').topics.length, 0)
+  assert.equal(rows.some((row) => row.chatId === 'dm' || row.chatId === 'group-blocked'), false)
+  assert.ok(JSON.stringify(rows).length < 64 * 1024, 'the aggregate stays well under the 64 KiB response budget')
+  const insertTopic = db.prepare('INSERT INTO discussion_topics(topic_id,chat_id,local_ref,title,summary,created_at,last_source_ts) VALUES(?,?,?,?,?,?,?)')
+  for (let i = 0; i < 40; i += 1) insertTopic.run('bulk-' + i, 'group-b', 'ref-' + i, '大量議題' + i, '摘要', '2026-09-30', 100 + i)
+  service.enable('group-b', true)
+  const capped = service.overview().find((row) => row.chatId === 'group-b')
+  assert.equal(capped.topics.length, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT, 'at most N recent topics per group')
+  assert.equal(capped.topics[0].title, '大量議題39', 'newest first, same order as list')
+  assert.equal(service.list('group-b').topics.length, 40, 'single-group list is not capped by the overview limit')
+  db.close()
 })

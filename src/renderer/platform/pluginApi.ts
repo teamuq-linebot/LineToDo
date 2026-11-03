@@ -408,6 +408,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       crossChatEnabled: (chatId) => call('groupTopics.crossChatEnabled', chatId),
       pendingCount: (chatId) => call('groupTopics.pendingCount', chatId),
       list: (chatId) => call('groupTopics.list', chatId),
+      overview: () => call('groupTopics.overview'),
       linkCandidates: (chatId) => call('groupTopics.linkCandidates', chatId),
       analyze: (chatId) => runAi<Awaited<ReturnType<GroupTopicsApi['analyze']>>>('groupTopics.analyze', [chatId], () => ({ ok: false, reason: 'analysis_failed' })),
       todoRefs: (topicId) => call('groupTopics.todoRefs', topicId),

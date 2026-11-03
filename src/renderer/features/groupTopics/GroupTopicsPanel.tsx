@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChatDTO, GroupTopicDTO, GroupTopicLinkCandidateDTO } from '../../../shared/api'
+import type { GroupTopicDTO, GroupTopicLinkCandidateDTO } from '../../../shared/api'
 import { useHostCapabilities, useLineTodoApi } from '../../platform/LineTodoApi'
-import { loadGroupTopicsOverview, type GroupTopicsOverviewEntry } from './groupTopicsOverview'
+import { createOverviewRefresher, loadGroupTopicsOverview, overviewToEntries, type GroupTopicsOverviewChat, type GroupTopicsOverviewEntry } from './groupTopicsOverview'
 
 const ALL_GROUPS = '__all_groups__'
 
@@ -48,13 +48,17 @@ interface Props {
   chatName?: string | null
   /** 嵌入聊天時使用較緊湊的標題與內容區。 */
   embedded?: boolean
+  /** 外層（總覽頁）已提供標題時，不重複顯示面板自己的 h2。 */
+  hideTitle?: boolean
 }
 
-export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, chatName, embedded = false }: Props = {}): JSX.Element {
+export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, chatName, embedded = false, hideTitle = false }: Props = {}): JSX.Element {
   const lineTodoApi = useLineTodoApi()
   const caps = useHostCapabilities()
   const api = lineTodoApi.groupTopics
-  const [chats, setChats] = useState<ChatDTO[]>([])
+  const [chats, setChats] = useState<GroupTopicsOverviewChat[]>([])
+  const viaOverview = !scopedChatId && !embedded && typeof api?.overview === 'function'
+  const overviewLoadedOnce = useRef(false)
   const [globalChatId, setGlobalChatId] = useState(ALL_GROUPS)
   const isOverview = !scopedChatId && globalChatId === ALL_GROUPS
   const chatId = scopedChatId ?? (isOverview ? '' : globalChatId)
@@ -77,6 +81,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   currentChatId.current = chatId
 
   useEffect(() => {
+    if (viaOverview) return undefined
     let active = true
     void lineTodoApi.db.chats.list(false).then((rows) => {
       if (!active) return
@@ -87,9 +92,10 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
       if (active) setError(errorMessage(loadError, '讀取群組清單失敗'))
     })
     return () => { active = false }
-  }, [lineTodoApi])
+  }, [lineTodoApi, viaOverview])
 
   useEffect(() => {
+    if (viaOverview) return undefined
     let active = true
     if (!isOverview || !api || chats.length === 0) {
       setOverviewGroups([])
@@ -109,7 +115,36 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
       if (active) setOverviewLoading(false)
     })
     return () => { active = false }
-  }, [api, chats, isOverview])
+  }, [api, chats, isOverview, viaOverview])
+
+  useEffect(() => {
+    if (!viaOverview || !isOverview || !api) return undefined
+    let active = true
+    const load = async (): Promise<void> => {
+      try {
+        const rows = await api.overview!()
+        if (!active) return
+        overviewLoadedOnce.current = true
+        setChats(rows.map((row) => ({ chatId: row.chatId, name: row.name })))
+        setOverviewGroups(overviewToEntries(rows))
+        setOverviewError('')
+      } catch (loadError) {
+        if (active) setOverviewError(errorMessage(loadError, '群組議題總覽載入失敗'))
+      } finally {
+        if (active) setOverviewLoading(false)
+      }
+    }
+    setOverviewError('')
+    if (!overviewLoadedOnce.current) setOverviewLoading(true)
+    void load()
+    const refresher = createOverviewRefresher(load)
+    const stopListening = lineTodoApi.pipeline.onRun(() => refresher.request())
+    return () => {
+      active = false
+      refresher.dispose()
+      stopListening()
+    }
+  }, [api, lineTodoApi, isOverview, viaOverview])
 
   useEffect(() => {
     const version = ++requestVersion.current
@@ -285,14 +320,14 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
 
   return (
     <section className={`settings-section group-topics-panel${embedded ? ' embedded' : ''}`} aria-label={heading}>
-      {!embedded && <h2>{heading}</h2>}
+      {!embedded && !hideTitle && <h2>{heading}</h2>}
       {!embedded && <details className="group-topics-help">
         <summary>議題分析說明與群組設定</summary>
         <p>議題分析需逐群啟用並手動執行。所有群組總覽只讀取各群既有結果，不會自動啟用或分析群組。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>
       </details>}
       {embedded && <div className="group-topics-head"><h3>{heading}</h3><span>{currentChatName}</span></div>}
       {!api && <p className="muted">此版本未提供議題分析功能。</p>}
-      {!embedded && chats.length === 0 && <p className="muted">目前沒有可用群組。</p>}
+      {!embedded && chats.length === 0 && !overviewLoading && <p className="muted">目前沒有可用群組。</p>}
       {embedded && !chatId && <p className="muted">目前沒有選取中的聊天室。</p>}
       {!embedded && chats.length > 0 && (
         <label className="group-topics-group-select">群組
@@ -303,10 +338,10 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
         </label>
       )}
       {error && !chatId && <p className="group-topics-error" role="alert">{error}</p>}
-      {isOverview && chats.length > 0 && (
+      {isOverview && (chats.length > 0 || overviewLoading || !!overviewError) && (
         <section className="group-topics-overview" aria-label="所有群組議題總覽">
           <h3>所有群組議題</h3>
-          {overviewLoading && <p className="muted" role="status">正在彙整 {chats.length} 個群組的既有議題…</p>}
+          {overviewLoading && <p className="muted" role="status">正在彙整{chats.length > 0 ? ` ${chats.length} 個群組的` : '群組的'}既有議題…</p>}
           {overviewError && <p className="group-topics-error" role="alert">{overviewError}</p>}
           {!overviewLoading && !overviewError && overviewGroups.length > 0 && !overviewGroups.some((group) => group.status === 'failed' || group.topics.length > 0) && <p className="muted">目前沒有已啟用且已有議題結果的群組。</p>}
           {!overviewLoading && overviewGroups.map((group) => (

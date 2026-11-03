@@ -5,12 +5,15 @@ import { GROUP_TOPICS_BUNDLE_ENABLED, GROUP_TOPICS_JSON_SCHEMA, GROUP_TOPICS_PRO
 import { TopicAnalysisValidationError, validateTopicAnalysis, type TopicFailurePath, type TopicValidationReason } from './domain'
 import { completedInputExists, countPendingMessages, crossChatIsEnabled, GROUP_TOPICS_VALIDATOR_VERSION, isEnabled, listLinkCandidates, listTopics, loadPendingMessages, loadTopicCandidates, recordFailure, saveAnalysis, setCrossChatEnabled, setEnabled, todoRefs, type TopicFailureStage, type TopicProviderKind } from './repository'
 import { getMessagesByChatAndIds } from '../../db/messages.repo'
+import { listChats } from '../../db/chats.repo'
 import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, recallTopicIdentityCandidates, recordIdentitySourceAttempt, releaseIdentitySourceAttempt } from '../../db/identity.repo'
 import { IDENTITY_QUERY_VERSION, type IdentityCandidate } from '../../../shared/identityDecision'
 
 const versions = { promptVersion: GROUP_TOPICS_PROMPT_VERSION, promptHash: GROUP_TOPICS_PROMPT_HASH, schemaVersion: GROUP_TOPICS_SCHEMA_VERSION, schemaHash: GROUP_TOPICS_SCHEMA_HASH, validatorVersion: GROUP_TOPICS_VALIDATOR_VERSION }
 export const GROUP_TOPICS_BATCH_SIZE = 20
 export const GROUP_TOPICS_USER_CHAR_LIMIT=7500
+/** 總覽每群最多回傳的議題數（回應大小上限）；單群詳情仍走 list。 */
+export const GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT=30
 
 function fitTopicRequestPayload(existingLocalTopics:Array<{ref:string;title:string;summary:string}>,candidates:IdentityCandidate[],messages:Array<{msgId:string;ts:number;direction:'in'|'out';text:string}>,candidateTruncated:boolean):{user:string;candidates:IdentityCandidate[];candidateTruncated:boolean} {
   let local=[...existingLocalTopics]
@@ -30,10 +33,20 @@ function fitTopicRequestPayload(existingLocalTopics:Array<{ref:string;title:stri
   return {user,candidates:history,candidateTruncated:truncated}
 }
 
+export interface GroupTopicsOverviewRow {
+  chatId: string
+  name: string | null
+  enabled: boolean
+  topics: ReturnType<typeof listTopics>
+  pendingCount: number
+  backlogCount: number
+}
+
 export interface GroupTopicsService {
   enable(chatId: string, enabled: boolean): { ok: boolean }
   enableCrossChat(chatId: string, enabled: boolean): { ok: boolean }
   list(chatId: string): { ok: boolean; topics: ReturnType<typeof listTopics> }
+  overview(): GroupTopicsOverviewRow[]
   listLinkCandidates(chatId: string): ReturnType<typeof listLinkCandidates>
   crossChatEnabled(chatId: string): boolean
   pendingCount(chatId: string): number
@@ -86,6 +99,13 @@ export function createGroupTopicsService(db: Database): GroupTopicsService {
       const chat = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as {blocked:number}|undefined
       if (!chat || chat.blocked === 1 || !isEnabled(db, chatId)) return { ok: false, topics: [] }
       return { ok: true, topics: listTopics(db, chatId) }
+    },
+    overview() {
+      return listChats({}, db).filter((chat) => chat.isGroup && !chat.blocked).map((chat) => {
+        const enabled = isEnabled(db, chat.chatId)
+        const pendingCount = enabled ? countPendingMessages(db, chat.chatId) : 0
+        return { chatId: chat.chatId, name: chat.name, enabled, topics: enabled ? listTopics(db, chat.chatId).slice(0, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT) : [], pendingCount, backlogCount: pendingCount }
+      })
     },
     todoRefs(topicId) { return todoRefs(db, topicId) },
     async analyze(chatId, resolveProvider) {
