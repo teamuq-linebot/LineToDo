@@ -1347,7 +1347,7 @@ test('avatar requests while scrolling the chat: no id is sent to the backend twi
   }
 })
 
-test('chat tab remount: avatar calls queued by the previous mount are dropped, so the chat list, LINE status and recent messages are not queued behind them', async () => {
+test('chat tab remount: avatar calls queued by the previous mount are dropped, and a slow avatar call already in flight does not hold up the chat list, LINE status and recent messages', async () => {
   const f = avatarScrollFixture(40)
   const order = []
   const gates = []
@@ -1373,34 +1373,38 @@ test('chat tab remount: avatar calls queued by the previous mount are dropped, s
     first = ui.mount(ui.messageStreamScene(api))
     vis.attach(first.container)
     await until(() => walk(first.container).filter((el) => el.hasAttribute('data-avatar-message-id')).length === 40, { message: 'all 40 messages rendered' })
-    // the user scrolls on while the backend is slow: each step asks for new ids (no overlap), three calls fill the whole view budget, the rest queue
+    // the user scrolls on while the backend is slow: each step asks for new ids (no overlap); the slow calls that were already sent never come back until the gate opens
     for (let step = 0; step < 8; step += 1) {
       vis.setVisible(['c1', ...f.ids(step * 4, step * 4 + 4)])
       await sleep(20)
     }
-    await until(() => gates.length === 3, { message: 'three slow avatar calls hold every host call slot' })
-    assert.equal(api.plugin.transportStats().active, 3)
+    await until(() => gates.length >= 1, { message: 'a slow avatar call is in flight' })
+    await sleep(30)
+    const inFlight = gates.length
 
     first.unmount() // the user switches to the todo tab
     await sleep(10)
-    const queuedAfterUnmount = api.plugin.transportStats().waiting
-    assert.equal(queuedAfterUnmount, 0, 'no avatar call of the unmounted chat page is left waiting for a slot')
+    assert.equal(api.plugin.transportStats().waiting, 0, 'no avatar call of the unmounted chat page is left waiting for a host call slot')
+    assert.equal(gates.length, inFlight, 'unmounting sent nothing more')
     const mark = order.length
     vis.setVisible([])
-    second = ui.mount(ui.messageStreamScene(api)) // and back to the chat tab
+    second = ui.mount(ui.messageStreamScene(api)) // and back to the chat tab, with the slow call(s) still running
     vis.attach(second.container)
-    await sleep(30)
-    assert.deepEqual(order.slice(mark), [], 'nothing reaches the backend while the three slow calls still hold the slots')
-    assert.equal(api.plugin.transportStats().waiting >= 3, true, 'the remount asked for the chat list, messages and status')
-    slow = false
-    for (const open of gates) open() // the three slow calls finish; whatever is next in line gets the freed slots
-    await until(() => ['db.chats.list', 'line.status', 'messages.recent', 'db.messages.list'].every((path) => order.slice(mark).includes(path)), { message: 'the remount requests to reach the backend' })
+    await until(() => ['db.chats.list', 'line.status', 'messages.recent', 'db.messages.list'].every((path) => order.slice(mark).includes(path)),
+      { message: `the remount's chat list, LINE status and recent messages reach the backend while ${inFlight} slow avatar call(s) are still running (sent after the mark: ${order.slice(mark).join(',')})` })
+    assert.equal(gates.length, inFlight, 'the slow avatar call(s) are still running: nothing waited for them')
     const after = order.slice(mark)
     for (const path of ['db.chats.list', 'line.status', 'messages.recent', 'db.messages.list']) {
       const avatarsFirst = after.slice(0, after.indexOf(path)).filter((entry) => entry === 'avatar').length
       assert.equal(avatarsFirst, 0, `${path} was sent after ${avatarsFirst} stale avatar call(s): ${after.join(',')}`)
     }
-    await until(() => walk(second.container).some((el) => el.getAttribute('data-avatar-chat-id') === 'c1'), { message: 'the chat list shows its rows' })
+    await until(() => walk(second.container).some((el) => el.getAttribute('data-avatar-chat-id') === 'c1'), { message: 'the chat list shows its rows while the avatar call is still running' })
+    assert.equal(gates.length, inFlight, 'the rows were shown before the slow avatar call finished')
+    assert.ok(api.plugin.transportStats().background.active <= 1, 'avatar calls hold at most one host call slot')
+    assert.equal(api.plugin.transportStats().background.waiting, 0, 'nothing of the unmounted page waits for an avatar slot')
+    slow = false
+    for (const open of gates) open()
+    await until(() => api.plugin.transportStats().active === 0, { message: 'the slow call to finish' })
   } finally {
     slow = false
     for (const open of gates) open()

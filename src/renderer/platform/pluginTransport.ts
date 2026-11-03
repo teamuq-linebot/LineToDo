@@ -171,9 +171,16 @@ export interface TransportOptions {
   /** `job.poll` 每次最久等多久（backend 上限 4 s）。 */
   jobPollWaitMs?: number
   busyRetry?: BusyRetryOptions
+  /**
+   * `background: true` 的呼叫（頭像）同時最多進行幾個。預設 `max(1, maxConcurrentCalls - 2)`：預算 3 格時背景呼叫最多 1 格，
+   * 其餘 2 格（事件長輪詢 1 ＋ 一般請求 1）永遠留給非背景呼叫。
+   */
+  maxBackgroundCalls?: number
 }
 
 export const DEFAULT_MAX_CONCURRENT_CALLS = 3
+/** 背景呼叫永遠不碰的格數：預算 3 格時留 2 格（事件長輪詢 ＋ 一般請求）。 */
+export const RESERVED_FOREGROUND_CALLS = 2
 
 export interface InvokeOptions {
   /**
@@ -183,6 +190,11 @@ export interface InvokeOptions {
   signal?: AbortSignal
   /** 這次呼叫的 host 呼叫真正開始執行（拿到名額）時通知；用來分辨「還在排隊」與「已送出」。 */
   onStart?(): void
+  /**
+   * 背景呼叫（頭像）：整個 `invoke`（含後續的 `job.poll`／`result.chunk`）最多同時 `maxBackgroundCalls` 個，其餘排在「背景名額」外面等
+   * （還沒進 host 呼叫佇列，所以不擋前景呼叫；`signal` 在等背景名額時也有效）。拿到背景名額後，每一次 host 呼叫仍和前景呼叫共用同一個預算。
+   */
+  background?: boolean
 }
 
 /**
@@ -207,6 +219,7 @@ export function isReplaySafePath(path: string): boolean { return REPLAY_SAFE_PAT
 export class PluginTransport {
   private readonly host: TuqPluginHost
   private readonly limiter: Limiter
+  private readonly backgroundLimiter: Limiter
   private readonly jobWaitMs: number
   private readonly retry: Required<BusyRetryOptions>
   private closed = false
@@ -219,6 +232,7 @@ export class PluginTransport {
   constructor(options: TransportOptions) {
     this.host = options.host
     this.limiter = new Limiter(options.maxConcurrentCalls ?? DEFAULT_MAX_CONCURRENT_CALLS)
+    this.backgroundLimiter = new Limiter(options.maxBackgroundCalls ?? Math.max(1, this.limiter.limit - RESERVED_FOREGROUND_CALLS))
     this.jobWaitMs = Math.min(4000, Math.max(0, options.jobPollWaitMs ?? 3000))
     const retry = options.busyRetry ?? {}
     this.retry = {
@@ -247,8 +261,11 @@ export class PluginTransport {
   }
   get isClosed(): boolean { return this.closed }
   /** `active`／`waiting`：目前在飛／排隊的 host 呼叫；`maxActive`：歷來同時在飛的最大值；`busyRetries`：因忙碌而重試的次數。 */
-  stats(): { active: number; waiting: number; maxActive: number; busyRetries: number; resultReplays: number; limit: number } {
-    return { ...this.limiter.stats(), maxActive: this.maxActive, busyRetries: this.busyRetries, resultReplays: this.resultReplays, limit: this.limiter.limit }
+  stats(): { active: number; waiting: number; maxActive: number; busyRetries: number; resultReplays: number; limit: number; background: { active: number; waiting: number; limit: number } } {
+    return {
+      ...this.limiter.stats(), maxActive: this.maxActive, busyRetries: this.busyRetries, resultReplays: this.resultReplays, limit: this.limiter.limit,
+      background: { ...this.backgroundLimiter.stats(), limit: this.backgroundLimiter.limit }
+    }
   }
 
   /**
@@ -257,6 +274,16 @@ export class PluginTransport {
    */
   async invoke(path: string, args: readonly unknown[] = [], options?: InvokeOptions): Promise<unknown> {
     if (this.closed) throw new PluginApiError('disposed', path, 'the plugin API was disposed')
+    if (!options?.background) return this.invokeNow(path, args, options)
+    try {
+      return await this.backgroundLimiter.run(() => this.invokeNow(path, args, options), options.signal ? { signal: options.signal } : undefined)
+    } catch (error) {
+      if (error instanceof CallCancelledError) throw new PluginApiError('cancelled', path, 'the call was cancelled before it started')
+      throw error
+    }
+  }
+
+  private async invokeNow(path: string, args: readonly unknown[], options?: InvokeOptions): Promise<unknown> {
     for (let replay = 0; ; replay += 1) {
       try {
         return await this.unwrap(path, await this.envelope(path, args, options))

@@ -898,8 +898,15 @@ function gatedHost({ fail = new Set() } = {}) {
       }
     }
   }
+  const avatarFlight = { now: 0, peak: 0 }
+  const inner = host.backend.call
+  host.backend.call = async (method, params) => {
+    const isAvatar = String(params.path).startsWith('media.avatar.')
+    if (isAvatar) { avatarFlight.now += 1; avatarFlight.peak = Math.max(avatarFlight.peak, avatarFlight.now) }
+    try { return await inner(method, params) } finally { if (isAvatar) avatarFlight.now -= 1 }
+  }
   const avatarCalls = (path = 'media.avatar.prepareMessages') => log.filter((entry) => entry.path === path)
-  return { host, log, hold, release, avatarCalls }
+  return { host, log, hold, release, avatarCalls, avatarFlight }
 }
 
 test('avatar requests: duplicates are sent once, known results are remembered, identical in-flight requests are merged, chat scope is separate', async () => {
@@ -1014,5 +1021,101 @@ test('avatar requests: aborting after the call started does not cancel its resul
     const again = await api.media.messageAvatarUrls('c1', ['i:chunked'])
     assert.deepEqual(Object.keys(again.urls), ['i:chunked'], 'the reassembled answer was remembered')
     assert.equal(g.log.length, calls)
+  } finally { api.dispose() }
+})
+
+// ───────────── in-flight slow avatar calls must not hold the whole host call budget ─────────────
+
+test('avatar calls: at most one is in flight at the default budget of 3, so two other host calls can always be sent; every avatar still loads', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, events: { enabled: false } })
+  try {
+    assert.equal(api.plugin.transportStats().limit, 3)
+    g.hold('media.avatar.prepareMessages')
+    const ids = Array.from({ length: 6 }, (_, index) => `i:${index + 1}`)
+    const loads = ids.map((id) => api.media.messageAvatarUrls('c1', [id]))
+    await sleep(20)
+    assert.equal(g.avatarCalls().length, 1, 'only one avatar call has been sent; the rest wait outside the host call queue')
+    assert.equal(api.plugin.transportStats().active, 1)
+    assert.equal(api.plugin.transportStats().waiting, 0)
+
+    g.hold('ping')
+    g.hold('line.status')
+    const ping = api.plugin.invoke('ping')
+    const status = api.plugin.invoke('line.status')
+    await until(() => g.log.some((e) => e.path === 'ping') && g.log.some((e) => e.path === 'line.status'), { message: 'two non-avatar calls reach the host while an avatar call is in flight' })
+    assert.equal(api.plugin.transportStats().active, 3)
+    g.release('ping')
+    g.release('line.status')
+    assert.equal(await ping, 'ping')
+    assert.equal(await status, 'line.status')
+    assert.equal(g.avatarCalls().length, 1, 'the avatar call is still the only one sent')
+
+    for (let round = 0; round < ids.length; round += 1) {
+      await until(() => g.avatarCalls().length === round + 1, { message: `avatar call ${round + 1} to be sent` })
+      g.release('media.avatar.prepareMessages')
+      g.hold('media.avatar.prepareMessages')
+    }
+    g.release('media.avatar.prepareMessages')
+    const results = await Promise.all(loads)
+    assert.equal(g.avatarFlight.peak, 1, 'never more than one avatar call at the host')
+    results.forEach((result, index) => assert.deepEqual(result.urls, { [ids[index]]: `asset://avatar-cache/${ids[index]}.jpg` }, `avatar ${ids[index]} loaded`))
+    assert.deepEqual(g.avatarCalls().map((c) => c.args[1][0]), ids, 'every avatar was requested exactly once, in order')
+    assert.equal(api.plugin.transportStats().active, 0)
+  } finally { api.dispose() }
+})
+
+test('avatar calls: the budget scales (limit 5 -> 3 avatar calls, 2 always free); a budget of 1 still lets avatars through one at a time', async () => {
+  const wide = gatedHost()
+  const five = createPluginLineTodoApi({ host: wide.host, maxConcurrentCalls: 5, events: { enabled: false } })
+  try {
+    wide.hold('media.avatar.prepareMessages')
+    const loads = Array.from({ length: 6 }, (_, index) => five.media.messageAvatarUrls('c1', [`i:${index + 1}`]))
+    await until(() => wide.avatarCalls().length === 3, { message: 'three avatar calls in flight' })
+    await sleep(20)
+    assert.equal(wide.avatarCalls().length, 3)
+    wide.release('media.avatar.prepareMessages')
+    await Promise.all(loads)
+    assert.equal(wide.avatarFlight.peak, 3)
+  } finally { five.dispose() }
+  const narrow = gatedHost()
+  const one = createPluginLineTodoApi({ host: narrow.host, maxConcurrentCalls: 1, events: { enabled: false } })
+  try {
+    const results = await Promise.all([one.media.messageAvatarUrls('c1', ['i:1']), one.media.messageAvatarUrls('c1', ['i:2'])])
+    assert.deepEqual(results.map((r) => Object.keys(r.urls)), [['i:1'], ['i:2']])
+  } finally { one.dispose() }
+})
+
+test('avatar calls: the background slot is held for the whole call (chunked answer), so the next avatar call cannot slip in between the chunks', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, events: { enabled: false } })
+  try {
+    const [chunked, plain] = await Promise.all([api.media.messageAvatarUrls('c1', ['i:chunked']), api.media.messageAvatarUrls('c1', ['i:2'])])
+    assert.deepEqual(Object.keys(chunked.urls), ['i:chunked'])
+    assert.deepEqual(Object.keys(plain.urls), ['i:2'])
+    assert.deepEqual(g.log.map((e) => (e.path === 'media.avatar.prepareMessages' ? `prepare:${e.args[1][0]}` : e.path)), ['prepare:i:chunked', 'result.chunk', 'result.chunk', 'prepare:i:2'])
+  } finally { api.dispose() }
+})
+
+test('avatar calls: abort drops a batch that waits for a background slot (never sent); the call in flight finishes', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, events: { enabled: false } })
+  try {
+    g.hold('media.avatar.prepareMessages')
+    const running = api.media.messageAvatarUrls('c1', ['i:1'])
+    await until(() => g.avatarCalls().length === 1, { message: 'the first avatar call to be in flight' })
+    const lone = new AbortController()
+    const waiting = api.media.messageAvatarUrls('c1', ['i:2'], { signal: lone.signal })
+    const kept = api.media.messageAvatarUrls('c1', ['i:3'])
+    await sleep(10)
+    assert.equal(api.plugin.transportStats().background.waiting, 2)
+    lone.abort()
+    assert.deepEqual(await waiting, { urls: {}, names: {} })
+    assert.equal(api.plugin.transportStats().background.waiting, 1, 'the aborted batch left the wait at once')
+    g.release('media.avatar.prepareMessages')
+    assert.deepEqual(Object.keys((await running).urls), ['i:1'])
+    assert.deepEqual(Object.keys((await kept).urls), ['i:3'])
+    assert.deepEqual(g.avatarCalls().map((c) => c.args[1]), [['i:1'], ['i:3']], 'i:2 never reached the host')
+    assert.deepEqual(Object.keys((await api.media.messageAvatarUrls('c1', ['i:2'])).urls), ['i:2'], 'an aborted id is requested again later')
   } finally { api.dispose() }
 })

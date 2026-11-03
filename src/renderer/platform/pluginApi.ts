@@ -167,13 +167,15 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
   // ── 頭像（view 端把關：去重、已知結果快取、合併進行中的相同請求、不再需要時丟掉尚未送出的請求）──
   // 頭像在 backend 很貴（每次讀來源資料庫；實測 media.avatar.prepare* 平均 2.5 s），而 view 的 host 呼叫預算只有 3 格、先進先出：
   // 重複或過期的頭像請求不能再擠在使用者真正要等的 db.chats.list／line.status／messages.recent 前面。
+  // 已送出、執行中的慢頭像呼叫收不回來，所以頭像同時送出的 host 呼叫數另有上限（背景名額，預設預算 3 格時 1 格；見 pluginTransport 的 background），
+  // 其餘名額永遠留給非頭像呼叫；超過上限的頭像批次在背景名額外面排隊（不佔 host 呼叫佇列，abort 也收得回來）。
   const rawAvatarBatch = async (
     path: 'media.avatar.prepareChats' | 'media.avatar.prepareMessages',
     args: unknown[],
     invokeOptions?: InvokeOptions
   ): Promise<AvatarUrlBatchDTO & { ok: boolean }> => {
     try {
-      const prepared = (await transport.invoke(path, args, invokeOptions)) as { paths?: unknown; names?: unknown } | null | undefined
+      const prepared = (await transport.invoke(path, args, { ...invokeOptions, background: true })) as { paths?: unknown; names?: unknown } | null | undefined
       const urls: Record<string, string> = {}
       if (prepared?.paths && typeof prepared.paths === 'object') {
         for (const [key, value] of Object.entries(prepared.paths as Record<string, unknown>)) {
