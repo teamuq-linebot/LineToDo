@@ -24,7 +24,9 @@
  *
  * 通道（lane）與等待上限（0.2.9）：總名額仍是 3，但分三條通道，讓聊天室清單與連線狀態不會被輔助呼叫佔滿名額而排不到——
  *   - `core`：其餘所有路徑（ping、line.status、db.*、messages.recent、settings.get、pipeline.status、groupTopics.*、result.chunk、job.poll…），優先出隊；
- *   - `bulk`（同時 ≤1）：`media.prepare`、`media.avatar.*`、`ai.status`、`ai.options`（可以慢、可以放棄的輔助資料）；
+ *   - `bulk`（同時 ≤ `max(1, 預算 - 2)`，預算 3 格時 1 格）：`media.prepare`、`media.avatar.*`、`ai.status`、`ai.options`（可以慢、可以放棄的輔助資料）。
+ *     一個 bulk 呼叫從開始到結束（含它的 `job.poll`／`result.chunk`）都佔著同一個 bulk 名額，超過上限的排在 bulk 佇列（不佔 core 名額）；
+ *     `invoke(path, args, { signal })` 在還沒拿到名額前 abort 會把它丟掉（`cancelled`，不送給 backend），已經送出的不收回；
  *   - `events`（同時 ≤1）：`events.*` 長輪詢（`events.close` 例外走 core，維持關閉時立刻送出）。
  *   總名額 3 ＝ core 至少永遠有 1 個。`maxConcurrentCalls` < 3（設定 view 用 1）時不分通道，維持單一 FIFO。
  *   每個佔用名額的 host 呼叫都有等待上限，逾時就釋放名額並 reject `view_call_timeout`（host 那一端的呼叫取消不了，晚到的結果丟掉）。逾時**不**改變連線狀態
@@ -115,6 +117,21 @@ export function toWire(path: string, args: readonly unknown[]): { path: string; 
   return JSON.parse(text) as { path: string; args: unknown[] }
 }
 
+/** 排隊中（尚未開始執行）的呼叫被呼叫端取消。已開始執行的呼叫不會收到這個錯誤。 */
+export class CallCancelledError extends Error {
+  constructor() {
+    super('call_cancelled')
+    this.name = 'CallCancelledError'
+  }
+}
+
+export interface LimiterRunOptions {
+  /** 在任務「開始執行之前」abort＝把排隊中的任務丟掉（reject `CallCancelledError`）；任務一旦開始執行，abort 不影響它。 */
+  signal?: AbortSignal
+}
+
+interface LaneWaiter { resume(): void; cancel(): void }
+
 export type CallLane = 'core' | 'bulk' | 'events'
 const LANE_ORDER: readonly CallLane[] = ['core', 'bulk', 'events']
 
@@ -124,7 +141,7 @@ const LANE_ORDER: readonly CallLane[] = ['core', 'bulk', 'events']
  */
 export class LaneLimiter {
   private readonly active: Record<CallLane, number> = { core: 0, bulk: 0, events: 0 }
-  private readonly waiting: Record<CallLane, Array<() => void>> = { core: [], bulk: [], events: [] }
+  private readonly waiting: Record<CallLane, LaneWaiter[]> = { core: [], bulk: [], events: [] }
   private total = 0
   private readonly max: number
   private readonly caps: Record<CallLane, number>
@@ -136,10 +153,25 @@ export class LaneLimiter {
   private canStart(lane: CallLane): boolean { return this.total < this.max && this.active[lane] < this.caps[lane] }
   private start(lane: CallLane): void { this.active[lane] += 1; this.total += 1 }
 
-  async run<T>(lane: CallLane, task: () => Promise<T>): Promise<T> {
-    // 排隊者由 pump 在釋放名額的同一刻接棒（先 start 再喚醒），所以名額數字在喚醒的空檔也是對的
-    if (this.waiting[lane].length > 0 || !this.canStart(lane)) await new Promise<void>((resolve) => this.waiting[lane].push(resolve))
-    else this.start(lane)
+  async run<T>(lane: CallLane, task: () => Promise<T>, options?: LimiterRunOptions): Promise<T> {
+    const signal = options?.signal
+    if (signal?.aborted) throw new CallCancelledError()
+    // 排隊者由 pump 在釋放名額的同一刻接棒（先 start 再喚醒），所以名額數字在喚醒的空檔也是對的；排隊中 abort 就離開佇列（還沒拿到名額，不影響名額數字）
+    if (this.waiting[lane].length > 0 || !this.canStart(lane)) {
+      await new Promise<void>((resolve, reject) => {
+        const waiter: LaneWaiter = {
+          resume: () => { signal?.removeEventListener('abort', waiter.cancel); resolve() },
+          cancel: () => {
+            const index = this.waiting[lane].indexOf(waiter)
+            if (index < 0) return
+            this.waiting[lane].splice(index, 1)
+            reject(new CallCancelledError())
+          }
+        }
+        this.waiting[lane].push(waiter)
+        signal?.addEventListener('abort', waiter.cancel, { once: true })
+      })
+    } else this.start(lane)
     try {
       return await task()
     } finally {
@@ -154,7 +186,7 @@ export class LaneLimiter {
       while (this.waiting[lane].length > 0 && this.canStart(lane)) {
         this.start(lane)
         const next = this.waiting[lane].shift()
-        if (next) next()
+        if (next) next.resume()
       }
     }
   }
@@ -173,7 +205,7 @@ export class Limiter {
     const cap = Math.max(1, Math.floor(max))
     this.inner = new LaneLimiter(cap, { core: cap, bulk: cap, events: cap })
   }
-  run<T>(task: () => Promise<T>): Promise<T> { return this.inner.run('core', task) }
+  run<T>(task: () => Promise<T>, options?: LimiterRunOptions): Promise<T> { return this.inner.run('core', task, options) }
   stats(): { active: number; waiting: number } { const { active, waiting } = this.inner.stats(); return { active, waiting } }
   get limit(): number { return this.inner.limit }
 }
@@ -227,8 +259,20 @@ export interface TransportOptions {
 }
 
 export const DEFAULT_MAX_CONCURRENT_CALLS = 3
+
+export interface InvokeOptions {
+  /**
+   * 在這次呼叫「第一個 host 呼叫開始執行之前」abort＝丟掉排隊中的呼叫（reject `PluginApiError('cancelled')`，不送給 backend）。
+   * 已經開始執行的呼叫不受影響；`job.poll`／`result.chunk` 這類後續呼叫與事件長輪詢都不吃這個 signal。
+   */
+  signal?: AbortSignal
+  /** 這次呼叫的 host 呼叫真正開始執行（拿到名額）時通知；用來分辨「還在排隊」與「已送出」。 */
+  onStart?(): void
+}
 /** 只有總名額至少是這個數字才分通道（bulk／events 各佔 1，core 至少還有 1）；更小的預算（設定 view 的 1）維持單一 FIFO。 */
 export const MIN_LANES_BUDGET = 3
+/** bulk 通道永遠不碰的名額：事件長輪詢 1 ＋ 一般（core）請求 1。bulk 同時上限 = `max(1, 預算 - 2)`：預算 3 格時 1 格，預算 5 格時 3 格。 */
+export const RESERVED_FOREGROUND_CALLS = 2
 
 const BULK_PATHS: ReadonlySet<string> = new Set(['media.prepare', 'ai.status', 'ai.options'])
 /** 狀態列只呈現 LINE 橋接與聊天室清單的狀態：只有這三條 path 的逾時會讓 phase 變成 `timeout`；狀態列的「重試」會重讀這三條。 */
@@ -247,6 +291,12 @@ export function laneFor(path: string): CallLane {
   return 'core'
 }
 
+/** `job.poll`／`result.chunk` 替 bulk 路徑（頭像、media.prepare…）做事時留在 bulk 通道：輔助資料的後續呼叫不能跑到 core 通道去擠聊天室清單與連線狀態。 */
+function laneOf(path: string, owner: string): CallLane {
+  const own = laneFor(path)
+  return own === 'core' && owner !== path && (path === 'job.poll' || path === 'result.chunk') && laneFor(owner) === 'bulk' ? 'bulk' : own
+}
+
 /**
  * 分段結果在 backend 已經不在了（`result_expired`：被擠掉、TTL 到期，或 backend 重新啟動後換了一個新的 dispatcher）時，
  * 唯讀路徑整個重取的最多次數（不含第一次）。寫入類路徑不重送：結果過期不代表那次呼叫沒生效。
@@ -261,7 +311,8 @@ const REPLAY_SAFE_PATHS: ReadonlySet<string> = new Set([
   'db.todos.list', 'db.todos.get', 'db.todos.openByChat', 'db.todos.listNotMine', 'db.todos.listNotMineCorrections', 'db.todos.getNotMineReview',
   'db.todos.identity.listPending', 'db.todos.identity.inspect', 'db.todos.identity.todoTopicRelations',
   'groupTopics.list', 'groupTopics.linkCandidates', 'groupTopics.todoRefs', 'groupTopics.linkProposals', 'groupTopics.pendingCount', 'groupTopics.crossChatEnabled',
-  'pipeline.status', 'pipeline.loadStats'
+  'pipeline.status', 'pipeline.loadStats',
+  'settings.chatPrompt.get', 'settings.chatPrompt.list'
 ])
 export function isReplaySafePath(path: string): boolean { return REPLAY_SAFE_PATHS.has(path) }
 
@@ -306,7 +357,7 @@ export class PluginTransport {
     this.host = options.host
     const budget = Math.max(1, Math.floor(options.maxConcurrentCalls ?? DEFAULT_MAX_CONCURRENT_CALLS))
     this.lanesEnabled = budget >= MIN_LANES_BUDGET
-    this.limiter = new LaneLimiter(budget, this.lanesEnabled ? { core: budget, bulk: 1, events: 1 } : { core: budget, bulk: budget, events: budget })
+    this.limiter = new LaneLimiter(budget, this.lanesEnabled ? { core: budget, bulk: Math.max(1, budget - RESERVED_FOREGROUND_CALLS), events: 1 } : { core: budget, bulk: budget, events: budget })
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts }
     this.startingAfterMs = options.startingAfterMs ?? DEFAULT_STARTING_AFTER_MS
     this.jobWaitMs = Math.min(4000, Math.max(0, options.jobPollWaitMs ?? 3000))
@@ -428,11 +479,37 @@ export class PluginTransport {
    * 一般請求：每一次 host 呼叫（含 job 輪詢、分段取回）各自佔用一個併發名額，名額不跨輪詢持有。
    * 唯讀路徑的分段結果中途過期（`result_expired`）時整個重取，最多 `RESULT_REPLAYS` 次；其他錯誤與寫入類路徑照常往外丟。
    */
-  async invoke(path: string, args: readonly unknown[] = []): Promise<unknown> {
+  async invoke(path: string, args: readonly unknown[] = [], options?: InvokeOptions): Promise<unknown> {
     if (this.closed) throw new PluginApiError('disposed', path, 'the plugin API was disposed')
+    if (this.lanesEnabled && laneFor(path) === 'bulk') return this.invokeBulk(path, args, options)
+    return this.invokeNow(path, args, options, null)
+  }
+
+  /**
+   * bulk 路徑（頭像、media.prepare、ai.status…）：整個 `invoke`（含後續的 `job.poll`／`result.chunk`）佔用 bulk 通道的一個名額直到結束，
+   * 所以下一個 bulk 呼叫不會插在分段取回之間，慢的輔助呼叫也永遠不會超過 bulk 上限；超過上限的在 bulk 佇列等（不佔 core 名額），
+   * `signal` 在等名額時也有效（丟掉尚未送出的呼叫）。拿到名額後，每一次 host 呼叫仍計入同一個總預算。
+   */
+  private async invokeBulk(path: string, args: readonly unknown[], options?: InvokeOptions): Promise<unknown> {
+    const call: PendingCall = { path, lane: 'bulk', queuedAt: Date.now(), startedAt: null }
+    this.pending.add(call)
+    try {
+      return await this.limiter.run('bulk', () => {
+        options?.onStart?.()
+        return this.invokeNow(path, args, options, call)
+      }, options?.signal ? { signal: options.signal } : undefined)
+    } catch (error) {
+      if (error instanceof CallCancelledError) throw new PluginApiError('cancelled', path, 'the call was cancelled before it started')
+      throw error
+    } finally {
+      this.pending.delete(call)
+    }
+  }
+
+  private async invokeNow(path: string, args: readonly unknown[], options: InvokeOptions | undefined, held: PendingCall | null): Promise<unknown> {
     for (let replay = 0; ; replay += 1) {
       try {
-        return await this.unwrap(path, await this.envelope(path, args))
+        return await this.unwrap(path, await this.envelope(path, args, path, options, held), held)
       } catch (error) {
         const expired = error instanceof PluginApiError && error.code === 'result_expired'
         if (!expired || replay >= RESULT_REPLAYS || this.closed || !isReplaySafePath(path)) throw error
@@ -476,28 +553,32 @@ export class PluginTransport {
   }
 
   /** 一次 host 呼叫：佔用名額；host 說忙就釋放名額、退避、再試（超過次數才 reject）。 */
-  private async envelope(path: string, args: readonly unknown[], owner: string = path): Promise<unknown> {
+  private async envelope(path: string, args: readonly unknown[], owner: string = path, options?: InvokeOptions, held: PendingCall | null = null): Promise<unknown> {
     const method = backendMethodFor(path)
     if (method === null) throw new PluginApiError('path_unknown', path, 'the path is not in any backend method group')
     const wire = toWire(path, args)
-    const lane = laneFor(path)
+    const lane = laneOf(path, owner)
     const scheduled: CallLane = this.lanesEnabled ? lane : 'core'
     const limitMs = this.timeoutFor(path, lane)
-    const call: PendingCall = { path, lane, queuedAt: Date.now(), startedAt: null }
-    this.pending.add(call)
+    const cancelled = (): PluginApiError => new PluginApiError('cancelled', path, 'the call was cancelled before it started')
+    const call: PendingCall = held ?? { path, lane, queuedAt: Date.now(), startedAt: null }
+    if (!held) this.pending.add(call)
     if (path === 'ping' && this.pingState === 'none') this.startPingWatch()
     try {
       for (let attempt = 0; ; attempt += 1) {
+        if (!held && options?.signal?.aborted) throw cancelled()
         try {
-          const env = await this.limiter.run(scheduled, () => {
+          const send = (): Promise<unknown> => {
             call.startedAt = Date.now()
             this.maxActive = Math.max(this.maxActive, this.limiter.stats().active)
             return this.hostCall(path, method, wire, limitMs)
-          })
+          }
+          const env = held ? await send() : await this.limiter.run(scheduled, () => { options?.onStart?.(); return send() }, options?.signal ? { signal: options.signal } : undefined)
           this.setLink('ok', null, false)
           this.noteResponse(path, lane)
           return env
         } catch (error) {
+          if (error instanceof CallCancelledError) throw cancelled()
           call.startedAt = null
           if (error instanceof PluginApiError && error.code === VIEW_CALL_TIMEOUT) {
             this.noteFailure(path, lane, VIEW_CALL_TIMEOUT, owner)
@@ -517,7 +598,7 @@ export class PluginTransport {
         }
       }
     } finally {
-      this.pending.delete(call)
+      if (!held) this.pending.delete(call)
     }
   }
 
@@ -528,26 +609,26 @@ export class PluginTransport {
     return code === 'unsupported_in_plugin' ? new PluginUnsupportedError(path, message ?? '', route) : new PluginApiError(code, path, message, route)
   }
 
-  private async unwrap(path: string, first: unknown): Promise<unknown> {
+  private async unwrap(path: string, first: unknown, held: PendingCall | null = null): Promise<unknown> {
     let env = first
     for (;;) {
       if (!isRecord(env) || typeof env.ok !== 'boolean') throw new PluginApiError('bad_response', path, 'the backend answered with something that is not an envelope')
       if (env.ok === false) throw this.failure(path, env)
       if (env.pending === true && typeof env.jobId === 'string') {
         if (this.closed) throw new PluginApiError('disposed', path, 'the plugin API was disposed')
-        env = await this.envelope('job.poll', [{ jobId: env.jobId, waitMs: this.jobWaitMs }], path)
+        env = await this.envelope('job.poll', [{ jobId: env.jobId, waitMs: this.jobWaitMs }], path, undefined, held)
         continue
       }
-      if (env.chunked === true && typeof env.resultId === 'string' && typeof env.chunks === 'number') return this.readChunks(path, env.resultId, env.chunks)
+      if (env.chunked === true && typeof env.resultId === 'string' && typeof env.chunks === 'number') return this.readChunks(path, env.resultId, env.chunks, held)
       return env.value
     }
   }
 
-  private async readChunks(path: string, resultId: string, count: number): Promise<unknown> {
+  private async readChunks(path: string, resultId: string, count: number, held: PendingCall | null = null): Promise<unknown> {
     const parts: string[] = []
     for (let index = 0; index < count; index += 1) {
       if (this.closed) throw new PluginApiError('disposed', path, 'the plugin API was disposed')
-      const env = await this.envelope('result.chunk', [{ resultId, index }], path)
+      const env = await this.envelope('result.chunk', [{ resultId, index }], path, undefined, held)
       if (!isRecord(env) || env.ok !== true || !isRecord(env.value) || typeof env.value.data !== 'string') {
         throw isRecord(env) && env.ok === false ? this.failure(path, env) : new PluginApiError('bad_response', path, 'malformed result chunk')
       }

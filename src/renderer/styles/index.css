@@ -715,6 +715,15 @@ code {
   background: var(--panel);
   color: var(--text);
 }
+.chat-pane-view-toggle .pane-tab-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
 
 .chat-message-log {
   flex: 1;

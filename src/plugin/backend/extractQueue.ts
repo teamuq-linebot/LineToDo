@@ -193,7 +193,8 @@ export function partitionExtractInput(input: ChatExtractInput, opts: { maxChars:
 export interface ExtractQueueOptions {
   db: Database
   getConfig(): PipelineDefaults
-  getSystemSha256?(): string
+  /** system 的雜湊；帶 chatId＝該對話的生效值（逐對話 prompt／名字），不帶＝預設值。 */
+  getSystemSha256?(chatId?: string): string
   getSessionContext?(): string
   /** commit 落庫後回報一輪結果（外掛接到 `scheduler.recordExternalRun`，沿用 pipeline-run / todos-changed 事件）。 */
   onRun?(result: RunOnceResult): void
@@ -584,7 +585,7 @@ export class ExtractQueue implements ExtractSink {
           if(!attempt.ok){releaseIdentitySourceAttempt(this.opts.db,lease,true);if(e.group)this.failGroup(e.group,new Error('identity_context_stale'));else this.recordFailure(e,'identity_context_stale');continue}
           lease=attempt.lease
         } else {
-          const sessionFingerprint=createHash('sha256').update(JSON.stringify({systemSha256:this.opts.getSystemSha256?.()??EXTRACT_SYSTEM_SHA256,schema:EXTRACT_JSON_SCHEMA.schema,identityQuery:IDENTITY_QUERY_VERSION,sessionContext:this.opts.getSessionContext?.()??''})).digest('hex')
+          const sessionFingerprint=createHash('sha256').update(JSON.stringify({systemSha256:this.opts.getSystemSha256?.(e.chatId)??EXTRACT_SYSTEM_SHA256,schema:EXTRACT_JSON_SCHEMA.schema,identityQuery:IDENTITY_QUERY_VERSION,sessionContext:this.opts.getSessionContext?.()??''})).digest('hex')
           const begun=beginIdentitySourceAttempt(this.opts.db,e.chatId,e.input.identitySnapshot,e.user,sessionFingerprint)
           if(!begun.lease) {
             if(begun.reason==='lease_busy') {e.notBefore=now+1000;soonest=soonest===null?e.notBefore:Math.min(soonest,e.notBefore);continue}
@@ -620,6 +621,7 @@ export class ExtractQueue implements ExtractSink {
       if (items.length >= maxItems) break
     }
     return {
+      // 只代表預設值（不帶 chatId）；各對話實際的 system 指紋看 chat_context_cache.session_fingerprint（上面 getSystemSha256(e.chatId)）。
       ok: true, items, pending: this.countState('pending'), leased: this.countState('leased'), systemSha256: this.opts.getSystemSha256?.() ?? EXTRACT_SYSTEM_SHA256,
       maxUserChars: this.maxChars, retryAfterMs: items.length === 0 && soonest !== null ? Math.max(0, soonest - now) : null
     }

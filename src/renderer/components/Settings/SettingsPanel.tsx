@@ -328,7 +328,7 @@ export function SettingsPanel({ initialView, initialLoadError, initialActionErro
 
       {/* AI 判斷引擎（外掛版：由 TeamUQ 的 ai:chat 提供，沒有 provider／端點／金鑰可選） */}
       {!caps.aiProviderSelection && api.hostAi && <HostAiSettings control={api.hostAi} selection={v.pluginAi} onSaved={(pluginAi) => setView((current) => current ? { ...current, pluginAi } : current)} />}
-      {!caps.aiProviderSelection && api.hostAi && <PromptSettings control={api.hostAi.prompts} />}
+      {!caps.aiProviderSelection && api.hostAi && <PromptSettings control={api.hostAi.prompts} chatControl={api.hostAi.chatPrompts} chats={chats} />}
       {!caps.aiProviderSelection && !api.hostAi && (
         <div className="set-section">
           <div className="set-section-title">AI 判斷引擎</div>

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { PROMPT_GOAL_MAX_CHARS } from '../../../shared/promptSettings'
-import type { PromptControl, PromptState, PromptSuggestion } from '../../../shared/promptSettings'
+import { MY_NAME_MAX_CHARS, PROMPT_GOAL_MAX_CHARS } from '../../../shared/promptSettings'
+import type { ChatPromptControl, ChatPromptSummary, PromptControl, PromptState, PromptSuggestion } from '../../../shared/promptSettings'
+import type { ChatDTO } from '../../types/api'
+import { displayChatName } from '../../lib/displayChatName'
 import { PROMPT_EDITOR_DRAFT_MAX_AGE_MS, useUiState } from '../../lib/uiState'
 import { DEFAULT_PROMPT_GOAL, PROMPT_DRAFT_KEY, notifyPromptSuggestionSaved, onPromptSuggestionSaved, parsePromptDraft } from './promptDraft'
 
@@ -9,6 +11,9 @@ function errorText(error: unknown): string {
   if (text.includes('prompt_conflict')) return '這份 prompt 已在另一個畫面變更。請按「重新載入」取得最新內容，再儲存。'
   if (text.includes('prompt_empty')) return 'Prompt 不可留空。'
   if (text.includes('prompt_too_long') || text.includes('prompt_goal_too_long')) return '內容超過可用長度，請縮短 prompt 或改善目標後重試。'
+  if (text.includes('my_name_too_long')) return '名字太長，請縮短後再儲存。'
+  if (text.includes('my_name_invalid')) return '名字不可包含換行或控制字元。'
+  if (text.includes('chat_prompt_unavailable')) return '資料庫尚未就緒，請稍後重試。'
   if (text.includes('prompt_suggestion_invalid') || text.includes('invalid_json')) return 'AI 建議的格式不正確，尚未套用任何變更；請重新產生建議。'
   if (text.includes('session_limit') || text.includes('busy') || text.includes('turn_in_progress')) return 'AI 正在處理其他工作，請稍後再試。'
   if (text.includes('quota_exhausted')) return 'AI 額度已用完，請在額度恢復後再產生建議。'
@@ -20,9 +25,70 @@ function errorText(error: unknown): string {
   return '操作未完成，請確認外掛與 AI 可用後重試。'
 }
 
-export function PromptSettings({ control }: { control: PromptControl }): JSX.Element {
+const collapseName = (value: string): string => value.trim().replace(/\s+/g, ' ')
+
+function nameErrorText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error)
+  if (text.includes('prompt_conflict')) return '名字已在另一個畫面變更。請按「重新載入」取得最新內容，再儲存。'
+  return errorText(error)
+}
+
+/** 「各對話的個別設定」：預設收合，第一次展開才讀清單；只列出有覆寫的對話，可逐筆恢復沿用預設。 */
+function ChatOverrides({ control, chats }: { control: ChatPromptControl; chats: ChatDTO[] }): JSX.Element {
+  const [items, setItems] = useState<ChatPromptSummary[] | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [resetting, setResetting] = useState<string | null>(null)
+  const requested = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  const load = useCallback(async (): Promise<void> => {
+    setLoading(true); setError(null)
+    try {
+      const next = await control.list()
+      if (mounted.current) setItems(next)
+    } catch (failure) { if (mounted.current) setError(errorText(failure)) }
+    finally { if (mounted.current) setLoading(false) }
+  }, [control])
+  const reset = async (item: ChatPromptSummary): Promise<void> => {
+    setResetting(item.chatId); setError(null)
+    try {
+      await control.reset(item.chatId, item.revision)
+      if (mounted.current) setItems((current) => current ? current.filter((entry) => entry.chatId !== item.chatId) : current)
+    } catch (failure) {
+      if (mounted.current) setError(errorText(failure))
+      if (mounted.current && String(failure instanceof Error ? failure.message : failure).includes('prompt_conflict')) await load()
+    } finally { if (mounted.current) setResetting(null) }
+  }
+  const names = new Map(chats.map((chat) => [chat.chatId, displayChatName(chat.name, chat.chatId, chat.isGroup)]))
+  return (
+    <details data-testid="chat-overrides" onToggle={(event) => { if ((event.currentTarget as HTMLDetailsElement).open && !requested.current) { requested.current = true; void load() } }}>
+      <summary>各對話的個別設定</summary>
+      {loading && <div className="muted" role="status">正在載入…</div>}
+      {error && <div className="set-msg err" role="alert" data-testid="chat-overrides-error">{error}</div>}
+      {items && items.length === 0 && !error && <div className="muted" data-testid="chat-overrides-empty">目前沒有。到看板的聊天室 →「AI 設定」可以個別調整。</div>}
+      {items && items.length > 0 && (
+        <ul data-testid="chat-overrides-list">
+          {items.map((item) => (
+            <li key={item.chatId} className="set-inline" data-testid={`chat-override-${item.chatId}`}>
+              <span>{names.get(item.chatId) ?? '（已不在清單）'}</span>
+              {item.hasPrompt && <span className="muted">專屬 Prompt</span>}
+              {item.myName !== null && <span className="muted">名字：{item.myName}</span>}
+              <button className="btn" type="button" disabled={resetting !== null} data-testid={`reset-chat-override-${item.chatId}`} onClick={() => void reset(item)}>恢復沿用預設</button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
+  )
+}
+
+export function PromptSettings({ control, chatControl, chats = [] }: { control: PromptControl; chatControl?: ChatPromptControl; chats?: ChatDTO[] }): JSX.Element {
   const drafts = useUiState()
   const [state, setState] = useState<PromptState | null>(null)
+  const [nameDraft, setNameDraft] = useState('')
+  const [nameBusy, setNameBusy] = useState(false)
+  const nameDirty = useRef(false)
   const [draft, setDraft] = useState('')
   const [goal, setGoal] = useState(DEFAULT_PROMPT_GOAL)
   const [busy, setBusy] = useState<'loading' | 'saving' | 'refining' | null>('loading')
@@ -45,6 +111,7 @@ export function PromptSettings({ control }: { control: PromptControl }): JSX.Ele
         if (discardDraft) drafts.remove(PROMPT_DRAFT_KEY)
         const restored = discardDraft ? undefined : drafts.read(PROMPT_DRAFT_KEY, parsePromptDraft, { maxAgeMs: PROMPT_EDITOR_DRAFT_MAX_AGE_MS })
         setState(restored ? { ...next, revision: restored.revision } : next)
+        if (discardDraft || !nameDirty.current) { setNameDraft(next.myName ?? ''); nameDirty.current = false }
         setDraft(restored?.draft ?? next.activePrompt)
         setGoal(restored?.goal ?? DEFAULT_PROMPT_GOAL)
         setSuggestion(restored?.suggestion ?? null)
@@ -71,6 +138,17 @@ export function PromptSettings({ control }: { control: PromptControl }): JSX.Ele
       setMessage('已儲存，下一項抽取工作會使用這份 prompt。')
     } catch (failure) { setError(errorText(failure)) }
     finally { setBusy(null) }
+  }
+  const saveName = async (): Promise<void> => {
+    if (!state || state.nameRevision === undefined) return
+    setNameBusy(true); setError(null); setMessage(null)
+    try {
+      const next = await control.saveName(collapseName(nameDraft) || null, state.nameRevision)
+      setState((current) => current ? { ...current, myName: next.myName, nameRevision: next.nameRevision } : current)
+      setNameDraft(next.myName ?? ''); nameDirty.current = false
+      setMessage('已儲存名字，下一項抽取工作會使用。')
+    } catch (failure) { setError(nameErrorText(failure)) }
+    finally { setNameBusy(false) }
   }
   const refine = async (): Promise<void> => {
     const base = draft
@@ -101,6 +179,16 @@ export function PromptSettings({ control }: { control: PromptControl }): JSX.Ele
       {message && <div className="set-msg muted" role="status">{message}</div>}
       {busy === 'loading' && <div className="muted" role="status">正在載入 prompt…</div>}
       {state && <>
+        <div className="set-field">
+          <label className="set-label" htmlFor="default-my-name">我的名字（預設）</label>
+          <div className="set-inline">
+            <input id="default-my-name" data-testid="default-my-name" className="set-input" type="text" maxLength={state.maxNameChars ?? MY_NAME_MAX_CHARS} value={nameDraft}
+              disabled={busy === 'loading' || nameBusy || state.nameRevision === undefined} onChange={(event) => { nameDirty.current = true; setNameDraft(event.target.value) }} />
+            <button className="btn" type="button" data-testid="save-my-name"
+              disabled={busy === 'loading' || nameBusy || state.nameRevision === undefined || collapseName(nameDraft) === (state.myName ?? '')} onClick={() => void saveName()}>儲存名字</button>
+          </div>
+          <span className="muted">用來判斷哪些待辦是指派給你；各對話可以個別改</span>
+        </div>
         <details data-testid="initial-prompt">
           <summary>查看初始 Prompt</summary>
           <textarea aria-label="內建初始 Prompt" className="set-input" rows={12} readOnly value={state.initialPrompt} style={{ width: '100%', resize: 'vertical' }} />
@@ -131,6 +219,7 @@ export function PromptSettings({ control }: { control: PromptControl }): JSX.Ele
           <button className="btn" type="button" disabled={locked} onClick={() => { setSuggestion(null); setMessage(null) }}>捨棄建議</button>
         </div>}
       </>}
+      {chatControl && <ChatOverrides control={chatControl} chats={chats} />}
       <button className="btn" type="button" disabled={locked} onClick={() => void load(true)}>重新載入</button>
     </div>
   )

@@ -662,3 +662,16 @@ test('G-06: no backend module reads context.settings (the plugin has no settings
   assert.equal(manifest.permissions.includes('settings:plugin'), false)
   assert.deepEqual(manifest.contributes.views.filter((v) => v.presentations.includes('settings')).map((v) => v.id), ['settings'], 'the settings view stays')
 })
+
+
+test('m1 teamuqPlaces: the "where to change the defaults" sentence follows the board capability, like the undo hint; ChatPromptPanel uses it instead of a fixed TeamUQ place', () => {
+  assert.equal(PLUGIN_CAPABILITIES.settingsTab, true, 'the plugin board has its own 設定 tab')
+  assert.equal(places.defaultsInSettingsHint(PLUGIN_CAPABILITIES.settingsTab), '預設值可到看板的「設定」分頁修改。')
+  assert.equal(places.defaultsInSettingsHint(STANDALONE_CAPABILITIES.settingsTab), '預設值可到看板的「設定」分頁修改。', 'standalone has the same tab')
+  assert.equal(places.defaultsInSettingsHint(false), `預設值在${places.PLUGIN_SETTINGS_PLACE}修改。`, 'a host without a board 設定 tab: the place TeamUQ shows')
+  assert.ok(places.defaultsInSettingsHint(true).includes('看板的「設定」分頁') && !places.defaultsInSettingsHint(true).includes('TeamUQ'), 'the board tab by name, no TeamUQ place')
+  assert.equal(namesVersionSpecificPlace(places.defaultsInSettingsHint(false)), false)
+  const panel = readFileSync(join(ROOT, 'src', 'renderer', 'features', 'chatPrompt', 'ChatPromptPanel.tsx'), 'utf8')
+  assert.ok(panel.includes('defaultsInSettingsHint(caps.settingsTab)'), 'ChatPromptPanel follows the host capability')
+  assert.equal(panel.includes('PLUGIN_SETTINGS_PLACE'), false, 'and names no fixed TeamUQ place')
+})

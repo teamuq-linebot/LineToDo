@@ -47,6 +47,11 @@ export interface AvatarUrlBatchDTO {
   names: Record<string, string>
 }
 
+/** `signal`: abort when the caller no longer needs the answer; a request that has not been sent to the backend yet is dropped, one already sent finishes (its result is kept for later callers). */
+export interface AvatarRequestOptions {
+  signal?: AbortSignal
+}
+
 export interface MessageDTO {
   msgId: string
   chatId: string
@@ -307,6 +312,7 @@ export interface SettingsView {
   codexCli: CliProviderSettings
   pluginAi?: HostAiSelection
   pluginPrompt?: string | null
+  pluginMyName?: string | null
   /** 草稿填入 LINE 設定。 */
   driverPost: DriverPostSettings
   /** AI 引擎是否已就緒（http=有金鑰；CLI=設定無誤）。欄位名沿用歷史，語意見 main scheduler。 */
@@ -334,6 +340,7 @@ export type SettingsPatch = Partial<{
   codexCli: Partial<CliProviderSettings>
   pluginAi: HostAiSelection
   pluginPrompt: string | null
+  pluginMyName: string | null
   /** 部分更新草稿填入 LINE 設定（mode 一律正規化成 fillOnly）。 */
   driverPost: Partial<DriverPostSettings>
 }>
@@ -685,9 +692,9 @@ export interface LineTodoApi {
      */
     assetLookup?(msgId: string): Promise<{ url: string | null; indexing: boolean }>
     /** Plugin-host-only, on-demand chat avatars. Source locators and LINE MIDs stay in the backend. */
-    avatarUrls?(chatIds: string[]): Promise<AvatarUrlBatchDTO>
+    avatarUrls?(chatIds: string[], options?: AvatarRequestOptions): Promise<AvatarUrlBatchDTO>
     /** Plugin-host-only, on-demand sender avatars for the given imported message ids. */
-    messageAvatarUrls?(chatId: string, msgIds: string[]): Promise<AvatarUrlBatchDTO>
+    messageAvatarUrls?(chatId: string, msgIds: string[], options?: AvatarRequestOptions): Promise<AvatarUrlBatchDTO>
   }
   /** Optional main-owned group discussion projection. Never carries LINE participant keys or raw source identities. */
   groupTopics?: {

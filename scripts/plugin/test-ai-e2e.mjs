@@ -265,6 +265,48 @@ test('saved TeamUQ model and effort reach extraction and reply calls; an unavail
   })
 })
 
+test('A20 e2e: a per-chat prompt and name saved through the view API reach host.ai.complete only for that chat; the other chat keeps the default prompt plus the default name; a reset brings it back', async () => {
+  const marker = 'ALICE_ONLY_RULE_9f3a'
+  await withStack({
+    selection: { providerId: 'codex', modelId: 'gpt-5-codex', effort: 'high' },
+    reply: (ctx) => fenced(todoFor(ctx.user, '測試待辦'))
+  }, async ({ api, line, ai, calls }) => {
+    const state = await api.hostAi.prompts.get()
+    await api.hostAi.prompts.saveName('預設小明', state.nameRevision)
+    line.emit(raw(1, { chatId: 'u-alice', chat: 'Alice', text: '艾莉絲的請託：請寄報價單' }))
+    line.emit(raw(2, { chatId: 'u-bob', chat: 'Bob', text: '鮑勃的請託：請寄報價單' }))
+    const alice = await api.hostAi.chatPrompts.get('u-alice')
+    assert.equal(alice.promptSource, 'default')
+    const saved = await api.hostAi.chatPrompts.save('u-alice', { prompt: `${marker} 只看艾莉絲的對話`, myName: '艾莉絲專用名' }, alice.revision)
+    assert.deepEqual([saved.promptSource, saved.nameSource, saved.effectiveName], ['chat', 'chat', '艾莉絲專用名'])
+    assert.deepEqual((await api.hostAi.chatPrompts.list()).map((item) => item.chatId), ['u-alice'])
+    await api.pipeline.runOnce()
+    await until(async () => (await aiState(api)).counters.extracted >= 2, { message: 'both chats extracted' })
+    const systemFor = (needle) => calls.find((call) => call.user.includes(needle)).system
+    const aliceSystem = systemFor('艾莉絲的請託')
+    const bobSystem = systemFor('鮑勃的請託')
+    assert.ok(aliceSystem.startsWith(marker), 'alice: her own prompt replaces the default completely')
+    assert.ok(!aliceSystem.includes(EXTRACT_SYSTEM_PROMPT))
+    assert.ok(aliceSystem.includes(JSON.stringify('艾莉絲專用名')) && !aliceSystem.includes('預設小明'))
+    assert.ok(bobSystem.startsWith(EXTRACT_SYSTEM_PROMPT), 'bob: the default prompt')
+    assert.ok(bobSystem.includes(JSON.stringify('預設小明')) && !bobSystem.includes(marker))
+    for (const system of [aliceSystem, bobSystem]) {
+      assert.ok(system.endsWith(state.outputFormat), 'the fixed output contract stays last')
+      assert.ok(system.length <= CONTRACT.limits.systemChars)
+    }
+    // the next item of alice uses the reset value at once, without a restart
+    const reset = await api.hostAi.chatPrompts.reset('u-alice', saved.revision)
+    assert.equal(reset.promptSource, 'default')
+    line.emit(raw(3, { chatId: 'u-alice', chat: 'Alice', text: '艾莉絲的第二件請託：請寄合約' }))
+    await api.pipeline.runOnce()
+    await until(async () => (await aiState(api)).counters.extracted >= 3, { message: 'third extraction' })
+    const after = systemFor('艾莉絲的第二件請託')
+    assert.ok(after.startsWith(EXTRACT_SYSTEM_PROMPT) && after.includes(JSON.stringify('預設小明')) && !after.includes(marker))
+    await assert.rejects(api.hostAi.chatPrompts.reset('u-alice', saved.revision), /prompt_conflict/)
+    await assert.rejects(api.hostAi.chatPrompts.get('u-ghost'), /chat_unknown/)
+  })
+})
+
 test('prompt refinement runs in the backend, needs adoption, and the next extraction already uses the saved prompt', async () => {
   let initialPrompt
   const marker = 'CUSTOM_PROMPT_RULE_FOR_NEXT_EXTRACTION'

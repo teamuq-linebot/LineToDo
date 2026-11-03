@@ -1120,7 +1120,8 @@ test('WP-C timeout (non-device): a core call with no answer shows 讀取逾時 w
     let listCalls = 0
     const { api, backend } = plugin({
       'db.chats.list': async () => { listCalls += 1; if (listCalls === 1) await hang.promise; return [wpChat('bni', 'BNI 商會')] },
-      'db.messages.list': async () => [], 'db.messages.recentByChat': async () => [], 'messages.recent': async () => [], 'line.status': async () => STOPPED
+      'db.messages.list': async () => [], 'db.messages.recentByChat': async () => [], 'messages.recent': async () => [], 'line.status': async () => STOPPED,
+      'settings.chatPrompt.list': async () => ({ items: [] })
     }, { timeouts: { coreMs: 150, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
     let scene
     try {
@@ -1530,4 +1531,412 @@ test('N1 (effects): the waits grow by doubling up to maxMs and stay there', asyn
     await until(() => imageSrcs(scene.container).length === 1, { message: 'the picture after four retries' })
     assert.deepEqual(waits, [2000, 3000, 3000, 3000], 'doubling (2 s, 4 s ...) is cut off at maxMs')
   } finally { globalThis.setTimeout = realSetTimeout; Object.assign(ui.mediaIndexingRetry, saved); scene?.unmount(); api.dispose() }
+})
+
+
+// ───────────── per-chat prompt / my name (A16, A17, A18) ─────────────
+
+test('A16 settings: the default name field is always there and saves through saveName without touching an unsaved prompt draft; "各對話的個別設定" is collapsed and does not call list before it is opened', async () => {
+  const chatAlice = { chatId: 'u-alice', name: 'Alice', isGroup: false, blocked: false, blockReason: null, firstSeenAt: '2026-11-01T00:00:00.000Z', lastSeenAt: '2026-11-01T00:00:00.000Z' }
+  let promptState = { initialPrompt: '初始待辦判斷規則', activePrompt: '初始待辦判斷規則', customized: false, revision: 'initial', maxChars: 12000, outputFormat: '固定格式', myName: '舊名字', nameRevision: 'n1', maxNameChars: 40 }
+  const nameSaves = []
+  const listCalls = []
+  const resets = []
+  let items = [
+    { chatId: 'u-alice', hasPrompt: true, myName: null, revision: 'ra' },
+    { chatId: 'u-gone', hasPrompt: false, myName: '阿華', revision: 'rg' }
+  ]
+  const { backend, api } = plugin(settingsHandlers({
+    'settings.prompt.get': () => promptState,
+    'settings.prompt.saveName': ({ myName, expectedNameRevision }) => {
+      nameSaves.push({ myName, expectedNameRevision })
+      promptState = { ...promptState, myName, nameRevision: 'n2' }
+      return promptState
+    },
+    'db.chats.list': () => [chatAlice],
+    'settings.chatPrompt.list': () => { listCalls.push(1); return { items } },
+    'settings.chatPrompt.reset': ({ chatId, expectedRevision }) => {
+      resets.push({ chatId, expectedRevision })
+      items = items.filter((item) => item.chatId !== chatId)
+      return { chatId, revision: 'r0' }
+    }
+  }))
+  const data = new Map()
+  const storage = { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value), removeItem: (key) => data.delete(key) }
+  const scene = ui.mount(ui.settingsDraftScene(api, storage))
+  const field = (name) => byAttr(scene.container, 'data-testid', name)
+  try {
+    await until(() => field('default-my-name') && !reactProps(field('default-my-name')).disabled, { message: 'name field loaded' })
+    assert.equal(reactProps(field('default-my-name')).value, '舊名字')
+    assert.equal(reactProps(field('save-my-name')).disabled, true, 'unchanged name: nothing to save')
+    assert.equal(reactProps(field('default-my-name')).maxLength, 40)
+    assert.ok(scene.container.textContent.includes('各對話可以個別改'))
+
+    reactProps(field('active-extract-prompt')).onChange({ target: { value: '尚未儲存的 prompt' } })
+    await until(() => data.has('lt-ui:prompt.editor.draft'), { message: 'prompt draft persisted' })
+    reactProps(field('default-my-name')).onChange({ target: { value: '  新   名字 ' } })
+    await until(() => reactProps(field('save-my-name')).disabled === false, { message: 'changed name can be saved' })
+    reactProps(field('save-my-name')).onClick()
+    await until(() => nameSaves.length === 1 && scene.container.textContent.includes('已儲存名字'), { message: 'name saved' })
+    assert.deepEqual(nameSaves, [{ myName: '新 名字', expectedNameRevision: 'n1' }], 'trimmed, runs of spaces collapsed, with the name revision')
+    assert.equal(reactProps(field('default-my-name')).value, '新 名字')
+    assert.equal(reactProps(field('active-extract-prompt')).value, '尚未儲存的 prompt', 'the unsaved prompt draft survives a name save')
+    assert.ok(data.has('lt-ui:prompt.editor.draft'))
+    assert.equal(reactProps(field('save-my-name')).disabled, true)
+
+    reactProps(field('default-my-name')).onChange({ target: { value: '   ' } })
+    await until(() => reactProps(field('default-my-name')).value === '   ' && reactProps(field('save-my-name')).disabled === false, { message: 'blank name can be saved' })
+    reactProps(field('save-my-name')).onClick()
+    await until(() => nameSaves.length === 2, { message: 'blank clears the name' })
+    assert.deepEqual(nameSaves[1], { myName: null, expectedNameRevision: 'n2' })
+
+    const details = field('chat-overrides')
+    assert.ok(details, 'the section is present')
+    assert.equal(details.getAttribute('open'), null, 'collapsed by default')
+    await sleep(60)
+    assert.equal(listCalls.length, 0, 'list is not called before the section is opened')
+    assert.equal(field('chat-overrides-list'), null)
+    reactProps(details).onToggle({ currentTarget: { open: true } })
+    await until(() => field('chat-overrides-list'), { message: 'list rendered after opening' })
+    assert.equal(listCalls.length, 1)
+    reactProps(details).onToggle({ currentTarget: { open: true } })
+    await sleep(30)
+    assert.equal(listCalls.length, 1, 'opening again does not reload')
+    const rows = field('chat-overrides-list').textContent
+    assert.ok(rows.includes('Alice') && rows.includes('專屬 Prompt'))
+    assert.ok(rows.includes('（已不在清單）') && rows.includes('名字：阿華'))
+    reactProps(field('reset-chat-override-u-alice')).onClick()
+    await until(() => resets.length === 1 && !field('chat-override-u-alice'), { message: 'one override reset' })
+    assert.deepEqual(resets, [{ chatId: 'u-alice', expectedRevision: 'ra' }], 'resets with the revision shown in the list')
+    reactProps(field('reset-chat-override-u-gone')).onClick()
+    await until(() => field('chat-overrides-empty'), { message: 'empty state' })
+    assert.ok(field('chat-overrides-empty').textContent.includes('AI 設定'))
+    assert.deepEqual(backend.unknown.filter((path) => path.startsWith('settings.')), [])
+  } finally { scene.unmount(); api.dispose() }
+})
+
+test('A16 settings: an older backend (no myName / nameRevision in the state) still renders, the name cannot be saved, and without chatPrompts the per-chat section is not rendered', async () => {
+  const { api } = plugin(settingsHandlers())
+  const withoutChatPrompts = { ...api, hostAi: { ...api.hostAi, chatPrompts: undefined } }
+  const scene = ui.mount(ui.settingsScene(withoutChatPrompts))
+  const field = (name) => byAttr(scene.container, 'data-testid', name)
+  try {
+    await until(() => field('active-extract-prompt') && !reactProps(field('active-extract-prompt')).disabled, { message: 'legacy prompt state rendered' })
+    assert.equal(reactProps(field('default-my-name')).value, '')
+    assert.equal(reactProps(field('default-my-name')).disabled, true)
+    assert.equal(reactProps(field('save-my-name')).disabled, true)
+    assert.equal(field('chat-overrides'), null, 'no chatPrompts: no per-chat section')
+  } finally { scene.unmount(); api.dispose() }
+})
+
+function boardChat(chatId, name) {
+  return { chatId, name, isGroup: false, blocked: false, blockReason: null, firstSeenAt: new Date(1700000000000).toISOString(), lastSeenAt: new Date(1700000003000).toISOString() }
+}
+const noOverride = (extra = {}) => ({
+  chatId: 'bni', revision: 'r0', overridePrompt: null, overrideName: null, effectivePrompt: '預設的抽取規則', effectiveName: '預設名', promptSource: 'default', nameSource: 'default',
+  defaultName: '預設名', maxChars: 12000, maxNameChars: 40, corrupt: false, ...extra
+})
+
+test('A17/A18 board: the chat pane has a fourth "AI 設定" tab, marked only when the chat has an override; the editor stays closed until asked for; save sends the whole pair; conflicts and validation errors read in Chinese; reset returns to "沿用預設"', async () => {
+  let state = noOverride()
+  let listItems = []
+  const saves = []
+  const resets = []
+  let nextSaveError = null
+  const { backend, api } = plugin({
+    'db.chats.list': () => [boardChat('bni', 'BNI 商會')],
+    'db.messages.list': () => [],
+    'db.messages.recentByChat': () => [],
+    'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'settings.chatPrompt.list': () => ({ items: listItems }),
+    'settings.chatPrompt.get': ({ chatId }) => { assert.equal(chatId, 'bni'); return state },
+    'settings.chatPrompt.save': (input) => {
+      if (nextSaveError) { const error = nextSaveError; nextSaveError = null; throw error }
+      saves.push(input)
+      state = noOverride({ revision: 'r1', overridePrompt: input.prompt, overrideName: input.myName, effectivePrompt: input.prompt ?? '預設的抽取規則', effectiveName: input.myName ?? '預設名', promptSource: input.prompt === null ? 'default' : 'chat', nameSource: input.myName === null ? 'default' : 'chat' })
+      return state
+    },
+    'settings.chatPrompt.reset': (input) => { resets.push(input); state = noOverride({ revision: 'r0' }); return state }
+  })
+  const scene = ui.mount(ui.messageStreamScene(api))
+  const field = (name) => byAttr(scene.container, 'data-testid', name)
+  const toggleButtons = () => walk(scene.container).filter((element) => element.localName === 'button' && element.parentNode && hasClassName(element.parentNode, 'chat-pane-view-toggle'))
+  const aiTab = () => toggleButtons().find((button) => button.textContent.includes('AI 設定'))
+  try {
+    await until(() => aiTab(), { message: 'chat pane header with the AI settings tab' })
+    assert.deepEqual(toggleButtons().map((button) => button.textContent.trim()), ['訊息', '議題', '待辦', 'AI 設定'], 'fourth tab after 待辦')
+    await sleep(30)
+    assert.equal(field('ai-settings-customized'), null, 'no override: no mark')
+    assert.equal(field('chat-prompt-panel'), null, 'the message view stays the default')
+
+    reactProps(aiTab()).onClick()
+    await until(() => field('chat-prompt-panel') && field('chat-prompt-source'), { message: 'panel loaded' })
+    assert.equal(field('chat-prompt-text'), null, 'the prompt editor is not rendered while the chat follows the default')
+    assert.equal(field('chat-prompt-source').textContent, '沿用預設')
+    assert.equal(reactProps(field('chat-prompt-name')).placeholder, '預設名')
+    assert.ok(field('chat-prompt-name-source').textContent.includes('沿用預設：預設名'))
+    assert.equal(reactProps(field('save-chat-prompt')).disabled, true, 'nothing changed')
+    assert.equal(reactProps(field('reset-chat-prompt')).disabled, true, 'nothing to reset')
+    assert.equal(field('chat-prompt-defaults-hint').textContent, '預設值可到看板的「設定」分頁修改。', 'tells where the defaults live: the board has its own 設定 tab')
+
+    reactProps(field('customize-chat-prompt')).onClick()
+    await until(() => field('chat-prompt-text'), { message: 'editor opened on request' })
+    assert.equal(reactProps(field('chat-prompt-text')).value, '預設的抽取規則', 'pre-filled with the effective prompt')
+    assert.ok(field('chat-prompt-panel').textContent.includes('此對話使用專屬 Prompt，不受預設變更影響'))
+    assert.equal(reactProps(field('save-chat-prompt')).disabled, true, 'opening the editor without a change is not a change')
+
+    reactProps(field('chat-prompt-text')).onChange({ target: { value: '   ' } })
+    nextSaveError = Object.assign(new Error('prompt_empty'), { code: 'prompt_empty' })
+    reactProps(field('save-chat-prompt')).onClick()
+    await until(() => field('chat-prompt-error'), { message: 'validation error shown' })
+    assert.equal(field('chat-prompt-error').textContent, 'Prompt 不可留空。')
+
+    reactProps(field('chat-prompt-text')).onChange({ target: { value: '這個對話專屬的規則' } })
+    reactProps(field('chat-prompt-name')).onChange({ target: { value: ' 阿華 ' } })
+    nextSaveError = Object.assign(new Error('prompt_conflict'), { code: 'prompt_conflict' })
+    reactProps(field('save-chat-prompt')).onClick()
+    await until(() => field('chat-prompt-error') && field('chat-prompt-error').textContent.includes('已在另一個畫面變更'), { message: 'conflict shown in Chinese' })
+    assert.equal(saves.length, 0)
+
+    reactProps(field('save-chat-prompt')).onClick()
+    await until(() => saves.length === 1 && field('chat-prompt-message'), { message: 'saved' })
+    assert.deepEqual(saves, [{ chatId: 'bni', prompt: '這個對話專屬的規則', myName: '阿華', expectedRevision: 'r0' }], 'the whole pair in one call, with the revision that was read')
+    assert.ok(field('chat-prompt-message').textContent.includes('這個對話的下一項抽取工作會使用新設定'))
+    assert.equal(field('chat-prompt-error'), null)
+    await until(() => field('ai-settings-customized'), { message: 'tab marked once the chat has an override' })
+    assert.equal(field('ai-settings-customized').getAttribute('aria-label'), '已自訂')
+    assert.ok(field('chat-prompt-text'), 'a chat with its own prompt shows the editor')
+    assert.ok(field('chat-prompt-name-source').textContent.includes('此對話自訂'))
+
+    reactProps(field('reset-chat-prompt')).onClick()
+    await until(() => resets.length === 1 && !field('chat-prompt-text') && field('chat-prompt-source'), { message: 'reset returns to the default view' })
+    assert.deepEqual(resets, [{ chatId: 'bni', expectedRevision: 'r1' }])
+    assert.equal(field('chat-prompt-source').textContent, '沿用預設')
+    assert.equal(field('ai-settings-customized'), null, 'the mark is gone after the reset')
+    assert.deepEqual(backend.unknown.filter((path) => path.startsWith('settings.')), [])
+  } finally { scene.unmount(); api.dispose() }
+})
+
+test('A18 board: the mark shows for a chat whose override already exists when the board opens; a backend without chatPrompts hides the tab', async () => {
+  const { api } = plugin({
+    'db.chats.list': () => [boardChat('bni', 'BNI 商會')],
+    'db.messages.list': () => [], 'db.messages.recentByChat': () => [], 'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'settings.chatPrompt.list': () => ({ items: [{ chatId: 'bni', hasPrompt: false, myName: '阿華', revision: 'rx' }] })
+  })
+  const toggleLabels = (scene) => walk(scene.container).filter((element) => element.localName === 'button' && element.parentNode && hasClassName(element.parentNode, 'chat-pane-view-toggle')).map((button) => button.textContent.trim())
+  let scene = ui.mount(ui.messageStreamScene(api))
+  try {
+    await until(() => byAttr(scene.container, 'data-testid', 'ai-settings-customized'), { message: 'mark for the chat that already has an override' })
+    assert.deepEqual(toggleLabels(scene), ['訊息', '議題', '待辦', 'AI 設定'])
+  } finally { scene.unmount() }
+  scene = ui.mount(ui.messageStreamScene({ ...api, hostAi: { ...api.hostAi, chatPrompts: undefined } }))
+  try {
+    await until(() => toggleLabels(scene).length > 0, { message: 'pane header without chatPrompts' })
+    assert.deepEqual(toggleLabels(scene), ['訊息', '議題', '待辦'])
+  } finally { scene.unmount(); api.dispose() }
+})
+
+
+test('m1/n4 board: the AI settings panel names the board "設定" tab as the place for the defaults (the plugin board has one), and "恢復沿用預設 Prompt" says it takes effect after saving', async () => {
+  const state = noOverride({ revision: 'r1', overridePrompt: '這個對話專屬的規則', effectivePrompt: '這個對話專屬的規則', promptSource: 'chat' })
+  const saves = []
+  const { api } = plugin({
+    'db.chats.list': () => [boardChat('bni', 'BNI 商會')],
+    'db.messages.list': () => [], 'db.messages.recentByChat': () => [], 'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'settings.chatPrompt.list': () => ({ items: [{ chatId: 'bni', hasPrompt: true, myName: null, revision: 'r1' }] }),
+    'settings.chatPrompt.get': () => state,
+    'settings.chatPrompt.save': (input) => { saves.push(input); return noOverride({ revision: 'r2' }) }
+  })
+  const scene = ui.mount(ui.messageStreamScene(api))
+  const field = (name) => byAttr(scene.container, 'data-testid', name)
+  const aiTab = () => walk(scene.container).filter((element) => element.localName === 'button' && element.parentNode && hasClassName(element.parentNode, 'chat-pane-view-toggle')).find((button) => button.textContent.includes('AI 設定'))
+  try {
+    await until(() => aiTab(), { message: 'chat pane header with the AI settings tab' })
+    reactProps(aiTab()).onClick()
+    await until(() => field('chat-prompt-text') && field('chat-prompt-defaults-hint'), { message: 'panel with the editor open' })
+    assert.equal(field('chat-prompt-defaults-hint').textContent, '預設值可到看板的「設定」分頁修改。', 'the plugin board has its own 設定 tab, so the hint points there')
+    assert.ok(!field('chat-prompt-panel').textContent.includes('打開這個外掛後'), 'it no longer sends the user to the TeamUQ plugin page')
+    assert.equal(field('chat-prompt-message'), null, 'no message before anything is clicked')
+
+    reactProps(field('restore-default-chat-prompt')).onClick()
+    await until(() => field('chat-prompt-message'), { message: 'restore message' })
+    assert.equal(field('chat-prompt-message').textContent, '已改回沿用預設 Prompt，按「儲存」後生效。')
+    assert.equal(field('chat-prompt-text'), null, 'the editor closes')
+    assert.equal(saves.length, 0, 'restoring in the form alone saves nothing')
+    assert.equal(reactProps(field('save-chat-prompt')).disabled, false, 'the pending change can be saved')
+    reactProps(field('save-chat-prompt')).onClick()
+    await until(() => saves.length === 1, { message: 'saved' })
+    assert.deepEqual(saves, [{ chatId: 'bni', prompt: null, myName: null, expectedRevision: 'r1' }])
+  } finally { scene.unmount(); api.dispose() }
+})
+
+// ───────────── chat tab remount: avatar requests must not pile up in front of the chat list ─────────────
+
+/**
+ * An IntersectionObserver stand-in the test drives by hand: `setVisible(ids)` is "the user scrolled", every live observer is told which of its
+ * targets (data-avatar-chat-id / data-avatar-message-id) are on screen; a newly observed target reports its current state, like the real one.
+ * mini-dom has no querySelectorAll on the document, so the stand-in also answers the effect's lookup from the mounted container.
+ */
+function installVisibility() {
+  const live = new Set()
+  let visible = new Set()
+  const state = { container: null }
+  const previous = { observer: globalThis.IntersectionObserver, query: dom.document.querySelectorAll }
+  const idOf = (node) => node.getAttribute('data-avatar-message-id') ?? node.getAttribute('data-avatar-chat-id')
+  const entryFor = (target) => {
+    const on = visible.has(idOf(target))
+    return { target, isIntersecting: on, intersectionRatio: on ? 1 : 0 }
+  }
+  globalThis.IntersectionObserver = class {
+    constructor(callback) { this.callback = callback; this.targets = new Set(); live.add(this) }
+    observe(target) {
+      this.targets.add(target)
+      queueMicrotask(() => { if (live.has(this) && this.targets.has(target)) this.callback([entryFor(target)]) })
+    }
+    unobserve(target) { this.targets.delete(target) }
+    disconnect() { live.delete(this); this.targets.clear() }
+  }
+  dom.document.querySelectorAll = () => (state.container
+    ? walk(state.container).filter((el) => el.hasAttribute('data-avatar-chat-id') || el.hasAttribute('data-avatar-message-id'))
+    : [])
+  return {
+    attach(container) { state.container = container },
+    setVisible(ids) {
+      visible = new Set(ids)
+      for (const observer of [...live]) if (observer.targets.size > 0) observer.callback([...observer.targets].map(entryFor))
+    },
+    restore() {
+      if (previous.observer === undefined) delete globalThis.IntersectionObserver; else globalThis.IntersectionObserver = previous.observer
+      if (previous.query === undefined) delete dom.document.querySelectorAll; else dom.document.querySelectorAll = previous.query
+    }
+  }
+}
+
+function avatarScrollFixture(count) {
+  const ts0 = Date.UTC(2026, 10, 3, 1, 0, 0)
+  const iso = (ts) => new Date(ts).toISOString()
+  const chat = (chatId, name, ts) => ({ chatId, name, isGroup: true, blocked: false, blockReason: null, firstSeenAt: iso(ts0), lastSeenAt: iso(ts) })
+  const messages = Array.from({ length: count }, (_, index) => {
+    const n = index + 1
+    return { msgId: `i:${n}`, chatId: 'c1', ts: ts0 + n * 1000, timeIso: iso(ts0 + n * 1000), direction: 'in', sender: `成員${n}`, text: `訊息 ${n}`, contentType: 0, processed: true, ingestedAt: iso(ts0 + n * 1000), origFilename: null, fileSize: null, unsent: false }
+  })
+  const chats = [chat('c1', '主要群組', ts0 + count * 1000), chat('c2', '第二群組', ts0)]
+  const pathFor = (id) => `avatar-cache/${id.replace(':', '_')}.jpg`
+  const answer = (ids) => ({ paths: Object.fromEntries(ids.map((id) => [id, pathFor(id)])), names: Object.fromEntries(ids.map((id) => [id, `名稱 ${id}`])) })
+  const ids = (from, to) => Array.from({ length: to - from }, (_, index) => `i:${from + index + 1}`)
+  return { chats, messages, answer, ids }
+}
+
+test('avatar requests while scrolling the chat: no id is sent to the backend twice and the call count stays bounded (IntersectionObserver stand-in)', async (t) => {
+  const f = avatarScrollFixture(40)
+  const sent = { chats: [], messages: [] }
+  const { api } = plugin({
+    ...settingsHandlers(),
+    'db.chats.list': () => f.chats,
+    'db.messages.list': () => f.messages,
+    'db.messages.recentByChat': () => f.messages,
+    'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'media.avatar.prepareChats': async (ids) => { sent.chats.push(ids); await sleep(8); return f.answer(ids) },
+    'media.avatar.prepareMessages': async (_chatId, ids) => { sent.messages.push(ids); await sleep(8); return f.answer(ids) }
+  })
+  const vis = installVisibility()
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    vis.attach(scene.container)
+    await until(() => walk(scene.container).filter((el) => el.hasAttribute('data-avatar-message-id')).length === 40, { message: 'all 40 messages rendered' })
+    const steps = 8
+    for (let step = 0; step < steps; step += 1) {
+      // the window slides by 3 ids and the second chat row flips in and out of view: the id lists change every step but mostly repeat
+      vis.setVisible(['c1', ...(step % 2 === 0 ? ['c2'] : []), ...f.ids(step * 3, step * 3 + 12)])
+      await sleep(30)
+    }
+    await sleep(60)
+    const messageIds = sent.messages.flat()
+    const chatIds = sent.chats.flat()
+    t.diagnostic(`prepareMessages calls=${sent.messages.length} ids sent=${messageIds.length} unique=${new Set(messageIds).size}; prepareChats calls=${sent.chats.length} ids sent=${chatIds.length} unique=${new Set(chatIds).size}`)
+    assert.equal(new Set(messageIds).size, messageIds.length, `a message avatar id was sent more than once: ${JSON.stringify(sent.messages)}`)
+    assert.equal(new Set(chatIds).size, chatIds.length, `a chat avatar id was sent more than once: ${JSON.stringify(sent.chats)}`)
+    assert.ok(sent.messages.length <= steps + 1, `prepareMessages calls ${sent.messages.length} <= ${steps + 1}`)
+    assert.ok(sent.chats.length <= 2, `prepareChats calls ${sent.chats.length} <= 2`)
+    assert.deepEqual([...new Set(messageIds)].sort((a, b) => Number(a.slice(2)) - Number(b.slice(2))), f.ids(0, 33), 'every id that was ever on screen was asked for once')
+    const sources = walk(scene.container).filter((el) => el.localName === 'img').map((el) => el.getAttribute('src'))
+    assert.ok(sources.some((src) => src.endsWith('/avatar-cache/i_33.jpg')), 'the newest window still shows its sender images')
+  } finally {
+    scene?.unmount()
+    vis.restore()
+    api.dispose()
+  }
+})
+
+test('chat tab remount: avatar calls queued by the previous mount are dropped, and a slow avatar call already in flight does not hold up the chat list, LINE status and recent messages', async () => {
+  const f = avatarScrollFixture(40)
+  const order = []
+  const gates = []
+  let slow = true
+  const { api } = plugin({
+    ...settingsHandlers(),
+    'db.chats.list': () => { order.push('db.chats.list'); return f.chats },
+    'db.messages.list': () => { order.push('db.messages.list'); return f.messages },
+    'db.messages.recentByChat': () => f.messages,
+    'messages.recent': () => { order.push('messages.recent'); return [] },
+    'line.status': () => { order.push('line.status'); return { state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 } },
+    'media.avatar.prepareChats': (ids) => f.answer(ids),
+    'media.avatar.prepareMessages': async (_chatId, ids) => {
+      order.push('avatar')
+      if (slow) await new Promise((resolve) => { gates.push(resolve) })
+      return f.answer(ids)
+    }
+  })
+  const vis = installVisibility()
+  let first
+  let second
+  try {
+    first = ui.mount(ui.messageStreamScene(api))
+    vis.attach(first.container)
+    await until(() => walk(first.container).filter((el) => el.hasAttribute('data-avatar-message-id')).length === 40, { message: 'all 40 messages rendered' })
+    // the user scrolls on while the backend is slow: each step asks for new ids (no overlap); the slow calls that were already sent never come back until the gate opens
+    for (let step = 0; step < 8; step += 1) {
+      vis.setVisible(['c1', ...f.ids(step * 4, step * 4 + 4)])
+      await sleep(20)
+    }
+    await until(() => gates.length >= 1, { message: 'a slow avatar call is in flight' })
+    await sleep(30)
+    const inFlight = gates.length
+
+    first.unmount() // the user switches to the todo tab
+    await sleep(10)
+    assert.equal(api.plugin.transportStats().waiting, 0, 'no avatar call of the unmounted chat page is left waiting for a host call slot')
+    assert.equal(gates.length, inFlight, 'unmounting sent nothing more')
+    const mark = order.length
+    vis.setVisible([])
+    second = ui.mount(ui.messageStreamScene(api)) // and back to the chat tab, with the slow call(s) still running
+    vis.attach(second.container)
+    await until(() => ['db.chats.list', 'line.status', 'messages.recent', 'db.messages.list'].every((path) => order.slice(mark).includes(path)),
+      { message: `the remount's chat list, LINE status and recent messages reach the backend while ${inFlight} slow avatar call(s) are still running (sent after the mark: ${order.slice(mark).join(',')})` })
+    assert.equal(gates.length, inFlight, 'the slow avatar call(s) are still running: nothing waited for them')
+    const after = order.slice(mark)
+    for (const path of ['db.chats.list', 'line.status', 'messages.recent', 'db.messages.list']) {
+      const avatarsFirst = after.slice(0, after.indexOf(path)).filter((entry) => entry === 'avatar').length
+      assert.equal(avatarsFirst, 0, `${path} was sent after ${avatarsFirst} stale avatar call(s): ${after.join(',')}`)
+    }
+    await until(() => walk(second.container).some((el) => el.getAttribute('data-avatar-chat-id') === 'c1'), { message: 'the chat list shows its rows while the avatar call is still running' })
+    assert.equal(gates.length, inFlight, 'the rows were shown before the slow avatar call finished')
+    assert.ok(api.plugin.transportStats().lanes.bulk.active <= 1, 'avatar calls hold at most one host call slot')
+    assert.equal(api.plugin.transportStats().lanes.bulk.waiting, 0, 'nothing of the unmounted page waits for an avatar slot')
+    slow = false
+    for (const open of gates) open()
+    await until(() => api.plugin.transportStats().active === 0, { message: 'the slow call to finish' })
+  } finally {
+    slow = false
+    for (const open of gates) open()
+    first?.unmount()
+    second?.unmount()
+    vis.restore()
+    api.dispose()
+  }
 })

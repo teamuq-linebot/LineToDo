@@ -24,7 +24,7 @@ import {
   PluginApiError, PluginBackendError, PluginUnsupportedError, createPluginLineTodoApi
 } from '../../src/renderer/platform/pluginApi.ts'
 import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
-import { Limiter, laneFor, toWire } from '../../src/renderer/platform/pluginTransport.ts'
+import { CallCancelledError, Limiter, laneFor, toWire } from '../../src/renderer/platform/pluginTransport.ts'
 import { describeLink } from '../../src/plugin/ui/backendLink.ts'
 import { bootBoard } from '../../src/plugin/ui/board.ts'
 import { describeBackendError } from '../../src/renderer/lib/backendError.ts'
@@ -226,6 +226,41 @@ test('adapter: identity list/inspect/retry/resolve and both relation decisions u
     assert.equal((await api.groupTopics.resolveLinkProposal({linkId:'link-1',expectedLinkRevision:1,leftTopicRevision:1,rightTopicRevision:1,choice:'reject'})).status,'rejected')
     assert.ok(calls.filter((call)=>call.path.startsWith('db.todos.identity.')).every((call)=>call.method==='db.todos'))
     assert.ok(calls.filter((call)=>call.path.startsWith('groupTopics.')).every((call)=>call.method==='groupTopics'))
+  }finally{api.dispose()}
+})
+
+test('A15 adapter: hostAi.chatPrompts and prompts.saveName map to the settings method group with the exact paths and args; the read paths are replay-safe, the write paths are not',async()=>{
+  const calls=[]
+  const summary={chatId:'u-alice',hasPrompt:true,myName:'阿華',revision:'r1'}
+  const target={async call(method,request){
+    calls.push({method,path:request.path,args:request.args})
+    const values={
+      'settings.prompt.saveName':{myName:'王小明',nameRevision:'n2'},
+      'settings.chatPrompt.get':{chatId:'u-alice',revision:'r0'},
+      'settings.chatPrompt.save':{chatId:'u-alice',revision:'r1'},
+      'settings.chatPrompt.reset':{chatId:'u-alice',revision:'r0'},
+      'settings.chatPrompt.list':{items:[summary]}
+    }
+    return {ok:true,value:values[request.path]}
+  }}
+  const mock=makeHost({target})
+  const api=createPluginLineTodoApi({host:mock.host,events:{enabled:false}})
+  try{
+    assert.equal((await api.hostAi.prompts.saveName('王小明','n1')).nameRevision,'n2')
+    assert.equal((await api.hostAi.chatPrompts.get('u-alice')).revision,'r0')
+    assert.equal((await api.hostAi.chatPrompts.save('u-alice',{prompt:'P',myName:null},'r0')).revision,'r1')
+    assert.equal((await api.hostAi.chatPrompts.reset('u-alice','r1')).revision,'r0')
+    assert.deepEqual(await api.hostAi.chatPrompts.list(),[summary],'list unwraps { items }')
+    assert.deepEqual(calls,[
+      {method:'settings',path:'settings.prompt.saveName',args:[{myName:'王小明',expectedNameRevision:'n1'}]},
+      {method:'settings',path:'settings.chatPrompt.get',args:[{chatId:'u-alice'}]},
+      {method:'settings',path:'settings.chatPrompt.save',args:[{chatId:'u-alice',prompt:'P',myName:null,expectedRevision:'r0'}]},
+      {method:'settings',path:'settings.chatPrompt.reset',args:[{chatId:'u-alice',expectedRevision:'r1'}]},
+      {method:'settings',path:'settings.chatPrompt.list',args:[]}
+    ])
+    const transport=await import('../../src/renderer/platform/pluginTransport.ts')
+    for(const path of ['settings.chatPrompt.get','settings.chatPrompt.list'])assert.equal(transport.isReplaySafePath(path),true,path)
+    for(const path of ['settings.chatPrompt.save','settings.chatPrompt.reset','settings.prompt.saveName'])assert.equal(transport.isReplaySafePath(path),false,path)
   }finally{api.dispose()}
 })
 
@@ -1210,4 +1245,294 @@ test('WP-C board: bootBoard sends ping first and defers ai.status until the firs
   } finally {
     if (previous === undefined) delete globalThis.window; else globalThis.window = previous
   }
+})
+
+
+// ───────────── chat tab remount: queued avatar calls can be dropped, avatar requests are de-duplicated and remembered ─────────────
+
+test('Limiter: a queued task can be cancelled before it starts; a running task and the queue behind it are unaffected', async () => {
+  const limiter = new Limiter(1)
+  let releaseRunning
+  const ran = []
+  const running = limiter.run(async () => { ran.push('running'); await new Promise((resolve) => { releaseRunning = resolve }); return 'done' })
+  const early = new AbortController()
+  const late = new AbortController()
+  const cancelled = limiter.run(async () => { ran.push('cancelled'); return 'no' }, { signal: early.signal })
+  const kept = limiter.run(async () => { ran.push('kept'); return 'kept' }, { signal: late.signal })
+  assert.deepEqual(limiter.stats(), { active: 1, waiting: 2 })
+  early.abort()
+  await assert.rejects(cancelled, (e) => e instanceof CallCancelledError)
+  assert.deepEqual(limiter.stats(), { active: 1, waiting: 1 }, 'the cancelled task left the queue at once')
+  const alreadyAborted = new AbortController()
+  alreadyAborted.abort()
+  await assert.rejects(limiter.run(async () => 'x', { signal: alreadyAborted.signal }), (e) => e instanceof CallCancelledError)
+  assert.deepEqual(limiter.stats(), { active: 1, waiting: 1 }, 'an already aborted signal never enters the queue')
+  releaseRunning()
+  assert.equal(await running, 'done')
+  assert.equal(await kept, 'kept')
+  assert.deepEqual(ran, ['running', 'kept'])
+  assert.deepEqual(limiter.stats(), { active: 0, waiting: 0 })
+  // aborting after the task started does nothing to it
+  const started = new AbortController()
+  let finish
+  const inFlight = limiter.run(() => new Promise((resolve) => { finish = resolve }), { signal: started.signal })
+  started.abort()
+  finish('still ran')
+  assert.equal(await inFlight, 'still ran')
+  assert.deepEqual(limiter.stats(), { active: 0, waiting: 0 })
+})
+
+/** a host with gates: `hold(path)` makes the next calls of that path wait for `release(path)`; every call is logged in order */
+function gatedHost({ fail = new Set() } = {}) {
+  const log = []
+  const held = new Map()
+  const holding = new Set()
+  const hold = (path) => { holding.add(path) }
+  const release = (path) => { holding.delete(path); for (const open of held.get(path) ?? []) open(); held.set(path, []) }
+  const pathsFor = (ids) => Object.fromEntries(ids.map((id) => [id, `avatar-cache/${id}.jpg`]))
+  const namesFor = (ids) => Object.fromEntries(ids.map((id) => [id, `N ${id}`]))
+  const host = {
+    assets: { url: (p) => `asset://${p}` },
+    backend: {
+      async call(_method, params) {
+        const { path, args = [] } = params
+        log.push({ path, args })
+        if (holding.has(path)) await new Promise((resolve) => { held.set(path, [...(held.get(path) ?? []), resolve]) })
+        if (path === 'media.avatar.prepareMessages') {
+          const ids = args[1]
+          if (ids.some((id) => fail.has(id))) throw new Error('plugin_backend_crashed')
+          if (ids.includes('i:chunked')) return { ok: true, chunked: true, resultId: 'r1', chunks: 2 }
+          return { ok: true, value: { paths: pathsFor(ids), names: namesFor(ids) } }
+        }
+        if (path === 'media.avatar.prepareChats') return { ok: true, value: { paths: pathsFor(args[0]), names: namesFor(args[0]) } }
+        if (path === 'result.chunk') {
+          const text = JSON.stringify({ paths: pathsFor(['i:chunked']), names: namesFor(['i:chunked']) })
+          const half = Math.ceil(text.length / 2)
+          return { ok: true, value: { data: args[0].index === 0 ? text.slice(0, half) : text.slice(half) } }
+        }
+        return { ok: true, value: path }
+      }
+    }
+  }
+  const avatarFlight = { now: 0, peak: 0 }
+  const inner = host.backend.call
+  host.backend.call = async (method, params) => {
+    const isAvatar = String(params.path).startsWith('media.avatar.')
+    if (isAvatar) { avatarFlight.now += 1; avatarFlight.peak = Math.max(avatarFlight.peak, avatarFlight.now) }
+    try { return await inner(method, params) } finally { if (isAvatar) avatarFlight.now -= 1 }
+  }
+  const avatarCalls = (path = 'media.avatar.prepareMessages') => log.filter((entry) => entry.path === path)
+  return { host, log, hold, release, avatarCalls, avatarFlight }
+}
+
+test('avatar requests: duplicates are sent once, known results are remembered, identical in-flight requests are merged, chat scope is separate', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, maxConcurrentCalls: 1, events: { enabled: false } })
+  try {
+    g.hold('ping')
+    const blocker = api.plugin.invoke('ping') // fills the only slot, so the avatar calls below queue behind it
+    await until(() => g.log.length === 1, { message: 'the blocker to start' })
+    const first = api.media.messageAvatarUrls('c1', ['i:1', 'i:2', 'i:1'])
+    const second = api.media.messageAvatarUrls('c1', ['i:2', 'i:1'])
+    await sleep(10)
+    assert.equal(api.plugin.transportStats().waiting, 1, 'the two identical requests share one queued call')
+    g.release('ping')
+    await blocker
+    const [a, b] = await Promise.all([first, second])
+    assert.deepEqual(a, { urls: { 'i:1': 'asset://avatar-cache/i:1.jpg', 'i:2': 'asset://avatar-cache/i:2.jpg' }, names: { 'i:1': 'N i:1', 'i:2': 'N i:2' } })
+    assert.deepEqual(b, a)
+    assert.deepEqual(g.avatarCalls().map((c) => c.args), [['c1', ['i:1', 'i:2']]])
+
+    const partial = await api.media.messageAvatarUrls('c1', ['i:2', 'i:3'])
+    assert.deepEqual(Object.keys(partial.urls).sort(), ['i:2', 'i:3'])
+    assert.deepEqual(g.avatarCalls().map((c) => c.args[1]), [['i:1', 'i:2'], ['i:3']], 'only the unknown id was sent')
+    await api.media.messageAvatarUrls('c1', ['i:3', 'i:1'])
+    assert.equal(g.avatarCalls().length, 2, 'a fully known request sends nothing')
+
+    await api.media.messageAvatarUrls('c2', ['i:1'])
+    assert.deepEqual(g.avatarCalls().map((c) => c.args), [['c1', ['i:1', 'i:2']], ['c1', ['i:3']], ['c2', ['i:1']]], 'the same msgId in another chat is a different avatar')
+
+    await api.media.avatarUrls(['c1', 'c2', 'c1'])
+    await api.media.avatarUrls(['c2', 'c1'])
+    assert.deepEqual(g.avatarCalls('media.avatar.prepareChats').map((c) => c.args), [[['c1', 'c2']]])
+  } finally { api.dispose() }
+})
+
+test('avatar requests: a failed answer is not remembered; an empty id list sends nothing', async () => {
+  const g = gatedHost({ fail: new Set(['i:bad']) })
+  const api = createPluginLineTodoApi({ host: g.host, events: { enabled: false }, busyRetry: { attempts: 0 } })
+  try {
+    assert.deepEqual(await api.media.messageAvatarUrls('c1', ['i:bad']), { urls: {}, names: {} })
+    assert.deepEqual(await api.media.messageAvatarUrls('c1', ['i:bad']), { urls: {}, names: {} })
+    assert.equal(g.avatarCalls().length, 2, 'a failure is retried')
+    assert.deepEqual(await api.media.messageAvatarUrls('c1', []), { urls: {}, names: {} })
+    assert.equal(g.avatarCalls().length, 2, 'an empty id list sends nothing')
+  } finally { api.dispose() }
+})
+
+test('avatar requests: abort drops a queued request (the backend never sees it); a request someone else still waits for survives; a started call finishes and is remembered', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, maxConcurrentCalls: 1, events: { enabled: false } })
+  try {
+    g.hold('ping')
+    const blocker = api.plugin.invoke('ping')
+    await until(() => g.log.length === 1, { message: 'the blocker to start' })
+
+    const lone = new AbortController()
+    const dropped = api.media.messageAvatarUrls('c1', ['i:9'], { signal: lone.signal })
+    await sleep(5)
+    assert.equal(api.plugin.transportStats().waiting, 1)
+    lone.abort()
+    assert.deepEqual(await dropped, { urls: {}, names: {} }, 'an aborted request resolves empty')
+    assert.equal(api.plugin.transportStats().waiting, 0, 'its queued backend call left the queue')
+
+    const sharedA = new AbortController()
+    const leaving = api.media.messageAvatarUrls('c1', ['i:20'], { signal: sharedA.signal })
+    const staying = api.media.messageAvatarUrls('c1', ['i:20'])
+    await sleep(5)
+    assert.equal(api.plugin.transportStats().waiting, 1, 'merged into one queued call')
+    sharedA.abort()
+    assert.deepEqual(await leaving, { urls: {}, names: {} })
+    assert.equal(api.plugin.transportStats().waiting, 1, 'another caller still needs it: not dropped')
+
+    g.release('ping')
+    await blocker
+    assert.deepEqual((await staying).urls, { 'i:20': 'asset://avatar-cache/i:20.jpg' })
+    assert.deepEqual(g.avatarCalls().map((c) => c.args[1]), [['i:20']], 'i:9 was never sent; i:20 was sent once')
+
+    const retry = await api.media.messageAvatarUrls('c1', ['i:9'])
+    assert.deepEqual(Object.keys(retry.urls), ['i:9'], 'a dropped request does not poison later requests for the same id')
+
+    g.hold('media.avatar.prepareMessages')
+    const startedAbort = new AbortController()
+    const started = api.media.messageAvatarUrls('c1', ['i:30'], { signal: startedAbort.signal })
+    await until(() => g.avatarCalls().some((c) => c.args[1].includes('i:30')), { message: 'the call to start' })
+    startedAbort.abort()
+    assert.deepEqual(await started, { urls: {}, names: {} })
+    const merged = api.media.messageAvatarUrls('c1', ['i:30', 'i:31'])
+    await sleep(10)
+    g.release('media.avatar.prepareMessages')
+    assert.deepEqual(Object.keys((await merged).urls).sort(), ['i:30', 'i:31'])
+    assert.deepEqual(g.avatarCalls().map((c) => c.args[1]).slice(-2), [['i:30'], ['i:31']], 'a new request merges into the call that already started and only sends the rest')
+    const before = g.avatarCalls().length
+    await api.media.messageAvatarUrls('c1', ['i:30'])
+    assert.equal(g.avatarCalls().length, before, 'the aborted-but-started call was kept')
+  } finally { api.dispose() }
+})
+
+test('avatar requests: aborting after the call started does not cancel its result.chunk reads', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, events: { enabled: false } })
+  try {
+    g.hold('result.chunk')
+    const abort = new AbortController()
+    const pending = api.media.messageAvatarUrls('c1', ['i:chunked'], { signal: abort.signal })
+    await until(() => g.log.some((entry) => entry.path === 'result.chunk'), { message: 'the first chunk read' })
+    abort.abort()
+    assert.deepEqual(await pending, { urls: {}, names: {} })
+    g.release('result.chunk')
+    await until(() => g.log.filter((entry) => entry.path === 'result.chunk').length === 2, { message: 'both chunks to be read after the abort' })
+    await sleep(10)
+    const calls = g.log.length
+    const again = await api.media.messageAvatarUrls('c1', ['i:chunked'])
+    assert.deepEqual(Object.keys(again.urls), ['i:chunked'], 'the reassembled answer was remembered')
+    assert.equal(g.log.length, calls)
+  } finally { api.dispose() }
+})
+
+// ───────────── in-flight slow avatar calls must not hold the whole host call budget ─────────────
+
+test('avatar calls: at most one is in flight at the default budget of 3, so two other host calls can always be sent; every avatar still loads', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, events: { enabled: false } })
+  try {
+    assert.equal(api.plugin.transportStats().limit, 3)
+    g.hold('media.avatar.prepareMessages')
+    const ids = Array.from({ length: 6 }, (_, index) => `i:${index + 1}`)
+    const loads = ids.map((id) => api.media.messageAvatarUrls('c1', [id]))
+    await sleep(20)
+    assert.equal(g.avatarCalls().length, 1, 'only one avatar call has been sent; the rest wait outside the host call queue')
+    assert.equal(api.plugin.transportStats().active, 1)
+    assert.equal(api.plugin.transportStats().lanes.core.waiting, 0, 'nothing waits in the core lane')
+    assert.equal(api.plugin.transportStats().lanes.bulk.waiting, ids.length - 1, 'the other avatar batches wait in the bulk lane, behind the one in flight')
+
+    g.hold('ping')
+    g.hold('line.status')
+    const ping = api.plugin.invoke('ping')
+    const status = api.plugin.invoke('line.status')
+    await until(() => g.log.some((e) => e.path === 'ping') && g.log.some((e) => e.path === 'line.status'), { message: 'two non-avatar calls reach the host while an avatar call is in flight' })
+    assert.equal(api.plugin.transportStats().active, 3)
+    g.release('ping')
+    g.release('line.status')
+    assert.equal(await ping, 'ping')
+    assert.equal(await status, 'line.status')
+    assert.equal(g.avatarCalls().length, 1, 'the avatar call is still the only one sent')
+
+    for (let round = 0; round < ids.length; round += 1) {
+      await until(() => g.avatarCalls().length === round + 1, { message: `avatar call ${round + 1} to be sent` })
+      g.release('media.avatar.prepareMessages')
+      g.hold('media.avatar.prepareMessages')
+    }
+    g.release('media.avatar.prepareMessages')
+    const results = await Promise.all(loads)
+    assert.equal(g.avatarFlight.peak, 1, 'never more than one avatar call at the host')
+    results.forEach((result, index) => assert.deepEqual(result.urls, { [ids[index]]: `asset://avatar-cache/${ids[index]}.jpg` }, `avatar ${ids[index]} loaded`))
+    assert.deepEqual(g.avatarCalls().map((c) => c.args[1][0]), ids, 'every avatar was requested exactly once, in order')
+    assert.equal(api.plugin.transportStats().active, 0)
+  } finally { api.dispose() }
+})
+
+test('avatar calls: the budget scales (limit 5 -> 3 avatar calls, 2 always free); a budget of 1 still lets avatars through one at a time', async () => {
+  const wide = gatedHost()
+  const five = createPluginLineTodoApi({ host: wide.host, maxConcurrentCalls: 5, events: { enabled: false } })
+  try {
+    wide.hold('media.avatar.prepareMessages')
+    const loads = Array.from({ length: 6 }, (_, index) => five.media.messageAvatarUrls('c1', [`i:${index + 1}`]))
+    await until(() => wide.avatarCalls().length === 3, { message: 'three avatar calls in flight' })
+    await sleep(20)
+    assert.equal(wide.avatarCalls().length, 3)
+    wide.release('media.avatar.prepareMessages')
+    await Promise.all(loads)
+    assert.equal(wide.avatarFlight.peak, 3)
+  } finally { five.dispose() }
+  const narrow = gatedHost()
+  const one = createPluginLineTodoApi({ host: narrow.host, maxConcurrentCalls: 1, events: { enabled: false } })
+  try {
+    const results = await Promise.all([one.media.messageAvatarUrls('c1', ['i:1']), one.media.messageAvatarUrls('c1', ['i:2'])])
+    assert.deepEqual(results.map((r) => Object.keys(r.urls)), [['i:1'], ['i:2']])
+  } finally { one.dispose() }
+})
+
+test('avatar calls: the background slot is held for the whole call (chunked answer), so the next avatar call cannot slip in between the chunks', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, events: { enabled: false } })
+  try {
+    const [chunked, plain] = await Promise.all([api.media.messageAvatarUrls('c1', ['i:chunked']), api.media.messageAvatarUrls('c1', ['i:2'])])
+    assert.deepEqual(Object.keys(chunked.urls), ['i:chunked'])
+    assert.deepEqual(Object.keys(plain.urls), ['i:2'])
+    assert.deepEqual(g.log.map((e) => (e.path === 'media.avatar.prepareMessages' ? `prepare:${e.args[1][0]}` : e.path)), ['prepare:i:chunked', 'result.chunk', 'result.chunk', 'prepare:i:2'])
+  } finally { api.dispose() }
+})
+
+test('avatar calls: abort drops a batch that waits for a background slot (never sent); the call in flight finishes', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, events: { enabled: false } })
+  try {
+    g.hold('media.avatar.prepareMessages')
+    const running = api.media.messageAvatarUrls('c1', ['i:1'])
+    await until(() => g.avatarCalls().length === 1, { message: 'the first avatar call to be in flight' })
+    const lone = new AbortController()
+    const waiting = api.media.messageAvatarUrls('c1', ['i:2'], { signal: lone.signal })
+    const kept = api.media.messageAvatarUrls('c1', ['i:3'])
+    await sleep(10)
+    assert.equal(api.plugin.transportStats().lanes.bulk.waiting, 2)
+    lone.abort()
+    assert.deepEqual(await waiting, { urls: {}, names: {} })
+    assert.equal(api.plugin.transportStats().lanes.bulk.waiting, 1, 'the aborted batch left the wait at once')
+    g.release('media.avatar.prepareMessages')
+    assert.deepEqual(Object.keys((await running).urls), ['i:1'])
+    assert.deepEqual(Object.keys((await kept).urls), ['i:3'])
+    assert.deepEqual(g.avatarCalls().map((c) => c.args[1]), [['i:1'], ['i:3']], 'i:2 never reached the host')
+    assert.deepEqual(Object.keys((await api.media.messageAvatarUrls('c1', ['i:2'])).urls), ['i:2'], 'an aborted id is requested again later')
+  } finally { api.dispose() }
 })
