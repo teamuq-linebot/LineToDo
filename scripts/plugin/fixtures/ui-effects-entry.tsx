@@ -14,6 +14,7 @@ import App from '../../../src/renderer/App'
 import { useTodos } from '../../../src/renderer/store/useTodos'
 import { NotMineReviewPanel } from '../../../src/renderer/components/Board/NotMineReviewPanel'
 import { ReviewControls } from '../../../src/renderer/components/Board/KanbanBoard'
+import { TodaySummary } from '../../../src/renderer/components/TodaySummary'
 import { DraftReplyDialog } from '../../../src/renderer/components/DraftReplyDialog'
 import { IdentityInboxPanel } from '../../../src/renderer/features/identity/IdentityInboxPanel'
 import { ResidencyNotice, ResidencyStatusBar } from '../../../src/plugin/ui/ResidencyStatus'
@@ -82,6 +83,10 @@ export function todosScene(api: Api): ReactElement {
 
 export function notMineScene(api: Api): ReactElement {
   return <NotMineReviewPanel api={api} onClose={() => undefined} onChanged={() => undefined} />
+}
+
+export function todaySummaryScene(api: Api): ReactElement {
+  return <Host api={api}><TodaySummary todos={[]} loading={false} onRefresh={() => undefined} /></Host>
 }
 
 export function reviewControlsScene(api: Api, props: { onRefresh: () => Promise<boolean>; pollDelayMs: (failures: number) => number }): ReactElement {

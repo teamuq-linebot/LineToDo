@@ -175,6 +175,7 @@ export function PromptSettings({ control, chatControl, chats = [] }: { control: 
     <div className="set-section" data-testid="prompt-settings">
       <div className="set-section-title">待辦抽取 Prompt</div>
       <div className="set-msg muted">這是 AI 開始判斷 LINE 訊息時使用的提示詞。可調整分類、判斷與去重方式；待辦輸出欄位仍由系統固定。</div>
+      {state?.topicAppendix && <div className="set-msg muted" data-testid="topic-appendix">{state.topicAppendix}</div>}
       {error && <div className="set-msg err" role="alert" data-testid="prompt-error">{error}</div>}
       {message && <div className="set-msg muted" role="status">{message}</div>}
       {busy === 'loading' && <div className="muted" role="status">正在載入 prompt…</div>}

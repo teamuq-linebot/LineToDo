@@ -1,4 +1,4 @@
-import { useLineTodoApi } from '../platform/LineTodoApi'
+import { useHostCapabilities, useLineTodoApi } from '../platform/LineTodoApi'
 import { useEffect, useRef, useState } from 'react'
 import type { AiProviderId, TodoDTO, PipelineStatus, ReconcileProgress } from '../types/api'
 import { isOverdue } from './Board/buckets'
@@ -82,9 +82,12 @@ function reconPct(p: ReconcileProgress): number {
 
 export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element {
   const api = useLineTodoApi()
+  const caps = useHostCapabilities()
   const [status, setStatus] = useState<PipelineStatus | null>(null)
   // 目前選用的 AI provider：決定「引擎未就緒」時該叫使用者去填金鑰還是去修 CLI 路徑。
   const [provider, setProvider] = useState<AiProviderId>('http')
+  // 待辦與議題合併整理開啟時，這顆鈕就是總入口（已啟用議題的群組一併產出議題），所以改名「立即整理」。
+  const [combined, setCombined] = useState(false)
   const [running, setRunning] = useState(false)
 
   // 自我對帳進度（方案 A：低調 pill）。backfilling 顯示；done 顯示綠勾後淡出；
@@ -96,7 +99,7 @@ export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element 
   useEffect(() => {
     // 失敗時只是不顯示引擎狀態：同一個 backend 問題會由看板的錯誤列（useTodos.error）說明原因（G-02），這裡不留未處理的 rejection。
     void sharedRead(api, 'pipeline.status', () => api.pipeline.status()).then(setStatus, () => undefined)
-    void sharedRead(api, 'settings.get', () => api.settings.get()).then((v) => setProvider(v.aiProvider), () => undefined)
+    void sharedRead(api, 'settings.get', () => api.settings.get()).then((v) => { setProvider(v.aiProvider); setCombined(caps.host === 'plugin' && v.pluginCombinedExtract === true) }, () => undefined)
     const off = api.pipeline.onStatus(setStatus)
     return off
   }, [])
@@ -217,7 +220,7 @@ export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element 
           )}
         </div>
         <button onClick={() => void runNow()} disabled={running || status?.busy}>
-          {running ? '抓取中…' : '立即抓取'}
+          {combined ? (running ? '整理中…' : '立即整理') : (running ? '抓取中…' : '立即抓取')}
         </button>
       </div>
     </section>

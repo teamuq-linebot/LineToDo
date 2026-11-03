@@ -266,7 +266,7 @@ function keyPath(): string {
 }
 
 /** 「待辦與議題合併整理」的預設值；設定檔沒有這個欄位時（舊版升級）也用它。 */
-export const DEFAULT_COMBINED_EXTRACT = false
+export const DEFAULT_COMBINED_EXTRACT = true
 
 /** 預設設定（從 defaults.ts 衍生，深拷貝 blocklist 避免共用參考被改）。 */
 function defaultSettings(): AppSettings {

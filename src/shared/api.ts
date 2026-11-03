@@ -702,7 +702,8 @@ export interface LineTodoApi {
     setCrossChatEnabled(chatId: string, enabled: boolean): Promise<{ ok: boolean }>
     crossChatEnabled(chatId: string): Promise<boolean>
     pendingCount(chatId: string): Promise<number>
-    list(chatId: string): Promise<{ ok: boolean; topics: GroupTopicDTO[] }>
+    /** `combined: true`＝待辦與議題合併整理正在背景運作：新訊息的議題會隨「立即整理」產生，手動分析只補舊訊息。 */
+    list(chatId: string): Promise<{ ok: boolean; topics: GroupTopicDTO[]; combined?: boolean }>
     /** 一次回傳所有未封鎖群組的議題總覽（取代逐群 list）。選填：沒有的宿主，view 退回逐群 list。 */
     overview?(): Promise<GroupTopicsOverviewDTO[]>
     linkCandidates(chatId: string): Promise<GroupTopicLinkCandidateDTO[]>

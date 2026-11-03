@@ -41,6 +41,20 @@ import {
  * `initialLoadError`／`initialActionError`：測試用（同 `initialView`）。
  */
 
+/** 外掛版：待辦與議題合併整理的開關（即時生效，不必重啟）。 */
+function CombinedExtractSetting({ enabled, onChange }: { enabled: boolean; onChange: (value: boolean) => void }): JSX.Element {
+  return (
+    <div className="set-section" data-testid="combined-extract-setting">
+      <div className="set-section-title">議題與待辦合併整理</div>
+      <label className="set-row">
+        <input type="checkbox" data-testid="combined-extract-toggle" checked={enabled} onChange={(event) => onChange(event.target.checked)} />
+        <span>已啟用議題的群組，整理時一次 AI 呼叫同時產出待辦與議題</span>
+      </label>
+      <div className="set-msg muted">開啟後，按「立即整理」或背景整理時，已啟用議題的群組會同時產生議題；舊訊息可在群組議題用「補分析舊訊息」補上。關閉後，待辦與議題回到各自獨立的兩條路徑（議題需手動分析）。已啟用議題的群組輸出較長，AI 用量會略增。</div>
+    </div>
+  )
+}
+
 export function SettingsPanel({ initialView, initialLoadError, initialActionError }: { initialView?: SettingsView; initialLoadError?: string; initialActionError?: string } = {}): JSX.Element {
   const api = useLineTodoApi()
   const caps = useHostCapabilities()
@@ -328,6 +342,7 @@ export function SettingsPanel({ initialView, initialLoadError, initialActionErro
 
       {/* AI 判斷引擎（外掛版：由 TeamUQ 的 ai:chat 提供，沒有 provider／端點／金鑰可選） */}
       {!caps.aiProviderSelection && api.hostAi && <HostAiSettings control={api.hostAi} selection={v.pluginAi} onSaved={(pluginAi) => setView((current) => current ? { ...current, pluginAi } : current)} />}
+      {!caps.aiProviderSelection && api.hostAi && <CombinedExtractSetting enabled={v.pluginCombinedExtract === true} onChange={(value) => void patch({ pluginCombinedExtract: value })} />}
       {!caps.aiProviderSelection && api.hostAi && <PromptSettings control={api.hostAi.prompts} chatControl={api.hostAi.chatPrompts} chats={chats} />}
       {!caps.aiProviderSelection && !api.hostAi && (
         <div className="set-section">

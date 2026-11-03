@@ -665,6 +665,7 @@ test('e2e analyzeNotMine: the fenced JSON is cleaned by the AI port, validated a
 
 test('e2e groupTopics.analyze: the JSON Schema is put in the prompt (no structured output on ai:chat), the reply is validated by the backend\'s domain validator and saved as a topic', async () => {
   await withStack({
+    settings: { pluginCombinedExtract: false },
     reply: (ctx) => {
       if (!ctx.system.includes('ONE group chat')) return fenced(todoFor(ctx.user))
       const payload = JSON.parse(ctx.user)
@@ -691,6 +692,7 @@ test('e2e groupTopics.analyze: the JSON Schema is put in the prompt (no structur
   })
   // invalid output (an assignment for a message that was never sent) is rejected by the backend and nothing is saved
   await withStack({
+    settings: { pluginCombinedExtract: false },
     reply: (ctx) => (ctx.system.includes('ONE group chat') ? JSON.stringify({ topics: [], identityDecisions:[], assignments: [{ msgId: 'ghost', topicRef: null, relation: 'uncertain', confidence: 0.1, relevance: 'unknown', relevanceEvidenceMsgIds: [] }] }) : fenced(todoFor(ctx.user)))
   }, async ({ api, line }) => {
     line.emit(raw(1, { chatId: 'g-x', chat: '群', isGroup: true, text: '大家好' }))
@@ -703,7 +705,7 @@ test('e2e groupTopics.analyze: the JSON Schema is put in the prompt (no structur
   })
 })
 
-test('e2e combined extraction: with pluginCombinedExtract on, one AI turn per part returns { todo, topic } for an enabled group; the todo and the topic both land, and the run event names the chat', async () => {
+test('e2e combined extraction: with pluginCombinedExtract on (the default), one AI turn per part returns { todo, topic } for an enabled group; the todo and the topic both land, and the run event names the chat', async () => {
   const replyFor = (ctx) => {
     const payload = JSON.parse(ctx.user)
     const first = payload.newMessages[0].msgId
@@ -719,7 +721,8 @@ test('e2e combined extraction: with pluginCombinedExtract on, one AI turn per pa
       }
     })
   }
-  await withStack({ settings: { pollIntervalSec: 3600, pluginCombinedExtract: true }, reply: replyFor }, async ({ api, line, calls }) => {
+  // no pluginCombinedExtract in settings.json: an installed copy upgraded from 0.2.10 runs the combined path (default ON)
+  await withStack({ settings: { pollIntervalSec: 3600 }, reply: replyFor }, async ({ api, line, calls }) => {
     const runs = []
     api.pipeline.onRun((run) => runs.push(run))
     for (let i = 1; i <= 3; i += 1) line.emit(raw(i, { chatId: 'g-launch', chat: '發表會籌備群', isGroup: true, text: `發表會場地第 ${i} 案要不要訂？` }))
@@ -738,6 +741,8 @@ test('e2e combined extraction: with pluginCombinedExtract on, one AI turn per pa
     await until(() => runs.some((run) => run.topicChatIds?.includes('g-launch')), { message: 'a pipeline-run that names the chat in topicChatIds' })
     const overview = (await api.groupTopics.overview()).find((row) => row.chatId === 'g-launch')
     assert.equal(overview.backlogCount, 0, 'nothing is left for the manual backfill')
+    const combinedDiag = (await api.plugin.info()).extract.combined
+    assert.deepEqual({ topicApplied: combinedDiag.topicApplied, topicFailed: combinedDiag.topicFailed, decisions: combinedDiag.decisions, deferDecisions: combinedDiag.deferDecisions }, { topicApplied: 1, topicFailed: 0, decisions: 1, deferDecisions: 0 }, 'diagnostics expose the combined counters (the defer ratio)')
   })
   await withStack({ settings: { pollIntervalSec: 3600, pluginCombinedExtract: false }, reply: replyFor }, async ({ api, line, calls }) => {
     for (let i = 1; i <= 2; i += 1) line.emit(raw(i, { chatId: 'g-launch', chat: '發表會籌備群', isGroup: true, text: `發表會場地第 ${i} 案要不要訂？` }))

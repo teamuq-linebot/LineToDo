@@ -50,7 +50,8 @@ export interface GroupTopicsOverviewRow {
 export interface GroupTopicsService {
   enable(chatId: string, enabled: boolean): { ok: boolean }
   enableCrossChat(chatId: string, enabled: boolean): { ok: boolean }
-  list(chatId: string): { ok: boolean; topics: ReturnType<typeof listTopics> }
+  /** `combined`：合併整理正在背景運作（只在 ok 時帶）；面板據此改用「補分析舊訊息」的文案。 */
+  list(chatId: string): { ok: boolean; topics: ReturnType<typeof listTopics>; combined?: boolean }
   overview(): GroupTopicsOverviewRow[]
   listLinkCandidates(chatId: string): ReturnType<typeof listLinkCandidates>
   crossChatEnabled(chatId: string): boolean
@@ -160,7 +161,7 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
     list(chatId) {
       const chat = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as {blocked:number}|undefined
       if (!chat || chat.blocked === 1 || !isEnabled(db, chatId)) return { ok: false, topics: [] }
-      return { ok: true, topics: listTopics(db, chatId) }
+      return { ok: true, topics: listTopics(db, chatId), ...(combinedActive() ? { combined: true } : {}) }
     },
     overview() {
       const rows = listChats({}, db).filter((chat) => chat.isGroup && !chat.blocked).map((chat): GroupTopicsOverviewRow => {

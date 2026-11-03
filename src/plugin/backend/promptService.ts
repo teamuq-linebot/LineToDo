@@ -7,7 +7,7 @@ import { COMBINED_OUTPUT_CONTRACT, EXTRACT_OUTPUT_CONTRACT } from './aiOutputCon
 import { COMBINED_BUNDLE_ENABLED, COMBINED_TOPIC_SECTION } from '../../main/features/groupTopics/prompts/bundle'
 import { EMPTY_CHAT_PROMPT_OVERRIDE } from './chatPromptStore'
 import type { ChatPromptStore } from './chatPromptStore'
-import { MY_NAME_MAX_CHARS, PROMPT_MAX_CHARS, PromptError, promptRefinementInput, validateMyName, validatePrompt, validatePromptSuggestion } from '../../shared/promptSettings'
+import { MY_NAME_MAX_CHARS, PROMPT_MAX_CHARS, PromptError, TOPIC_APPENDIX_TEXT, promptRefinementInput, validateMyName, validatePrompt, validatePromptSuggestion } from '../../shared/promptSettings'
 import type { ChatPromptState, ChatPromptSummary, PromptRefinementRequest, PromptState, PromptSuggestion } from '../../shared/promptSettings'
 
 /** `topics`：已啟用議題的群組，system 另接固定的議題段落與合併輸出格式。省略＝與舊版逐字相同。 */
@@ -60,7 +60,7 @@ export function createPromptService(settings: SettingsStore, ai: AiPort, options
   const nameRevision = (): string => sha256(JSON.stringify({ myName: defaultName() }))
   const state = (): PromptState => ({
     initialPrompt: EXTRACT_SYSTEM_PROMPT, activePrompt: active(), customized: active() !== EXTRACT_SYSTEM_PROMPT,
-    revision: revision(), maxChars: PROMPT_MAX_CHARS, outputFormat: EXTRACT_OUTPUT_CONTRACT,
+    revision: revision(), maxChars: PROMPT_MAX_CHARS, outputFormat: EXTRACT_OUTPUT_CONTRACT, topicAppendix: TOPIC_APPENDIX_TEXT,
     myName: defaultName(), nameRevision: nameRevision(), maxNameChars: MY_NAME_MAX_CHARS
   })
   const assertRevision = (expected: unknown): void => { if (expected !== revision()) throw new PromptError('prompt_conflict') }

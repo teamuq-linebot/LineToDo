@@ -74,6 +74,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [pending, setPending] = useState(0)
+  const [combined, setCombined] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const requestVersion = useRef(0)
@@ -152,6 +153,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     setEnabled(false)
     setCrossEnabled(false)
     setPending(0)
+    setCombined(false)
     setNotice('')
     setError('')
     setBusy(false)
@@ -170,6 +172,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     ]).then(([result, cross, candidates, pendingCount]) => {
       if (requestVersion.current !== version) return
       setEnabled(result.ok)
+      setCombined(result.combined === true)
       setTopics(result.topics)
       setCrossEnabled(cross)
       setLinks(candidates)
@@ -194,6 +197,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     ])
     if (!stillShowing(chatIdAtStart, versionAtStart)) return
     setEnabled(result.ok)
+    setCombined(result.combined === true)
     setTopics(result.topics)
     setLinks(candidates)
     setPending(pendingCount)
@@ -323,7 +327,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
       {!embedded && !hideTitle && <h2>{heading}</h2>}
       {!embedded && <details className="group-topics-help">
         <summary>議題分析說明與群組設定</summary>
-        <p>議題分析需逐群啟用並手動執行。所有群組總覽只讀取各群既有結果，不會自動啟用或分析群組。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>
+        <p>議題分析需逐群啟用。已開啟「議題與待辦合併整理」時，新訊息的議題會在「立即整理」與背景整理時一併產生，舊訊息可用「補分析舊訊息」手動補上；否則需手動執行分析。所有群組總覽只讀取各群既有結果，不會自動啟用或分析群組。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>
       </details>}
       {embedded && <div className="group-topics-head"><h3>{heading}</h3><span>{currentChatName}</span></div>}
       {!api && <p className="muted">此版本未提供議題分析功能。</p>}
@@ -382,9 +386,12 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
               <div className="group-topics-controls">
                 <label><input type="checkbox" checked={enabled} disabled={!api || busy} onChange={(event) => void toggleEnabled(event.target.checked)} /> 啟用此{chatLabel}議題分析</label>
                 {selectedChatIsGroup && <label><input type="checkbox" checked={crossEnabled} disabled={!api || !enabled || busy} onChange={(event) => void toggleCrossChat(event.target.checked)} /> 顯示跨群語意候選（人物一致性不會由此確認）</label>}
-                <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '分析中…' : `分析最近${chatLabel}訊息`}</button>
+                {combined
+                  ? (pending > 0 || busy) && <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '補分析中…' : '補分析舊訊息'}</button>
+                  : <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '分析中…' : `分析最近${chatLabel}訊息`}</button>}
               </div>
-              {enabled && <p className="group-topics-pending">{busy ? '目前每批最多整理 20 則；若仍有待整理訊息，可再次執行。' : pending > 100 ? '有 100 則以上新訊息待整理；每批最多整理 20 則。' : pending > 0 ? `有 ${pending} 則新訊息待整理；每批最多整理 20 則。` : '沒有新增訊息待處理，既有議題結果已保留。'}</p>}
+              {enabled && combined && <p className="group-topics-pending">{busy ? '目前每批最多補分析 20 則；若仍有舊訊息，可再次執行。' : pending > 100 ? '有 100 則以上舊訊息尚未分析議題；每批最多補分析 20 則。' : pending > 0 ? `有 ${pending} 則舊訊息尚未分析議題，可按「補分析舊訊息」補上；新訊息會在「立即整理」時一併產生議題。` : '新訊息會在「立即整理」時一併產生議題；沒有需要補分析的舊訊息。'}</p>}
+              {enabled && !combined && <p className="group-topics-pending">{busy ? '目前每批最多整理 20 則；若仍有待整理訊息，可再次執行。' : pending > 100 ? '有 100 則以上新訊息待整理；每批最多整理 20 則。' : pending > 0 ? `有 ${pending} 則新訊息待整理；每批最多整理 20 則。` : '沒有新增訊息待處理，既有議題結果已保留。'}</p>}
               {enabled && (
                 <div className="group-topics-results">
                   <h3>此{chatLabel}近期議題</h3>

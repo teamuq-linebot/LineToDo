@@ -824,6 +824,8 @@ export class ExtractQueue implements ExtractSink {
           })
           topicApplied = applied.topic === 'applied'
           this.afterTopicOutcome(entry, applied.topic, applied.topicError, combinedTopic, topicFailure, topicTargets)
+          // 診斷（累計計數，不含訊息內容）：defer 比例＝deferDecisions／decisions；回覆長度＝replyChars／partsWithTopic。
+          try { this.opts.log?.('combined_commit', { chatId: entry.chatId, topic: applied.topic, todo: extract !== null, targets: topicTargets.length, ...this.combinedCounters }) } catch { /* 診斷失敗不影響流程 */ }
           if (topicApplied) topicChatIds.add(entry.chatId)
         } else applyChatExtract({ db: this.opts.db, cfg: this.opts.getConfig(), now: new Date(this.now()).toISOString(), ...(identity?{identity}:{}) }, entry.chatId, entry.msgIds, extract!, local)
         tally.todosCreated += local.todosCreated

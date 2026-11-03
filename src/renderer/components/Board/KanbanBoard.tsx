@@ -1,4 +1,4 @@
-import { useLineTodoApi } from '../../platform/LineTodoApi'
+import { useHostCapabilities, useLineTodoApi } from '../../platform/LineTodoApi'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   AiProviderId,
@@ -333,6 +333,9 @@ export function ReviewControls({
   const [progress, setProgress] = useState<BackfillProgress | null>(null)
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null)
   const [aiProvider, setAiProvider] = useState<AiProviderId>('http')
+  const caps = useHostCapabilities()
+  /** 待辦與議題合併整理開啟：回顧最近幾天仍只產出待辦（兩者的訊息窗口規則互相牽制），tooltip 說明。 */
+  const [combined, setCombined] = useState(false)
   const [reviewNote, setReviewNote] = useState<string | null>(null)
   const [backfilling, setBackfilling] = useState(false)
   const [backfillNote, setBackfillNote] = useState<string | null>(null)
@@ -383,7 +386,7 @@ export function ReviewControls({
     void sharedRead(api, 'pipeline.status', () => api.pipeline.status()).then((s) => { if (alive) setHasApiKey(s.hasApiKey) }).catch(() => {
       if (alive) setHasApiKey(null)
     })
-    void sharedRead(api, 'settings.get', () => api.settings.get()).then((v) => { if (alive) setAiProvider(v.aiProvider) }).catch(() => undefined)
+    void sharedRead(api, 'settings.get', () => api.settings.get()).then((v) => { if (alive) { setAiProvider(v.aiProvider); setCombined(caps.host === 'plugin' && v.pluginCombinedExtract === true) } }).catch(() => undefined)
     const coalescer = createProgressFrameCoalescer(
       (callback) => window.requestAnimationFrame(callback),
       (id) => window.cancelAnimationFrame(id),
@@ -450,7 +453,7 @@ export function ReviewControls({
     <div className="board-toolbar">
       <button className="btn-review-week" onClick={onShowNotMine}>不是我的回查</button>
       <button className="btn-review-week" disabled={reviewBusy} onClick={() => void onReviewRecentDays()}
-        title={hasApiKey === false ? notReadyShortText(aiProvider) : `用 AI 判斷最近 ${REVIEW_DAYS} 天訊息、補建代辦`}>
+        title={hasApiKey === false ? notReadyShortText(aiProvider) : combined ? `用 AI 判斷最近 ${REVIEW_DAYS} 天訊息、補建代辦（只產出待辦，不會產生群組議題）` : `用 AI 判斷最近 ${REVIEW_DAYS} 天訊息、補建代辦`}>
         {reviewLabel}
       </button>
       {hasApiKey === false && !reviewBusy && <span className="review-hint">{notReadyShortText(aiProvider)}</span>}

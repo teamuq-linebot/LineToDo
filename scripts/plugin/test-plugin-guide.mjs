@@ -675,3 +675,21 @@ test('m1 teamuqPlaces: the "where to change the defaults" sentence follows the b
   assert.ok(panel.includes('defaultsInSettingsHint(caps.settingsTab)'), 'ChatPromptPanel follows the host capability')
   assert.equal(panel.includes('PLUGIN_SETTINGS_PLACE'), false, 'and names no fixed TeamUQ place')
 })
+
+// ───────────── Phase 4: combined todo+topic switch ─────────────
+
+test('Phase 4: the combined todo+topic switch rides the existing settings group (no new backend method); a fresh backend reports it ON and an explicit OFF persists', async () => {
+  assert.deepEqual(buildManifest({ version: '0.1.2' }).backendMethods, [...BACKEND_METHOD_GROUPS], 'the allow-list is unchanged by the new setting')
+  await withRealBackend(async ({ backend }) => {
+    const full = coreHost(backend)
+    const api = createPluginLineTodoApi({ host: full.host, events: FAST_EVENTS })
+    try {
+      assert.equal((await api.settings.get()).pluginCombinedExtract, true, 'default ON (also what a settings.json without the field means after an upgrade)')
+      assert.equal((await api.settings.update({ pluginCombinedExtract: false })).pluginCombinedExtract, false)
+      assert.equal((await api.settings.get()).pluginCombinedExtract, false)
+      assert.equal((await api.settings.update({ pollIntervalSec: 45 })).pluginCombinedExtract, false, 'an unrelated patch does not wash the switch back to ON')
+      assert.deepEqual(full.state.refusedMethods, [], 'nothing outside the manifest allow-list')
+      for (const call of full.state.calls) assert.equal(call.method, backendMethodFor(call.path))
+    } finally { api.dispose() }
+  })
+})

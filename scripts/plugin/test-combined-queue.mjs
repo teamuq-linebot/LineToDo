@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { createTodo, getOpenTodosByChat, updateTodo } from '../../src/main/db/todos.repo.ts'
 import { getPipelineDefaults } from '../../src/main/config/defaults.ts'
-import { createSettingsStore } from '../../src/main/config/settings.ts'
+import { DEFAULT_COMBINED_EXTRACT, createSettingsStore } from '../../src/main/config/settings.ts'
 import { buildUserPayload } from '../../src/main/llm/extractPrompt.ts'
 import { createGroupTopicsService, GROUP_TOPICS_BATCH_SIZE } from '../../src/main/features/groupTopics/service.ts'
 import { ensureGroupTopicsSchema, loadPendingMessages, setEnabled } from '../../src/main/features/groupTopics/repository.ts'
@@ -687,12 +687,13 @@ test('worker: a topics item is answered with system(chatId,{topics:true}) and va
 
 // ───────────────────────── settings ─────────────────────────
 
-test('settings: pluginCombinedExtract defaults per DEFAULT_COMBINED_EXTRACT, persists a boolean, and an old settings.json without the field gets the default', () => {
+test('settings: pluginCombinedExtract defaults to ON, persists a boolean, and an old settings.json without the field (an upgrade) is ON', () => {
   const dir = mkdtempSync(join(tmpdir(), 'line-todo-settings-'))
   try {
     const fresh = createSettingsStore({ userDataDir: dir, secrets: noSecrets })
     const initial = fresh.get().pluginCombinedExtract
-    assert.equal(typeof initial, 'boolean')
+    assert.equal(DEFAULT_COMBINED_EXTRACT, true)
+    assert.equal(initial, true, 'a fresh install is ON')
     fresh.update({ pluginCombinedExtract: !initial })
     assert.equal(fresh.get().pluginCombinedExtract, !initial)
     const reread = createSettingsStore({ userDataDir: dir, secrets: noSecrets })
@@ -703,9 +704,11 @@ test('settings: pluginCombinedExtract defaults per DEFAULT_COMBINED_EXTRACT, per
     try {
       writeFileSync(join(oldDir, 'settings.json'), JSON.stringify({ pollIntervalSec: 45, aiProvider: 'http' }))
       const old = createSettingsStore({ userDataDir: oldDir, secrets: noSecrets })
-      assert.equal(old.get().pluginCombinedExtract, initial, 'missing field -> the default')
+      assert.equal(old.get().pluginCombinedExtract, true, 'missing field -> ON (an upgraded install)')
       writeFileSync(join(oldDir, 'settings.json'), JSON.stringify({ pluginCombinedExtract: 'yes' }))
-      assert.equal(createSettingsStore({ userDataDir: oldDir, secrets: noSecrets }).get().pluginCombinedExtract, initial, 'a non-boolean is ignored')
+      assert.equal(createSettingsStore({ userDataDir: oldDir, secrets: noSecrets }).get().pluginCombinedExtract, true, 'a non-boolean is ignored')
+      writeFileSync(join(oldDir, 'settings.json'), JSON.stringify({ pluginCombinedExtract: false }))
+      assert.equal(createSettingsStore({ userDataDir: oldDir, secrets: noSecrets }).get().pluginCombinedExtract, false, 'an explicit OFF survives')
     } finally { rmSync(oldDir, { recursive: true, force: true }) }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
@@ -735,6 +738,10 @@ test('measurement: size of a realistic maximal combined reply (20 targets) and t
     assert.ok(stats.replyChars > 0 && stats.replyChars === stats.replyCharsMax)
     assert.equal(stats.decisions, 6)
     assert.equal(stats.deferDecisions, 0)
+    const logged = s.logs.filter(([event]) => event === 'combined_commit')
+    assert.equal(logged.length, 1)
+    assert.deepEqual({ topic: logged[0][1].topic, todo: logged[0][1].todo, targets: logged[0][1].targets, decisions: logged[0][1].decisions, deferDecisions: logged[0][1].deferDecisions }, { topic: 'applied', todo: true, targets: 20, decisions: 6, deferDecisions: 0 })
+    assert.equal(JSON.stringify(logged[0][1]).includes('Orion'), false, 'the diagnostic carries counters only, never message text')
   } finally { s.close() }
 })
 

@@ -3,7 +3,7 @@
  * It uses a task-owned SQLite DB, fake LINE events, and fake Host AI only.
  * No Electron app, customer DB, LINE login, provider token, or network is needed.
  */
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createPluginBackend } from '../../src/plugin/backend/assemble.ts'
@@ -54,6 +54,8 @@ export async function createIdentityE2EFixture(options={}){
   const fixtureDir=mkdtempSync(join(fixtureRoot,'identity-'))
   const dataDir=join(fixtureDir,'task-data')
   mkdirSync(dataDir,{recursive:true})
+  // This fixture drives the manual groupTopics.analyze path (set B + set A together); with the combined switch ON that path only backfills processed messages.
+  writeFileSync(join(dataDir,'settings.json'),JSON.stringify({pluginCombinedExtract:options.combinedExtract===true}))
   const line=fakeLine()
   const ai=createMockTuqAi({reply:options.aiReply??((context)=>identityReply(context,options))})
   const calls=[]

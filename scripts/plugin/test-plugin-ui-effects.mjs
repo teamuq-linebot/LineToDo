@@ -1719,3 +1719,94 @@ test('M1 overview UI: trimmed rows say so, how many topics are shown out of the 
     assert.equal(text.split('只顯示最近').length - 1, 1, 'only the trimmed group carries the hint')
   } finally { view.unmount(); api.dispose() }
 })
+
+// ───────────── Phase 4: combined todo+topic wording and switch ─────────────
+
+const buttonTexts = (view) => walk(view.container).filter((element) => element.localName === 'button').map((element) => element.textContent.trim())
+
+test('Phase 4 wording: 立即整理 when the combined switch is on (plugin host); 立即抓取 when it is off or absent', async () => {
+  for (const [flag, expected, unexpected] of [[true, '立即整理', '立即抓取'], [false, '立即抓取', '立即整理'], [undefined, '立即抓取', '立即整理']]) {
+    const { api } = plugin(settingsHandlers({ 'settings.get': () => ({ ...VIEW, ...(flag === undefined ? {} : { pluginCombinedExtract: flag }) }) }))
+    const view = ui.mount(ui.todaySummaryScene(api))
+    try {
+      await until(() => buttonTexts(view).includes(expected), { message: `the ${expected} button (flag ${flag})` })
+      assert.ok(!buttonTexts(view).includes(unexpected))
+    } finally { view.unmount(); api.dispose() }
+  }
+})
+
+test('Phase 4 wording: the review button says it only produces todos when the combined switch is on', async () => {
+  for (const flag of [true, false]) {
+    const { api } = plugin(settingsHandlers({ 'settings.get': () => ({ ...VIEW, pluginCombinedExtract: flag }), 'pipeline.status': () => ({ hasApiKey: true }) }))
+    const view = ui.mount(ui.reviewControlsScene(api, { onRefresh: async () => true, pollDelayMs: () => 60_000 }))
+    try {
+      const review = () => walk(view.container).find((element) => element.localName === 'button' && element.textContent.includes('回顧最近'))
+      await until(() => review() && (flag ? String(reactProps(review()).title).includes('只產出待辦') : !String(reactProps(review()).title).includes('只產出待辦') && String(reactProps(review()).title).includes('補建代辦')), { message: `review tooltip (flag ${flag})` })
+    } finally { view.unmount(); api.dispose() }
+  }
+})
+
+test('Phase 4 settings: the combined switch shows the stored value and writes pluginCombinedExtract through settings.update; the prompt section explains the fixed topic appendix', async () => {
+  const updates = []
+  const view0 = { ...VIEW, pluginCombinedExtract: true }
+  const { api } = plugin(settingsHandlers({
+    'settings.get': () => view0,
+    'settings.update': (patch) => { updates.push(patch); return { ...view0, ...patch } },
+    'settings.prompt.get': () => ({ initialPrompt: '初始', activePrompt: '初始', customized: false, revision: 'initial', maxChars: 12000, outputFormat: '固定', topicAppendix: '已啟用議題的群組會另外附加固定段落（測試文案）。' })
+  }))
+  const view = ui.mount(ui.settingsScene(api))
+  try {
+    await until(() => byAttr(view.container, 'data-testid', 'combined-extract-toggle') && byAttr(view.container, 'data-testid', 'topic-appendix'), { message: 'the switch and the appendix note' })
+    const toggle = () => byAttr(view.container, 'data-testid', 'combined-extract-toggle')
+    assert.equal(reactProps(toggle()).checked, true)
+    assert.ok(byAttr(view.container, 'data-testid', 'topic-appendix').textContent.includes('固定段落'))
+    reactProps(toggle()).onChange({ target: { checked: false } })
+    await until(() => updates.length === 1, { message: 'settings.update' })
+    assert.deepEqual(updates[0], { pluginCombinedExtract: false })
+    await until(() => reactProps(toggle()).checked === false, { message: 'the switch follows the saved value' })
+    await sleep(1400) // SettingsPanel's success flash schedules a 1.2s state reset; let it finish before the suite restores window/document
+  } finally { view.unmount(); api.dispose() }
+})
+
+test('Phase 4 groupTopics panel: while the combined path is active the button is 補分析舊訊息 and only appears when there are old messages to analyze; otherwise the legacy button', async () => {
+  const enabled = new Set(['ov-group-0'])
+  const state = { combined: true, pending: 3 }
+  const log = []
+  const { api } = plugin(overviewHandlers(log, {
+    'groupTopics.list': (chatId) => ({ ok: enabled.has(chatId), topics: [], ...(state.combined ? { combined: true } : {}) }),
+    'groupTopics.crossChatEnabled': () => false,
+    'groupTopics.linkCandidates': () => [],
+    'groupTopics.pendingCount': () => state.pending,
+    'groupTopics.analyze': () => ({ ok: true, count: 0, analyzedCount: 3 })
+  }))
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.appScene(api))
+  try {
+    await until(() => view.container.textContent.includes('總覽議題0'), { message: 'overview shown' })
+    const select = walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
+    reactProps(select).onChange({ target: { value: 'ov-group-0' } })
+    await until(() => buttonTexts(view).includes('補分析舊訊息'), { message: 'combined mode: backfill button with 3 old messages' })
+    assert.ok(!buttonTexts(view).includes('分析最近群組訊息'))
+    assert.ok(view.container.textContent.includes('有 3 則舊訊息尚未分析議題'))
+    const backfill = () => walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === '補分析舊訊息')
+    reactProps(backfill()).onClick()
+    await until(() => log.some((entry) => entry.path === 'groupTopics.analyze'), { message: 'the backfill calls groupTopics.analyze' })
+  } finally { view.unmount(); api.dispose() }
+
+  state.pending = 0
+  const quiet = plugin(overviewHandlers([], {
+    'groupTopics.list': (chatId) => ({ ok: enabled.has(chatId), topics: [], combined: true }),
+    'groupTopics.crossChatEnabled': () => false,
+    'groupTopics.linkCandidates': () => [],
+    'groupTopics.pendingCount': () => 0
+  }))
+  const view2 = ui.mount(ui.appScene(quiet.api))
+  try {
+    await until(() => view2.container.textContent.includes('總覽議題0'), { message: 'overview shown (second mount)' })
+    const select = walk(view2.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
+    reactProps(select).onChange({ target: { value: 'ov-group-0' } })
+    await until(() => view2.container.textContent.includes('沒有需要補分析的舊訊息'), { message: 'nothing to backfill' })
+    assert.ok(!buttonTexts(view2).includes('補分析舊訊息'), 'no old messages: the backfill button is hidden')
+    assert.ok(!buttonTexts(view2).includes('分析最近群組訊息'), 'and the legacy button does not come back')
+  } finally { view2.unmount(); quiet.api.dispose() }
+})

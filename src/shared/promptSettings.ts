@@ -2,6 +2,9 @@ export const PROMPT_MAX_CHARS = 12_000
 export const PROMPT_GOAL_MAX_CHARS = 2_000
 export const MY_NAME_MAX_CHARS = 40
 
+/** 設定頁在「待辦抽取 Prompt」旁顯示的唯讀說明：已啟用議題的群組，system 會另外附加固定的議題段落與合併輸出格式。 */
+export const TOPIC_APPENDIX_TEXT = '已啟用議題的群組，系統會在上面的提示詞之後另外附加一段固定的議題分類說明與合併輸出格式（這一段不能編輯），讓 AI 在同一次整理裡同時產出待辦與議題。沒有啟用議題的群組與一對一聊天不受影響。'
+
 export interface PromptState {
   initialPrompt: string
   activePrompt: string
@@ -9,6 +12,8 @@ export interface PromptState {
   revision: string
   maxChars: number
   outputFormat: string
+  /** 唯讀：已啟用議題的群組另外附加的固定段落說明（見 TOPIC_APPENDIX_TEXT）；舊 backend 不帶。 */
+  topicAppendix?: string
   /** 預設的「我的名字」；null＝未設定。 */
   myName: string | null
   /** 預設名字的 CAS token（`sha256(JSON.stringify({myName}))`），與 prompt 的 `revision` 各自獨立。 */

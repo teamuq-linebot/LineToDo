@@ -11,7 +11,7 @@ import { EXTRACT_SYSTEM_PROMPT } from '../../src/main/llm/extractPrompt.ts'
 import { openDatabase } from '../../src/main/db/database.ts'
 import { SCHEMA_VERSION } from '../../src/main/db/schema.ts'
 import { createChatPromptStore } from '../../src/plugin/backend/chatPromptStore.ts'
-import { MY_NAME_MAX_CHARS, PROMPT_MAX_CHARS, normalizeMyName, promptRefinementInput, validateMyName, validatePromptSuggestion } from '../../src/shared/promptSettings.ts'
+import { MY_NAME_MAX_CHARS, PROMPT_MAX_CHARS, TOPIC_APPENDIX_TEXT, normalizeMyName, promptRefinementInput, validateMyName, validatePromptSuggestion } from '../../src/shared/promptSettings.ts'
 import { EXTRACT_OUTPUT_CONTRACT } from '../../src/plugin/backend/aiOutputContract.ts'
 import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
 
@@ -33,6 +33,10 @@ test('initial prompt, edits, conflict prevention, restart and restore all use th
     assert.equal(saved.initialPrompt, initial.initialPrompt)
     assert.notEqual(saved.revision, initial.revision)
     assert.equal(saved.outputFormat, EXTRACT_OUTPUT_CONTRACT)
+    assert.equal(saved.topicAppendix, TOPIC_APPENDIX_TEXT, 'the read-only note about the fixed topic appendix rides along')
+    assert.match(saved.topicAppendix, /已啟用議題的群組.*固定.*不能編輯/s)
+    assert.equal(initial.topicAppendix, saved.topicAppendix)
+    assert.ok(!custom.includes(saved.topicAppendix), 'the appendix is never part of the user prompt')
     assert.throws(() => service.save('stale replacement', initial.revision), /prompt_conflict/)
     assert.throws(() => service.save(' ', saved.revision), /prompt_empty/)
     assert.throws(() => service.save('x'.repeat(PROMPT_MAX_CHARS + 1), saved.revision), /prompt_too_long/)

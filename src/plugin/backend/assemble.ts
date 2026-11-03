@@ -523,7 +523,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       watcher: watcher !== null,
       keyRecovery: { scans: keyGuard.scans, blocked: keyGuard.blocked(), retryInMs: keyGuard.retryInMs() },
       appDb: appDbInfo(appDb),
-      extract: queue.stats(),
+      extract: { ...queue.stats(), combined: queue.combinedStats() },
       review: review.status() as unknown as JsonValue,
       ai: aiStatus() as unknown as JsonValue,
       residency: residency.snapshot() as unknown as JsonValue,
