@@ -176,22 +176,34 @@ function isFuture(dueAt: string | null, nowIso: string): boolean {
 /** applyChatExtract 累計的結果欄位（RunOnceResult 的子集；runOnce 與外掛 ExtractQueue 的 commit 共用）。 */
 export type ApplyTally = Pick<RunOnceResult, 'todosCreated' | 'todosMerged' | 'todosResolvedDone' | 'todosSuggestedDone' | 'createdIds' | 'resolvedIds' | 'updatedIds'>
 
+export interface TodoApplyContext {
+  db: Database
+  cfg: PipelineDefaults
+  now: string
+  identity?: ChatIdentityApplyContext
+  /** 寫入 todo_identity_decisions 的版本字串；省略時為既有的 extract-identity-v1 / extract-result-v3。 */
+  identityVersions?: { promptVersion: string; schemaVersion: string }
+}
+
+export const DEFAULT_TODO_IDENTITY_VERSIONS = { promptVersion: 'extract-identity-v1', schemaVersion: 'extract-result-v3' } as const
+
 /**
- * 套用一個 chat 的已驗證 ExtractResult（runOnce 步驟 6 的落庫段，逐字從 runOnce 抽出）：
- * newTodos（逐對話忽略 + 近似去重）→ resolved（完成偵測門檻）→ updates（重新分類）→ 該 chat 訊息標 processed。
- * standalone 的 runOnce 與外掛的 ExtractQueue.commit 走同一份邏輯，行為不分叉。
+ * 把一個 chat 的已驗證 ExtractResult 的落庫段組成「尚未執行」的交易本體（呼叫端負責交易與 lease）。
+ * `skipSnapshotAssert`：呼叫端已在同一交易內先行斷言過 identity 快照時，略過本體開頭的 todo 快照斷言（其餘檢查不變）。
  */
-export function applyChatExtract(
-  ctx: { db: Database; cfg: PipelineDefaults; now: string; identity?: ChatIdentityApplyContext },
+export function buildTodoApply(
+  ctx: TodoApplyContext,
   chatId: string,
   msgIds: string[],
   extract: ExtractResult,
-  result: ApplyTally
-): void {
+  result: ApplyTally,
+  opts: { skipSnapshotAssert?: boolean } = {}
+): () => void {
   const { db, cfg, now } = ctx
+  const versions = ctx.identityVersions ?? DEFAULT_TODO_IDENTITY_VERSIONS
   const apply = (): void => {
     if (ctx.identity) {
-      assertIdentitySnapshotCurrent(db,chatId,ctx.identity.snapshot,'todo')
+      if (!opts.skipSnapshotAssert) assertIdentitySnapshotCurrent(db,chatId,ctx.identity.snapshot,'todo')
       const meta=identityMetaState(db,chatId,'todo')
       if (meta!=='ready') throw new Error('todo_identity_index_not_ready')
       if (ctx.identity.sourceLease && (ctx.identity.sourceLease.chatId!==chatId || ctx.identity.sourceLease.sourceEpoch!==ctx.identity.snapshot.sourceEpoch)) throw new Error('todo_identity_lease_mismatch')
@@ -218,7 +230,7 @@ export function applyChatExtract(
       const decisionId=randomUUID()
       const revision=(db.prepare('SELECT COALESCE(MAX(decision_revision),0)+1 AS revision FROM todo_identity_decisions WHERE chat_id=? AND source_digest=? AND draft_ref=?').get(chatId,digest,draftRef) as {revision:number}).revision
       db.prepare(`INSERT INTO todo_identity_decisions(decision_id,chat_id,source_digest,draft_ref,outcome,state,canonical_todo_id,decision_revision,source_epoch,scope_revision,identity_revision,topic_identity_revision,draft_json,candidate_snapshot_json,reason_codes_json,prompt_version,schema_version,query_version,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(decisionId,chatId,digest,draftRef,outcome,outcome==='defer'?'open':'resolved',canonicalTodoId,revision,ctx.identity?.snapshot.sourceEpoch??1,ctx.identity?.snapshot.scopeRevision??1,ctx.identity?.snapshot.identityRevision??0,ctx.identity?.snapshot.topicIdentityRevision??0,JSON.stringify(draft),JSON.stringify({candidateIds,revisions:candidateIds.map((id)=>ctx.identity?.snapshot.candidateRevisions.find((candidate)=>candidate.entityId===id)??null)}),JSON.stringify([reasonCode]),'extract-identity-v1','extract-result-v3',IDENTITY_QUERY_VERSION,now,now)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(decisionId,chatId,digest,draftRef,outcome,outcome==='defer'?'open':'resolved',canonicalTodoId,revision,ctx.identity?.snapshot.sourceEpoch??1,ctx.identity?.snapshot.scopeRevision??1,ctx.identity?.snapshot.identityRevision??0,ctx.identity?.snapshot.topicIdentityRevision??0,JSON.stringify(draft),JSON.stringify({candidateIds,revisions:candidateIds.map((id)=>ctx.identity?.snapshot.candidateRevisions.find((candidate)=>candidate.entityId===id)??null)}),JSON.stringify([reasonCode]),versions.promptVersion,versions.schemaVersion,IDENTITY_QUERY_VERSION,now,now)
       return decisionId
     }
     const addSources=(decisionId:string,evidenceIds:string[])=>{
@@ -354,6 +366,23 @@ export function applyChatExtract(
     for(const id of changedTodoIds) refreshTodoIdentityTerms(db,chatId,id,wasIndexReady)
     markProcessed(msgIds,db)
   }
+  return apply
+}
+
+/**
+ * 套用一個 chat 的已驗證 ExtractResult（runOnce 步驟 6 的落庫段，逐字從 runOnce 抽出）：
+ * newTodos（逐對話忽略 + 近似去重）→ resolved（完成偵測門檻）→ updates（重新分類）→ 該 chat 訊息標 processed。
+ * standalone 的 runOnce 與外掛的 ExtractQueue.commit 走同一份邏輯，行為不分叉。
+ */
+export function applyChatExtract(
+  ctx: { db: Database; cfg: PipelineDefaults; now: string; identity?: ChatIdentityApplyContext; identityVersions?: { promptVersion: string; schemaVersion: string } },
+  chatId: string,
+  msgIds: string[],
+  extract: ExtractResult,
+  result: ApplyTally
+): void {
+  const { db } = ctx
+  const apply = buildTodoApply(ctx, chatId, msgIds, extract, result)
 
   const identity=ctx.identity
   if(identity) {

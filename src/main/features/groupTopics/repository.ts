@@ -236,29 +236,54 @@ export function loadMessages(db: Database, chatId: string, limit = 100): TopicMe
     .map((row) => ({ msgId: row.msgId, ts: row.ts, direction: row.direction, text: (row.text ?? '').slice(0, 3000) }))
 }
 
-/** Only undecided messages in a bounded recent window are eligible for a new run. */
-export function loadPendingMessages(db: Database, chatId: string, limit = 100, initialWindow = limit): TopicMessageInput[] {
-  const boundedLimit = Math.max(1, Math.min(100, limit))
-  const boundedInitialWindow = Math.max(boundedLimit, Math.min(100, initialWindow))
+export interface PendingMessageOptions {
+  /** 只考慮這些 msgId（仍須符合所有既有的資格條件）。 */
+  restrictToMsgIds?: string[]
+  /** 依 messages.processed 篩選；預設 'any' ＝ 不篩。 */
+  processedFilter?: 'any' | 'unprocessed' | 'processed'
+}
+
+/** loadPendingMessages 與 selectTopicTargets 共用的資格條件：純文字、unsent=0、符合 baseline／checkpoint 規則、尚無 decision。 */
+function selectPendingMessageIds(db: Database, chatId: string, limit: number, initialWindow: number, opts: PendingMessageOptions = {}): string[] {
+  const extra: string[] = []
+  const extraParams: unknown[] = []
+  if (opts.restrictToMsgIds) { extra.push('AND m.msg_id IN (SELECT value FROM json_each(?))'); extraParams.push(JSON.stringify(opts.restrictToMsgIds)) }
+  if (opts.processedFilter === 'unprocessed') extra.push('AND m.processed=0')
+  else if (opts.processedFilter === 'processed') extra.push('AND m.processed=1')
+  const extraSql = extra.join(' ')
   const checkpoint = db.prepare(`SELECT baseline_ts,baseline_msg_id FROM topic_message_checkpoints WHERE chat_id=?`).get(chatId) as {baseline_ts:number;baseline_msg_id:string}|undefined
   const legacyCheckpoint = checkpoint ?? db.prepare(`SELECT m.ts,m.msg_id FROM topic_message_decisions d JOIN messages m ON m.msg_id=d.msg_id
     WHERE d.chat_id=? ORDER BY m.ts DESC,m.msg_id DESC LIMIT 1`).get(chatId) as {ts:number;msg_id:string}|undefined
   const rows = legacyCheckpoint
     ? db.prepare(`SELECT m.msg_id FROM messages m
       WHERE m.chat_id=? AND m.unsent=0 AND m.content_type=0 AND m.text IS NOT NULL AND trim(m.text)<>'' AND m.ts>=?
-        AND NOT EXISTS (SELECT 1 FROM topic_message_decisions d WHERE d.chat_id=m.chat_id AND d.msg_id=m.msg_id)
-      ORDER BY m.ts,m.msg_id LIMIT ?`).all(chatId,'baseline_ts' in legacyCheckpoint ? legacyCheckpoint.baseline_ts : legacyCheckpoint.ts,boundedLimit) as Array<{msg_id:string}>
+        AND NOT EXISTS (SELECT 1 FROM topic_message_decisions d WHERE d.chat_id=m.chat_id AND d.msg_id=m.msg_id) ${extraSql}
+      ORDER BY m.ts,m.msg_id LIMIT ?`).all(chatId,'baseline_ts' in legacyCheckpoint ? legacyCheckpoint.baseline_ts : legacyCheckpoint.ts,...extraParams,limit) as Array<{msg_id:string}>
     : db.prepare(`SELECT m.msg_id FROM messages m
       WHERE m.chat_id=? AND m.unsent=0 AND m.content_type=0 AND m.text IS NOT NULL AND trim(m.text)<>''
         AND m.msg_id IN (SELECT recent.msg_id FROM messages recent WHERE recent.chat_id=? AND recent.unsent=0
           AND recent.content_type=0 AND recent.text IS NOT NULL AND trim(recent.text)<>''
           ORDER BY recent.ts DESC,recent.msg_id DESC LIMIT ?)
-        AND NOT EXISTS (SELECT 1 FROM topic_message_decisions d WHERE d.chat_id=m.chat_id AND d.msg_id=m.msg_id)
-      ORDER BY m.ts,m.msg_id LIMIT ?`).all(chatId,chatId,boundedInitialWindow,boundedLimit) as Array<{msg_id:string}>
-  const sourceRows = getMessagesByChatAndIds(chatId, rows.map((row) => row.msg_id), db)
+        AND NOT EXISTS (SELECT 1 FROM topic_message_decisions d WHERE d.chat_id=m.chat_id AND d.msg_id=m.msg_id) ${extraSql}
+      ORDER BY m.ts,m.msg_id LIMIT ?`).all(chatId,chatId,initialWindow,...extraParams,limit) as Array<{msg_id:string}>
+  return rows.map((row) => row.msg_id)
+}
+
+/** Only undecided messages in a bounded recent window are eligible for a new run. */
+export function loadPendingMessages(db: Database, chatId: string, limit = 100, initialWindow = limit, opts: PendingMessageOptions = {}): TopicMessageInput[] {
+  const boundedLimit = Math.max(1, Math.min(100, limit))
+  const boundedInitialWindow = Math.max(boundedLimit, Math.min(100, initialWindow))
+  const ids = selectPendingMessageIds(db, chatId, boundedLimit, boundedInitialWindow, opts)
+  const sourceRows = getMessagesByChatAndIds(chatId, ids, db)
   return sourceRows
     .filter((row) => row.text !== null)
     .map((row) => ({ msgId: row.msgId, ts: row.ts, direction: row.direction, text: (row.text ?? '').slice(0,3000) }))
+}
+
+/** msgIds 中符合議題分析資格的子集（與 loadPendingMessages 同一組條件，含 checkpoint／最近 100 則視窗），依 ts、msgId 排序。 */
+export function selectTopicTargets(db: Database, chatId: string, msgIds: string[]): string[] {
+  if (!msgIds.length) return []
+  return selectPendingMessageIds(db, chatId, Math.min(100, msgIds.length), 100, { restrictToMsgIds: msgIds })
 }
 
 export function countPendingMessages(db: Database, chatId: string, limit = 100): number {
@@ -278,13 +303,17 @@ export interface TopicIdentitySaveContext {
   candidatesTruncated:boolean
 }
 
-export function saveAnalysis(db: Database, chatId: string, input: TopicMessageInput[], result: TopicAnalysis, versions: AnalysisVersions, identity?:TopicIdentitySaveContext): boolean | 'inactive' {
+/**
+ * 組成議題落庫的交易本體（尚未執行）與租約要比對的 selectedRows。saveAnalysis 是它的薄包裝。
+ * `skipSnapshotAssert`：呼叫端已在同一交易內先行斷言過 identity 快照時略過本體開頭的 topic 快照斷言。
+ */
+export function buildTopicSave(db: Database, chatId: string, input: TopicMessageInput[], result: TopicAnalysis, versions: AnalysisVersions, identity?:TopicIdentitySaveContext, opts: {skipSnapshotAssert?:boolean} = {}): { tx: () => boolean | 'inactive'; selectedRows: IdentityContextSnapshot['selectedFingerprints'] } {
   const digest = completionDigest(input, versions)
   const runId = randomUUID()
   const now = new Date().toISOString()
   const wasIdentityReady=identityMetaState(db,chatId,'topic')==='ready'
   const tx = db.transaction(() => {
-    if(identity) assertIdentitySnapshotCurrent(db,chatId,identity.snapshot,'topic')
+    if(identity&&!opts.skipSnapshotAssert) assertIdentitySnapshotCurrent(db,chatId,identity.snapshot,'topic')
     const active = db.prepare(`SELECT c.is_group,c.blocked,p.enabled FROM chats c
       LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {is_group:number;blocked:number;enabled:number|null}|undefined
     if (!active || active.blocked === 1 || active.enabled !== 1) return 'inactive' as const
@@ -430,10 +459,14 @@ export function saveAnalysis(db: Database, chatId: string, input: TopicMessageIn
     for(const topicId of touchedTopicIds) syncTopicIdentityTerms(db,chatId,topicId,wasIdentityReady)
     return true
   })
+  return { tx, selectedRows: identity?identity.snapshot.selectedFingerprints:[] }
+}
+
+export function saveAnalysis(db: Database, chatId: string, input: TopicMessageInput[], result: TopicAnalysis, versions: AnalysisVersions, identity?:TopicIdentitySaveContext): boolean | 'inactive' {
+  const { tx, selectedRows } = buildTopicSave(db, chatId, input, result, versions, identity)
   if(!identity) return tx()
   if(!identity.sourceLease) throw new Error('topic_identity_source_lease_required')
   let innerResult:boolean|'inactive'=false
-  const selectedRows=identity.snapshot.selectedFingerprints
   let applyFailure:string|null=null
   try {
     const committed=sharedSourceRows(db).commitLease({

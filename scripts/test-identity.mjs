@@ -12,7 +12,7 @@ import { migrate } from '../src/main/db/migrate.ts'
 import { SCHEMA_VERSION, SOURCE_CACHE_DDL } from '../src/main/db/schema.ts'
 import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, explainIdentityCandidateQuery, listIdentityBackfillIssues, recallTodoIdentityCandidates, recallTopicIdentityCandidates, releaseIdentitySourceAttempt } from '../src/main/db/identity.repo.ts'
 import { readChatSourceState } from '../src/main/db/sourceCache.ts'
-import { applyChatExtract } from '../src/main/pipeline/runOnce.ts'
+import { applyChatExtract, buildTodoApply } from '../src/main/pipeline/runOnce.ts'
 import { runOnce } from '../src/main/pipeline/runOnce.ts'
 import { reviewLastDays } from '../src/main/pipeline/backfill.ts'
 import { ExtractQueue } from '../src/plugin/backend/extractQueue.ts'
@@ -867,3 +867,35 @@ test('GroupTopics keeps its user-priority provider path and rotates its durable 
   }finally{opened.close()}
 })
 
+test('Phase 0: buildTodoApply returns an unexecuted body; skipSnapshotAssert and identityVersions behave as documented',()=>{
+  const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+  try{
+    const ctxFor=(work,msgId,extra={})=>({db,cfg:getPipelineDefaults(),now:NOW,identity:{
+      snapshot:work.snapshot,sourceLease:work.lease,candidates:work.recalled.candidates,candidatesTruncated:work.candidatesTruncated,
+      selectedMessageIds:[msgId],targetType:'todo',allowedTodoIds:work.openTodos.map((todo)=>todo.id)
+    },...extra})
+    const tally=()=>({todosCreated:0,todosMerged:0,todosResolvedDone:0,todosSuggestedDone:0,createdIds:[],resolvedIds:[],updatedIds:[]})
+    const id1=addMessage(db,'p0-src-1',1000,'alpha beta action one')
+    const work1=buildWork(db,chatId,[id1])
+    const body1=buildTodoApply(ctxFor(work1,id1),chatId,[id1],newExtract(id1,todoDecision(id1,'d1'),todoDraft(id1,'d1')),tally())
+    assert.equal(typeof body1,'function')
+    assert.equal(listTodos({},db).length,0,'building has no side effects')
+    db.transaction(body1)()
+    assert.equal(listTodos({},db).length,1)
+    const row1=db.prepare('SELECT prompt_version,schema_version FROM todo_identity_decisions WHERE chat_id=?').get(chatId)
+    assert.deepEqual(row1,{prompt_version:'extract-identity-v1',schema_version:'extract-result-v3'})
+
+    const id2=addMessage(db,'p0-src-2',2000,'gamma delta other thing')
+    releaseIdentitySourceAttempt(db,work1.lease,false)
+    const work2=buildWork(db,chatId,[id2])
+    work2.snapshot.identityRevision+=1
+    const extract2=newExtract(id2,todoDecision(id2,'d2'),todoDraft(id2,'d2',{title:'gamma delta other thing'}))
+    const t2=tally()
+    assert.throws(()=>db.transaction(buildTodoApply(ctxFor(work2,id2),chatId,[id2],extract2,t2))(),/identity_candidate_set_stale/)
+    assert.equal(listTodos({},db).length,1)
+    db.transaction(buildTodoApply(ctxFor(work2,id2,{identityVersions:{promptVersion:'extract-combined-v1',schemaVersion:'extract-combined-schema-v1'}}),chatId,[id2],extract2,t2,{skipSnapshotAssert:true}))()
+    assert.equal(listTodos({},db).length,2)
+    const row2=db.prepare("SELECT prompt_version,schema_version FROM todo_identity_decisions WHERE draft_ref='d2'").get()
+    assert.deepEqual(row2,{prompt_version:'extract-combined-v1',schema_version:'extract-combined-schema-v1'})
+  }finally{opened.db.close()}
+})

@@ -8,7 +8,7 @@ import { SCHEMA_DDL } from '../src/main/db/schema.ts'
 import { createGroupTopicsService } from '../src/main/features/groupTopics/service.ts'
 import { ensureGroupTopicsSchema } from '../src/main/features/groupTopics/repository.ts'
 import { ensureLineImportSchema } from '../src/main/db/lineImport.repo.ts'
-import { completedInputExists, countPendingMessages, GROUP_TOPICS_VALIDATOR_VERSION, loadMessages, listTopics, saveAnalysis, todoRefs } from '../src/main/features/groupTopics/repository.ts'
+import { buildTopicSave, completedInputExists, countPendingMessages, GROUP_TOPICS_VALIDATOR_VERSION, loadMessages, loadPendingMessages, listTopics, saveAnalysis, selectTopicTargets, todoRefs } from '../src/main/features/groupTopics/repository.ts'
 import { GROUP_TOPICS_JSON_SCHEMA, GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_SCHEMA_HASH } from '../src/main/features/groupTopics/prompts/bundle.ts'
 import { makeHttpProvider } from '../src/main/llm/provider/httpOpenAi.ts'
 import { LlmProviderError } from '../src/main/llm/provider/types.ts'
@@ -614,4 +614,72 @@ test('renderer overview requests every group and keeps disabled and failed group
     { chatId: 'group-b', status: 'disabled', topics: 0, error: undefined },
     { chatId: 'group-c', status: 'failed', topics: 0, error: 'synthetic query failure' }
   ])
+})
+
+test('Phase 0: loadPendingMessages new options default to the previous behaviour and filter as documented', () => {
+  const db=dbFixture()
+  const insert=db.prepare(`INSERT INTO messages(msg_id,chat_id,ts,time_iso,direction,sender,text,content_type,processed,unsent,ingested_at)
+    VALUES(?, 'group-a', ?, '2026-09-30T00:00:00Z','in','sender',?,?,?,?,'2026-09-30')`)
+  insert.run('p-done',10,'processed body',0,1,0)
+  insert.run('p-new',11,'fresh body',0,0,0)
+  insert.run('p-unsent',12,'unsent body',0,0,1)
+  insert.run('p-media',13,null,1,0,0)
+  insert.run('p-blank',14,'   ',0,0,0)
+  const ids=(rows)=>rows.map((m)=>m.msgId)
+  const base=ids(loadPendingMessages(db,'group-a'))
+  assert.deepEqual(base,['a1','a2','p-done','p-new'])
+  assert.deepEqual(ids(loadPendingMessages(db,'group-a',100,100,{})),base)
+  assert.deepEqual(ids(loadPendingMessages(db,'group-a',100,100,{processedFilter:'any'})),base)
+  assert.deepEqual(ids(loadPendingMessages(db,'group-a',100,100,{processedFilter:'unprocessed'})),['a1','a2','p-new'])
+  assert.deepEqual(ids(loadPendingMessages(db,'group-a',100,100,{processedFilter:'processed'})),['p-done'])
+  assert.deepEqual(ids(loadPendingMessages(db,'group-a',100,100,{restrictToMsgIds:['p-new','a2','p-unsent','p-media','nope']})),['a2','p-new'])
+  assert.deepEqual(ids(loadPendingMessages(db,'group-a',100,100,{restrictToMsgIds:[]})),[])
+  assert.deepEqual(ids(loadPendingMessages(db,'group-a',100,100,{restrictToMsgIds:['a1','a2','p-done'],processedFilter:'unprocessed'})),['a1','a2'])
+  db.close()
+})
+
+test('Phase 0: selectTopicTargets applies the same eligibility rules as loadPendingMessages (text only, undecided, checkpoint)', async () => {
+  const db=dbFixture(); const service=createGroupTopicsService(db); service.enable('group-a',true)
+  const insert=db.prepare(`INSERT INTO messages(msg_id,chat_id,ts,time_iso,direction,sender,text,content_type,processed,unsent,ingested_at)
+    VALUES(?, 'group-a', ?, '2026-09-30T00:00:00Z','in','sender',?,?,0,?,'2026-09-30')`)
+  insert.run('t-unsent',20,'unsent body',0,1)
+  insert.run('t-media',21,null,1,0)
+  insert.run('t-text',22,'real text',0,0)
+  assert.deepEqual(selectTopicTargets(db,'group-a',[]),[])
+  assert.deepEqual(selectTopicTargets(db,'group-a',['t-text','a1','t-unsent','t-media','b1','missing']),['a1','t-text'])
+  const first={topics:[],assignments:[
+    {msgId:'a1',topicRef:null,relation:'uncertain',confidence:.1,relevance:'unknown',relevanceEvidenceMsgIds:[]},
+    {msgId:'a2',topicRef:null,relation:'uncertain',confidence:.1,relevance:'unknown',relevanceEvidenceMsgIds:[]},
+    {msgId:'t-text',topicRef:null,relation:'uncertain',confidence:.1,relevance:'unknown',relevanceEvidenceMsgIds:[]}
+  ]}
+  assert.deepEqual(await service.analyze('group-a',()=>fakeProvider(first)),{ok:true,count:0,analyzedCount:3})
+  assert.deepEqual(selectTopicTargets(db,'group-a',['a1','a2','t-text']),[], 'decided messages are no longer targets')
+  insert.run('t-late',30,'later text',0,0)
+  insert.run('t-old',0,'older than the checkpoint',0,0)
+  assert.deepEqual(selectTopicTargets(db,'group-a',['t-late','t-old','a1']),['t-late'])
+  assert.deepEqual(loadPendingMessages(db,'group-a').map((m)=>m.msgId),['t-late'])
+  db.close()
+})
+
+test('Phase 0: buildTopicSave().tx() writes exactly what saveAnalysis writes', () => {
+  const versions={promptVersion:'v',promptHash:'h',schemaVersion:'s',schemaHash:'sh',validatorVersion:GROUP_TOPICS_VALIDATOR_VERSION}
+  const dump=(db)=>JSON.stringify([
+    db.prepare('SELECT chat_id,local_ref,title,summary FROM discussion_topics ORDER BY local_ref').all(),
+    db.prepare('SELECT msg_id,relation,relevance FROM topic_evidence ORDER BY msg_id').all(),
+    db.prepare('SELECT msg_id,disposition FROM topic_message_decisions ORDER BY msg_id').all(),
+    db.prepare('SELECT baseline_msg_id FROM topic_message_checkpoints').all()
+  ])
+  const run=(mode)=>{
+    const db=dbFixture(); createGroupTopicsService(db).enable('group-a',true)
+    const input=loadMessages(db,'group-a')
+    if(mode==='save') assert.equal(saveAnalysis(db,'group-a',input,analysisA,versions),true)
+    else {
+      const built=buildTopicSave(db,'group-a',input,analysisA,versions)
+      assert.deepEqual(built.selectedRows,[])
+      assert.equal(built.tx(),true)
+      assert.equal(built.tx(),false, 'a second run of the same input is already complete')
+    }
+    const out=dump(db); db.close(); return out
+  }
+  assert.equal(run('build'),run('save'))
 })
