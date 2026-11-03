@@ -9,7 +9,7 @@ import { createGroupTopicsService } from '../src/main/features/groupTopics/servi
 import { ensureGroupTopicsSchema } from '../src/main/features/groupTopics/repository.ts'
 import { ensureLineImportSchema } from '../src/main/db/lineImport.repo.ts'
 import { buildTopicSave, completedInputExists, countPendingMessages, GROUP_TOPICS_VALIDATOR_VERSION, loadMessages, loadPendingMessages, listTopics, saveAnalysis, selectTopicTargets, todoRefs } from '../src/main/features/groupTopics/repository.ts'
-import { GROUP_TOPICS_JSON_SCHEMA, GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_SCHEMA_HASH } from '../src/main/features/groupTopics/prompts/bundle.ts'
+import { COMBINED_BUNDLE_ENABLED, COMBINED_JSON_SCHEMA, COMBINED_PROMPT_HASH, COMBINED_PROMPT_VERSION, COMBINED_SCHEMA_HASH, COMBINED_SCHEMA_VERSION, COMBINED_TOPIC_SECTION, GROUP_TOPICS_BUNDLE_ENABLED, GROUP_TOPICS_JSON_SCHEMA, GROUP_TOPICS_PROMPT, GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_PROMPT_VERSION, GROUP_TOPICS_SCHEMA_HASH, GROUP_TOPICS_SCHEMA_VERSION } from '../src/main/features/groupTopics/prompts/bundle.ts'
 import { makeHttpProvider } from '../src/main/llm/provider/httpOpenAi.ts'
 import { LlmProviderError } from '../src/main/llm/provider/types.ts'
 import { loadGroupTopicsOverview } from '../src/renderer/features/groupTopics/groupTopicsOverview.ts'
@@ -682,4 +682,27 @@ test('Phase 0: buildTopicSave().tx() writes exactly what saveAnalysis writes', (
     const out=dump(db); db.close(); return out
   }
   assert.equal(run('build'),run('save'))
+})
+
+test('Phase 2: the existing v4/v3 bundle exports are unchanged by the combined additions', async () => {
+  const { createHash } = await import('node:crypto')
+  assert.equal(GROUP_TOPICS_BUNDLE_ENABLED, true)
+  assert.equal(GROUP_TOPICS_PROMPT_VERSION, 'group-topics-v4')
+  assert.equal(GROUP_TOPICS_SCHEMA_VERSION, 'topic-output-v3')
+  assert.equal(GROUP_TOPICS_PROMPT_HASH, '4755390607a1f94edb755ca6206f38a131300f2337bc1c02eeda0d207e8f880c')
+  assert.equal(GROUP_TOPICS_SCHEMA_HASH, 'a3b46874a34034a9ec23d8c3759a2cb80e18c63ed1ffded15f7e6757a828c2ce')
+  assert.equal(createHash('sha256').update(GROUP_TOPICS_PROMPT).digest('hex'), '7b4cc94d39b61c9b60db523089196b2a2dfc2b2bfaabfd9e06988feb01b1d0f5')
+  assert.equal(createHash('sha256').update(JSON.stringify(GROUP_TOPICS_JSON_SCHEMA)).digest('hex'), '24389c95635021486866a5ffe9b324e78adbdb57712d10ae36a6e45d9024f758')
+})
+
+test('Phase 2: the combined bundle has its own versions and tracked hashes distinct from the topic bundle', () => {
+  assert.equal(COMBINED_BUNDLE_ENABLED, true)
+  assert.equal(COMBINED_PROMPT_VERSION, 'extract-combined-v1')
+  assert.equal(COMBINED_SCHEMA_VERSION, 'extract-combined-schema-v1')
+  assert.match(COMBINED_PROMPT_HASH, /^[a-f0-9]{64}$/)
+  assert.match(COMBINED_SCHEMA_HASH, /^[a-f0-9]{64}$/)
+  for (const hash of [COMBINED_PROMPT_HASH, COMBINED_SCHEMA_HASH]) assert.ok(![GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_SCHEMA_HASH].includes(hash))
+  assert.ok(COMBINED_TOPIC_SECTION.length > 0)
+  assert.equal(COMBINED_JSON_SCHEMA.additionalProperties, false)
+  assert.deepEqual(COMBINED_JSON_SCHEMA.required, ['todo', 'topic'])
 })

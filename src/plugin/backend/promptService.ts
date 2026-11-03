@@ -3,11 +3,15 @@ import { AiPortError } from '../../core/aiPort'
 import type { AiPort } from '../../core/aiPort'
 import type { SettingsStore } from '../../main/config/settings'
 import { EXTRACT_SYSTEM_PROMPT } from '../../main/llm/extractPrompt'
-import { EXTRACT_OUTPUT_CONTRACT } from './aiOutputContract'
+import { COMBINED_OUTPUT_CONTRACT, EXTRACT_OUTPUT_CONTRACT } from './aiOutputContract'
+import { COMBINED_BUNDLE_ENABLED, COMBINED_TOPIC_SECTION } from '../../main/features/groupTopics/prompts/bundle'
 import { EMPTY_CHAT_PROMPT_OVERRIDE } from './chatPromptStore'
 import type { ChatPromptStore } from './chatPromptStore'
 import { MY_NAME_MAX_CHARS, PROMPT_MAX_CHARS, PromptError, promptRefinementInput, validateMyName, validatePrompt, validatePromptSuggestion } from '../../shared/promptSettings'
 import type { ChatPromptState, ChatPromptSummary, PromptRefinementRequest, PromptState, PromptSuggestion } from '../../shared/promptSettings'
+
+/** `topics`：已啟用議題的群組，system 另接固定的議題段落與合併輸出格式。省略＝與舊版逐字相同。 */
+export interface ExtractSystemOptions { topics?: boolean }
 
 export interface PromptService {
   state(): PromptState
@@ -18,9 +22,9 @@ export interface PromptService {
   refine(request: PromptRefinementRequest): Promise<PromptSuggestion>
   revision(): string
   /** 抽取實際送給 AI 的 system：生效的 prompt＋（有名字時）身分段＋固定輸出格式（ExtractWorker 每次領到項目時讀）。省略 chatId＝只用預設值。 */
-  extractSystem(chatId?: string): string
+  extractSystem(chatId?: string, opts?: ExtractSystemOptions): string
   /** 該對話 system（不含固定輸出格式）的 sha256；沒有名字時等於預設 prompt 的 `revision()`，所以升級不會重置既有 session。 */
-  systemSha256(chatId?: string): string
+  systemSha256(chatId?: string, opts?: ExtractSystemOptions): string
   chatState(chatId: unknown): ChatPromptState
   chatSave(chatId: unknown, input: { prompt: unknown; myName: unknown }, expectedRevision: unknown): ChatPromptState
   chatReset(chatId: unknown, expectedRevision: unknown): ChatPromptState
@@ -94,6 +98,9 @@ export function createPromptService(settings: SettingsStore, ai: AiPort, options
     return value.name === null ? value.prompt : `${value.prompt}\n\n${identitySection(value.name)}`
   }
 
+  /** 合併 bundle 建置失敗（失敗閉鎖）時，topics 選項退回純待辦的 system，不會送出空的議題段落。 */
+  const withTopics = (opts: ExtractSystemOptions | undefined): boolean => opts?.topics === true && COMBINED_BUNDLE_ENABLED
+
   const chatState = (chatId: string): ChatPromptState => {
     const override = readOverride(chatId)
     const name = override.myName ?? defaultName()
@@ -115,8 +122,10 @@ export function createPromptService(settings: SettingsStore, ai: AiPort, options
 
   return {
     state, revision,
-    extractSystem: (chatId) => `${systemText(chatId)}\n\n${EXTRACT_OUTPUT_CONTRACT}`,
-    systemSha256: (chatId) => sha256(systemText(chatId)),
+    extractSystem: (chatId, opts) => withTopics(opts)
+      ? `${systemText(chatId)}\n\n${COMBINED_TOPIC_SECTION}\n\n${COMBINED_OUTPUT_CONTRACT}`
+      : `${systemText(chatId)}\n\n${EXTRACT_OUTPUT_CONTRACT}`,
+    systemSha256: (chatId, opts) => sha256(withTopics(opts) ? `${systemText(chatId)}\n\n${COMBINED_TOPIC_SECTION}` : systemText(chatId)),
     save(prompt, expectedRevision) {
       assertRevision(expectedRevision)
       const text = validatePrompt(prompt)

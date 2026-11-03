@@ -6,6 +6,7 @@
  * 這個檔案只產生那段附註文字（純函式、無 I/O），抽取（promptService.extractSystem）與單次 AI 功能（aiProvider）共用。
  */
 import { EXTRACT_JSON_SCHEMA } from '../../main/llm/schema'
+import { COMBINED_JSON_SCHEMA } from '../../main/features/groupTopics/prompts/bundle'
 
 /** 把 JSON Schema 轉成附在 system prompt 後面的格式要求。 */
 export function outputContractFor(schema: unknown): string {
@@ -20,3 +21,6 @@ export function outputContractFor(schema: unknown): string {
 
 /** 抽取：接在 system prompt 後面一起送給 `host.ai.complete`（promptService.extractSystem）。 */
 export const EXTRACT_OUTPUT_CONTRACT = outputContractFor(EXTRACT_JSON_SCHEMA.schema)
+
+/** 待辦＋議題合併抽取：已啟用議題的群組接在 system 後面（schema 由 build-group-topics-prompts 組成；Phase 2 尚未被任何執行期程式呼叫）。 */
+export const COMBINED_OUTPUT_CONTRACT = outputContractFor(COMBINED_JSON_SCHEMA)
