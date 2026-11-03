@@ -21,7 +21,8 @@ import { copySnapshot, findDbPath } from '../src/main/line/engine/fsPort.ts'
 import {
   configureLineEnginePorts, getLineEnginePorts, resetLineEnginePorts, DEFAULT_LINE_DB_DIR
 } from '../src/main/line/engine/enginePorts.ts'
-import { DB_DIR, findDb, openDb } from '../src/main/line/engine/linedb.ts'
+import { DB_DIR, findDb, openDb, openSnapshotDb } from '../src/main/line/engine/linedb.ts'
+import { createWin32LineFsPort } from '../src/main/line/engine/native/win32fs.ts'
 import { findPid, getKey } from '../src/main/line/engine/linekey.ts'
 import { loadState, saveState, saveStateStrict, walSig } from '../src/main/line/engine/watchEngine.ts'
 import { createMediaDecryptor } from '../src/main/media/decrypt.ts'
@@ -108,6 +109,11 @@ function portWalkEimg(fs, dir, index) {
 }
 
 // ── fixture ────────────────────────────────────────────────────────────────
+
+async function withTempAsync(prefix, fn) {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  try { return await fn(dir) } finally { rmSync(dir, { recursive: true, force: true }) }
+}
 
 function withTemp(prefix, fn) {
   const dir = mkdtempSync(join(tmpdir(), prefix))
@@ -358,6 +364,109 @@ test('openDb with no DB in the injected dbDir reports that dir', (t) => {
   assert.throws(() => openDb('00000000000000000000000000000000'), (error) => {
     assert.deepEqual(JSON.parse(error.message), { error: 'LINE message DB not found', dir: '/nowhere' })
     return true
+  })
+})
+
+test('openSnapshotDb: the same open / cipher / key / verify sequence as openDb; checkpoint:false leaves the snapshot alone; a wrong key keeps the fixed message and records the cause', (t) => {
+  t.after(resetLineEnginePorts)
+  const engine = fakeEngine()
+  configureLineEnginePorts({ fs: fakeFs(), sqlite: engine, dbDir: '/line/db' })
+  openSnapshotDb('/snap/m.edb', '0123456789abcdef0123456789abcdef')
+  assert.deepEqual(engine.log, [
+    ['open', '/snap/m.edb', null],
+    ['pragma', "cipher='aes128cbc'"],
+    ['pragma', 'kdf_iter=1'],
+    ['pragma', "key='0123456789abcdef0123456789abcdef'"],
+    ['prepare', 'SELECT count(*) FROM sqlite_master'],
+    ['pragma', 'wal_checkpoint(TRUNCATE)']
+  ])
+  const quiet = fakeEngine()
+  configureLineEnginePorts({ sqlite: quiet })
+  openSnapshotDb('/snap/m.edb', '0123456789abcdef0123456789abcdef', { checkpoint: false })
+  assert.equal(quiet.log.some((entry) => String(entry[1]).includes('wal_checkpoint')), false)
+  const wrong = fakeEngine({ wrongKey: true })
+  configureLineEnginePorts({ sqlite: wrong })
+  assert.throws(() => openSnapshotDb('/snap/m.edb', 'ffffffffffffffffffffffffffffffff'), (error) => {
+    assert.deepEqual(JSON.parse(error.message), { error: 'decryption failed — wrong key or cipher params' })
+    assert.match(String(error.cause?.message), /not a database/)
+    return true
+  })
+  assert.deepEqual(wrong.log.at(-1), ['close'])
+})
+
+test('getKey: skipValidate takes the cached key without copying the DB to validate it; without it the cache is validated by opening a copy (standalone unchanged)', (t) => {
+  t.after(resetLineEnginePorts)
+  const fs = fakeFs({ '/line/db/qwmain.edb': 'E', '/ud/.linekey': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })
+  const engine = fakeEngine()
+  configureLineEnginePorts({ fs, sqlite: engine, dbDir: '/line/db' })
+  const saved = process.env.LINE_DB_KEY
+  delete process.env.LINE_DB_KEY
+  try {
+    assert.equal(getKey({ cacheFile: '/ud/.linekey', skipValidate: true, skipRecover: true }), 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    assert.equal(fs.calls.filter((c) => c[0] === 'copyFile').length, 0)
+    assert.equal(engine.log.length, 0)
+    assert.equal(getKey({ cacheFile: '/ud/.linekey', skipRecover: true }), 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    assert.equal(fs.calls.filter((c) => c[0] === 'copyFile').length, 1, 'validated the old way: one copy of the DB')
+    assert.ok(engine.log.some((entry) => entry[0] === 'open'))
+  } finally { if (saved !== undefined) process.env.LINE_DB_KEY = saved }
+})
+
+test('registry: access is optional, passes through configure, and reset removes it', () => {
+  resetLineEnginePorts()
+  assert.equal('access' in getLineEnginePorts(), false)
+  const access = { open: async () => null, keyHeld: () => false, forgetKey: () => {} }
+  configureLineEnginePorts({ access })
+  assert.equal(getLineEnginePorts().access, access)
+  configureLineEnginePorts({ access: undefined })
+  assert.equal(getLineEnginePorts().access, undefined)
+  configureLineEnginePorts({ access })
+  resetLineEnginePorts()
+  assert.equal(getLineEnginePorts().access, undefined)
+})
+
+test('NodeLineFsPort.copyFileAsync copies byte-for-byte and rejects for a missing source; readHead reads the first bytes of a local file (short files give a short buffer)', async () => {
+  await withTempAsync('lfp-async-', async (root) => {
+    const fs = new NodeLineFsPort()
+    const data = Buffer.from(Array.from({ length: 5000 }, (_, i) => i % 251))
+    writeFileSync(join(root, 'a.bin'), data)
+    await fs.copyFileAsync(join(root, 'a.bin'), join(root, 'b.bin'))
+    assert.deepEqual(readFileSync(join(root, 'b.bin')), data)
+    await assert.rejects(() => fs.copyFileAsync(join(root, 'missing.bin'), join(root, 'c.bin')))
+    assert.deepEqual(fs.readHead(join(root, 'a.bin'), 32), data.subarray(0, 32))
+    assert.deepEqual(fs.readHead(join(root, 'a.bin'), 100_000), data)
+    writeFileSync(join(root, 'short.bin'), Buffer.from('abc'))
+    assert.equal(fs.readHead(join(root, 'short.bin'), 32).length, 3)
+    assert.throws(() => fs.readHead(join(root, 'missing.bin'), 32))
+  })
+})
+
+test('Win32LineFsPort (real koffi): copyFileAsync goes through .async and counts it; a failed copy rejects with the right code and is NOT redone synchronously; asyncCopy:false copies synchronously and counts that; readHead reads local files', async () => {
+  await withTempAsync('lfp-win32-async-', async (root) => {
+    const port = createWin32LineFsPort({ workspaceRoot: join(root, 'ws') })
+    const data = Buffer.from(Array.from({ length: 300_000 }, (_, i) => (i * 7) % 253))
+    writeFileSync(join(root, 'src.bin'), data)
+    await port.copyFileAsync(join(root, 'src.bin'), join(root, 'dst.bin'))
+    assert.deepEqual(readFileSync(join(root, 'dst.bin')), data)
+    assert.deepEqual(port.copyStats, { async: 1, syncFallback: 0 })
+    let syncRedos = 0
+    const syncCopy = port.copyFile.bind(port)
+    port.copyFile = (src, dst) => { syncRedos += 1; syncCopy(src, dst) }
+    await assert.rejects(() => port.copyFileAsync(join(root, 'nope.bin'), join(root, 'x.bin')), (error) => { assert.equal(error.code, 'ENOENT'); assert.equal(error.win32Code, 2); return true })
+    await assert.rejects(() => port.copyFileAsync(join(root, 'src.bin'), join(root, 'no-such-dir', 'x.bin')), (error) => { assert.equal(error.code, 'ENOENT'); assert.equal(error.win32Code, 3); return true })
+    const blocker = join(root, 'a-directory')
+    mkdirSync(blocker)
+    await assert.rejects(() => port.copyFileAsync(join(root, 'src.bin'), blocker), (error) => { assert.equal(error.code, 'EIO'); return true })
+    assert.equal(syncRedos, 0, 'a failed asynchronous copy is not redone with a synchronous CopyFileW (a mid-copy failure would block the event loop again)')
+    assert.deepEqual(port.copyStats, { async: 1, syncFallback: 0 })
+    port.copyFile = syncCopy
+    const sync = createWin32LineFsPort({ workspaceRoot: join(root, 'ws2'), asyncCopy: false })
+    await sync.copyFileAsync(join(root, 'src.bin'), join(root, 'dst2.bin'))
+    assert.deepEqual(readFileSync(join(root, 'dst2.bin')), data)
+    assert.deepEqual(sync.copyStats, { async: 0, syncFallback: 1 })
+    await assert.rejects(() => sync.copyFileAsync(join(root, 'nope.bin'), join(root, 'y.bin')), (error) => { assert.equal(error.code, 'ENOENT'); return true })
+    assert.deepEqual(port.readHead(join(root, 'src.bin'), 32), data.subarray(0, 32))
+    assert.equal(port.readHead(join(root, 'src.bin'), 1_000_000).length, 300_000)
+    assert.throws(() => port.readHead(join(root, 'nope.bin'), 32))
   })
 })
 

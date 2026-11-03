@@ -691,6 +691,11 @@ export interface LineTodoApi {
      * (its CSP has no `linemedia:`). Resolves null when the image is not available (not downloaded in LINE yet, key mismatch, ...).
      */
     assetUrl?(msgId: string): Promise<string | null>
+    /**
+     * Optional (plugin host only): like `assetUrl`, but also says WHY there is no URL when the plugin backend answered `not_cached` while its LINE Cache index is still being built
+     * (`indexing: true`: the image may well be in the Cache, the index just has not seen it yet — ask again later). `indexing: false` with a null url is "not available / not downloaded yet".
+     */
+    assetLookup?(msgId: string): Promise<{ url: string | null; indexing: boolean }>
     /** Plugin-host-only, on-demand chat avatars. Source locators and LINE MIDs stay in the backend. */
     avatarUrls?(chatIds: string[], options?: AvatarRequestOptions): Promise<AvatarUrlBatchDTO>
     /** Plugin-host-only, on-demand sender avatars for the given imported message ids. */

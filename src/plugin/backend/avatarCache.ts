@@ -160,6 +160,13 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
     }
     return files
   }
+  const probe = async (key: string): Promise<string | undefined> => {
+    for (const ext of Object.values(MIME_EXT)) {
+      const name = `${key}.${ext}`
+      try { if ((await fs.stat(join(dir, name))).isFile()) return name } catch { /* 不是這個副檔名 */ }
+    }
+    return undefined
+  }
   const prune = async (keep: string): Promise<void> => {
     const files = await fileNames()
     let bytes = files.reduce((n, f) => n + f.size, 0)
@@ -180,7 +187,8 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
     const release = await acquire()
     try {
       const key = avatarCacheKey(identity, locator)
-      const cachedName = (await fileNames()).find((f) => f.name.startsWith(key + '.'))?.name
+      // 命中時依 key 直接 stat 三種副檔名，不掃整個目錄；找不到才退回列舉（舊檔名、手動放入的檔案）。
+      const cachedName = (await probe(key)) ?? (await fileNames()).find((f) => f.name.startsWith(key + '.'))?.name
       if (cachedName) {
         const ext = cachedName.slice(key.length + 1)
         const mime = (Object.entries(MIME_EXT).find(([, e]) => e === ext)?.[0]) as AvatarMime | undefined

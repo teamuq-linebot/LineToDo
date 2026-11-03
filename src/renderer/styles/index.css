@@ -291,6 +291,18 @@ code {
   white-space: nowrap;
 }
 
+/* 狀態列可以換行（窄寬時「重試」與「診斷」不會被截斷）；診斷展開時佔滿一整行，內容垂直堆疊。 */
+.stream-bar { flex-wrap: wrap; }
+.stream-retry { flex: 0 0 auto; white-space: nowrap; }
+.stream-diag { font-size: 12px; }
+.stream-diag > summary { cursor: pointer; color: var(--muted); }
+.stream-diag[open] { order: 10; flex: 1 0 100%; }
+.stream-diag-body { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 0; }
+.stream-diag-body > div { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.stream-diag-body dt { color: var(--muted); }
+.stream-diag-body dd { margin: 0; overflow-wrap: anywhere; }
+.chat-load-error { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+
 .stream-error {
   flex: 0 0 auto;
   margin: 0;
@@ -858,6 +870,10 @@ code {
 .chat-pane-empty h2 { margin: 0; color: var(--text); font-size: 15px; }
 .chat-pane-empty p { margin: 0; font-size: 12px; }
 .stream-load-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
   flex: 0 0 auto;
   padding: 6px 14px;
   border-bottom: 1px solid var(--border);

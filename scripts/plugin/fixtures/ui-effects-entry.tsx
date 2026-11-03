@@ -10,6 +10,7 @@ import { LineTodoApiProvider } from '../../../src/renderer/platform/LineTodoApi'
 import { PLUGIN_CAPABILITIES } from '../../../src/renderer/platform/capabilities'
 import { SettingsPanel } from '../../../src/renderer/components/Settings/SettingsPanel'
 import { MessageStream } from '../../../src/renderer/components/MessageStream'
+import { MediaImage, mediaIndexingRetry } from '../../../src/renderer/components/MediaView'
 import App from '../../../src/renderer/App'
 import { useTodos } from '../../../src/renderer/store/useTodos'
 import { NotMineReviewPanel } from '../../../src/renderer/components/Board/NotMineReviewPanel'
@@ -23,10 +24,10 @@ import { UiStateProvider, createLocalUiState } from '../../../src/renderer/lib/u
 import { createOverviewRefresher } from '../../../src/renderer/features/groupTopics/groupTopicsOverview'
 import { GroupTopicsPanel } from '../../../src/renderer/features/groupTopics/GroupTopicsPanel'
 import { sharedRead } from '../../../src/renderer/lib/sharedRead'
-import { createPluginLineTodoApi } from '../../../src/renderer/platform/pluginApi'
+import { MEDIA_INDEX_BUILDING_TOKEN, createPluginLineTodoApi } from '../../../src/renderer/platform/pluginApi'
 import { BACKEND_METHOD_GROUPS } from '../../../src/shared/pluginWire'
 
-export { BACKEND_METHOD_GROUPS, createPluginLineTodoApi, createOverviewRefresher, sharedRead }
+export { BACKEND_METHOD_GROUPS, MEDIA_INDEX_BUILDING_TOKEN, createPluginLineTodoApi, createOverviewRefresher, mediaIndexingRetry, sharedRead }
 
 export function groupTopicsScene(api: Api): ReactElement {
   return <Host api={api}><GroupTopicsPanel hideTitle /></Host>
@@ -46,6 +47,10 @@ function Host({ api, children }: { api: Api; children: ReactElement }): JSX.Elem
 /** the plugin's settings view (src/plugin/ui/settings.tsx without the status bar / theme follower) */
 export function settingsScene(api: Api): ReactElement {
   return <Host api={api}><SettingsPanel /></Host>
+}
+/** one image message as the stream shows it (the real MediaImage with the real retry-while-indexing effect) */
+export function mediaImageScene(api: Api, msgId: string): ReactElement {
+  return <Host api={api}><MediaImage msgId={msgId} onOpenLightbox={() => undefined} /></Host>
 }
 export function messageStreamScene(api: Api): ReactElement {
   return <Host api={api}><MessageStream /></Host>

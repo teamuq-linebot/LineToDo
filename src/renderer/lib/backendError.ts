@@ -6,9 +6,10 @@
  * standalone 的 IPC 錯誤沒有這些碼，就照原本的訊息顯示。這個檔案不 import 外掛傳輸層（standalone bundle 不需要它），只看 `code`。
  */
 import { PERMISSIONS_SECTION_TITLE, PLUGIN_PAGE_PLACE } from '../../shared/teamuqPlaces'
+import type { BackendPhase } from '../platform/pluginTransport'
 
-/** `revoked`＝TeamUQ 已隔離這個外掛的後端呼叫（停用／逾時）或外掛已移除；`unavailable`＝暫時的，稍後再試。 */
-export type BackendErrorKind = 'revoked' | 'unavailable' | 'invalid' | 'other'
+/** `revoked`＝TeamUQ 已隔離這個外掛的後端呼叫（停用／逾時）或外掛已移除；`unavailable`＝暫時的，稍後再試；`timeout`＝畫面端等不到回覆而放棄（後端可能仍在忙，可以重試）。 */
+export type BackendErrorKind = 'revoked' | 'unavailable' | 'timeout' | 'invalid' | 'other'
 
 /**
  * 被隔離時要使用者去的地方（0.1.3）。不寫完整路徑，因為外掛管理頁在不同版本的 TeamUQ 放在不同地方：1.6.8 是「設定」裡的「外掛」分類
@@ -49,6 +50,12 @@ const UNAVAILABLE_TEXT: Record<string, string> = {
   disposed: '畫面正在關閉。'
 }
 
+/** 畫面端等待逾時（`pluginTransport.ts` 的 `view_call_timeout`）：不是 TeamUQ 的隔離，後端多半只是忙或剛啟動；重試是有用的。 */
+export const VIEW_CALL_TIMEOUT_TEXT = '讀取逾時：後端太久沒有回應，可以按「重試」。'
+const TIMEOUT_TEXT: Record<string, string> = {
+  view_call_timeout: VIEW_CALL_TIMEOUT_TEXT
+}
+
 /** 呼叫格式或版本不一致（不應該發生；多半是外掛 UI 與 backend 版本不同）。 */
 const INVALID_TEXT: Record<string, string> = {
   backend_method_not_allowed: '這個操作不在外掛宣告的方法清單內（外掛畫面與後端的版本可能不一致），請重新安裝外掛。',
@@ -85,10 +92,30 @@ export interface DescribedError {
 export function describeBackendError(error: unknown): DescribedError {
   const code = codeOf(error)
   if (code !== null && REVOKED_TEXT[code]) return { kind: 'revoked', code, text: REVOKED_TEXT[code] }
+  if (code !== null && TIMEOUT_TEXT[code]) return { kind: 'timeout', code, text: TIMEOUT_TEXT[code] }
   if (code !== null && UNAVAILABLE_TEXT[code]) return { kind: 'unavailable', code, text: UNAVAILABLE_TEXT[code] }
   if (code !== null && INVALID_TEXT[code]) return { kind: 'invalid', code, text: INVALID_TEXT[code] }
   const message = messageOf(error).trim()
   return { kind: 'other', code, text: message === '' ? '發生未知錯誤' : message.slice(0, 300) }
+}
+
+/** 這個錯誤是畫面端的等待逾時嗎（畫面用來決定要不要多給一個「重試」，而不是再疊一則紅色錯誤）。 */
+export function isViewCallTimeout(error: unknown): boolean {
+  return codeOf(error) === 'view_call_timeout'
+}
+
+/**
+ * 後端階段 → 狀態列的一句話（外掛版 `pluginTransport.ts` 的 phase；standalone 沒有 phase，傳 null）。`ready` 不顯示任何階段文字（回 null，由橋接狀態接手）。
+ * `retry`＝這個階段要多給一個「重試」；`tone: 'err'`＝異常，必須在預設畫面就看得出來（不可隱藏）。
+ */
+export function describePhase(phase: BackendPhase | null): { text: string; tone: 'err' | ''; retry: boolean } | null {
+  switch (phase) {
+    case 'starting': return { text: '後端啟動中…（首次開啟需要數秒）', tone: '', retry: false }
+    case 'connecting': return { text: '連線中…', tone: '', retry: false }
+    case 'timeout': return { text: '讀取逾時', tone: 'err', retry: true }
+    case 'error': return { text: '無法連線', tone: 'err', retry: true }
+    default: return null
+  }
 }
 
 /** `前綴：說明`。 */

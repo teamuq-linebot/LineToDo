@@ -9,6 +9,8 @@
  *   - 檔案有上限：超過 `maxBytes` 就把目前的檔案改名為 `<file>.1`（rename 本身會取代舊的，**rename 成功前不刪舊檔**）再從頭寫，總量最多約 2 × `maxBytes`。
  *     rename 失敗（`.1` 被占用、不是檔案、權限）就降級成截斷目前的檔案，舊的 `.1` 原樣保留；連截斷都失敗就繼續追加（有硬上限 `2 × maxBytes`，超過才丟棄）；期間每多寫 64 KiB 再試一次，到了硬上限則每一筆都再試，障礙排除後下一筆就恢復寫入。
  *     輪替時還在進行中的呼叫會補寫一行 `carry`，所以「已開始、未結束」的呼叫不會因輪替而從磁碟上消失。
+ *   - 觀測事件（`event()`）：`snap`＝持久 snapshot 的一次取得（`m`＝reuse／wal／full，`ms`、`bytes`、`from`）；`bg`＝背景工作花了多久（`p`＝poll／reconcile／quick_check／unsent_scan／media_index／avatar_backfill）。
+ *     `bg` 與 `snap` 的 `reuse` 只記 `eventMinMs`（預設 50 ms）以上的；`wal`／`full` 一律記。欄位全是既有白名單的 m／p／ms／bytes／from，用來把 `loop_stall` 歸因到背景工作。
  *   - 事件迴圈卡頓：一個 `unref` 的計時器每 `tickMs` 量一次遲到時間，遲到超過 `stallMs` 就寫 `loop_stall`（卡了多久、從何時開始、期間重疊的呼叫）。
  *     計時器本身在迴圈被卡住時跑不動，所以永久卡死不會有 `loop_stall`；那種情況看最後一筆沒有 `end` 的 `start`，以及它之後有沒有 `inflight` 心跳
  *     （有心跳＝迴圈還活著、呼叫在等非同步的東西；心跳在某個時間點之後消失＝迴圈在那之後被卡死）。
@@ -30,6 +32,8 @@ export const TRACE_DEFAULTS = Object.freeze({
   slowMs: 2000,
   /** 事件迴圈卡頓門檻：1 秒（取樣間隔 0.5 秒的兩倍）。使用者看得到的卡頓從這裡開始；金鑰掃描的讓出時間片是 20 ms，遠低於它。 */
   stallMs: 1000,
+  /** `bg` 事件（與 `snap` 的 reuse）低於這麼久不記：背景工作大多是毫秒級，只留會被看見的。 */
+  eventMinMs: 50,
   tickMs: 500,
   /** 有慢呼叫（或背景 job）還在進行時，最多每這麼久寫一筆 `inflight` 心跳。 */
   heartbeatMs: 5000
@@ -50,6 +54,13 @@ export const ALLOWED_FIELDS: ReadonlySet<string> = new Set([
   't', 'ev', 'pid', 'ver', 'slowMs', 'stallMs', 'seq', 'm', 'p', 'argc', 'argB', 'fl', 'ms', 'res', 'slow', 'err', 'bytes',
   'from', 'lagMs', 'calls', 'age', 'job', 'wait', 'open', 'since'
 ])
+
+/** `event()` 接受的事件名稱。 */
+export type TraceEventName = 'snap' | 'bg'
+/** `snap` 事件的 `m`：持久 snapshot 這次是 reuse（零複製）、wal（只複製 -wal）還是 full（整份複製）。 */
+export const SNAP_KINDS: ReadonlySet<string> = new Set(['reuse', 'wal', 'full'])
+/** `bg` 事件的 `p`：占用事件迴圈的背景工作種類。 */
+export const BG_PHASES: ReadonlySet<string> = new Set(['poll', 'reconcile', 'quick_check', 'unsent_scan', 'media_index', 'avatar_backfill'])
 
 export interface TraceInfo {
   /** method 組名（已驗證在 `BACKEND_METHOD_GROUPS` 內，否則 `?`）。 */
@@ -80,6 +91,7 @@ export interface InvokeTraceOptions {
   maxBytes?: number
   slowMs?: number
   stallMs?: number
+  eventMinMs?: number
   tickMs?: number
   heartbeatMs?: number
   /** 牆上時鐘（毫秒，供時間戳記）；測試可注入。 */
@@ -103,7 +115,7 @@ export function safeCode(value: unknown): string {
 }
 
 export class InvokeTrace {
-  private readonly o: Required<Pick<InvokeTraceOptions, 'file' | 'maxBytes' | 'slowMs' | 'stallMs' | 'tickMs' | 'heartbeatMs'>> & InvokeTraceOptions
+  private readonly o: Required<Pick<InvokeTraceOptions, 'file' | 'maxBytes' | 'slowMs' | 'stallMs' | 'eventMinMs' | 'tickMs' | 'heartbeatMs'>> & InvokeTraceOptions
   private readonly rotated: string
   private readonly active = new Map<number, Active>()
   private readonly spans: Span[] = []
@@ -129,6 +141,7 @@ export class InvokeTrace {
       maxBytes: options.maxBytes ?? TRACE_DEFAULTS.maxBytes,
       slowMs: options.slowMs ?? TRACE_DEFAULTS.slowMs,
       stallMs: options.stallMs ?? TRACE_DEFAULTS.stallMs,
+      eventMinMs: options.eventMinMs ?? TRACE_DEFAULTS.eventMinMs,
       tickMs: options.tickMs ?? TRACE_DEFAULTS.tickMs,
       heartbeatMs: options.heartbeatMs ?? TRACE_DEFAULTS.heartbeatMs
     }
@@ -201,6 +214,27 @@ export class InvokeTrace {
         }
       }
     }
+  }
+
+  /**
+   * 記一筆觀測事件（絕不 throw）：`snap`（`m`：reuse／wal／full）或 `bg`（`p`：見 BG_PHASES）。`ms` 是這件事花的時間，`from` 由結束時間往回推，
+   * 方便和 `loop_stall` 的 `from`／`lagMs` 對時間。名稱或種類不在白名單內、或 `bg`／`snap(reuse)` 低於 `eventMinMs` 一律不記。
+   */
+  event(ev: TraceEventName, fields: { m?: string; p?: string; ms: number; bytes?: number }): void {
+    if (this.stopped) return
+    try {
+      const ms = Number.isFinite(fields.ms) ? Math.max(0, Math.round(fields.ms)) : 0
+      const from = isoOf(this.wall() - ms)
+      if (ev === 'snap') {
+        if (typeof fields.m !== 'string' || !SNAP_KINDS.has(fields.m)) return
+        if (fields.m === 'reuse' && ms < this.o.eventMinMs) return
+        const bytes = typeof fields.bytes === 'number' && Number.isFinite(fields.bytes) && fields.bytes > 0 ? Math.round(fields.bytes) : null
+        this.write({ ev, pid: this.pid(), m: fields.m, ms, ...(bytes !== null ? { bytes } : {}), from })
+      } else if (ev === 'bg') {
+        if (typeof fields.p !== 'string' || !BG_PHASES.has(fields.p) || ms < this.o.eventMinMs) return
+        this.write({ ev, pid: this.pid(), p: fields.p, ms, from })
+      }
+    } catch (error) { this.noteError(error) }
   }
 
   /** 取樣一次：量事件迴圈遲到多久，必要時寫 `loop_stall`；有慢呼叫還在進行就（限速）寫 `inflight`。計時器每 `tickMs` 呼叫一次。 */

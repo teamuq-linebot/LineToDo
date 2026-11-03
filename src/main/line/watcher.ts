@@ -43,7 +43,7 @@ export interface LineWatcherOptions {
    * 引擎選項（checkpoint 檔、DB 路徑、key 快取檔）。standalone 不給＝沿用 userData 推導的預設；
    * 外掛 backend 必須給（路徑都在 dataDir，且 backend 沒有 electron）。
    */
-  engine?: Pick<WatchEngineOptions, 'stateFile' | 'dbPath' | 'keyOpts'>
+  engine?: Pick<WatchEngineOptions, 'stateFile' | 'dbPath' | 'keyOpts' | 'avatarMeta'>
   /**
    * 一批讀滿（hasMore）就立刻接著讀下一批，直到追上。預設 false＝每個 interval 只讀一批（standalone 現行行為）。
    * 外掛首次匯入大量歷史訊息時開啟。

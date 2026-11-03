@@ -24,8 +24,9 @@
  */
 import type { Database as Db } from 'better-sqlite3'
 
-import { findDb, openDb } from '../line/engine/linedb'
-import { getKey, getKeyAsync, type GetKeyOptions } from '../line/engine/linekey'
+import { findDb } from '../line/engine/linedb'
+import { openLineDbFor } from '../line/engine/lineAccess'
+import type { GetKeyOptions } from '../line/engine/linekey'
 
 /** 月份鍵，格式 `YYYY-MM`（本地時區分月）。 */
 export type YearMonth = string
@@ -121,11 +122,9 @@ export async function getSourceMonthlyFingerprint(
   opts: SourceFingerprintOptions = {}
 ): Promise<Map<YearMonth, MonthFingerprint>> {
   const dbPath = opts.dbPath ?? findDb()
-  // 外掛 backend 給 recoverGuard：協作式（掃記憶體時讓出事件迴圈、退避）；standalone 不給＝原本的同步 getKey。
-  const key = opts.keyOpts?.recoverGuard ? await getKeyAsync({ ...opts.keyOpts, dbPath }) : getKey({ ...opts.keyOpts, dbPath })
-  if (!key) throw new ReconcileKeyUnavailableError()
-
-  const { con, cleanup } = openDb(key, dbPath)
+  // 金鑰與開 DB 走 lineAccess 的單一入口：外掛 backend 給 recoverGuard（協作式：掃記憶體時讓出事件迴圈、退避）並共用持久 snapshot；
+  // standalone 不注入 access＝原本的同步 getKey + openDb。
+  const { con, cleanup } = await openLineDbFor({ dbPath, policy: 'fresh', keyOpts: opts.keyOpts, keyMissing: () => new ReconcileKeyUnavailableError() })
   try {
     const rows = con.prepare(SOURCE_MONTHLY_SQL).all() as Array<{
       ym: string
