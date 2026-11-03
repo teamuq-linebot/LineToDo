@@ -12,23 +12,48 @@ import { useHostCapabilities, useLineTodoApi } from '../platform/LineTodoApi'
  * 檔案的「開啟／另存」靠 Electron 的 shell／dialog，外掛版沒有（`mediaFileActions:false`）→ 只顯示檔案卡。
  */
 
-export type MediaUrlState = { status: 'loading'; url: null } | { status: 'ready'; url: string } | { status: 'missing'; url: null }
+export type MediaUrlState = { status: 'loading'; url: null } | { status: 'indexing'; url: null } | { status: 'ready'; url: string } | { status: 'missing'; url: null }
+
+/**
+ * 索引還在建立時（`api.media.assetLookup` 回 `indexing: true`）的自動重試：同一張圖第一次重試等 `baseMs`（2 s），之後每次加倍、上限 `maxMs`，最多重試 `maxRetries` 次，用完就當「尚未下載」。
+ * 索引就緒（回的不再是 indexing）、元件卸載（effect 清理會取消計時器、之後不再發請求）也會停。重試走同一個 `media.prepare`，所以在 transport 的 bulk lane。
+ * 是個可變物件只是為了讓測試縮短等待；正式程式不改它。
+ */
+export const mediaIndexingRetry = { baseMs: 2_000, maxMs: 30_000, maxRetries: 8 }
+const retryDelay = (retry: number): number => Math.min(mediaIndexingRetry.maxMs, mediaIndexingRetry.baseMs * 2 ** retry)
 
 /** 向宿主解析圖片網址。 */
 export function useMediaUrl(msgId: string): MediaUrlState {
   const api = useLineTodoApi()
-  const [state, setState] = useState<MediaUrlState>(() => (api.media.assetUrl ? { status: 'loading', url: null } : { status: 'missing', url: null }))
+  const [state, setState] = useState<MediaUrlState>(() => (api.media.assetLookup || api.media.assetUrl ? { status: 'loading', url: null } : { status: 'missing', url: null }))
 
   useEffect(() => {
+    const lookup = api.media.assetLookup
     const resolve = api.media.assetUrl
-    if (!resolve) { setState({ status: 'missing', url: null }); return }
+    if (!lookup && !resolve) { setState({ status: 'missing', url: null }); return }
     let alive = true
+    let timer: ReturnType<typeof setTimeout> | null = null
     setState({ status: 'loading', url: null })
-    void resolve.call(api.media, msgId).then(
-      (url) => { if (alive) setState(url ? { status: 'ready', url } : { status: 'missing', url: null }) },
-      () => { if (alive) setState({ status: 'missing', url: null }) }
-    )
-    return () => { alive = false }
+    const attempt = (retry: number): void => {
+      const asked = lookup
+        ? lookup.call(api.media, msgId)
+        : resolve!.call(api.media, msgId).then((url) => ({ url, indexing: false }))
+      void asked.then(
+        ({ url, indexing }) => {
+          if (!alive) return
+          if (url) { setState({ status: 'ready', url }); return }
+          if (indexing && retry < mediaIndexingRetry.maxRetries) {
+            setState({ status: 'indexing', url: null })
+            timer = setTimeout(() => { timer = null; if (alive) attempt(retry + 1) }, retryDelay(retry))
+            return
+          }
+          setState({ status: 'missing', url: null })
+        },
+        () => { if (alive) setState({ status: 'missing', url: null }) }
+      )
+    }
+    attempt(0)
+    return () => { alive = false; if (timer !== null) { clearTimeout(timer); timer = null } }
   }, [api, msgId])
 
   return state
@@ -44,6 +69,7 @@ export function MediaImage({ msgId, as: Tag = 'span', onOpenLightbox }: {
   const [failed, setFailed] = useState(false)
   if (failed || media.status === 'missing') return <Tag className="sm-media-missing">尚未下載</Tag>
   if (media.status === 'loading') return <Tag className="sm-media-missing">載入中…</Tag>
+  if (media.status === 'indexing') return <Tag className="sm-media-missing">索引建立中…</Tag>
   return (
     <Tag className="sm-media">
       <img className="sm-thumb" src={media.url} alt="圖片" onClick={() => onOpenLightbox(media.url)} onError={() => setFailed(true)} />

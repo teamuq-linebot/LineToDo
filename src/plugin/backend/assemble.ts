@@ -33,8 +33,13 @@ import type { AppDbEngine } from '../../main/db/appDbEngine'
 import { createBetterSqlite3AppEngine } from '../../main/db/appDbEngine'
 import { getLastRun } from '../../main/db/pipeline.repo'
 import { commitLineImportBatch, isLineImportSchemaReady } from '../../main/db/lineImport.repo'
-import { configureLineEnginePorts } from '../../main/line/engine/enginePorts'
+import { ensureLineAvatarSchema } from '../../main/db/lineAvatar.repo'
+import { ensureMediaIndexSchema } from '../../main/db/mediaIndex.repo'
+import type { Database as BetterSqlite3Database } from 'better-sqlite3'
+import { configureLineEnginePorts, getLineEnginePorts } from '../../main/line/engine/enginePorts'
 import type { LineEnginePorts } from '../../main/line/engine/enginePorts'
+import { createLineAccess } from '../../main/line/engine/lineAccess'
+import { LineSnapshotStore } from '../../main/line/engine/lineSnapshot'
 import { RecoverGuard } from '../../main/line/engine/linekey'
 import type { GetKeyOptions, RecoverGuardOptions } from '../../main/line/engine/linekey'
 import { getAvatarMetadata, getLineImportBatch, getMessagesSince } from '../../main/line/engine/watchEngine'
@@ -70,9 +75,14 @@ import { createResidencyTracker } from './residency'
 import { createTeamuqTaskBinding } from './teamuqTask'
 import { createPluginMedia } from './media'
 import type { MediaDb } from './media'
+import { createMediaIndex } from './mediaIndex'
+import type { MediaIndex, MediaIndexBudget } from './mediaIndex'
 import { createAvatarCache } from './avatarCache'
 import { createPluginAvatars } from './avatar'
-import type { AvatarDb } from './avatar'
+import type { AvatarDb, AvatarMetadataReader } from './avatar'
+import { createLayeredAvatarReader } from './avatarReader'
+import { createAvatarBackfill, OFF_STATUS } from './avatarBackfill'
+import type { AvatarBackfillBudget } from './avatarBackfill'
 import { ReviewCoordinator, ReviewLedger } from './reviewRun'
 import { LongTaskTracker } from './taskStatus'
 import type { BackendDiagnostics, JsonValue, PluginBackendHandler, SessionChannel, SessionInfo } from './types'
@@ -116,13 +126,31 @@ export interface PluginBackendOptions {
    * 預設：掃不到時 30 s → 5 分鐘指數退避，連續占用事件迴圈超過 20 ms 就讓出。
    */
   keyRecovery?: { guard?: RecoverGuardOptions; scanner?: GetKeyOptions['scanner'] }
+  /**
+   * LINE DB 的持久 snapshot（`<dataDir>/line-engine/snapshot`，lineSnapshot.ts）與單一入口（lineAccess.ts）：poll、頭像、reconcile、resetNow 共用同一份副本與同一把金鑰。
+   * 只在有 `linePorts` 時啟用；`enabled:false`＝關閉，全部退回舊的「解析金鑰 + 每次整份複製」流程（回退開關）。
+   * `walOnly` 預設只在引擎是唯讀的 WASM 時開（副本必須一直和來源 edb 逐位元組相同）；`fullResyncMs`／`now` 供測試。
+   */
+  snapshot?: { enabled?: boolean; walOnly?: boolean; fullResyncMs?: number; now?(): number }
+  /**
+   * 發話者頭像存本地 DB（lineAvatar.repo.ts）：匯入時順便寫入、讀取先看本地、背景回填既有訊息。
+   * `enabled:false`＝回到「每次從 LINE DB 讀」的舊行為：不建表、不寫入、不回填。
+   */
+  avatarStore?: { enabled?: boolean; now?(): number; backfill?: { enabled?: boolean } & AvatarBackfillBudget }
   /** app DB 引擎；預設 standalone 的 better-sqlite3（外掛 build 會把它指到 13.0.2）。 */
   appDbEngine?: AppDbEngine
   /**
    * 媒體：LINE Cache 目錄與檔案存取。省略 `cacheDir` 時，若 `linePorts.dbDir` 形如 `...\LINE\Data\db` 就推得 `...\LINE\Cache`；
    * 兩者都沒有＝`media.prepare` 回 media_unavailable（不猜路徑）。`fs` 省略時用 `linePorts.fs`。
    */
-  media?: { cacheDir?: string; fs?: LineFsPort; maxCacheBytes?: number; reindexMinIntervalMs?: number; now?(): number }
+  media?: {
+    cacheDir?: string; fs?: LineFsPort; maxCacheBytes?: number
+    /** 圖片索引的 `noteMiss` 節流（ms，預設 30 s）。`reindexMinIntervalMs` 是舊名，保留一版當別名。 */
+    refreshMinIntervalMs?: number; reindexMinIntervalMs?: number
+    /** 圖片索引的時鐘（24 小時重列、30 天清除、節流）與掃描預算（啟動延遲、切片大小等，測試用）。 */
+    now?(): number
+    index?: MediaIndexBudget
+  }
   /**
    * 開機自我對帳（`runReconcile`，設定頁的 reconcile.enabled 決定要不要跑）與近期收回掃描。
    * 預設：有 `linePorts`（真引擎）才接；只給 fake `line` 的測試不接（對帳預設會開真 LINE 目錄）。
@@ -201,32 +229,105 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   // env 傳 {}：backend 的行為不受環境變數影響（QWEN_*、LINE_* 都不讀）。
   const getDefaults = createPipelineConfig(() => settings.get(), {})
   const getQwenConfig = createQwenConfig({ readApiKey: () => null, readBaseUrl: () => null }, {})
-  if (options.linePorts) configureLineEnginePorts(options.linePorts)
+
+  // 觀測：InvokeTrace 在 runtime 初始化之後才建立（下面），但 snapshot 的 span 與背景工作的計時在那之前就註冊好了，所以用可變參考延後取用。
+  let trace: InvokeTrace | null = null
+  /** 量一件背景工作（同步或回傳 promise 皆可）占了多久，記成 `bg` 事件（≥ eventMinMs 才會寫進 log）。 */
+  const bg = <T>(phase: string, run: () => T): T => {
+    const t0 = performance.now()
+    const done = (): void => { trace?.event('bg', { p: phase, ms: performance.now() - t0 }) }
+    let result: T
+    try { result = run() } catch (error) { done(); throw error }
+    if (result instanceof Promise) return result.finally(done) as T
+    done()
+    return result
+  }
+
+  // ── LINE DB 的持久 snapshot 與單一入口（外掛專用；standalone 不經過這裡）──
+  const snapshotStore = options.linePorts && options.snapshot?.enabled !== false
+    ? new LineSnapshotStore({
+      fs: options.linePorts.fs,
+      dir: join(dataDir, 'line-engine', 'snapshot'),
+      walOnly: options.snapshot?.walOnly ?? options.linePorts.sqlite.name.startsWith('sqlite3mc-wasm'),
+      ...(options.snapshot?.fullResyncMs !== undefined ? { fullResyncMs: options.snapshot.fullResyncMs } : {}),
+      ...(options.snapshot?.now ? { now: options.snapshot.now } : {}),
+      onSpan: (kind, ms, bytes) => trace?.event('snap', { m: kind, ms, bytes })
+    })
+    : null
+  const lineAccess = snapshotStore ? createLineAccess({ store: snapshotStore }) : null
+  if (options.linePorts) configureLineEnginePorts({ ...options.linePorts, access: lineAccess ?? undefined })
+  const fsCopyStats = (options.linePorts?.fs as unknown as { copyStats?: { async: number; syncFallback: number } } | undefined)?.copyStats
 
   // Avatar source reads use the same async key recovery and Win32/WASM ports as LINE imports.
   const keyGuard = new RecoverGuard(options.keyRecovery?.guard)
   const keyOpts: GetKeyOptions = { cacheFile: join(dataDir, '.linekey'), recoverGuard: keyGuard, ...(options.keyRecovery?.scanner ? { scanner: options.keyRecovery.scanner } : {}) }
-  const engineOptions = { stateFile: join(dataDir, '.watch_json_state'), keyOpts }
+  const avatarStoreOn = options.avatarStore?.enabled !== false
+  let avatarSchemaReady = false
+  let avatarDb: BetterSqlite3Database | null = null
+  const avatarReads = { local: 0, fallback: 0, miss: 0, write: 0 }
+  const engineOptions = { stateFile: join(dataDir, '.watch_json_state'), keyOpts, ...(avatarStoreOn ? { avatarMeta: true } : {}) }
 
   const hub = new EventHub(options.hub)
   const mediaFs = options.media?.fs ?? options.linePorts?.fs
   const dbDir = options.linePorts?.dbDir
   const cacheDir = options.media?.cacheDir
     ?? (dbDir && basename(dirname(dbDir)).toLowerCase() === 'data' ? join(dirname(dirname(dbDir)), 'Cache') : undefined)
-  const decryptor = cacheDir ? createMediaDecryptor({ ...(mediaFs ? { fs: mediaFs } : {}), cacheDir }) : null
+  // 圖片索引（mediaIndex.ts）：LINE Cache 的 size → 路徑存在 app DB，背景切片掃描；`media.prepare` 只查索引。沒有 Cache 目錄＝沒有索引。
+  // 建表失敗時 `mediaIndexDb` 維持 null：索引關閉、`media.prepare` 回 media_unavailable，不會退回同步走訪。
+  let mediaIndexDb: BetterSqlite3Database | null = null
+  const indexFs = mediaFs ?? {
+    readDir: (dir: string, readOptions?: { stat?: boolean }) => getLineEnginePorts().fs.readDir(dir, readOptions),
+    stat: (path: string) => getLineEnginePorts().fs.stat(path),
+    exists: (path: string) => getLineEnginePorts().fs.exists(path)
+  }
+  const mediaIndex: MediaIndex | null = cacheDir
+    ? createMediaIndex({
+      getDb: () => mediaIndexDb,
+      fs: indexFs,
+      cacheDir,
+      ...(options.media?.now ? { now: options.media.now } : {}),
+      trace: (phase, ms) => trace?.event('bg', { p: phase, ms }),
+      log: (line) => log(line),
+      budget: {
+        ...options.media?.index,
+        refreshMinIntervalMs: options.media?.refreshMinIntervalMs ?? options.media?.reindexMinIntervalMs ?? options.media?.index?.refreshMinIntervalMs
+      }
+    })
+    : null
+  const decryptor = cacheDir && mediaIndex ? createMediaDecryptor({ ...(mediaFs ? { fs: mediaFs } : {}), cacheDir, index: mediaIndex }) : null
   let appDbForMedia: (MediaDb & AvatarDb) | null = null
   const media = createPluginMedia({
     dataDir,
     getDb: () => appDbForMedia,
     decryptor,
-    maxCacheBytes: options.media?.maxCacheBytes,
-    reindexMinIntervalMs: options.media?.reindexMinIntervalMs,
-    now: options.media?.now
+    index: mediaIndex,
+    maxCacheBytes: options.media?.maxCacheBytes
   })
   const avatarCache = createAvatarCache({ dataDir })
+  // 回填既有訊息的頭像連結：只在有持久 snapshot 時才跑（只用 `any`，絕不複製、不掃金鑰）；啟動與 dispose 見下面。
+  const { enabled: backfillEnabled, ...backfillBudget } = options.avatarStore?.backfill ?? {}
+  const backfill = avatarStoreOn && backfillEnabled !== false && lineAccess
+    ? createAvatarBackfill({
+      getDb: () => (avatarSchemaReady ? avatarDb : null),
+      openSource: () => lineAccess.open({ dbPath: null, policy: 'any', keyOpts }),
+      trace: (phase, ms) => trace?.event('bg', { p: phase, ms }),
+      log: (line) => log(line),
+      budget: backfillBudget
+    })
+    : null
+  // 頭像：本地 DB → `any` snapshot（結果寫回本地）→ 文字頭像。功能關閉時只走 LINE DB（舊行為）。
+  const avatarFallback: AvatarMetadataReader = { read: (input) => getAvatarMetadata(input, engineOptions) }
+  const avatarReader: AvatarMetadataReader = avatarStoreOn
+    ? createLayeredAvatarReader({
+      getDb: () => avatarDb,
+      fallback: avatarFallback,
+      ...(options.avatarStore?.now ? { now: options.avatarStore.now } : {}),
+      onStat: (kind, n) => { avatarReads[kind] += n }
+    })
+    : avatarFallback
   const avatars = createPluginAvatars({
     cache: avatarCache,
-    reader: { read: (input) => getAvatarMetadata(input, engineOptions) },
+    reader: avatarReader,
     getDb: () => appDbForMedia
   })
   const reconcileWired = options.reconcile !== false && (options.reconcile !== undefined || options.linePorts !== undefined)
@@ -264,7 +365,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       status: () => w.getStatus(),
       onMessage: (listener) => { w.on('message', listener); return () => { w.off('message', listener) } },
       onStatus: (listener) => { w.on('status', listener); return () => { w.off('status', listener) } },
-      setBatchCommitter: (committer: (batch: LineImportBatch) => void | Promise<void>) => w.setBatchCommitter(committer),
+      setBatchCommitter: (committer: (batch: LineImportBatch) => void | Promise<void>) => w.setBatchCommitter((batch) => bg('poll', () => committer(batch))),
       getLineImportBatch: (cursor, opts) => getLineImportBatch({ ...opts, cursor, source: opts.source ?? 'line-backfill', ...engineOptions }),
       getMessagesSince: (sinceMs, opts) => getMessagesSince(sinceMs, { ...opts, ...engineOptions })
     }
@@ -356,7 +457,18 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       dbPath: join(dataDir, 'line-todo.db'),
       runtimeOwnerProof: ownerLockProof,
       appDbEngine: options.appDbEngine ?? createBetterSqlite3AppEngine(),
-      onDatabase: (db) => { appDb = db; appDbForMedia = db },
+      onDatabase: (db) => {
+        appDb = db
+        appDbForMedia = db
+        avatarDb = db
+        // 附屬表，不動 user_version；建不起來只是頭像退回舊流程（匯入端用 isLineAvatarSchemaReady 判斷，沒有表就跳過）。
+        if (avatarStoreOn) {
+          try { ensureLineAvatarSchema(db); avatarSchemaReady = true } catch { log('[avatar-store] schema_unavailable') }
+        }
+        if (mediaIndex) {
+          try { ensureMediaIndexSchema(db); mediaIndexDb = db } catch { log('[media-index] schema_unavailable') }
+        }
+      },
       participantIdentity: UNKNOWN_IDENTITY,
       settings,
       pipelineConfig: { getDefaults, getQwenConfig, isProviderConfigured: () => true },
@@ -421,8 +533,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
           const importReady = isLineImportSchemaReady(db)
           await runReconcile({ scopeMonths: reconcile.scopeMonths }, {
             db,
-            getSourceFingerprint: () => getSourceMonthlyFingerprint({ keyOpts }),
-            checkHealth: () => ({ ok: db.pragma('quick_check', { simple: true }) === 'ok' }),
+            getSourceFingerprint: () => bg('reconcile', () => getSourceMonthlyFingerprint({ keyOpts })),
+            checkHealth: () => bg('quick_check', () => ({ ok: db.pragma('quick_check', { simple: true }) === 'ok' })),
             stateFile: join(dataDir, 'reconcile-state.json'),
             lockFile: join(dataDir, '.reconcile_lock'),
             signal,
@@ -440,12 +552,12 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
           if (signal.aborted || Date.now() - lastUnsentScan < UNSENT_SCAN_MIN_INTERVAL_MS) return
           lastUnsentScan = Date.now()
           const importReady = isLineImportSchemaReady(db)
-          const scan = await scanRecentUnsent(3, {
+          const scan = await bg('unsent_scan', () => scanRecentUnsent(3, {
             db, signal,
             fetchWindow: async (sinceMs) => ({ messages: await line!.getMessagesSince(sinceMs, { limit: 5000 }) }),
             fetchImportBatch: importReady ? line!.getLineImportBatch : undefined,
             commitImportBatch: importReady ? (batch) => commitLineImportBatch(db, batch, UNKNOWN_IDENTITY) : undefined
-          }).catch((error) => {
+          })).catch((error) => {
             log(`[unsent-scan] failed: ${error instanceof Error ? error.name : 'unknown'}`)
             return null
           })
@@ -474,7 +586,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
 
   let disposed = false
   // 每個 backend 呼叫的開始／結束／耗時／結果碼與事件迴圈卡頓（invokeTrace.ts）。純觀測；寫入失敗只在 recentLog 留一行，不影響呼叫。
-  const trace = options.trace === false ? null : new InvokeTrace({
+  trace = options.trace === false ? null : new InvokeTrace({
     file: join(dataDir, INVOKE_TRACE_RELATIVE_FILE),
     version: options.version,
     onError: (code) => log(`[trace] write_failed ${code}`),
@@ -507,6 +619,18 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       line: line!.status() as unknown as JsonValue,
       watcher: watcher !== null,
       keyRecovery: { scans: keyGuard.scans, blocked: keyGuard.blocked(), retryInMs: keyGuard.retryInMs() },
+      // 持久 snapshot 的計數（reuse／wal／full 次數、複製位元組、最近一次的種類與耗時；沒有 snapshot＝null）與「記憶體裡有沒有已驗證的金鑰」。不含任何路徑或金鑰。
+      lineSnapshot: snapshotStore
+        ? { ...snapshotStore.stats(), ...(fsCopyStats ? { koffiAsyncCopies: fsCopyStats.async, koffiSyncFallbacks: fsCopyStats.syncFallback } : {}) } as unknown as JsonValue
+        : null,
+      keyHeld: lineAccess?.keyHeld() ?? false,
+      // 頭像本地表的狀態（只有計數與旗標；任何地方都不輸出 MID、locator 或顯示名）。
+      avatarStore: {
+        enabled: avatarStoreOn, schemaReady: avatarSchemaReady,
+        reads: { local: avatarReads.local, fallback: avatarReads.fallback, miss: avatarReads.miss },
+        writeThrough: avatarReads.write,
+        backfill: backfill ? backfill.status() as unknown as JsonValue : OFF_STATUS as unknown as JsonValue
+      },
       appDb: appDbInfo(appDb),
       extract: queue.stats(),
       review: review.status() as unknown as JsonValue,
@@ -522,6 +646,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   try {
     if (options.autoStart !== false) {
       await runtime.start()
+      backfill?.start()
+      mediaIndex?.start()
       // 背景抽取：backend 啟動後就開始（不等看板）。沒有 host.ai（單元測試）就不啟動，項目留在佇列。
       // 真實 LINE 來源時與第一輪 poll 一樣延後到 activate() 回傳之後（boot-ack 先送出，host 才收得到我們對 host.ai 的第一個呼叫）。
       if (options.hostAi) {
@@ -534,6 +660,10 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   } catch (error) {
     disposed = true
     keyGuard.cancel()
+    await backfill?.dispose()
+    await mediaIndex?.dispose()
+    void snapshotStore?.close(0)
+    lineAccess?.forgetKey()
     for (const off of unsubscribers) off()
     offResidency()
     residency.dispose()
@@ -575,9 +705,15 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       queue.dispose()
       review.dispose()
       try {
+        // 回填先停（它用 app DB 與 snapshot）：進行中的切片收尾、放掉 lease，之後不再存取任何 DB。最多等 DISPOSE_IDLE_WAIT_MS（它可能正等 snapshot 更新）。
+        // 圖片索引同理：用 app DB 的切片收尾後才關 runtime（dispose 之後不再列任何目錄、不再存取任何 DB）。
+        await Promise.race([Promise.all([backfill?.dispose(), mediaIndex?.dispose()]), new Promise<void>((resolve) => { setTimeout(resolve, DISPOSE_IDLE_WAIT_MS).unref?.() })])
         await runtime.dispose()
+        // 讓 snapshot store 靜止：不再發 lease、不再換檔、不再寫 meta（進行中的複製無法中止，複製完會發現已關閉而放棄換檔）；記憶體裡的金鑰一併忘掉。
+        const closing = snapshotStore?.close(DISPOSE_IDLE_WAIT_MS)
         // 讓進行中的 poll／掃描收尾（刪掉暫存快照、關 handle）；等不到就放手，殘留的快照目錄會在下次啟動時清掉。
-        await Promise.race([Promise.all([watcher?.idle(), keyGuard.idle()]), new Promise<void>((resolve) => { setTimeout(resolve, DISPOSE_IDLE_WAIT_MS).unref?.() })])
+        await Promise.race([Promise.all([watcher?.idle(), keyGuard.idle(), closing]), new Promise<void>((resolve) => { setTimeout(resolve, DISPOSE_IDLE_WAIT_MS).unref?.() })])
+        lineAccess?.forgetKey()
       } finally {
         // 最後才寫 `stop`：被 dispose 喚醒的長輪詢等呼叫的 `end` 都已落檔，檔尾是 `stop` 就代表正常結束。
         trace?.stop()

@@ -18,11 +18,11 @@
  * koffi 的載入點是可注入的（`loadKoffi`）：外掛打包後要從固定路徑載入（addon shim，Phase 5），
  * 不做 PATH／PWD probing。預設用 `createRequire(import.meta.url)('koffi')`。
  */
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { join, win32 } from 'node:path'
+import { dirname, join, win32 } from 'node:path'
 
-import type { LineDirEntry, LineFileStat, LineFsPort } from '../fsPort'
+import type { LineDirEntry, LineFileStat, LineFsPort, LineReadDirOptions } from '../fsPort'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type KoffiApi = any
@@ -32,6 +32,14 @@ export interface Win32LineFsPortOptions {
   workspaceRoot: string
   /** koffi 載入點；預設 `createRequire(import.meta.url)('koffi')`。 */
   loadKoffi?: () => KoffiApi
+  /** false＝`copyFileAsync` 不用 koffi 的 `.async`，一律退回同步複製（並計入 `copyStats.syncFallback`）。預設 true。 */
+  asyncCopy?: boolean
+}
+
+/** `copyFileAsync` 的使用計數（診斷用）：真的走 `.async` 的次數、退回同步的次數。 */
+export interface Win32CopyStats {
+  async: number
+  syncFallback: number
 }
 
 export class Win32Error extends Error {
@@ -63,7 +71,10 @@ interface Win32Api {
   koffi: KoffiApi
   GetFileAttributesW: (p: string) => number
   GetFileAttributesExW: (p: string, level: number, out: Record<string, number>) => boolean
-  CopyFileW: (src: string, dst: string, failIfExists: boolean) => boolean
+  CopyFileW: ((src: string, dst: string, failIfExists: boolean) => boolean) & {
+    /** koffi 的非同步呼叫：函式在 libuv 執行緒池上跑，事件迴圈不被占住；完成時以 callback 回報。 */
+    async?: (src: string, dst: string, failIfExists: boolean, done: (error: Error | null, ok: boolean) => void) => void
+  }
   CreateFileW: (p: string, access: number, share: number, sec: null, disp: number, flags: number, tmpl: null) => unknown
   GetFileSizeEx: (h: unknown, out: number[]) => boolean
   ReadFile: (h: unknown, buf: Uint8Array, n: number, read: number[], ov: null) => boolean
@@ -154,6 +165,11 @@ function isInvalidHandle(koffi: KoffiApi, h: unknown): boolean {
   return addr === 0n || addr === 0xffffffffffffffffn
 }
 
+/** WIN32_FIND_DATAW 的檔案大小：高 32 位元在 nFileSizeHigh（檔案超過 4 GiB 才會用到）。 */
+export function findDataFileSize(high: number, low: number): number {
+  return Number((BigInt(high) << 32n) | BigInt(low))
+}
+
 function fileTimeToUnixNs(ft: { dwLowDateTime: number; dwHighDateTime: number }): bigint {
   const t = (BigInt(ft.dwHighDateTime) << 32n) | BigInt(ft.dwLowDateTime)
   return (t - FILETIME_UNIX_EPOCH_100NS) * 100n
@@ -170,10 +186,14 @@ export class Win32LineFsPort implements LineFsPort {
   private readonly workspaceRoot: string
   /** 建構時清掉的殘留快照目錄數（診斷／測試）。 */
   readonly sweptOrphans: number
+  /** `copyFileAsync` 的使用計數：真的走 koffi `.async` 的次數、退回同步複製的次數（R2：不可用時退回同步並計數）。 */
+  readonly copyStats: Win32CopyStats = { async: 0, syncFallback: 0 }
+  private readonly asyncCopy: boolean
 
   constructor(options: Win32LineFsPortOptions) {
     const load = options.loadKoffi ?? (() => createRequire(import.meta.url)('koffi'))
     this.api = bindApi(load())
+    this.asyncCopy = options.asyncCopy !== false
     this.workspaceRoot = options.workspaceRoot
     mkdirSync(this.workspaceRoot, { recursive: true })
     this.sweptOrphans = this.sweepOrphans()
@@ -197,7 +217,7 @@ export class Win32LineFsPort implements LineFsPort {
 
   // ── 1. LINE 來源讀取（koffi） ──
 
-  readDir(dir: string): LineDirEntry[] {
+  readDir(dir: string, _options?: LineReadDirOptions): LineDirEntry[] {
     const a = this.api
     const data: Record<string, unknown> = {}
     const h = a.FindFirstFileW(win32.join(dir, '*'), data)
@@ -211,8 +231,15 @@ export class Win32LineFsPort implements LineFsPort {
         const isSymlink =
           (attrs & FILE_ATTRIBUTE_REPARSE_POINT) !== 0 && (data.dwReserved0 as number) === IO_REPARSE_TAG_SYMLINK
         const isDir = (attrs & FILE_ATTRIBUTE_DIRECTORY) !== 0
-        // 比照 Dirent：symlink 兩者皆 false。
-        out.push({ name, isFile: !isSymlink && !isDir, isDirectory: !isSymlink && isDir })
+        // 比照 Dirent：symlink 兩者皆 false。size／mtimeNs 取自 FindFirstFileW 已經回傳的資料（不必再逐檔 GetFileAttributesExW）。
+        const ft = data.ftLastWriteTime as { dwLowDateTime: number; dwHighDateTime: number }
+        out.push({
+          name,
+          isFile: !isSymlink && !isDir,
+          isDirectory: !isSymlink && isDir,
+          size: isDir ? 0 : findDataFileSize(data.nFileSizeHigh as number, data.nFileSizeLow as number),
+          mtimeNs: fileTimeToUnixNs(ft)
+        })
       } while (a.FindNextFileW(h, data))
     } finally {
       a.FindClose(h)
@@ -263,7 +290,51 @@ export class Win32LineFsPort implements LineFsPort {
     if (!this.api.CopyFileW(src, dst, false)) throw new Win32Error('CopyFileW', src, this.api.GetLastError())
   }
 
+  /**
+   * 非同步複製：koffi 的 `.async`（libuv 執行緒池跑 CopyFileW），事件迴圈在複製期間照常運轉。
+   * `.async` 不存在、丟例外或 callback 回 error（koffi 本身不可用）時，退回同步 `copyFile`，並計入 `copyStats.syncFallback`。
+   * 複製本身回報失敗（`ok=false`）時**不重做**：中途失敗（磁碟滿、I/O 錯誤）若再用同步複製重做一次，會再占住事件迴圈複製到同一個點，
+   * 而且每個 poll 週期都重演。執行緒池上的 GetLastError 不屬於這個執行緒，所以只用兩次廉價的同步 `GetFileAttributesW` 判斷來源／目的地資料夾是否存在
+   * 來對應 ENOENT，其餘一律是泛用的 EIO。
+   */
+  copyFileAsync(src: string, dst: string): Promise<void> {
+    const copy = this.api.CopyFileW
+    if (!this.asyncCopy || typeof copy.async !== 'function') {
+      this.copyStats.syncFallback += 1
+      try { this.copyFile(src, dst) } catch (error) { return Promise.reject(error) }
+      return Promise.resolve()
+    }
+    return new Promise<void>((resolve, reject) => {
+      const fallback = (): void => {
+        this.copyStats.syncFallback += 1
+        try { this.copyFile(src, dst); resolve() } catch (error) { reject(error) }
+      }
+      try {
+        copy.async!(src, dst, false, (error, ok) => {
+          if (error) { fallback(); return }
+          if (!ok) { reject(new Win32Error('CopyFileW', src, !this.exists(src) ? 2 : !this.exists(dirname(dst)) ? 3 : 31)); return }
+          this.copyStats.async += 1
+          resolve()
+        })
+      } catch {
+        fallback()
+      }
+    })
+  }
+
   // ── 2. 引擎工作區與狀態檔（node:fs，僅限 dataDir 底下） ──
+
+  /** 讀工作區內本地檔的前 `bytes` 位元組（node:fs，只限 dataDir 底下；不是 LINE 目錄）。 */
+  readHead(path: string, bytes: number): Buffer {
+    const fd = openSync(path, 'r')
+    try {
+      const buf = Buffer.alloc(bytes)
+      const n = readSync(fd, buf, 0, bytes, 0)
+      return buf.subarray(0, n)
+    } finally {
+      closeSync(fd)
+    }
+  }
 
   makeTempDir(prefix: string): string {
     return mkdtempSync(join(this.workspaceRoot, prefix))

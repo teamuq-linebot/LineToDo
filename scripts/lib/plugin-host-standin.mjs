@@ -223,6 +223,8 @@ try {
     return { status: 200, type: DATA_MIME[ext] ?? 'application/octet-stream', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }
   }
   async function mediaScenario() {
+    // media.prepare only queries the local image index: wait until the backend's background scan of the (fake) LINE Cache has finished
+    await waitFor('media index ready', async () => { const index = (await must('backend.info')).media?.index; return index && index.ready && !index.scanning ? true : 0 })
     const base = await waitFor('media base import', async () => ((await must('db.messages.count')) >= cfg.expected.messageCount ? await must('db.messages.count') : 0))
     const denied = (() => { try { fs.readdirSync(cfg.cacheDir); return null } catch (error) { return error.code ?? String(error) } })()
     const results = {}

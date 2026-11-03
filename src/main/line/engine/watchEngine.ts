@@ -43,11 +43,12 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 import { getLineEnginePorts } from './enginePorts'
-import { chatAvatarSource, chatName, findDb, iso, myMid, newMessagesAfter, openDb, senderAvatarSource, senderName, type LineAvatarSource } from './linedb'
-import { getKey, getKeyAsync, type GetKeyOptions } from './linekey'
+import { chatAvatarSource, chatName, findDb, iso, myMid, newMessagesAfter, senderAvatarSource, senderName, type Db, type LineAvatarSource, type NewMessageRow } from './linedb'
+import { openLineDbFor } from './lineAccess'
+import type { GetKeyOptions } from './linekey'
 import { rowToObj } from './rowToObj'
 import type { RawLineMessage } from '../types'
-import type { LineImportBatch, LineImportItem, LineSourceCursor } from '../importTypes'
+import type { LineImportAvatarMeta, LineImportBatch, LineImportItem, LineSourceCursor } from '../importTypes'
 
 /** 預設每次 poll 的安全上限（對齊 watch_json.py argparse `--limit` default 500）。 */
 export const DEFAULT_LIMIT = 500
@@ -84,6 +85,8 @@ export interface WatchEngineOptions {
   createdTimeExclusive?: number
   /** getKey 選項透傳（測試冷啟/自訂快取用）。 */
   keyOpts?: GetKeyOptions
+  /** 預設 false（standalone 逐字不變）。true＝順便用同一條已開的連線收集這批訊息的聊天室／發話者頭像來源，交給匯入端寫進本地頭像表。 */
+  avatarMeta?: boolean
 }
 
 /** key 三段（env/cache/recover）皆 miss 時拋此錯，讓下游辨識為 key 失敗。 */
@@ -199,24 +202,11 @@ export function saveStateStrict(stateFile: string, s: WatchState): void {
 }
 
 /**
- * resolveKeyOrThrow — 取 DB key；三段皆 miss 拋 KeyUnavailableError。
- * dbPath 透傳給 getKey（cache 段的 test-decrypt 需要它）。
+ * 金鑰與開 DB 都集中在 lineAccess.ts 的 `openLineDbFor`：沒注入 access（standalone）＝同步 `getKey` + `openDb` 的舊流程，
+ * 有 `keyOpts.recoverGuard`（外掛 backend）＝協作式 `getKeyAsync`（掃記憶體時讓出事件迴圈、single-flight、失敗退避；review F2）。
+ * 三段金鑰皆 miss 時丟 KeyUnavailableError，讓下游辨識為 key 失敗。
  */
-function resolveKeyOrThrow(dbPath: string | null, keyOpts?: GetKeyOptions): string {
-  const key = getKey({ ...keyOpts, dbPath })
-  if (!key) throw new KeyUnavailableError()
-  return key
-}
-
-/**
- * resolveKeyCooperative — 外掛 backend 的金鑰解析（`keyOpts.recoverGuard` 有給）：掃記憶體時讓出事件迴圈、single-flight、失敗退避（review F2）。
- * 沒給 guard（standalone）一律走上面的同步 `resolveKeyOrThrow`，與先前逐字相同。
- */
-async function resolveKeyCooperative(dbPath: string | null, keyOpts: GetKeyOptions): Promise<string> {
-  const key = await getKeyAsync({ ...keyOpts, dbPath })
-  if (!key) throw new KeyUnavailableError()
-  return key
-}
+const keyUnavailable = (): Error => new KeyUnavailableError()
 
 /**
  * getMessagesSince(ms, opts?) — 對照 py `--since <ms>`。
@@ -233,8 +223,30 @@ export async function getMessagesSince(
   // reader/converter as live watch. Durable receipt/participant commit is owned by
   // the caller's existing persistence path until those backfill callers migrate.
   // Preserve the legacy `_createdTime > ms` contract while import callers use explicit composite cursors.
-  const batch = await getLineImportBatch({ ...opts, source: 'line-backfill', cursor: { createdTime: ms, rowId: Number.MAX_SAFE_INTEGER } })
+  const batch = await getLineImportBatch({ ...opts, avatarMeta: false, source: 'line-backfill', cursor: { createdTime: ms, rowId: Number.MAX_SAFE_INTEGER } })
   return batch.items.map((item) => item.message)
+}
+
+/**
+ * 收集這批訊息的頭像來源：每個不同的聊天室一次 `chatAvatarSource`、每個不同的（聊天室, 發話者）一次 `senderAvatarSource`（自己的 accountMid 不收）。
+ * 查詢數只和「不同的聊天室／發話者」有關（每個發話者 ≤7、每個聊天室 ≤8 次點查），和列數無關；任何一筆失敗都只是少一筆。
+ */
+export function collectAvatarMeta(con: Db, rows: readonly NewMessageRow[], accountMid: string | null): LineImportAvatarMeta {
+  const meta: LineImportAvatarMeta = { chats: [], senders: [] }
+  const seenChats = new Set<string>()
+  const seenSenders = new Set<string>()
+  for (const r of rows) {
+    if (!seenChats.has(r.chatId)) {
+      seenChats.add(r.chatId)
+      try { meta.chats.push({ chatId: r.chatId, source: chatAvatarSource(con, r.chatId) }) } catch { /* 少一筆，不影響匯入 */ }
+    }
+    if (!accountMid || !r.from || r.from === accountMid) continue
+    const key = `${r.chatId}\0${r.from}`
+    if (seenSenders.has(key)) continue
+    seenSenders.add(key)
+    try { meta.senders.push({ chatId: r.chatId, senderMid: r.from, source: senderAvatarSource(con, r.chatId, r.from) }) } catch { /* 同上 */ }
+  }
+  return meta
 }
 
 /**
@@ -254,8 +266,7 @@ export async function getLineImportBatch(
     const batchId = createHash('sha256').update(`${opts.source ?? 'line-watch'}\0${cursorFrom.createdTime}:${cursorFrom.rowId}\0${cursorFrom.createdTime}:${cursorFrom.rowId}`).digest('hex')
     return { batchId, source: opts.source ?? 'line-watch', cursorFrom, cursorTo: cursorFrom, hasMore: false, observedAt: new Date().toISOString(), items: [] }
   }
-  const key = opts.keyOpts?.recoverGuard ? await resolveKeyCooperative(dbPath, opts.keyOpts) : resolveKeyOrThrow(dbPath, opts.keyOpts)
-  const { con, cleanup } = openDb(key, dbPath)
+  const { con, cleanup } = await openLineDbFor({ dbPath, policy: 'fresh', keyOpts: opts.keyOpts, keyMissing: keyUnavailable })
   try {
     const limit = opts.limit ?? DEFAULT_LIMIT
     const rows = newMessagesAfter(con, cursorFrom, opts.name, limit + 1, opts.createdTimeExclusive)
@@ -272,7 +283,8 @@ export async function getLineImportBatch(
     })
     const cursorTo = rows.length ? { createdTime: rows[rows.length - 1].createdTime, rowId: rows[rows.length - 1].rowId } : cursorFrom
     const batchId = createHash('sha256').update(`${opts.source ?? 'line-watch'}\0${cursorFrom.createdTime}:${cursorFrom.rowId}\0${cursorTo.createdTime}:${cursorTo.rowId}`).digest('hex')
-    return { batchId, source: opts.source ?? 'line-watch', cursorFrom, cursorTo, hasMore, observedAt: new Date().toISOString(), items }
+    const avatarMeta = opts.avatarMeta ? collectAvatarMeta(con, rows, accountMid) : undefined
+    return { batchId, source: opts.source ?? 'line-watch', cursorFrom, cursorTo, hasMore, observedAt: new Date().toISOString(), items, ...(avatarMeta ? { avatarMeta } : {}) }
   } finally {
     cleanup()
   }
@@ -281,6 +293,18 @@ export async function getLineImportBatch(
 export interface LineAvatarMetadataBatch {
   chats: Record<string, LineAvatarSource>
   messages: Record<string, LineAvatarSource>
+  /** 這次讀取的來源所認得的自己的 MID（讀不到＝null）。只給本地頭像表的 write-through 排除自己用，avatar.ts 不使用。 */
+  accountMid?: string | null
+}
+
+/** 頭像請求的輸入正規化（上限與格式）：getAvatarMetadata 與本地優先的 layered reader 共用。 */
+export function normalizeAvatarRequest(
+  input: { chatIds?: readonly string[]; chatId?: string; msgIds?: readonly string[] },
+): { chatIds: string[]; chatId: string | null; msgIds: string[] } {
+  const chatIds = [...new Set((input.chatIds ?? []).filter((id) => typeof id === 'string' && id.length > 0 && id.length <= 128))].slice(0, 100)
+  const chatId = typeof input.chatId === 'string' && input.chatId.length > 0 && input.chatId.length <= 128 ? input.chatId : null
+  const msgIds = [...new Set((input.msgIds ?? []).filter((id) => typeof id === 'string' && /^i:.{1,160}$/u.test(id)))].slice(0, 200)
+  return { chatIds, chatId, msgIds }
 }
 
 /**
@@ -291,21 +315,19 @@ export async function getAvatarMetadata(
   input: { chatIds?: readonly string[]; chatId?: string; msgIds?: readonly string[] },
   opts: Pick<WatchEngineOptions, 'dbPath' | 'keyOpts'> = {},
 ): Promise<LineAvatarMetadataBatch> {
-  const chatIds = [...new Set((input.chatIds ?? []).filter((id) => typeof id === 'string' && id.length > 0 && id.length <= 128))].slice(0, 100)
-  const chatId = typeof input.chatId === 'string' && input.chatId.length > 0 && input.chatId.length <= 128 ? input.chatId : null
-  const msgIds = [...new Set((input.msgIds ?? []).filter((id) => typeof id === 'string' && /^i:.{1,160}$/u.test(id)))].slice(0, 200)
+  const { chatIds, chatId, msgIds } = normalizeAvatarRequest(input)
   const result: LineAvatarMetadataBatch = { chats: {}, messages: {} }
   if (chatIds.length === 0 && (!chatId || msgIds.length === 0)) return result
 
   const dbPath = opts.dbPath ?? findDb()
   if (!dbPath) return result
-  // Avatar refreshes never persist/read env or .linekey secrets; keep the validated key in process memory only.
-  const avatarKeyOpts: GetKeyOptions = { ...opts.keyOpts, skipEnv: true, skipCache: true, cache: false }
-  const key = avatarKeyOpts.recoverGuard
-    ? await resolveKeyCooperative(dbPath, avatarKeyOpts)
-    : resolveKeyOrThrow(dbPath, avatarKeyOpts)
-  const { con, cleanup } = openDb(key, dbPath)
+  // Avatars accept a stale snapshot ('any'): they use only the key the import path already validated (in process memory) and the snapshot
+  // that already exists, and never trigger a copy or a key scan. Nothing available yet = an empty result (text avatars), not an error.
+  const opened = await openLineDbFor({ dbPath, policy: 'any', keyOpts: opts.keyOpts, keyMissing: keyUnavailable })
+  if (!opened) return result
+  const { con, cleanup } = opened
   try {
+    try { result.accountMid = myMid(con) } catch { result.accountMid = null }
     for (const id of chatIds) result.chats[id] = chatAvatarSource(con, id)
     if (chatId && msgIds.length > 0) {
       const bySourceId = new Map<string, string>()
@@ -367,8 +389,7 @@ export async function commitAndAcknowledgeLineImportBatch(
 export async function resetNow(opts: WatchEngineOptions = {}): Promise<number> {
   const dbPath = opts.dbPath ?? findDb()
   const stateFile = opts.stateFile ?? defaultStateFile()
-  const key = opts.keyOpts?.recoverGuard ? await resolveKeyCooperative(dbPath, opts.keyOpts) : resolveKeyOrThrow(dbPath, opts.keyOpts)
-  const { con, cleanup } = openDb(key, dbPath)
+  const { con, cleanup } = await openLineDbFor({ dbPath, policy: 'fresh', keyOpts: opts.keyOpts, keyMissing: keyUnavailable })
   let ts: number
   try {
     const row = con.prepare('SELECT _createdTime AS m, rowid AS rid FROM _message ORDER BY _createdTime DESC, rowid DESC LIMIT 1').get() as

@@ -3,14 +3,16 @@
  *   - `revoked`：TeamUQ 隔離了這個外掛的後端呼叫（關閉 backend:invoke 權限——TeamUQ 設定頁上叫「讓畫面和它的背景程式溝通」、停用外掛，或後端逾時）或外掛已移除。Core 會停掉 backend，
  *     LINE 讀取、解密、落庫全部停止；明講可能的原因與實際有效的操作（確認權限與啟用狀態；仍沒恢復就停用再啟用外掛或重新啟動 TeamUQ），
  *     而不是讓看板安靜地變空白或顯示「暫時中斷」。Core 1.7.1 重新允許權限不會解除隔離（review B1），所以這裡不承諾會自動恢復。
- *   - `unavailable`：backend 沒起來、忙或當掉（沒有被隔離，TeamUQ 會重新啟動它）。
+ *   - `unavailable`：backend 沒起來、忙或當掉（沒有被隔離，TeamUQ 會重新啟動它）。後端階段（phase）是 `starting`／`connecting` 時不顯示：那時 ping 還在等後端起來，
+ *     「暫時無法回應」是預期的過渡狀態，狀態列已經用「後端啟動中」／「連線中」說明；ping 失敗或超過上限後 phase 變成 `error`／`timeout`，橫幅照舊出現。
  *   - 其他狀態不顯示。文字來自 `lib/backendError.ts`（與各元件的錯誤訊息一致）。
  */
 import { describeBackendError } from '../../renderer/lib/backendError'
-import type { BackendLink } from '../../renderer/platform/pluginTransport'
+import type { BackendLink, BackendPhase } from '../../renderer/platform/pluginTransport'
 
-export function describeLink(link: BackendLink | null): { tone: 'err' | 'warn'; text: string } | null {
+export function describeLink(link: BackendLink | null, phase: BackendPhase | null = null): { tone: 'err' | 'warn'; text: string } | null {
   if (!link || (link.state !== 'revoked' && link.state !== 'unavailable')) return null
+  if (link.state === 'unavailable' && (phase === 'starting' || phase === 'connecting')) return null
   const described = describeBackendError({ code: link.code ?? (link.state === 'revoked' ? 'plugin_permission_denied' : 'plugin_backend_unavailable') })
   return { tone: link.state === 'revoked' ? 'err' : 'warn', text: described.text }
 }

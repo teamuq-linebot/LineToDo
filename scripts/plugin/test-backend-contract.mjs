@@ -331,7 +331,7 @@ test('deactivate: no DB connection, watcher, timer or other handle is left; the 
   assert.deepEqual(after.diagnostics.extract, { pending: 0, leased: 0, awaiting: 0 })
   assert.equal(after.call.code, 'backend_stopped')
   assert.equal(after.ownerLock, false)
-  assert.deepEqual(after.lineEngineDir, [], 'no snapshot working directory left in dataDir (this includes the two orphans seeded before activate: the start-up sweep removed them, review F4)')
+  assert.deepEqual(after.lineEngineDir.filter((name) => name !== 'snapshot'), [], 'no temporary snapshot working directory left in dataDir (this includes the two orphans seeded before activate: the start-up sweep removed them, review F4); the persistent LINE snapshot directory (line-engine/snapshot) is the one thing that stays by design')
   assert.ok(r.closingPoll.code === 'backend_stopped' || r.closingPoll.value?.closed === true, 'a long poll that was waiting during dispose is released')
   assert.ok(r.disposeMs < 3000, `dispose took ${r.disposeMs} ms`)
   // no leaked handle of any kind compared with the state before activate
@@ -403,6 +403,9 @@ test('media: under Electron 44 + 1.6.8 flags the backend decrypts a LINE-cache i
   assert.deepEqual(m.cacheDirListing, [...served].sort(), 'only the three decryptable images are in dataDir/media-cache (no temp files)')
   assert.equal(m.info.written, 3)
   assert.equal(m.info.cacheFiles, 3)
+  assert.equal(m.info.index.ready, true, 'the backend scanned the fake LINE Cache through koffi (FindFirstFileW) under the real permission model')
+  assert.equal(m.info.index.errors, 0)
+  assert.ok(m.info.index.rows >= 3 && m.info.index.dirsListed >= 1, JSON.stringify(m.info.index))
 })
 
 test('media: undownloaded, wrong-key and non-image files are in-band failures; open/saveAs stay unsupported; the data service refuses hidden, dotted and directory paths', async () => {
@@ -423,7 +426,7 @@ test('media: dispose after the media run leaves no handle, no snapshot directory
   assert.equal(r.afterDispose.diagnostics.appDbOpen, false)
   assert.deepEqual(r.afterDispose.diagnostics.lineEngine, { openConnections: 0, vfsOpenFiles: 0, vfsShmNodes: 0 })
   assert.equal(r.afterDispose.ownerLock, false)
-  assert.deepEqual(r.afterDispose.lineEngineDir, [])
+  assert.deepEqual(r.afterDispose.lineEngineDir.filter((name) => name !== 'snapshot'), [])
   const leaked = Object.entries(r.resourcesEnd).filter(([kind, n]) => n > (r.resourcesBaseline[kind] ?? 0))
   assert.deepEqual(leaked, [], `leaked handles (baseline ${JSON.stringify(r.resourcesBaseline)}, end ${JSON.stringify(r.resourcesEnd)})`)
 })

@@ -21,6 +21,19 @@ export interface LineDirEntry {
   name: string
   isFile: boolean
   isDirectory: boolean
+  /** 檔案位元組數（只在 `readDir(dir, { stat: true })` 且實作拿得到時才有；Win32 一律有，因為 FindFirstFileW 本來就回傳）。 */
+  size?: number
+  /** 最後寫入時間（奈秒，同 `LineFileStat.mtimeNs`）；檔案與目錄都有，條件同 `size`。 */
+  mtimeNs?: bigint
+}
+
+/** `readDir` 的選項。 */
+export interface LineReadDirOptions {
+  /**
+   * 要求每個項目帶 `size`／`mtimeNs`（圖片索引掃描用，不必再逐檔 `stat`）。Win32 實作不論有沒有要求都會帶（資料已經在手上）；
+   * Node 實作只在要求時才對每個項目 `stat`（讀不到的項目略過那兩個欄位）。沒有要求時，Node 實作的回傳形狀與之前完全相同。
+   */
+  stat?: boolean
 }
 
 /** 檔案大小與奈秒 mtime（`statSync(p, { bigint: true })` 的 size/mtimeNs）。 */
@@ -32,13 +45,23 @@ export interface LineFileStat {
 export interface LineFsPort {
   // ── 1. LINE 來源讀取 ──
   /** 列出目錄項目；目錄不存在或無權限時 throw。 */
-  readDir(dir: string): LineDirEntry[]
+  readDir(dir: string, options?: LineReadDirOptions): LineDirEntry[]
   /** 取檔案大小與 mtime；不存在時 throw。 */
   stat(path: string): LineFileStat
   exists(path: string): boolean
   readFile(path: string): Buffer
   /** 複製單檔（來源通常在 LINE 目錄，目的在引擎工作區）。 */
   copyFile(src: string, dst: string): void
+  /**
+   * `copyFile` 的非同步版本（持久 snapshot 用）：複製在背景執行緒進行，事件迴圈不被 270 MB 級的 I/O 占住。
+   * 沒有實作的 port（舊測試、假 port）由呼叫端退回同步 `copyFile`。失敗時 reject，語意同 `copyFile` 的 throw。
+   */
+  copyFileAsync?(src: string, dst: string): Promise<void>
+  /**
+   * 讀本地檔（引擎工作區內，不是 LINE 目錄）的前 `bytes` 位元組；檔案不足時回較短的 Buffer，不存在時 throw。
+   * 持久 snapshot 用它比對 `-wal` 檔頭（salt／checkpoint seq）。
+   */
+  readHead?(path: string, bytes: number): Buffer
 
   // ── 2. 引擎工作區與狀態檔 ──
   /** 在實作決定的暫存根目錄下建立唯一子目錄（standalone＝os.tmpdir()；plugin＝dataDir 底下）。 */

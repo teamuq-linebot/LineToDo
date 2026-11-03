@@ -4,6 +4,7 @@ import { deriveMsgId } from './schema'
 import { insertMessages } from './messages.repo'
 import type { LineImportBatch } from '../line/importTypes'
 import type { ParticipantIdentityProvider } from '../line/identity'
+import { isLineAvatarSchemaReady, writeImportAvatarMeta } from './lineAvatar.repo'
 
 export const LINE_IMPORT_SCHEMA_VERSION = 1
 
@@ -72,7 +73,8 @@ function epochFor(provider: ParticipantIdentityProvider): string | null {
 
 /**
  * Atomically persists legacy message rows, local pseudonyms and source coverage.
- * Raw LINE MIDs exist only in this call frame and are never interpolated into SQL.
+ * Apart from the account MID and `participant_key`, a raw sender MID exists only in this call frame and in the sender-profile table that
+ * lineAvatar.repo.ts owns (incoming messages only, never the account MID). SQL always binds it as a parameter.
  */
 export function commitLineImportBatch(
   db: Database,
@@ -81,6 +83,7 @@ export function commitLineImportBatch(
   options: { processedBeforeMs?: number } = {},
 ): CommitLineImportResult {
   const epoch = epochFor(identity)
+  const committedAt = new Date().toISOString()
   const tx = db.transaction((): CommitLineImportResult => {
     if (epoch) {
       const current = db.prepare('SELECT value FROM line_import_meta WHERE key=\'identity_epoch\'').get() as { value: string } | undefined
@@ -130,6 +133,11 @@ export function commitLineImportBatch(
         status, reason: resolved.reason ?? (status === 'unknown' ? 'identity_failure' : null), isMe: knownSelf })
     }
 
+    // Additive and best effort: a failure rolls back only this savepoint, never the messages, participants or receipt.
+    if (batch.avatarMeta && isLineAvatarSchemaReady(db)) {
+      try { db.transaction(() => writeImportAvatarMeta(db, batch, Date.now(), committedAt))() } catch { /* avatars are refreshed later (layered reader, backfill) */ }
+    }
+
     const receipt = db.prepare(`INSERT OR IGNORE INTO line_import_batches
       (batch_id,source,cursor_from_created_time,cursor_from_row_id,cursor_to_created_time,cursor_to_row_id,
        row_count,keyed_identity_count,unknown_identity_count,has_more,coverage_status,observed_at,committed_at)
@@ -139,7 +147,7 @@ export function commitLineImportBatch(
       toTime: batch.cursorTo.createdTime, toRow: batch.cursorTo.rowId,
       rowCount: batch.items.length, keyed: keyedIdentityCount, unknown: unknownIdentityCount,
       hasMore: Number(batch.hasMore), coverage: batch.hasMore ? 'partial' : 'complete',
-      observed: batch.observedAt, committed: new Date().toISOString() }).changes > 0
+      observed: batch.observedAt, committed: committedAt }).changes > 0
     return { inserted: inserted.inserted, insertedMsgIds: inserted.insertedMsgIds,
       mediaBackfilled: inserted.mediaBackfilled, unsentMarked: inserted.unsentMarked,
       chatIds: inserted.chatIds, receiptInserted, keyedIdentityCount, unknownIdentityCount }

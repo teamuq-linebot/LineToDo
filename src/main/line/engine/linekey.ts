@@ -66,6 +66,12 @@ export interface GetKeyOptions {
   /** 略過 live recover（不掃 LINE 記憶體）：env／cache 都 miss 時直接回 null。driver_post D5。 */
   skipRecover?: boolean
   /**
+   * 不另外複製整份 DB 去驗證金鑰：cache 命中就直接採用、recover 命中後不再過最後一次 `decrypts`（BatchVerifier 的試解仍照舊）。
+   * 只有 lineAccess 會設：它馬上就用同一把金鑰開 snapshot，那一次開檔就是驗證（開不起來會作廢金鑰並重新解析一次）。
+   * standalone 不設＝行為逐字不變。
+   */
+  skipValidate?: boolean
+  /**
    * 協作式金鑰解析（外掛 backend；review F2）。給了 guard，呼叫端（watchEngine／reconcile）改走 `getKeyAsync`：
    * 掃記憶體時定期讓出事件迴圈、同一時間只有一次掃描（single-flight）、掃不到時指數退避（不會每個 poll 都重掃）。
    * standalone 不給＝走原本的同步 `getKey`，行為完全不變。
@@ -317,7 +323,7 @@ export function recoverKey(opts: GetKeyOptions = {}): string | null {
 function finishRecover(dbPath: string, hit: string | null, opts: GetKeyOptions): string | null {
   // 最終確認：命中的 key 過一次正規 openDb（snapshot + WAL merge），確保與
   // 日常開檔路徑一致；理論上必過（BatchVerifier 已驗），失敗即視為未命中。
-  if (hit && !decrypts(dbPath, hit)) hit = null
+  if (hit && !opts.skipValidate && !decrypts(dbPath, hit)) hit = null
 
   if (hit && opts.cache !== false) {
     try {
@@ -405,7 +411,7 @@ export async function getKeyAsync(opts: GetKeyOptions = {}): Promise<string | nu
       } catch {
         cached = ''
       }
-      if (cached && dbPath && decrypts(dbPath, cached)) return cached
+      if (cached && dbPath && (opts.skipValidate || decrypts(dbPath, cached))) return cached
     }
   }
 
@@ -444,7 +450,7 @@ export function getKey(opts: GetKeyOptions = {}): string | null {
       } catch {
         cached = ''
       }
-      if (cached && dbPath && decrypts(dbPath, cached)) return cached
+      if (cached && dbPath && (opts.skipValidate || decrypts(dbPath, cached))) return cached
     }
   }
 

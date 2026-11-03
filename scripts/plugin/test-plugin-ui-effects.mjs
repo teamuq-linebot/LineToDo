@@ -33,7 +33,8 @@ await build({
 const ui = await import(pathToFileURL(outfile).href)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-async function until(predicate, { timeout = 3000, message = 'condition' } = {}) {
+// a polling wait only: it returns as soon as the condition holds, the ceiling just has to survive a starved shared machine (it was 3,000 ms; every test that WAITS for something would be red on a loaded machine)
+async function until(predicate, { timeout = 30_000, message = 'condition' } = {}) {
   const t0 = Date.now()
   while (!predicate()) {
     if (Date.now() - t0 > timeout) assert.fail(`timed out waiting for ${message}`)
@@ -54,11 +55,11 @@ function scriptedBackend(handlers) {
   }
 }
 
-function plugin(handlers) {
+function plugin(handlers, apiOptions = {}) {
   const backend = scriptedBackend(handlers)
   const core = createCoreGateStandin(backend, { methods: [...ui.BACKEND_METHOD_GROUPS] })
   // 0.2.0: the view has no window.tuqPlugin.ai at all; AI features are backend calls (here: scripted handlers that talk to a mock context.host.ai)
-  const api = ui.createPluginLineTodoApi({ host: { ...core.host }, events: { enabled: false }, busyRetry: { attempts: 0 } })
+  const api = ui.createPluginLineTodoApi({ host: { ...core.host }, events: { enabled: false }, busyRetry: { attempts: 0 }, ...apiOptions })
   return { backend, core, api }
 }
 
@@ -1004,4 +1005,529 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
     } finally { view.unmount(); api.dispose() }
   })
   assert.deepEqual(unhandled, [], 'no unhandled rejection from chat todo loading or the late response')
+})
+
+// ───────────── WP-C: the chat list does not wait for auxiliary calls; phase wording; timeout + retry; diagnostics (all non-device: mini-dom + scripted host) ─────────────
+
+const hasClassName = (element, name) => (element.getAttribute('class') ?? '').split(/\s+/).includes(name)
+const streamStatusText = (scene) => walk(scene.container).find((element) => hasClassName(element, 'stream-status'))?.textContent ?? ''
+const retryButtons = (scene) => walk(scene.container).filter((element) => element.localName === 'button' && element.textContent.trim() === '重試')
+const chatItem = (scene, name) => walk(scene.container).find((element) => hasClassName(element, 'chat-list-item') && element.textContent.includes(name))
+const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r }); return { promise, resolve } }
+const wpChat = (chatId, name) => ({ chatId, name, isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(1700000000000).toISOString(), lastSeenAt: new Date(1700000003000).toISOString() })
+const STOPPED = { state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }
+
+test('WP-C acceptance 5 (non-device): with ai.status, 100 avatar batches and a long poll holding the auxiliary lanes, the chat list appears in < 1 s', async () => {
+  const release = deferred()
+  const calls = []
+  const { api } = plugin({
+    'db.chats.list': async () => { calls.push('db.chats.list'); await sleep(5); return [wpChat('bni', 'BNI 商會'), wpChat('family', '家庭群')] },
+    'db.messages.list': async () => { await sleep(5); return [] },
+    'db.messages.recentByChat': async () => [],
+    'messages.recent': async () => [],
+    'line.status': async () => { await sleep(5); return STOPPED },
+    'ai.status': async () => { await sleep(2500); await release.promise; return { state: 'ready' } },
+    'media.avatar.prepareChats': async () => { await release.promise; return { paths: {}, names: {} } },
+    'media.avatar.prepareMessages': async () => { await release.promise; return { paths: {}, names: {} } },
+    'events.pull': async () => { await release.promise; return { events: [] } }
+  })
+  const pending = []
+  let scene
+  try {
+    pending.push(api.plugin.aiStatus({ refresh: true }))
+    for (let i = 0; i < 100; i += 1) pending.push(api.media.avatarUrls([`avatar-${i}`]))
+    pending.push(api.plugin.invoke('events.pull', [{ sessionId: 's', afterSeq: 0, waitMs: 0 }]))
+    await until(() => api.plugin.transportStats().lanes.bulk.active === 1 && api.plugin.transportStats().lanes.events.active === 1, { message: 'bulk and events lanes saturated' })
+    assert.ok(api.plugin.transportStats().lanes.bulk.waiting >= 100, 'the avatar batches are queued behind each other, not in front of the chat list')
+    const t0 = Date.now()
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => chatItem(scene, 'BNI 商會') && chatItem(scene, '家庭群'), { timeout: 1000, message: 'the chat list' })
+    const shownAfter = Date.now() - t0
+    assert.ok(shownAfter < 1000, `the chat list appeared after ${shownAfter} ms (harness threshold 1000 ms; not measured on the device)`)
+    await until(() => streamStatusText(scene).includes('已停止'), { timeout: 1000, message: 'line.status answered' })
+    assert.deepEqual(retryButtons(scene), [], 'nothing failed: no retry')
+    assert.ok(calls.length >= 1)
+  } finally {
+    release.resolve()
+    scene?.unmount()
+    api.dispose()
+    for (const p of pending) p.catch(() => undefined)
+  }
+})
+
+test('WP-C acceptance 5 (non-device): cold start — ping unanswered for 6 s shows 連線中 then 後端啟動中 (no retry, no error), and the list appears right after the backend is up', async () => {
+  const started = deferred()
+  let releasedAt = 0
+  const timer = setTimeout(() => { releasedAt = Date.now(); started.resolve() }, 6000)
+  const afterStart = (value) => async () => { await started.promise; return value }
+  const chat = wpChat('bni', 'BNI 商會')
+  const { api } = plugin({
+    ping: afterStart({ version: 'cold' }), 'line.status': afterStart(STOPPED), 'db.chats.list': afterStart([chat]), 'db.messages.list': afterStart([]),
+    'db.messages.recentByChat': async () => [], 'messages.recent': afterStart([])
+  })
+  let scene
+  try {
+    const t0 = Date.now()
+    void api.ping().catch(() => undefined) // bootBoard sends ping first
+    scene = ui.mount(ui.messageStreamScene(api))
+    await sleep(300)
+    assert.ok(streamStatusText(scene).includes('連線中…'), `first second: ${streamStatusText(scene)}`)
+    assert.equal(streamStatusText(scene).includes('後端啟動中'), false, 'not starting yet (ping was sent less than 1.2 s ago)')
+    await until(() => streamStatusText(scene).includes('後端啟動中…（首次開啟需要數秒）'), { timeout: 3000, message: 'starting wording after 1.2 s' })
+    assert.ok(Date.now() - t0 >= 1100, 'the starting wording needs ping to be unanswered for 1.2 s')
+    assert.ok(scene.container.textContent.includes('後端啟動中…（首次開啟需要數秒）'))
+    assert.deepEqual(retryButtons(scene), [], 'starting is not an error: no retry button')
+    assert.equal(walk(scene.container).some((element) => hasClassName(element, 'dot') && hasClassName(element, 'err')), false, 'no red dot while starting')
+    assert.equal(walk(scene.container).some((element) => hasClassName(element, 'stream-count')), false, 'an unknown message count is not shown as 0')
+    assert.equal(chatItem(scene, 'BNI 商會'), undefined, 'the list is not there before the backend is up')
+    await until(() => chatItem(scene, 'BNI 商會'), { timeout: 9000, message: 'the chat list after the backend is up' })
+    const lag = Date.now() - releasedAt
+    assert.ok(releasedAt > 0 && Date.now() - t0 >= 5900, 'the list did not appear before the 6 s start')
+    assert.ok(lag < 1_000, `the list appeared ${lag} ms after the backend answered (catastrophe ceiling 1,000 ms)`)
+    await until(() => streamStatusText(scene).includes('已停止'), { message: 'the bridge status replaces the phase wording' })
+  } finally {
+    clearTimeout(timer)
+    started.resolve()
+    scene?.unmount()
+    api.dispose()
+  }
+})
+
+test('WP-C phase wording: ping answered but line.status not yet = 連線中… (not 後端啟動中); the answer replaces it', async () => {
+  const gate = deferred()
+  const { api } = plugin({
+    ping: async () => ({ version: 'warm' }), 'line.status': async () => { await gate.promise; return STOPPED }, 'db.chats.list': async () => [wpChat('bni', 'BNI 商會')],
+    'db.messages.list': async () => [], 'db.messages.recentByChat': async () => [], 'messages.recent': async () => []
+  }, { startingAfterMs: 50 })
+  let scene
+  try {
+    await api.ping()
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => chatItem(scene, 'BNI 商會'), { message: 'the list does not wait for line.status' })
+    await sleep(150)
+    assert.equal(api.plugin.backendPhase(), 'connecting')
+    assert.ok(streamStatusText(scene).includes('連線中…'), streamStatusText(scene))
+    assert.equal(streamStatusText(scene).includes('後端啟動中'), false)
+    gate.resolve()
+    await until(() => streamStatusText(scene).includes('已停止'), { message: 'line.status answered' })
+    assert.equal(api.plugin.backendPhase(), 'ready')
+  } finally { gate.resolve(); scene?.unmount(); api.dispose() }
+})
+
+test('WP-C timeout (non-device): a core call with no answer shows 讀取逾時 with 重試 in the status line and above the list; retry resends and the list recovers; nothing is revoked and nothing is left unhandled', async () => {
+  const unhandled = await collectingUnhandled(async () => {
+    const hang = deferred()
+    let listCalls = 0
+    const { api, backend } = plugin({
+      'db.chats.list': async () => { listCalls += 1; if (listCalls === 1) await hang.promise; return [wpChat('bni', 'BNI 商會')] },
+      'db.messages.list': async () => [], 'db.messages.recentByChat': async () => [], 'messages.recent': async () => [], 'line.status': async () => STOPPED
+    }, { timeouts: { coreMs: 150, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
+    let scene
+    try {
+      scene = ui.mount(ui.messageStreamScene(api))
+      await until(() => streamStatusText(scene).includes('讀取逾時'), { timeout: 2000, message: 'the timeout wording in the status line' })
+      const bar = walk(scene.container).find((element) => hasClassName(element, 'stream-bar'))
+      assert.ok(walk(bar).some((element) => hasClassName(element, 'dot') && hasClassName(element, 'err')), 'the dot is red: a timeout cannot be hidden')
+      assert.equal(retryButtons(scene).length, 2, 'one 重試 in the status line, one above the (empty) chat list')
+      assert.ok(scene.container.textContent.includes('讀取聊天室清單失敗：讀取逾時'), 'the list area says what failed')
+      assert.equal(scene.container.textContent.includes('目前尚無聊天資料'), false, 'a failed load is not reported as "no chats"')
+      assert.equal(chatItem(scene, 'BNI 商會'), undefined)
+      assert.equal(api.plugin.backendLink().state, 'ok', 'line.status etc. answered, so the link is ok')
+      assert.notEqual(api.plugin.backendLink().state, 'revoked')
+      assert.equal(walk(scene.container).filter((element) => hasClassName(element, 'stream-error')).length, 0, 'the timeout is not stacked as a second red notice')
+
+      reactProps(retryButtons(scene)[0]).onClick()
+      await until(() => chatItem(scene, 'BNI 商會'), { timeout: 2000, message: 'the list after retry' })
+      assert.equal(listCalls, 2, 'retry resent db.chats.list')
+      await until(() => streamStatusText(scene).includes('已停止') && retryButtons(scene).length === 0, { message: 'the status line is back to the bridge state without 重試' })
+      assert.equal(api.plugin.backendPhase(), 'ready')
+      hang.resolve() // the abandoned first call is answered late
+      await sleep(30)
+      assert.ok(backend.unknown.every((path) => path.startsWith('media.avatar.')), `only the avatar batches have no handler here: ${backend.unknown}`)
+    } finally { hang.resolve(); scene?.unmount(); api.dispose() }
+  })
+  assert.deepEqual(unhandled, [])
+})
+
+test('WP-C timeout (non-device): a line.status that never answers is a 讀取逾時 + 重試 in the status line, with no extra red notice; retry asks again', async () => {
+  let statusCalls = 0
+  const gate = deferred()
+  const { api } = plugin({
+    'db.chats.list': async () => [], 'db.messages.list': async () => [], 'db.messages.recentByChat': async () => [], 'messages.recent': async () => [],
+    'line.status': async () => { statusCalls += 1; if (statusCalls === 1) await gate.promise; return { ...STOPPED, state: 'running', messageCount: 7 } }
+  }, { timeouts: { coreMs: 120, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => streamStatusText(scene).includes('讀取逾時'), { timeout: 2000, message: 'timeout wording' })
+    assert.equal(walk(scene.container).filter((element) => hasClassName(element, 'stream-error')).length, 0)
+    assert.equal(retryButtons(scene).length, 1)
+    reactProps(retryButtons(scene)[0]).onClick()
+    await until(() => streamStatusText(scene).includes('運行中 · 已收 7 則'), { timeout: 2000, message: 'status after retry' })
+    assert.equal(statusCalls, 2)
+    assert.equal(retryButtons(scene).length, 0)
+  } finally { gate.resolve(); scene?.unmount(); api.dispose() }
+})
+
+test('WP-C timeout (F1, non-device): after line.status times out, an unrelated core call that succeeds keeps 讀取逾時 and 重試 on the screen; only a successful line.status takes them away', async () => {
+  let statusCalls = 0
+  const gate = deferred()
+  const { api } = plugin({
+    'db.chats.list': async () => [], 'db.messages.list': async () => [], 'db.messages.recentByChat': async () => [], 'messages.recent': async () => [],
+    'line.status': async () => { statusCalls += 1; if (statusCalls === 1) await gate.promise; return { ...STOPPED, state: 'running', messageCount: 7 } }
+  }, { timeouts: { coreMs: 120, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => streamStatusText(scene).includes('讀取逾時'), { timeout: 2000, message: 'timeout wording' })
+    assert.equal(retryButtons(scene).length, 1)
+    assert.equal(api.plugin.backendPhase(), 'timeout')
+
+    await api.plugin.invoke('db.messages.list', [{ limit: 5 }])
+    await api.plugin.invoke('db.chats.list', [])
+    await sleep(60)
+    assert.equal(api.plugin.backendPhase(), 'timeout', 'unrelated core calls succeeded')
+    assert.ok(streamStatusText(scene).includes('讀取逾時'), `still 讀取逾時: ${streamStatusText(scene)}`)
+    assert.equal(streamStatusText(scene).includes('連線中'), false, 'not back to 連線中…')
+    assert.equal(retryButtons(scene).length, 1, '重試 is still there')
+    assert.equal(statusCalls, 1, 'nothing re-asked line.status yet')
+
+    reactProps(retryButtons(scene)[0]).onClick()
+    await until(() => streamStatusText(scene).includes('運行中 · 已收 7 則'), { timeout: 2000, message: 'status after retry' })
+    assert.equal(statusCalls, 2)
+    await until(() => retryButtons(scene).length === 0, { message: '重試 gone once line.status answered' })
+    assert.equal(api.plugin.backendPhase(), 'ready')
+  } finally { gate.resolve(); scene?.unmount(); api.dispose() }
+})
+
+test('WP-C timeout (F2, non-device): a db.messages.list that never answers is not a 讀取逾時 in the status line; the history area shows the error with its own 重試, and that 重試 reads again', async () => {
+  let listCalls = 0
+  const gate = deferred()
+  const { api } = plugin({
+    'db.chats.list': async () => [wpChat('bni', 'BNI 商會')],
+    'db.messages.list': async () => { listCalls += 1; if (listCalls === 1) await gate.promise; return [] },
+    'db.messages.recentByChat': async () => [], 'messages.recent': async () => [], 'line.status': async () => ({ ...STOPPED, state: 'running', messageCount: 7 })
+  }, { timeouts: { coreMs: 120, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    const note = () => walk(scene.container).find((element) => hasClassName(element, 'stream-load-note'))
+    await until(() => note(), { timeout: 2000, message: 'the history error' })
+    assert.ok(note().textContent.includes('讀取最近訊息失敗') && note().textContent.includes('讀取逾時'), note().textContent)
+    await until(() => streamStatusText(scene).includes('運行中 · 已收 7 則'), { message: 'the bridge state in the status line' })
+    assert.equal(streamStatusText(scene).includes('讀取逾時'), false, 'db.messages.list is not a bridge path: the status line does not say 讀取逾時')
+    assert.equal(api.plugin.backendPhase(), 'ready')
+    assert.equal(walk(scene.container).some((element) => hasClassName(element, 'dot') && hasClassName(element, 'err')), false, 'no red dot')
+    assert.ok(chatItem(scene, 'BNI 商會'), 'the chat list is there')
+    assert.equal(retryButtons(scene).length, 1, 'exactly one 重試: the one that belongs to the history error')
+    assert.ok(walk(note()).includes(retryButtons(scene)[0]), 'and it sits inside the history error')
+
+    reactProps(retryButtons(scene)[0]).onClick()
+    await until(() => !note() && listCalls === 2, { timeout: 2000, message: 'the history error is gone after the retry read it again' })
+    assert.equal(retryButtons(scene).length, 0)
+    assert.ok(streamStatusText(scene).includes('運行中 · 已收 7 則'))
+  } finally { gate.resolve(); scene?.unmount(); api.dispose() }
+})
+
+test('WP-C timeout (F2, non-device): a ping that times out shows 讀取逾時 with 重試; any successful core call afterwards takes both away', async () => {
+  let pings = 0
+  const gate = deferred()
+  const { api } = plugin({
+    ping: async () => { pings += 1; if (pings === 1) await gate.promise; return { version: 'x' } },
+    'db.chats.list': async () => [wpChat('bni', 'BNI 商會')], 'db.messages.list': async () => [], 'db.messages.recentByChat': async () => [], 'messages.recent': async () => [],
+    'line.status': async () => ({ ...STOPPED, state: 'running', messageCount: 7 })
+  }, { timeouts: { coreMs: 5000, pingMs: 150, longMs: 5000, bulkMs: 5000 } })
+  let scene
+  try {
+    void api.ping().catch(() => undefined)
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => streamStatusText(scene).includes('讀取逾時'), { timeout: 2000, message: 'the timeout wording after ping gave up' })
+    assert.ok(retryButtons(scene).length >= 1)
+    await api.line.status()
+    await until(() => !streamStatusText(scene).includes('讀取逾時') && retryButtons(scene).length === 0, { message: 'a core call answered: the timeout is gone' })
+    assert.ok(streamStatusText(scene).includes('運行中 · 已收 7 則'), streamStatusText(scene))
+    assert.equal(api.plugin.backendPhase(), 'ready')
+  } finally { gate.resolve(); scene?.unmount(); api.dispose() }
+})
+
+for (const target of ['line.status', 'messages.recent', 'db.chats.list']) {
+  test('WP-C timeout (F2, non-device): ' + target + ' and ping both time out; 重試 in the status line and ' + target + ' answers: 讀取逾時 and 重試 are gone', async () => {
+    const gate = deferred()
+    const counts = {}
+    const answer = (name, value) => async () => {
+      counts[name] = (counts[name] ?? 0) + 1
+      if ((name === target || name === 'ping') && counts[name] === 1) await gate.promise
+      return value
+    }
+    const { api } = plugin({
+      ping: answer('ping', { version: 'x' }), 'line.status': answer('line.status', { ...STOPPED, state: 'running', messageCount: 7 }), 'messages.recent': answer('messages.recent', []),
+      'db.chats.list': answer('db.chats.list', [wpChat('bni', 'BNI 商會')]), 'db.messages.list': answer('db.messages.list', []), 'db.messages.recentByChat': async () => []
+    }, { timeouts: { coreMs: 150, pingMs: 150, longMs: 5000, bulkMs: 5000 } })
+    let scene
+    try {
+      void api.ping().catch(() => undefined)
+      scene = ui.mount(ui.messageStreamScene(api))
+      await until(() => api.plugin.transportStats().timeouts >= 2, { timeout: 2000, message: 'both ' + target + ' and ping timed out' })
+      await until(() => streamStatusText(scene).includes('讀取逾時'), { message: 'the timeout wording' })
+      assert.ok(retryButtons(scene).length >= 1)
+      reactProps(retryButtons(scene)[0]).onClick()
+      await until(() => !streamStatusText(scene).includes('讀取逾時') && retryButtons(scene).length === 0, { timeout: 2000, message: 'the retry cleared every timeout it showed' })
+      assert.equal(counts[target], 2, target + ' was asked again by the retry')
+      assert.equal(api.plugin.backendPhase(), 'ready')
+      await until(() => streamStatusText(scene).includes('運行中 · 已收 7 則'), { message: 'the bridge state is back' })
+    } finally { gate.resolve(); scene?.unmount(); api.dispose() }
+  })
+}
+
+test('WP-C error (non-device): a refusing host (revoked) is shown at once in the status line as 無法連線 with 重試; it is not hidden behind 連線中…', async () => {
+  const fenced = ui.createPluginLineTodoApi({ host: { backend: { call: async () => { throw new Error('plugin_disabled') } }, assets: { url: String } }, events: { enabled: false }, busyRetry: { attempts: 0 } })
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(fenced))
+    await until(() => streamStatusText(scene).includes('無法連線'), { message: 'error wording' })
+    assert.equal(fenced.plugin.backendLink().state, 'revoked')
+    assert.equal(fenced.plugin.backendPhase(), 'error')
+    assert.ok(retryButtons(scene).length >= 1)
+    assert.equal(streamStatusText(scene).includes('連線中'), false)
+  } finally { scene?.unmount(); fenced.dispose() }
+})
+
+test('WP-C diagnostics (non-device): 診斷 is a collapsed <details>; opened it shows phase, how long each core call has waited, the last error code and the backend pid / uptime; unknown values say 未知, never 0', async () => {
+  const gate = deferred()
+  let infoOk = true
+  const { api } = plugin({
+    'db.chats.list': async () => [], 'db.messages.list': async () => [], 'db.messages.recentByChat': async () => [], 'messages.recent': async () => [],
+    'line.status': async () => { await gate.promise; return STOPPED },
+    'backend.info': async () => { if (!infoOk) throw Object.assign(new Error('info unavailable'), { code: 'internal' }); return { pid: 4242, uptimeMs: 125_000 } }
+  }, { timeouts: { coreMs: 5000, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    const details = () => walk(scene.container).find((element) => element.localName === 'details' && element.getAttribute('data-testid') === 'backend-diagnostics')
+    await until(() => details(), { message: 'the 診斷 details' })
+    assert.equal(details().hasAttribute('open'), false, 'collapsed by default: the default screen is one status line')
+    assert.ok(byText(details(), '診斷', 'summary'))
+    const field = (name) => walk(details()).find((element) => element.getAttribute('data-diag') === name)?.textContent ?? ''
+    assert.equal(field('calls'), '…', 'nothing is read while it is collapsed')
+
+    reactProps(details()).onToggle({ currentTarget: { open: true } })
+    await until(() => field('backend').includes('pid 4242'), { message: 'backend.info shown' })
+    assert.equal(field('backend'), 'pid 4242 · 已執行 2 分鐘')
+    assert.equal(field('phase'), '連線中…')
+    assert.match(field('calls'), /line\.status \d+\.\d 秒/, 'the pending core call and how long it has waited')
+    assert.equal(field('error'), '無')
+    gate.resolve()
+    await until(() => field('calls') === '無', { timeout: 2500, message: 'the diagnostics refresh while open' })
+    assert.equal(field('phase'), '正常')
+
+    reactProps(details()).onToggle({ currentTarget: { open: false } })
+    await sleep(30)
+    infoOk = false
+    reactProps(details()).onToggle({ currentTarget: { open: true } })
+    await until(() => field('backend') === '未知', { message: 'a failed backend.info is 未知, not 0' })
+    assert.equal(/\b0\b/.test(field('backend')), false)
+  } finally { gate.resolve(); scene?.unmount(); api.dispose() }
+})
+
+test('WP-C standalone (non-device): without a phase source the shared stream keeps its old wording and shows no 診斷', async () => {
+  const gate = deferred()
+  const standalone = {
+    messages: { recent: async () => [] },
+    line: { status: async () => { await gate.promise; return STOPPED }, onMessage: () => () => undefined, onStatus: () => () => undefined },
+    db: { chats: { list: async () => [] }, messages: { list: async () => [] }, onMessagesPersisted: () => () => undefined }
+  }
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(standalone))
+    await sleep(80)
+    assert.ok(streamStatusText(scene).includes('連線中…'))
+    assert.equal(walk(scene.container).some((element) => element.localName === 'details'), false)
+    gate.resolve()
+    await until(() => streamStatusText(scene).includes('已停止'), { message: 'status shown' })
+  } finally { gate.resolve(); scene?.unmount() }
+})
+
+// ───────────── N1 (review r1): the picture says 索引建立中 and asks again by itself while the backend's LINE Cache index is still being built ─────────────
+
+const INDEXING = () => Object.assign(new Error('the LINE cache index is still being built (索引建立中; index_building), try again shortly'), { code: 'not_cached' })
+const NOT_DOWNLOADED = () => Object.assign(new Error('not downloaded in LINE yet'), { code: 'not_cached' })
+const imageSrcs = (container) => walk(container).filter((el) => el.localName === 'img').map((el) => el.getAttribute('src'))
+
+/** a fast retry policy for the tests that are not about the delays themselves; restored afterwards */
+async function withFastRetry(policy, body) {
+  const saved = { ...ui.mediaIndexingRetry }
+  Object.assign(ui.mediaIndexingRetry, { baseMs: 15, maxMs: 40, maxRetries: 8 }, policy)
+  try { await body() } finally { Object.assign(ui.mediaIndexingRetry, saved) }
+}
+
+test('N1: the adapter looks for the token index_building (test-media-index.mjs checks that the backend message carries the same token)', () => {
+  assert.equal(ui.MEDIA_INDEX_BUILDING_TOKEN, 'index_building')
+})
+
+test('N1 (effects): while the index is being built the image shows 索引建立中, asks again by itself, and shows the picture once the backend finds it', async () => {
+  await withFastRetry({}, async () => {
+    const calls = []
+    const { api } = plugin({
+      'media.prepare': (msgId) => {
+        calls.push(msgId)
+        if (calls.length <= 2) throw INDEXING()
+        return { path: 'media-cache/found.png', mime: 'image/png', size: 10, cached: false }
+      }
+    })
+    let scene
+    try {
+      scene = ui.mount(ui.mediaImageScene(api, 'i:m1'))
+      await until(() => scene.container.textContent.includes('索引建立中'), { message: '索引建立中 on screen' })
+      assert.equal(scene.container.textContent.includes('尚未下載'), false, 'not "not downloaded": the image may be in the Cache already')
+      await until(() => imageSrcs(scene.container).length === 1, { message: 'the picture' })
+      assert.deepEqual(imageSrcs(scene.container), ['tuqplugin://tuqdev.line-todo/data/media-cache/found.png'])
+      assert.equal(scene.container.textContent.includes('索引建立中'), false)
+      assert.deepEqual(calls, ['i:m1', 'i:m1', 'i:m1'], 'two retries, then it was there')
+      await sleep(120)
+      assert.equal(calls.length, 3, 'nothing is asked again once the picture is shown')
+    } finally { scene?.unmount(); api.dispose() }
+  })
+})
+
+test('N1 (effects): with the default policy the retries of one image wait 2 s, then longer (2, 4, 8, 16 s), each at least 2 s', async () => {
+  const realSetTimeout = globalThis.setTimeout
+  // 30000 is left alone on purpose: the transport arms a timer of that length for every call
+  const ladder = new Set([2000, 4000, 8000, 16000])
+  const waits = []
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    if (ladder.has(ms)) { waits.push(ms); return realSetTimeout(fn, 5, ...rest) }
+    return realSetTimeout(fn, ms, ...rest)
+  }
+  let calls = 0
+  const { api } = plugin({ 'media.prepare': () => { calls += 1; if (calls <= 4) throw INDEXING(); return { path: 'media-cache/late.png' } } })
+  let scene
+  try {
+    scene = ui.mount(ui.mediaImageScene(api, 'i:slow'))
+    await until(() => imageSrcs(scene.container).length === 1, { message: 'the picture after four retries' })
+    assert.deepEqual(waits, [2000, 4000, 8000, 16000])
+    assert.ok(waits.every((ms, i) => ms >= 2000 && (i === 0 || ms > waits[i - 1])), 'at least 2 s and growing')
+  } finally { globalThis.setTimeout = realSetTimeout; scene?.unmount(); api.dispose() }
+})
+
+test('N1 (effects): not_cached because LINE has not downloaded the picture yet is not retried: 尚未下載 stays', async () => {
+  await withFastRetry({}, async () => {
+    let calls = 0
+    const { api } = plugin({ 'media.prepare': () => { calls += 1; throw NOT_DOWNLOADED() } })
+    let scene
+    try {
+      scene = ui.mount(ui.mediaImageScene(api, 'i:m2'))
+      await until(() => scene.container.textContent.includes('尚未下載'), { message: '尚未下載' })
+      await sleep(200)
+      assert.equal(calls, 1, 'asked once, never again')
+      assert.equal(scene.container.textContent.includes('索引建立中'), false)
+      assert.deepEqual(imageSrcs(scene.container), [])
+    } finally { scene?.unmount(); api.dispose() }
+  })
+})
+
+test('N1 (effects): any other failure (decrypt, key, unavailable) is not retried either', async () => {
+  await withFastRetry({}, async () => {
+    for (const code of ['hmac_miss', 'media_unavailable', 'no_key', 'internal']) {
+      let calls = 0
+      const { api } = plugin({ 'media.prepare': () => { calls += 1; throw Object.assign(new Error(`index_building ${code}`), { code }) } })
+      let scene
+      try {
+        scene = ui.mount(ui.mediaImageScene(api, 'i:m3'))
+        await until(() => scene.container.textContent.includes('尚未下載'), { message: `尚未下載 for ${code}` })
+        await sleep(100)
+        assert.equal(calls, 1, `${code}: asked once`)
+      } finally { scene?.unmount(); api.dispose() }
+    }
+  })
+})
+
+test('N1 (effects): after the component is unmounted no further request is sent and the pending retry is gone', async () => {
+  await withFastRetry({ baseMs: 30, maxMs: 30 }, async () => {
+    let calls = 0
+    const { api } = plugin({ 'media.prepare': () => { calls += 1; throw INDEXING() } })
+    let scene
+    try {
+      scene = ui.mount(ui.mediaImageScene(api, 'i:gone'))
+      await until(() => calls >= 2, { message: 'a first retry' })
+      assert.ok(scene.container.textContent.includes('索引建立中'))
+      scene.unmount()
+      scene = null
+      const atUnmount = calls
+      await sleep(250)
+      assert.equal(calls, atUnmount, `no request after unmount (${atUnmount} before, ${calls} after)`)
+    } finally { scene?.unmount(); api.dispose() }
+  })
+})
+
+test('N1 (effects): the retries are bounded: after maxRetries the image is 尚未下載 and nothing more is asked', async () => {
+  await withFastRetry({ maxRetries: 3, baseMs: 10, maxMs: 10 }, async () => {
+    let calls = 0
+    const { api } = plugin({ 'media.prepare': () => { calls += 1; throw INDEXING() } })
+    let scene
+    try {
+      scene = ui.mount(ui.mediaImageScene(api, 'i:never'))
+      await until(() => scene.container.textContent.includes('尚未下載'), { message: 'giving up' })
+      await sleep(150)
+      assert.equal(calls, 4, 'the first ask plus three retries, no more')
+    } finally { scene?.unmount(); api.dispose() }
+  })
+})
+
+test('N1 (effects): a host without assetLookup (standalone) keeps the old behaviour: one assetUrl call, a null is 尚未下載, no retry', async () => {
+  const { api } = plugin({})
+  let calls = 0
+  const standalone = { ...api, media: { ...api.media, assetLookup: undefined, assetUrl: async () => { calls += 1; return null } } }
+  let scene
+  try {
+    scene = ui.mount(ui.mediaImageScene(standalone, 'i:old'))
+    await until(() => scene.container.textContent.includes('尚未下載'), { message: '尚未下載' })
+    await sleep(100)
+    assert.equal(calls, 1)
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+test('N1 (effects): the retry of an image goes through the bulk lane of the transport (the core lane stays free)', async () => {
+  await withFastRetry({}, async () => {
+    let calls = 0
+    let release
+    const gate = new Promise((resolve) => { release = resolve })
+    const { api } = plugin({
+      'media.prepare': async () => {
+        calls += 1
+        if (calls === 1) throw INDEXING()
+        await gate
+        return { path: 'media-cache/bulk.png' }
+      }
+    })
+    let scene
+    try {
+      scene = ui.mount(ui.mediaImageScene(api, 'i:lane'))
+      await until(() => calls === 2, { message: 'the retry reached the backend' })
+      const stats = api.plugin.transportStats()
+      assert.equal(stats.lanes.bulk.active, 1, 'the retry holds the bulk lane')
+      assert.equal(stats.lanes.core.active, 0, 'nothing is on the core lane')
+      release()
+      await until(() => imageSrcs(scene.container).length === 1, { message: 'the picture' })
+    } finally { release?.(); scene?.unmount(); api.dispose() }
+  })
+})
+
+test('N1 (effects): the waits grow by doubling up to maxMs and stay there', async () => {
+  const realSetTimeout = globalThis.setTimeout
+  const ladder = new Set([2000, 3000])
+  const waits = []
+  globalThis.setTimeout = (fn, ms, ...rest) => {
+    if (ladder.has(ms)) { waits.push(ms); return realSetTimeout(fn, 5, ...rest) }
+    return realSetTimeout(fn, ms, ...rest)
+  }
+  const saved = { ...ui.mediaIndexingRetry }
+  Object.assign(ui.mediaIndexingRetry, { baseMs: 2000, maxMs: 3000, maxRetries: 8 })
+  let calls = 0
+  const { api } = plugin({ 'media.prepare': () => { calls += 1; if (calls <= 4) throw INDEXING(); return { path: 'media-cache/cap.png' } } })
+  let scene
+  try {
+    scene = ui.mount(ui.mediaImageScene(api, 'i:cap'))
+    await until(() => imageSrcs(scene.container).length === 1, { message: 'the picture after four retries' })
+    assert.deepEqual(waits, [2000, 3000, 3000, 3000], 'doubling (2 s, 4 s ...) is cut off at maxMs')
+  } finally { globalThis.setTimeout = realSetTimeout; Object.assign(ui.mediaIndexingRetry, saved); scene?.unmount(); api.dispose() }
 })

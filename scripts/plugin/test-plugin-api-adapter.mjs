@@ -24,7 +24,10 @@ import {
   PluginApiError, PluginBackendError, PluginUnsupportedError, createPluginLineTodoApi
 } from '../../src/renderer/platform/pluginApi.ts'
 import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
-import { Limiter, toWire } from '../../src/renderer/platform/pluginTransport.ts'
+import { Limiter, laneFor, toWire } from '../../src/renderer/platform/pluginTransport.ts'
+import { describeLink } from '../../src/plugin/ui/backendLink.ts'
+import { bootBoard } from '../../src/plugin/ui/board.ts'
+import { describeBackendError } from '../../src/renderer/lib/backendError.ts'
 import { RESOURCES } from './lib/manifest.mjs'
 import { backendMethodFor } from '../../src/shared/pluginWire.ts'
 
@@ -751,7 +754,9 @@ test('media: assetUrl() asks the backend to decrypt into dataDir and returns the
   const plain = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(1200, 0x41)])
   writeFileSync(join(cacheDir, 'x.eimg'), makeEimg(plain))
   try {
-    await withBackend({ backend: { media: { fs: createNodeLineFsPort(), cacheDir } } }, async ({ api, line, mock, dataDir }) => {
+    await withBackend({ backend: { media: { fs: createNodeLineFsPort(), cacheDir, index: { startDelayMs: 0 } } } }, async ({ api, line, mock, dataDir }) => {
+      // media.prepare only queries the local image index: wait until its first scan of the (fake) LINE Cache has finished
+      await asyncUntil(async () => (await api.plugin.info()).media.index.ready, { timeout: 10_000, message: 'the media index to be ready' })
       line.emit({ ...raw(1, { text: '[image]' }), contentType: 1, keyMaterial: IKM_B64, fileSize: plain.length, fileName: null })
       line.emit({ ...raw(2, { text: '[image]' }), contentType: 1, keyMaterial: IKM_B64, fileSize: 77, fileName: null }) // never downloaded
       const url = await api.media.assetUrl('i:m1')
@@ -794,5 +799,415 @@ test('review: when the AI cannot work reviewLastDays answers "not connected" at 
     api.dispose()
     await backend.dispose()
     rmSync(dataDir, { recursive: true, force: true })
+  }
+})
+
+// ───────────── WP-C: lanes, wait limits, phases (pluginTransport.ts) ─────────────
+// All of these go through createPluginLineTodoApi (the production wiring of PluginTransport) in front of a scripted host; none of them builds a Limiter by hand.
+
+/**
+ * A scripted host. `script[path]` = `{ value, delayMs, hold }`; `hold: true` answers only when `release()` is called (or throws `{ throws }`).
+ * It records, per lane, how many calls were in flight at the same time, so the lane caps are measured at the host and not only inside the transport.
+ */
+function scriptedHost(script = {}) {
+  const state = { calls: [], inFlight: { core: 0, bulk: 0, events: 0 }, peak: { core: 0, bulk: 0, events: 0 }, peakTotal: 0, held: [] }
+  const total = () => state.inFlight.core + state.inFlight.bulk + state.inFlight.events
+  const host = {
+    backend: {
+      async call(_method, params) {
+        const path = params.path
+        const lane = laneFor(path)
+        state.calls.push({ path, at: Date.now() })
+        state.inFlight[lane] += 1
+        state.peak[lane] = Math.max(state.peak[lane], state.inFlight[lane])
+        state.peakTotal = Math.max(state.peakTotal, total())
+        try {
+          const rule = typeof script[path] === 'function' ? script[path](params.args ?? [], state.calls.filter((c) => c.path === path).length) : script[path] ?? {}
+          if (rule.hold) await new Promise((resolve) => state.held.push(resolve))
+          if (rule.delayMs) await sleep(rule.delayMs)
+          if (rule.throws) throw new Error(rule.throws)
+          return { ok: true, value: rule.value ?? null }
+        } finally { state.inFlight[lane] -= 1 }
+      }
+    },
+    assets: { url: (path) => `tuqplugin://tuqdev.line-todo/data/${path}` }
+  }
+  return { host, state, count: (path) => state.calls.filter((c) => c.path === path).length, release: () => { for (const resolve of state.held.splice(0)) resolve() } }
+}
+
+const TIGHT = { coreMs: 60, pingMs: 200, bulkMs: 80, longMs: 400 }
+const apiFor = (fake, options = {}) => createPluginLineTodoApi({ host: fake.host, events: { ...FAST_EVENTS, enabled: false }, busyRetry: { attempts: 0 }, ...options })
+
+test('WP-C lanes: ping / status / db / messages / settings / pipeline / groupTopics / job / result are core; media.prepare, media.avatar.*, ai.status, ai.options are bulk; events.* are events (events.close stays core)', () => {
+  for (const path of ['ping', 'line.status', 'db.chats.list', 'db.messages.list', 'db.todos.list', 'messages.recent', 'settings.get', 'pipeline.status', 'groupTopics.list', 'result.chunk', 'job.poll', 'backend.info', 'events.close']) assert.equal(laneFor(path), 'core', path)
+  for (const path of ['media.prepare', 'media.avatar.prepareChats', 'media.avatar.prepareMessages', 'ai.status', 'ai.options']) assert.equal(laneFor(path), 'bulk', path)
+  for (const path of ['events.open', 'events.pull']) assert.equal(laneFor(path), 'events', path)
+})
+
+test('WP-C lanes: with the bulk lane and the events lane full, a core call still runs at once; bulk never exceeds 1, events never exceeds 1, the total never exceeds 3', async () => {
+  const fake = scriptedHost({
+    'media.avatar.prepareChats': { hold: true }, 'media.avatar.prepareMessages': { hold: true }, 'media.prepare': { hold: true }, 'ai.status': { hold: true }, 'events.pull': { hold: true },
+    'line.status': { value: { state: 'running' } }, 'db.chats.list': { value: [] }
+  })
+  const api = apiFor(fake, { timeouts: { coreMs: 5000, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
+  try {
+    const bulk = [
+      api.media.avatarUrls(['a']), api.media.avatarUrls(['b']), api.media.messageAvatarUrls('a', ['i:1']), api.media.assetUrl('i:1'), api.media.assetUrl('i:2'), api.plugin.aiStatus({ refresh: true })
+    ]
+    const events = [api.plugin.invoke('events.pull', [{ sessionId: 's', afterSeq: 0, waitMs: 0 }]), api.plugin.invoke('events.pull', [{ sessionId: 's', afterSeq: 0, waitMs: 0 }])]
+    await until(() => fake.state.peak.bulk === 1 && fake.state.peak.events === 1, { message: 'the bulk and the events lane are each occupied by exactly one call' })
+    const t0 = Date.now()
+    assert.deepEqual(await api.line.status(), { state: 'running' })
+    assert.deepEqual(await api.db.chats.list(), [])
+    assert.ok(Date.now() - t0 < 1_000, `core calls ran at once (${Date.now() - t0} ms) although bulk and events were saturated (catastrophe ceiling 1,000 ms; behind the held bulk calls they would never answer at all)`)
+    const lanes = api.plugin.transportStats().lanes
+    assert.equal(lanes.bulk.active, 1)
+    assert.equal(lanes.bulk.waiting, 5, 'the other five bulk calls queue behind the one that runs')
+    assert.equal(lanes.events.active, 1)
+    assert.equal(lanes.events.waiting, 1)
+    assert.equal(fake.count('line.status') + fake.count('db.chats.list'), 2)
+    // let everything finish: the queued bulk / events calls start one at a time as the running ones answer
+    const settled = Promise.allSettled([...bulk, ...events]).then(() => true)
+    for (let i = 0; i < 40; i += 1) { fake.release(); if (await Promise.race([settled, sleep(15).then(() => false)])) break }
+    assert.ok(await Promise.race([settled, sleep(1).then(() => false)]), 'every queued call finished')
+    assert.ok(fake.state.peak.bulk <= 1 && fake.state.peak.events <= 1, `peak bulk ${fake.state.peak.bulk}, events ${fake.state.peak.events}`)
+    assert.ok(fake.state.peakTotal <= 3, `peak total ${fake.state.peakTotal}`)
+  } finally { fake.release(); api.dispose() }
+})
+
+test('WP-C lanes: five simultaneous core calls use all three slots (the budget is unchanged), and a budget below 3 keeps one FIFO for everything', async () => {
+  const fake = scriptedHost({ 'db.chats.list': { delayMs: 30, value: [] } })
+  const api = apiFor(fake)
+  try {
+    await Promise.all(Array.from({ length: 9 }, () => api.db.chats.list()))
+    assert.equal(fake.state.peak.core, 3)
+  } finally { api.dispose() }
+
+  const single = scriptedHost({ 'media.prepare': { hold: true }, 'line.status': { value: 1 } })
+  const settings = apiFor(single, { maxConcurrentCalls: 1, timeouts: { ...TIGHT, bulkMs: 5000 } })
+  try {
+    void settings.media.assetUrl('i:1')
+    await until(() => single.count('media.prepare') === 1)
+    let answered = false
+    const status = settings.line.status().then(() => { answered = true })
+    await sleep(50)
+    assert.equal(answered, false, 'budget 1: one FIFO — the core call waits for the media call (the settings view has no bulk traffic of its own)')
+    single.release()
+    await status
+    assert.equal(settings.plugin.transportStats().maxActive, 1)
+  } finally { single.release(); settings.dispose() }
+})
+
+test('WP-C timeout: a core call that gets no answer is released with view_call_timeout, frees its slot, never marks the link revoked, and the late answer is dropped', async () => {
+  const unhandled = []
+  const onRejection = (reason) => { unhandled.push(reason) }
+  process.on('unhandledRejection', onRejection)
+  const fake = scriptedHost({ 'db.chats.list': (_args, n) => (n === 1 ? { hold: true } : { value: [{ chatId: 'c' }] }), 'line.status': { value: { state: 'running' } } })
+  const api = apiFor(fake, { timeouts: TIGHT })
+  const phases = []
+  api.plugin.onBackendPhase((p) => phases.push(p))
+  try {
+    const t0 = Date.now()
+    await assert.rejects(api.db.chats.list(), (e) => e instanceof PluginApiError && e.code === 'view_call_timeout' && e.path === 'db.chats.list')
+    const waited = Date.now() - t0
+    assert.ok(waited >= 50 && waited < 1_000, `gave up after ${waited} ms (coreMs 60; catastrophe ceiling 1,000 ms)`)
+    assert.equal(api.plugin.transportStats().active, 0, 'the slot came back')
+    assert.equal(api.plugin.transportStats().timeouts, 1)
+    assert.notEqual(api.plugin.backendLink().state, 'revoked', 'a view-side wait limit is not a host fence')
+    assert.deepEqual(api.plugin.backendLink(), { state: 'unknown', code: null })
+    assert.equal(api.plugin.backendPhase(), 'timeout')
+    assert.deepEqual(phases, ['timeout'])
+    assert.deepEqual(api.plugin.backendDiagnostics().lastError, { code: 'view_call_timeout', path: 'db.chats.list' })
+    // the next call is not held up by the abandoned one; the timeout is cleared only by a success of the SAME path (F1), not by an unrelated core call
+    await api.line.status()
+    assert.equal(api.plugin.backendPhase(), 'timeout', 'an unrelated core call succeeded: db.chats.list still has not answered, so the timeout stays')
+    assert.deepEqual(await api.db.chats.list(), [{ chatId: 'c' }])
+    assert.equal(api.plugin.backendPhase(), 'ready')
+    assert.deepEqual(phases, ['timeout', 'ready'])
+    fake.release() // the host answers the abandoned call late
+    await sleep(30)
+    assert.deepEqual(unhandled, [])
+  } finally { process.off('unhandledRejection', onRejection); fake.release(); api.dispose() }
+})
+
+test('WP-C timeout (F1): a line.status / messages.recent timeout stays until that same path answers; an unrelated core success neither clears it nor announces another phase', async () => {
+  const fake = scriptedHost({
+    'line.status': (_args, n) => (n === 1 ? { hold: true } : { value: { state: 'running' } }),
+    'messages.recent': (_args, n) => (n === 1 ? { hold: true } : { value: [] }),
+    'db.chats.list': { value: [] }, 'db.messages.list': { value: [] }, 'settings.get': { value: {} }
+  })
+  const api = apiFor(fake, { timeouts: TIGHT })
+  const phases = []
+  api.plugin.onBackendPhase((p) => phases.push(p))
+  try {
+    await api.db.chats.list()
+    await assert.rejects(api.line.status(), (e) => e instanceof PluginApiError && e.code === 'view_call_timeout' && e.path === 'line.status')
+    await assert.rejects(api.messages.recent(), (e) => e instanceof PluginApiError && e.code === 'view_call_timeout' && e.path === 'messages.recent')
+    assert.equal(api.plugin.backendPhase(), 'timeout')
+    assert.deepEqual(phases, ['timeout'])
+
+    await api.plugin.invoke('db.messages.list', [{ limit: 5 }])
+    await api.settings.get()
+    await api.db.chats.list()
+    assert.equal(api.plugin.backendPhase(), 'timeout', 'unrelated core calls succeeded: the timeout of line.status / messages.recent is still on')
+    assert.deepEqual(phases, ['timeout'], 'no other phase was announced in between')
+
+    assert.deepEqual(await api.line.status(), { state: 'running' })
+    assert.equal(api.plugin.backendPhase(), 'timeout', 'line.status answered but messages.recent has not: still a timeout')
+    assert.deepEqual(await api.messages.recent(), [])
+    assert.equal(api.plugin.backendPhase(), 'ready')
+    assert.deepEqual(phases, ['timeout', 'ready'])
+  } finally { fake.release(); api.dispose() }
+})
+
+test('WP-C timeout (F2): only line.status / messages.recent / db.chats.list can put the status line into timeout; a db.messages.list (or any other core path) timeout does not, but is still counted and kept as the last error', async () => {
+  const fake = scriptedHost({
+    'line.status': { value: { state: 'running' } }, 'db.chats.list': { value: [] },
+    'db.messages.list': { hold: true }, 'db.todos.list': { hold: true }, 'settings.get': { hold: true }
+  })
+  const api = apiFor(fake, { timeouts: TIGHT })
+  const phases = []
+  api.plugin.onBackendPhase((p) => phases.push(p))
+  const timedOut = (path) => (e) => e instanceof PluginApiError && e.code === 'view_call_timeout' && e.path === path
+  try {
+    await assert.rejects(api.plugin.invoke('db.messages.list', [{ limit: 5 }]), timedOut('db.messages.list'))
+    assert.equal(api.plugin.backendPhase(), 'connecting', 'db.messages.list timed out before the bridge answered: not a timeout')
+    assert.deepEqual(phases, [])
+    await api.line.status()
+    await api.db.chats.list()
+    assert.equal(api.plugin.backendPhase(), 'ready')
+    await assert.rejects(api.plugin.invoke('db.messages.list', [{ limit: 5 }]), timedOut('db.messages.list'))
+    await assert.rejects(api.plugin.invoke('db.todos.list', []), timedOut('db.todos.list'))
+    await assert.rejects(api.plugin.invoke('settings.get', []), timedOut('settings.get'))
+    assert.equal(api.plugin.backendPhase(), 'ready', 'timeouts of paths outside the bridge never reach the status line')
+    assert.deepEqual(phases, ['ready'], 'and no phase change was announced for them')
+    assert.equal(api.plugin.transportStats().timeouts, 4, 'they are still counted')
+    assert.deepEqual(api.plugin.backendDiagnostics().lastError, { code: 'view_call_timeout', path: 'settings.get' }, 'and still visible in the diagnostics')
+    assert.notEqual(api.plugin.backendLink().state, 'revoked')
+  } finally { fake.release(); api.dispose() }
+})
+
+test('WP-C timeout (F2): a ping timeout is cleared by ANY successful core call (the backend is alive), but that call never clears a bridge path that is still timed out', async () => {
+  const onlyFirstHangs = (value) => (_args, n) => (n === 1 ? { hold: true } : { value })
+  const alone = scriptedHost({ ping: onlyFirstHangs({ version: 'x' }), 'db.messages.list': { value: [] }, 'line.status': { value: { state: 'running' } }, 'db.chats.list': { value: [] } })
+  const a = apiFor(alone, { timeouts: TIGHT })
+  const seenA = []
+  a.plugin.onBackendPhase((p) => seenA.push(p))
+  try {
+    await assert.rejects(a.ping(), (e) => e.code === 'view_call_timeout' && e.path === 'ping')
+    assert.equal(a.plugin.backendPhase(), 'timeout')
+    await a.plugin.invoke('db.messages.list', [{ limit: 5 }])
+    assert.equal(a.plugin.backendPhase(), 'connecting', 'any core call that answers shows the backend is alive: the ping timeout is gone')
+    assert.deepEqual(seenA, ['timeout', 'connecting'])
+    await a.line.status()
+    await a.db.chats.list()
+    assert.equal(a.plugin.backendPhase(), 'ready')
+  } finally { alone.release(); a.dispose() }
+
+  const both = scriptedHost({ ping: onlyFirstHangs({ version: 'x' }), 'line.status': onlyFirstHangs({ state: 'running' }), 'db.messages.list': { value: [] }, 'db.chats.list': { value: [] } })
+  const b = apiFor(both, { timeouts: TIGHT })
+  const seenB = []
+  b.plugin.onBackendPhase((p) => seenB.push(p))
+  try {
+    await assert.rejects(b.ping(), (e) => e.code === 'view_call_timeout')
+    await assert.rejects(b.line.status(), (e) => e.code === 'view_call_timeout')
+    assert.equal(b.plugin.backendPhase(), 'timeout')
+    await b.plugin.invoke('db.messages.list', [{ limit: 5 }])
+    assert.equal(b.plugin.backendPhase(), 'timeout', 'the ping timeout is cleared, line.status has still not answered: still a timeout')
+    assert.deepEqual(seenB, ['timeout'])
+    await b.line.status()
+    assert.equal(b.plugin.backendPhase(), 'connecting', 'line.status answered: nothing is left')
+    assert.deepEqual(seenB, ['timeout', 'connecting'])
+  } finally { both.release(); b.dispose() }
+})
+
+test('WP-C timeout (F2): a job.poll / result.chunk that times out is charged to the path that asked for it (a bridge path shows, any other does not), and the path answering again clears it', async () => {
+  let healed = false
+  const host = {
+    backend: {
+      async call(_method, params) {
+        const path = params.path
+        if (path === 'line.status') return healed ? { ok: true, value: { state: 'running' } } : { ok: true, chunked: true, resultId: 'r1', chunks: 1 }
+        if (path === 'db.messages.list') return { ok: true, pending: true, jobId: 'j1' }
+        return new Promise(() => undefined)
+      }
+    },
+    assets: { url: (path) => path }
+  }
+  const api = createPluginLineTodoApi({ host, events: { ...FAST_EVENTS, enabled: false }, busyRetry: { attempts: 0 }, timeouts: TIGHT })
+  try {
+    await assert.rejects(api.plugin.invoke('db.messages.list', [{ limit: 5 }]), (e) => e.code === 'view_call_timeout' && e.path === 'job.poll')
+    assert.equal(api.plugin.backendPhase(), 'connecting', 'a job.poll of db.messages.list is not a bridge path')
+    await assert.rejects(api.plugin.invoke('line.status', []), (e) => e.code === 'view_call_timeout' && e.path === 'result.chunk')
+    assert.equal(api.plugin.backendPhase(), 'timeout', 'the chunk of line.status is a line.status timeout')
+    healed = true
+    assert.deepEqual(await api.plugin.invoke('line.status', []), { state: 'running' })
+    assert.equal(api.plugin.backendPhase(), 'connecting', 'line.status answered: the timeout is gone')
+  } finally { api.dispose() }
+})
+
+test('WP-C phase: the starting announcement does not depend on setTimeout firing a millisecond late — a timer that fires early (setTimeout vs Date.now skew, about 1 in 100 on Windows) still announces starting', async () => {
+  const realNow = Date.now
+  const fake = scriptedHost({ ping: { hold: true } })
+  const api = apiFor(fake, { startingAfterMs: 60, timeouts: { ...TIGHT, pingMs: 5000 } })
+  const phases = []
+  api.plugin.onBackendPhase((p) => phases.push(p))
+  try {
+    const ping = api.ping().catch(() => undefined)
+    Date.now = () => realNow() - 40 // as if the 60 ms timer fired 40 ms early: the margin is large so that ordinary timer lateness cannot hide a missing re-arm
+    await sleep(250)
+    assert.deepEqual(phases, ['starting'], 'the screen was told: without the re-arm the one timer saw "too early", published nothing and never tried again')
+    assert.equal(api.plugin.backendPhase(), 'starting')
+    Date.now = realNow
+    fake.release()
+    await ping
+  } finally { Date.now = realNow; fake.release(); api.dispose() }
+})
+
+test('WP-C timeout: bulk degrades silently (null / empty, no timeout phase, no last error); AI paths that the backend itself lets run for 20 s are not abandoned at the core limit; events are never limited', async () => {
+  const fake = scriptedHost({
+    'media.prepare': { hold: true }, 'media.avatar.prepareChats': { hold: true },
+    'db.todos.draftReply': { delayMs: 150, value: 'draft' }, 'db.todos.list': { delayMs: 150, value: [] },
+    'events.pull': { delayMs: 150, value: { events: [] } }
+  })
+  const api = apiFor(fake, { timeouts: TIGHT })
+  try {
+    assert.equal(await api.media.assetUrl('i:1'), null, 'a timed-out media.prepare answers null like any failure')
+    assert.deepEqual(await api.media.avatarUrls(['a']), { urls: {}, names: {} })
+    assert.equal(api.plugin.transportStats().timeouts, 2)
+    assert.equal(api.plugin.backendPhase(), 'connecting', 'bulk timeouts do not turn the phase into a timeout')
+    assert.equal(api.plugin.backendDiagnostics().lastError, null)
+    assert.equal(await api.plugin.invoke('db.todos.draftReply', ['t1']), 'draft', 'draftReply (150 ms) is a long call: it is judged against longMs 400, not coreMs 60')
+    await assert.rejects(api.db.todos.list(), (e) => e.code === 'view_call_timeout', 'an ordinary read taking the same 150 ms is abandoned at coreMs 60')
+    assert.deepEqual(await api.plugin.invoke('events.pull', [{ sessionId: 's', afterSeq: 0, waitMs: 0 }]), { events: [] }, 'events have no limit')
+  } finally { fake.release(); api.dispose() }
+})
+
+test('WP-C phase: ping unanswered = connecting, then starting after startingAfterMs; once ping answers it is connecting until line.status AND db.chats.list have answered, then ready; every change is announced once', async () => {
+  const fake = scriptedHost({ ping: { hold: true }, 'line.status': { value: { state: 'running' } }, 'db.chats.list': { value: [] } })
+  const api = apiFor(fake, { startingAfterMs: 60, timeouts: { ...TIGHT, pingMs: 5000 } })
+  const phases = []
+  api.plugin.onBackendPhase((p) => phases.push(p))
+  try {
+    assert.equal(api.plugin.backendPhase(), 'connecting', 'before anything is sent')
+    const ping = api.ping()
+    assert.equal(api.plugin.backendPhase(), 'connecting', 'ping just sent: not starting yet')
+    await sleep(100)
+    assert.equal(api.plugin.backendPhase(), 'starting')
+    assert.deepEqual(phases, ['starting'])
+    fake.release()
+    await ping
+    assert.equal(api.plugin.backendPhase(), 'connecting', 'ping answered, status and list not yet')
+    await api.line.status()
+    assert.equal(api.plugin.backendPhase(), 'connecting', 'line.status alone is not enough')
+    await api.db.chats.list()
+    assert.equal(api.plugin.backendPhase(), 'ready')
+    assert.deepEqual(phases, ['starting', 'connecting', 'ready'])
+  } finally { fake.release(); api.dispose() }
+})
+
+test('WP-C phase: a ping that never answers is a timeout at pingMs (35 s in production, longer than the host 30 s); a refusing host is error; unavailable during the wait for ping is still starting, after ping gave up it is error', async () => {
+  const hung = scriptedHost({ ping: { hold: true } })
+  const a = apiFor(hung, { startingAfterMs: 30, timeouts: { ...TIGHT, pingMs: 120 } })
+  try {
+    const result = await a.ping().then(() => 'answered', (e) => e.code)
+    assert.equal(result, 'view_call_timeout')
+    assert.equal(a.plugin.backendPhase(), 'timeout')
+  } finally { hung.release(); a.dispose() }
+
+  const fenced = scriptedHost({ 'line.status': { throws: 'plugin_disabled' } })
+  const b = apiFor(fenced, { timeouts: TIGHT })
+  try {
+    await assert.rejects(b.line.status(), (e) => e instanceof PluginBackendError && e.code === 'plugin_disabled')
+    assert.equal(b.plugin.backendLink().state, 'revoked')
+    assert.equal(b.plugin.backendPhase(), 'error')
+  } finally { b.dispose() }
+
+  let pingTries = 0
+  const booting = scriptedHost({ ping: () => { pingTries += 1; return { delayMs: 40, throws: 'plugin_backend_unavailable' } } })
+  const c = apiFor(booting, { startingAfterMs: 20, busyRetry: { attempts: 2, baseMs: 10, maxMs: 10, random: () => 0.5 }, timeouts: { ...TIGHT, pingMs: 5000 } })
+  const seen = []
+  c.plugin.onBackendPhase((p) => seen.push(p))
+  try {
+    await assert.rejects(c.ping(), (e) => e.code === 'plugin_backend_unavailable')
+    assert.equal(pingTries, 3, 'retried with backoff, as before')
+    assert.equal(c.plugin.backendLink().state, 'unavailable')
+    assert.equal(c.plugin.backendPhase(), 'error', 'ping gave up: the unavailable banner is allowed to show')
+    assert.ok(seen.includes('starting'), `while ping was still being retried the phase was starting: ${seen.join(',')}`)
+    assert.equal(seen.at(-1), 'error')
+  } finally { c.dispose() }
+})
+
+test('WP-C diagnostics: pending core calls report how long they have waited and whether they hold a slot; and nothing is left pending once they finish', async () => {
+  const fake = scriptedHost({ 'line.status': { hold: true }, 'db.chats.list': { hold: true }, 'settings.get': { hold: true }, 'db.todos.list': { hold: true } })
+  const api = apiFor(fake, { timeouts: { coreMs: 5000, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
+  try {
+    const pending = [api.line.status(), api.db.chats.list(), api.settings.get(), api.db.todos.list()].map((p) => p.catch(() => undefined))
+    await until(() => fake.state.calls.length === 3)
+    await sleep(40)
+    const diag = api.plugin.backendDiagnostics()
+    assert.equal(diag.calls.length, 4)
+    assert.deepEqual(diag.calls.map((c) => [c.path, c.lane, c.running]), [['line.status', 'core', true], ['db.chats.list', 'core', true], ['settings.get', 'core', true], ['db.todos.list', 'core', false]])
+    assert.ok(diag.calls.every((c) => c.waitedMs >= 30), JSON.stringify(diag.calls))
+    assert.equal(diag.lastError, null)
+    fake.release()
+    await sleep(20)
+    fake.release()
+    await Promise.all(pending)
+    await sleep(10)
+    assert.equal(api.plugin.backendDiagnostics().calls.length, 0)
+  } finally { fake.release(); api.dispose() }
+})
+
+test('WP-C banner: the unavailable banner stays hidden while the phase is starting or connecting, and shows again for error / timeout / ready; revoked is never hidden', async () => {
+  const unavailable = { state: 'unavailable', code: 'plugin_backend_unavailable' }
+  const revoked = { state: 'revoked', code: 'plugin_disabled' }
+  assert.ok(describeLink(unavailable))
+  assert.ok(describeLink(unavailable, null))
+  assert.equal(describeLink(unavailable, 'starting'), null)
+  assert.equal(describeLink(unavailable, 'connecting'), null)
+  for (const phase of ['error', 'timeout', 'ready']) assert.equal(describeLink(unavailable, phase)?.tone, 'warn', phase)
+  for (const phase of ['starting', 'connecting', 'error', 'timeout', 'ready', null]) assert.equal(describeLink(revoked, phase)?.tone, 'err', String(phase))
+  assert.equal(describeLink({ state: 'ok', code: null }, 'error'), null)
+  assert.equal(describeBackendError({ code: 'view_call_timeout' }).kind, 'timeout')
+  assert.match(describeBackendError({ code: 'view_call_timeout' }).text, /讀取逾時.*重試/)
+})
+
+test('WP-C board: bootBoard sends ping first and defers ai.status until the first core data (line.status + db.chats.list) is in, or the defer limit, whichever comes first', async () => {
+  const previous = globalThis.window
+  try {
+    // 1) core data arrives quickly: ai.status follows it at once (well before the limit)
+    const quick = scriptedHost({ ping: { value: { ok: 1 } }, 'line.status': { value: { state: 'running' } }, 'db.chats.list': { value: [] }, 'ai.status': { value: { state: 'ready' } } })
+    globalThis.window = { tuqPlugin: quick.host, addEventListener() {} }
+    const boot = bootBoard({ aiStatusDeferMs: 1500 })
+    try {
+      assert.ok(boot)
+      await until(() => quick.count('ping') === 1)
+      await sleep(40)
+      assert.equal(quick.count('ai.status'), 0, 'not before the first core data')
+      await boot.api.line.status()
+      assert.equal(quick.count('ai.status'), 0, 'line.status alone is not the first batch')
+      await boot.api.db.chats.list()
+      await until(() => quick.count('ai.status') === 1, { message: 'ai.status after ready' })
+      assert.deepEqual(quick.state.calls.map((c) => c.path), ['ping', 'line.status', 'db.chats.list', 'ai.status'])
+      assert.equal(laneFor('ai.status'), 'bulk')
+    } finally { boot?.api.dispose() }
+
+    // 2) core data never arrives: ai.status goes out at the defer limit, not earlier
+    const slow = scriptedHost({ ping: { value: { ok: 1 } }, 'line.status': { hold: true }, 'ai.status': { value: { state: 'ready' } } })
+    globalThis.window = { tuqPlugin: slow.host, addEventListener() {} }
+    const t0 = Date.now()
+    const boot2 = bootBoard({ aiStatusDeferMs: 200 })
+    try {
+      void boot2.api.line.status().catch(() => undefined)
+      await sleep(120)
+      assert.equal(slow.count('ai.status'), 0, 'still deferred at 120 ms')
+      await until(() => slow.count('ai.status') === 1, { message: 'ai.status at the limit' })
+      const at = slow.state.calls.find((c) => c.path === 'ai.status').at - t0
+      assert.ok(at >= 180 && at < 1_000, `ai.status sent after ${at} ms (limit 200; catastrophe ceiling 1,000 ms)`)
+      assert.equal(slow.state.calls[0].path, 'ping')
+    } finally { slow.release(); boot2?.api.dispose() }
+  } finally {
+    if (previous === undefined) delete globalThis.window; else globalThis.window = previous
   }
 })

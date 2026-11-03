@@ -82,6 +82,50 @@ export function findDb(): string | null {
 }
 
 /**
+ * openSnapshotDb(path, key, options?) — 開一份已經就位的 snapshot：開檔 → PRAGMA → 驗解密 → WAL checkpoint。
+ *
+ * 從 `openDb` 抽出（步驟 2–5 逐字不變），讓持久 snapshot（lineSnapshot／lineAccess）複用同一段開檔與驗證，
+ * 不必再複製一份 DB。`openDb` 的複製、錯誤包裝與 cleanup 順序和先前相同。
+ *
+ *   - 開檔失敗：原樣丟出引擎的錯誤。
+ *   - PRAGMA／驗解 SQL 失敗：關掉連線，丟出 `decryption failed` 的 Error（訊息不變，原因放在 `cause`）。
+ *   - `options.checkpoint === false`：不做 `wal_checkpoint(TRUNCATE)`。持久 snapshot 不可被改動（讀寫引擎的 checkpoint 會把 WAL 併進本地 edb），所以 lineAccess 傳 false；預設 true＝`openDb` 的舊行為。
+ */
+export function openSnapshotDb(path: string, key: string, options: { checkpoint?: boolean } = {}): Db {
+  const { sqlite } = getLineEnginePorts()
+  // 開 COPY read-write，讓 WAL merge 進來（最新訊息可見）。
+  const con = sqlite.open(path)
+  try {
+    // PRAGMA 順序逐字對齊 py：cipher → kdf_iter → key。
+    // better-sqlite3(-multiple-ciphers) 的 pragma() 用 "name=value" 字串形式
+    // （對照 scripts/spike/ciphers-spike.cjs 已驗證的正確寫法）。
+    con.pragma(`cipher='${CIPHER}'`)
+    con.pragma(`kdf_iter=${KDF_ITER}`)
+    con.pragma(`key='${key}'`)
+    // 驗解密 —— 錯 key / 錯 cipher 參數會在此拋。
+    con.prepare('SELECT count(*) FROM sqlite_master').get()
+  } catch (cause) {
+    try {
+      con.close()
+    } catch {
+      // ignore
+    }
+    throw new Error(
+      JSON.stringify({ error: 'decryption failed — wrong key or cipher params' }),
+      { cause },
+    )
+  }
+  if (options.checkpoint !== false) {
+    try {
+      con.pragma('wal_checkpoint(TRUNCATE)')
+    } catch {
+      // 非致命（對齊 py 的 try/except pass）
+    }
+  }
+  return con
+}
+
+/**
  * openDb(key, srcPath?) — snapshot + 開 RW COPY + 驗解 + WAL checkpoint。
  *
  * 逐步對齊 linedb.py:30-57（`open_db`）：
@@ -98,7 +142,7 @@ export function openDb(
   key: string,
   srcPath?: string | null,
 ): { con: Db; cleanup: () => void } {
-  const { fs, sqlite, dbDir } = getLineEnginePorts()
+  const { fs, dbDir } = getLineEnginePorts()
   const src = srcPath ?? findDbPath(fs, dbDir)
   if (!src) {
     throw new Error(JSON.stringify({ error: 'LINE message DB not found', dir: dbDir }))
@@ -115,36 +159,10 @@ export function openDb(
   const path = copySnapshot(fs, src, tmp, 'm.edb')
   let con: Db
   try {
-    // 開 COPY read-write，讓 WAL merge 進來（最新訊息可見）。
-    con = sqlite.open(path)
+    con = openSnapshotDb(path, key)
   } catch (e) {
     cleanup()
     throw e
-  }
-  try {
-    // PRAGMA 順序逐字對齊 py：cipher → kdf_iter → key。
-    // better-sqlite3(-multiple-ciphers) 的 pragma() 用 "name=value" 字串形式
-    // （對照 scripts/spike/ciphers-spike.cjs 已驗證的正確寫法）。
-    con.pragma(`cipher='${CIPHER}'`)
-    con.pragma(`kdf_iter=${KDF_ITER}`)
-    con.pragma(`key='${key}'`)
-    // 驗解密 —— 錯 key / 錯 cipher 參數會在此拋。
-    con.prepare('SELECT count(*) FROM sqlite_master').get()
-  } catch {
-    try {
-      con.close()
-    } catch {
-      // ignore
-    }
-    cleanup()
-    throw new Error(
-      JSON.stringify({ error: 'decryption failed — wrong key or cipher params' }),
-    )
-  }
-  try {
-    con.pragma('wal_checkpoint(TRUNCATE)')
-  } catch {
-    // 非致命（對齊 py 的 try/except pass）
   }
   const wrappedCleanup = (): void => {
     try {
@@ -442,6 +460,37 @@ export function newMessages(
   args.push(limit)
   const rows = con.prepare(q).all(...args) as RawMessageRow[]
   return rows.map(mapMessageRow)
+}
+
+/** 頭像回填用：一列「有發話者的訊息」（rowid、聊天室、訊息 id、發話者）。 */
+export interface OlderSenderRow {
+  rowId: number
+  chatId: string
+  msgId: string
+  from: string
+}
+
+/** 目前最大的 `_message` rowid（沒有訊息回 0）。 */
+export function maxMessageRowId(con: Db): number {
+  const row = con.prepare('SELECT MAX(rowid) AS m FROM _message').get() as { m: number | bigint | null } | undefined
+  return row?.m == null ? 0 : toSafeNumber(row.m)
+}
+
+/**
+ * 頭像回填：rowid 小於 `before` 的訊息，由新到舊；只取有發話者、而且不是自己（`_from != accountMid`）的列。
+ * 訊息 id 一律用 `normalizeMsgId`（和匯入時的 `i:` 後綴同一個規則），不用 CAST(_id AS TEXT)。
+ */
+export function olderSenderRows(con: Db, before: number, accountMid: string | null, limit: number): OlderSenderRow[] {
+  const rows = con.prepare(
+    'SELECT rowid AS _rowid,_chatId,_id,_from FROM _message WHERE rowid < ? AND _from IS NOT NULL AND _from != ? ORDER BY rowid DESC LIMIT ?',
+  ).all(before, accountMid ?? '', limit) as Array<{ _rowid: number | bigint; _chatId: string; _id: number | string | bigint | null; _from: string }>
+  const out: OlderSenderRow[] = []
+  for (const r of rows) {
+    const msgId = normalizeMsgId(r._id)
+    if (msgId === null || msgId === '') continue
+    out.push({ rowId: toSafeNumber(r._rowid), chatId: r._chatId, msgId: String(msgId), from: r._from })
+  }
+  return out
 }
 
 /**

@@ -27,10 +27,10 @@ import { parseResidencyView } from '../../shared/residency'
 import type { ResidencySnapshot } from '../../shared/residency'
 import type { PromptSuggestion } from '../../shared/promptSettings'
 import { PluginEventPump, type PluginEventPumpOptions, type PluginEventType } from './pluginEvents'
-import { PluginApiError, PluginTransport, PluginUnsupportedError, type BackendLink, type BusyRetryOptions, type TuqPluginHost } from './pluginTransport'
+import { PluginApiError, PluginTransport, PluginUnsupportedError, type BackendDiagnostics, type BackendLink, type BackendPhase, type BusyRetryOptions, type TransportTimeouts, type TuqPluginHost } from './pluginTransport'
 
 export { ACCESS_HOST_CODES, PluginApiError, PluginBackendError, PluginUnsupportedError } from './pluginTransport'
-export type { BackendLink, BackendLinkState, TuqPluginHost } from './pluginTransport'
+export type { BackendDiagnostics, BackendLink, BackendLinkState, BackendPhase, CallLane, TransportTimeouts, TuqPluginHost } from './pluginTransport'
 export { PLUGIN_CAPABILITIES } from './capabilities'
 
 type GroupTopicsApi = NonNullable<LineTodoApi['groupTopics']>
@@ -46,6 +46,10 @@ export interface PluginApiOptions {
   jobPollWaitMs?: number
   /** host 回忙碌（`plugin_backend_busy`／`plugin_backend_unavailable`）時的退避重試；預設最多 4 次、100 ms 起。 */
   busyRetry?: BusyRetryOptions
+  /** 畫面端等 host 回覆的上限（core 10 s、ping 35 s、bulk 15 s…，見 pluginTransport.ts 檔頭）；測試用較小的值覆寫。 */
+  timeouts?: TransportTimeouts
+  /** ping 送出多久還沒有任何成功回應就判定為「後端啟動中」（預設 1,200 ms）。 */
+  startingAfterMs?: number
   events?: Pick<PluginEventPumpOptions, 'waitMs' | 'idleStopMs' | 'backoffBaseMs' | 'backoffMaxMs' | 'accessProbeMs' | 'minLoopMs' | 'onDiagnostic'> & {
     /** false＝不開事件長輪詢（`on*` 訂閱不會收到任何事件）。設定 view 用：它的畫面不依賴即時事件，每次動作後會自己重讀狀態。 */
     enabled?: boolean
@@ -82,6 +86,15 @@ export interface PluginExtras {
   backendLink(): BackendLink
   /** 連線狀態改變時通知（外掛畫面的狀態列用）。 */
   onBackendLink(listener: (link: BackendLink) => void): () => void
+  /**
+   * 後端階段：`starting`（後端啟動中）／`connecting`（連線中）／`ready`／`timeout`（有讀取逾時）／`error`（revoked 或 unavailable）。
+   * 畫面據此顯示一行狀態，不必猜 host 的內部狀態；規則見 pluginTransport.ts 檔頭。
+   */
+  backendPhase(): BackendPhase
+  /** 階段改變時通知。 */
+  onBackendPhase(listener: (phase: BackendPhase) => void): () => void
+  /** 診斷快照（按需展開的「診斷」用）：還沒結束的呼叫已等待多久、最近一次失敗。 */
+  backendDiagnostics(): BackendDiagnostics
   /** 事件輪詢的狀態（測試／診斷）。 */
   eventsStats(): ReturnType<PluginEventPump['stats']>
   /** 傳輸層的併發統計（測試／診斷）：目前在飛／排隊、歷來最大同時在飛、忙碌重試次數。 */
@@ -95,6 +108,9 @@ export interface PluginLineTodoApi extends LineTodoApi {
   /** 卸載：停止事件輪詢（並關閉 session），之後的請求一律 reject `disposed`。 */
   dispose(): void
 }
+
+/** backend `media.ts` 的 `MEDIA_INDEX_BUILDING_TOKEN`（兩邊以測試對齊）：`not_cached` 的訊息含它＝LINE Cache 索引還在建立。 */
+export const MEDIA_INDEX_BUILDING_TOKEN = 'index_building'
 
 const unsupportedText = (error: PluginUnsupportedError): string => `unsupported_in_plugin: ${error.detail || error.path}`
 
@@ -111,7 +127,7 @@ async function orUnsupported<T>(run: () => Promise<unknown>, fallback: (error: P
 export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTodoApi {
   const { host } = options
   if (!host || !host.backend || typeof host.backend.call !== 'function') throw new TypeError('createPluginLineTodoApi needs window.tuqPlugin.backend.call')
-  const transport = new PluginTransport({ host, maxConcurrentCalls: options.maxConcurrentCalls, jobPollWaitMs: options.jobPollWaitMs, busyRetry: options.busyRetry })
+  const transport = new PluginTransport({ host, maxConcurrentCalls: options.maxConcurrentCalls, jobPollWaitMs: options.jobPollWaitMs, busyRetry: options.busyRetry, timeouts: options.timeouts, startingAfterMs: options.startingAfterMs })
   /** AI 功能的 backend 呼叫；失敗（AI 不可用、逾時、被拒）轉成該方法型別允許的失敗結果。 */
   const runAi = async <T>(path: string, args: unknown[], failed: (message: string) => T): Promise<T> => {
     try {
@@ -143,21 +159,23 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
   let refiningPrompt = false
 
   // ── 媒體 URL（成功的才快取；not_cached 之類之後可能成功）──
+  // backend 的 not_cached 訊息帶 MEDIA_INDEX_BUILDING_TOKEN＝LINE Cache 索引還在建立（圖片可能已經在 Cache 裡，只是索引還沒看到）；沒帶＝LINE 還沒下載。
   const assetUrls = new Map<string, string>()
-  const assetUrl = async (msgId: string): Promise<string | null> => {
+  const assetLookup = async (msgId: string): Promise<{ url: string | null; indexing: boolean }> => {
     const known = assetUrls.get(msgId)
-    if (known) return known
+    if (known) return { url: known, indexing: false }
     try {
       const prepared = (await call<{ path?: unknown }>('media.prepare', msgId))
-      if (!prepared || typeof prepared.path !== 'string') return null
+      if (!prepared || typeof prepared.path !== 'string') return { url: null, indexing: false }
       const url = host.assets?.url(prepared.path)
-      if (!url) return null
+      if (!url) return { url: null, indexing: false }
       assetUrls.set(msgId, url)
-      return url
-    } catch {
-      return null
+      return { url, indexing: false }
+    } catch (error) {
+      return { url: null, indexing: error instanceof PluginApiError && error.code === 'not_cached' && error.message.includes(MEDIA_INDEX_BUILDING_TOKEN) }
     }
   }
+  const assetUrl = async (msgId: string): Promise<string | null> => (await assetLookup(msgId)).url
 
   const avatarUrlBatch = async (path: 'media.avatar.prepareChats' | 'media.avatar.prepareMessages', args: unknown[]): Promise<AvatarUrlBatchDTO> => {
     try {
@@ -284,6 +302,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       open: (msgId) => orUnsupported(() => call('media.open', msgId), (e) => ({ ok: false, error: unsupportedText(e) })),
       saveAs: (msgId) => orUnsupported(() => call('media.saveAs', msgId), (e) => ({ ok: false, error: unsupportedText(e) })),
       assetUrl,
+      assetLookup,
       avatarUrls: (chatIds) => avatarUrlBatch('media.avatar.prepareChats', [chatIds]),
       messageAvatarUrls: (chatId, msgIds) => avatarUrlBatch('media.avatar.prepareMessages', [chatId, msgIds])
     },
@@ -313,6 +332,9 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       reviewStatus: () => call('review.status'),
       backendLink: () => transport.link(),
       onBackendLink: (listener) => transport.onLink(listener),
+      backendPhase: () => transport.phase(),
+      onBackendPhase: (listener) => transport.onPhase(listener),
+      backendDiagnostics: () => transport.diagnostics(),
       eventsStats: () => pump.stats(),
       transportStats: () => transport.stats()
     },

@@ -1,7 +1,9 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ChatDTO, MessageDTO, RawLineMessage, LineBridgeStatus } from '../../shared/api'
-import { useLineStream } from '../hooks/useLineStream'
-import { backendErrorText } from '../lib/backendError'
+import { useBackendPhase, useLineStream } from '../hooks/useLineStream'
+import type { BackendPhaseSource } from '../hooks/useLineStream'
+import type { BackendDiagnostics, BackendPhase } from '../platform/pluginTransport'
+import { backendErrorText, describePhase } from '../lib/backendError'
 import { formatCallRecord } from '../lib/callRecord'
 import { hasSavedMessageText, mergeMessageCopies, recalledMessageNotice, recalledMessageText } from '../lib/recalledMessage'
 import { useLineTodoApi } from '../platform/LineTodoApi'
@@ -25,8 +27,19 @@ type PaneView = 'messages' | 'topics' | 'todos'
 
 const HISTORY_PAGE_SIZE = 100
 
-function statusLabel(s: LineBridgeStatus | null): { text: string; cls: string } {
-  if (!s) return { text: '連線中…', cls: '' }
+/**
+ * 狀態列的一句話。外掛版有 phase（pluginTransport.ts）：逾時與無法連線不可隱藏（紅點＋「重試」），啟動中與連線中分開寫；
+ * standalone 沒有 phase（null），維持原本的文字。`retrying`＝使用者剛按了「重試」，等結果回來之前不再顯示舊的逾時。
+ */
+function statusLabel(s: LineBridgeStatus | null, phase: BackendPhase | null, retrying: boolean): { text: string; cls: string; retry: boolean } {
+  if (retrying) return { text: '重試中…', cls: '', retry: false }
+  const described = describePhase(phase)
+  if (described && described.tone === 'err') return { text: described.text, cls: 'err', retry: described.retry }
+  if (!s) return { text: described?.text ?? '連線中…', cls: '', retry: false }
+  return { ...bridgeLabel(s), retry: false }
+}
+
+function bridgeLabel(s: LineBridgeStatus): { text: string; cls: string } {
   switch (s.state) {
     case 'running':
       return { text: `運行中 · 已收 ${s.messageCount} 則`, cls: 'ok' }
@@ -122,6 +135,59 @@ function AvatarGlyph({ url, label, isGroup }: { url?: string; label: string; isG
         setFailedSource(url)
       }}
     />
+  )
+}
+
+function waitedSeconds(ms: number): string {
+  return `${(Math.max(0, ms) / 1000).toFixed(1)} 秒`
+}
+
+function formatUptime(ms: number): string {
+  const minutes = Math.floor(ms / 60_000)
+  if (minutes < 1) return `${Math.floor(ms / 1000)} 秒`
+  if (minutes < 60) return `${minutes} 分鐘`
+  return `${Math.floor(minutes / 60)} 小時 ${minutes % 60} 分鐘`
+}
+
+/**
+ * 「診斷」（原生 <details>，預設收合）：phase、各 core 呼叫已等待秒數、最近一次錯誤碼、後端 pid／uptime（backend.info）。
+ * 只在展開時才每秒更新、才讀 backend.info；讀不到的值顯示「未知」，不會顯示成 0。
+ */
+function BackendDiagnosticsPanel({ source }: { source: BackendPhaseSource }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [snapshot, setSnapshot] = useState<BackendDiagnostics | null>(null)
+  const [backend, setBackend] = useState<{ pid: number | null; uptimeMs: number | null } | 'unknown' | null>(null)
+
+  useEffect(() => {
+    if (!open) return undefined
+    let active = true
+    setSnapshot(source.backendDiagnostics())
+    const timer = setInterval(() => setSnapshot(source.backendDiagnostics()), 1000)
+    source.info().then((info) => {
+      if (!active) return
+      setBackend({
+        pid: typeof info.pid === 'number' && Number.isFinite(info.pid) ? info.pid : null,
+        uptimeMs: typeof info.uptimeMs === 'number' && Number.isFinite(info.uptimeMs) ? info.uptimeMs : null
+      })
+    }, () => { if (active) setBackend('unknown') })
+    return () => { active = false; clearInterval(timer) }
+  }, [open, source])
+
+  const coreCalls = snapshot?.calls.filter((call) => call.lane === 'core') ?? []
+  const phaseText = snapshot ? (describePhase(snapshot.phase)?.text ?? '正常') : '…'
+  const backendText = backend === null ? '讀取中…'
+    : backend === 'unknown' ? '未知'
+      : `pid ${backend.pid ?? '未知'} · 已執行 ${backend.uptimeMs === null ? '未知' : formatUptime(backend.uptimeMs)}`
+  return (
+    <details className="stream-diag" data-testid="backend-diagnostics" onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}>
+      <summary>診斷</summary>
+      <dl className="stream-diag-body">
+        <div><dt>狀態</dt><dd data-diag="phase">{phaseText}</dd></div>
+        <div><dt>等待中的讀取</dt><dd data-diag="calls">{snapshot === null ? '…' : coreCalls.length === 0 ? '無' : coreCalls.map((call) => `${call.path} ${waitedSeconds(call.waitedMs)}${call.running ? '' : '（排隊）'}`).join('、')}</dd></div>
+        <div><dt>最近錯誤</dt><dd data-diag="error">{snapshot === null ? '…' : snapshot.lastError ? `${snapshot.lastError.code}（${snapshot.lastError.path}）` : '無'}</dd></div>
+        <div><dt>後端</dt><dd data-diag="backend">{backendText}</dd></div>
+      </dl>
+    </details>
   )
 }
 
@@ -278,8 +344,10 @@ function MessageRow({
 
 export function MessageStream(): JSX.Element {
   const api = useLineTodoApi()
-  const { messages, status, error } = useLineStream()
-  const st = statusLabel(status)
+  const { messages, status, error, retry: retryStream } = useLineStream()
+  const { source: phaseSource, phase } = useBackendPhase()
+  const [retrying, setRetrying] = useState(false)
+  const st = statusLabel(status, phase, retrying)
   const [chats, setChats] = useState<ChatDTO[]>([])
   const [recentRows, setRecentRows] = useState<MessageDTO[]>([])
   const [chatAvatarUrls, setChatAvatarUrls] = useState<Record<string, string>>({})
@@ -314,31 +382,47 @@ export function MessageStream(): JSX.Element {
   const historyRequestIds = useRef(new Map<string, number>())
   const persistedRefreshIds = useRef(new Map<string, number>())
   const mountedRef = useRef(true)
+  const loadSeq = useRef(0)
 
   useEffect(() => {
     mountedRef.current = true
     return () => { mountedRef.current = false }
   }, [])
 
-  useEffect(() => {
-    let active = true
+  /** 讀聊天室清單與最近訊息（掛載時、以及逾時／失敗後的「重試」）。較新的一輪開始後，舊一輪的結果一律丟掉。 */
+  const reload = useCallback((): Promise<void> => {
+    loadSeq.current += 1
+    const seq = loadSeq.current
+    const live = (): boolean => mountedRef.current && loadSeq.current === seq
     setLoadingChats(true)
     setChatLoadError('')
     setHistoryLoadError('')
-    void api.db.chats.list(true).then((rows) => {
-      if (active) setChats(rows)
+    const chatsDone = api.db.chats.list(true).then((rows) => {
+      if (live()) setChats(rows)
     }, (loadError: unknown) => {
-      if (active) setChatLoadError(backendErrorText(loadError, '讀取聊天室清單失敗'))
+      if (live()) setChatLoadError(backendErrorText(loadError, '讀取聊天室清單失敗'))
     }).finally(() => {
-      if (active) setLoadingChats(false)
+      if (live()) setLoadingChats(false)
     })
-    void api.db.messages.list({ limit: 1000 }).then((rows) => {
-      if (active) setRecentRows(rows)
+    const rowsDone = api.db.messages.list({ limit: 1000 }).then((rows) => {
+      if (live()) setRecentRows(rows)
     }, (loadError: unknown) => {
-      if (active) setHistoryLoadError(backendErrorText(loadError, '讀取最近訊息失敗；仍可查看即時訊息'))
+      if (live()) setHistoryLoadError(backendErrorText(loadError, '讀取最近訊息失敗；仍可查看即時訊息'))
     })
-    return () => { active = false }
+    return Promise.all([chatsDone, rowsDone]).then(() => undefined)
   }, [api])
+
+  useEffect(() => {
+    void reload()
+    return () => { loadSeq.current += 1 }
+  }, [reload])
+
+  const retryAll = useCallback((): void => {
+    setRetrying(true)
+    void Promise.all([reload(), retryStream()]).finally(() => {
+      if (mountedRef.current) setRetrying(false)
+    })
+  }, [reload, retryStream])
 
   const chatById = useMemo(() => new Map(chats.map((chat) => [chat.chatId, chat])), [chats])
 
@@ -765,12 +849,19 @@ export function MessageStream(): JSX.Element {
     <section className="stream chat-stream">
       <div className="stream-bar">
         <span className={`dot ${st.cls}`} />
-        <span className="stream-status">LINE 橋接：{st.text}</span>
+        <span className="stream-status" role={st.cls === 'err' ? 'alert' : undefined}>LINE 橋接：{st.text}</span>
+        {st.retry && <button type="button" className="link-btn stream-retry" onClick={retryAll}>重試</button>}
         {status && status.restarts > 0 && <span className="muted">（重啟 {status.restarts} 次）</span>}
-        <span className="muted stream-count">{status?.messageCount ?? messages.length} 則</span>
+        {phaseSource && <BackendDiagnosticsPanel source={phaseSource} />}
+        {(status || messages.length > 0) && <span className="muted stream-count">{status?.messageCount ?? messages.length} 則</span>}
       </div>
       {error && <div className="set-notice err stream-error" role="alert">{error}</div>}
-      {historyLoadError && <div className="stream-load-note" role="status">{historyLoadError}</div>}
+      {historyLoadError && (
+        <div className="stream-load-note" role="status">
+          <span>{historyLoadError}</span>
+          <button type="button" className="link-btn" onClick={retryAll}>重試</button>
+        </div>
+      )}
 
       <div className={`chat-workspace mobile-show-${mobileView}`}>
         <aside className="chat-sidebar" aria-label="聊天室列表">
@@ -799,12 +890,17 @@ export function MessageStream(): JSX.Element {
               已忽略 <span>{conversations.filter((chat) => chat.blocked).length}</span>
             </button>
           </div>
-          {chatLoadError && <div className="chat-action-error" role="alert">{chatLoadError}</div>}
+          {chatLoadError && (
+            <div className="chat-action-error chat-load-error" role="alert">
+              <span>{chatLoadError}</span>
+              <button type="button" className="link-btn" onClick={retryAll}>重試</button>
+            </div>
+          )}
           {actionError && <div className="chat-action-error" role="alert">{actionError}</div>}
           {actionNotice && <div className="chat-action-notice" role="status">{actionNotice}</div>}
           <ul className="chat-list">
-            {loadingChats && conversations.length === 0 && <li className="chat-list-empty muted" role="status">正在載入聊天室…</li>}
-            {!loadingChats && conversations.length === 0 && <li className="chat-list-empty muted">目前尚無聊天資料</li>}
+            {loadingChats && conversations.length === 0 && <li className="chat-list-empty muted" role="status">{phase === 'starting' ? describePhase(phase)?.text : '正在載入聊天室…'}</li>}
+            {!loadingChats && !chatLoadError && conversations.length === 0 && <li className="chat-list-empty muted">目前尚無聊天資料</li>}
             {!loadingChats && conversations.length > 0 && shownConversations.length === 0 && (
               <li className="chat-list-empty muted">
                 <span>找不到符合的聊天室</span>
@@ -965,7 +1061,7 @@ export function MessageStream(): JSX.Element {
           ) : (
             <div className="chat-pane-empty">
               <span className="chat-pane-empty-icon" aria-hidden="true">☷</span>
-              <h2>{conversations.length === 0 ? '目前尚無聊天資料' : '選擇聊天室以查看訊息'}</h2>
+              <h2>{conversations.length === 0 ? (chatLoadError ? '尚未讀到聊天室' : loadingChats ? '正在載入聊天室…' : '目前尚無聊天資料') : '選擇聊天室以查看訊息'}</h2>
               <p>選擇左側對話後，這裡會顯示已載入的訊息。</p>
             </div>
           )}

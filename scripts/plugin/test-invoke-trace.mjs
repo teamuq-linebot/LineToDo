@@ -609,3 +609,61 @@ test('createPluginBackend writes <dataDir>/logs/invoke-trace.log by default, wri
     assert.ok(!existsSync(join(quietDir, 'logs')))
   } finally { await quiet.dispose(); rmSync(quietDir, { recursive: true, force: true }) }
 })
+
+// ───────────── snap / bg observation events ─────────────
+
+test('event(): snap and bg records carry only whitelisted fields; bg and snap(reuse) below eventMinMs, unknown names and unknown kinds are not written; a stopped trace writes nothing', () => {
+  const dir = tempDir('events')
+  const file = join(dir, 'l.log')
+  let wall = Date.parse('2026-11-02T10:00:10.000Z')
+  const trace = new InvokeTrace({ file, timer: false, pid: 4242, wallClock: () => wall })
+  try {
+    assert.equal(TRACE_DEFAULTS.eventMinMs, 50)
+    trace.event('snap', { m: 'full', ms: 1234.4, bytes: 270_000_000 })
+    trace.event('snap', { m: 'wal', ms: 7, bytes: 19_400_000 })
+    trace.event('snap', { m: 'reuse', ms: 3, bytes: 0 })
+    trace.event('snap', { m: 'reuse', ms: 80 })
+    trace.event('bg', { p: 'quick_check', ms: 49 })
+    trace.event('bg', { p: 'quick_check', ms: 50 })
+    trace.event('bg', { p: 'poll', ms: 3375 })
+    trace.event('bg', { p: 'media_index', ms: 60 })
+    trace.event('bg', { p: 'avatar_backfill', ms: 300 })
+    trace.event('bg', { p: 'avatar_backfill', ms: 12 })
+    // not recorded: unknown phase / kind, other event names, junk numbers
+    trace.event('bg', { p: 'avatar_backfill_x', ms: 500 })
+    trace.event('bg', { p: 'poll/../etc', ms: 500 })
+    trace.event('snap', { m: 'partial', ms: 500 })
+    trace.event('snap', { ms: 500 })
+    trace.event('loop_stall', { p: 'poll', ms: 5000 })
+    trace.event('bg', { p: 'poll', ms: Number.NaN })
+    const records = readRecords(file).slice(1)
+    assert.deepEqual(records.map((r) => [r.ev, r.m ?? r.p, r.ms]), [
+      ['snap', 'full', 1234], ['snap', 'wal', 7], ['snap', 'reuse', 80], ['bg', 'quick_check', 50], ['bg', 'poll', 3375], ['bg', 'media_index', 60], ['bg', 'avatar_backfill', 300]
+    ])
+    assert.deepEqual(records[0], { t: '2026-11-02T10:00:10.000Z', ev: 'snap', pid: 4242, m: 'full', ms: 1234, bytes: 270_000_000, from: '2026-11-02T10:00:08.766Z' })
+    assert.equal(records[3].bytes, undefined, 'bg carries no bytes')
+    for (const record of readRecords(file)) for (const key of Object.keys(record)) assert.ok(ALLOWED_FIELDS.has(key), `field ${key} is whitelisted`)
+    wall += 1000
+    trace.stop()
+    const count = readRecords(file).length
+    trace.event('bg', { p: 'poll', ms: 900 })
+    trace.event('snap', { m: 'full', ms: 900 })
+    assert.equal(readRecords(file).length, count, 'nothing is appended after stop')
+  } finally { trace.stop(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('event(): eventMinMs is configurable (0 records every bg), and an unwritable log never makes event() throw', () => {
+  const dir = tempDir('events-min')
+  const file = join(dir, 'l.log')
+  const trace = new InvokeTrace({ file, timer: false, pid: 1, eventMinMs: 0 })
+  try {
+    trace.event('bg', { p: 'unsent_scan', ms: 1 })
+    trace.event('snap', { m: 'reuse', ms: 0 })
+    assert.deepEqual(readRecords(file).slice(1).map((r) => [r.ev, r.m ?? r.p, r.ms]), [['bg', 'unsent_scan', 1], ['snap', 'reuse', 0]])
+  } finally { trace.stop() }
+  mkdirSync(join(dir, 'a-directory'), { recursive: true }) // the log path is a directory: every write fails
+  const blocked = new InvokeTrace({ file: join(dir, 'a-directory'), timer: false, pid: 1 })
+  assert.doesNotThrow(() => { blocked.event('bg', { p: 'poll', ms: 500 }); blocked.event('snap', { m: 'full', ms: 500 }) })
+  blocked.stop()
+  rmSync(dir, { recursive: true, force: true })
+})

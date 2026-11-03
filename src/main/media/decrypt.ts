@@ -161,12 +161,23 @@ export interface MediaDecryptor {
   reset(): void
 }
 
+/**
+ * 外部索引（圖片索引，`plugin/backend/mediaIndex.ts`）：給了它就不建記憶體 Map、也不走訪 Cache——候選檔一律向它查；
+ * 讀不到的候選檔（被 LINE 清掉、被鎖住）回報 `onUnreadable`，由索引標 stale。沒給時 decrypt 的行為與之前逐字相同。
+ */
+export interface MediaIndexLookup {
+  candidates(size: number): string[]
+  onUnreadable?(path: string): void
+}
+
 /** createMediaDecryptor 的注入選項（皆可省略；省略時用組裝根注入的 LINE 引擎 ports）。 */
 export interface MediaDecryptorOptions {
   /** LINE Cache 檔案存取；省略時用 `getLineEnginePorts().fs`（呼叫當下解析）。 */
   fs?: LineFsPort
   /** 快取根目錄；省略時 `%LOCALAPPDATA%\LINE\Cache`。單次呼叫的 `input.cacheDir` 優先。 */
   cacheDir?: string
+  /** 外部索引；有的話候選檔向它查（見 `MediaIndexLookup`），不建記憶體索引、不走訪 Cache。 */
+  index?: MediaIndexLookup
 }
 
 /** Runtime-owned cache index; each application instance tracks its own LINE cache directory. */
@@ -203,13 +214,18 @@ function decryptWithState(input: DecryptMediaInput, state: MediaCacheState, opti
     const targetSize = input.fileSize + HMAC_LEN
     const dir = input.cacheDir ?? options.cacheDir ?? defaultCacheDir()
 
-    // 首次用到、或換了 cacheDir → lazy 建索引一次；之後同一 dir 直接查記憶化 map（零重掃）。
-    if (state.cacheIndex === null || state.indexedDir !== dir) {
-      buildCacheIndex(fs, dir, state)
+    let candidates: string[]
+    if (options.index) {
+      candidates = options.index.candidates(targetSize)
+    } else {
+      // 首次用到、或換了 cacheDir → lazy 建索引一次；之後同一 dir 直接查記憶化 map（零重掃）。
+      if (state.cacheIndex === null || state.indexedDir !== dir) {
+        buildCacheIndex(fs, dir, state)
+      }
+      // size 查無候選 → 直接回 not-cached，不逐次 rebuild（避免 backup 迴圈每筆 not-cached 觸發
+      // 全量重掃 → O(N) 卡 main）；索引失效/涵蓋新 .eimg 由呼叫端主動 resetMediaCacheIndex()。
+      candidates = state.cacheIndex!.get(targetSize) ?? []
     }
-    // size 查無候選 → 直接回 not-cached，不逐次 rebuild（避免 backup 迴圈每筆 not-cached 觸發
-    // 全量重掃 → O(N) 卡 main）；索引失效/涵蓋新 .eimg 由呼叫端主動 resetMediaCacheIndex()。
-    const candidates = state.cacheIndex!.get(targetSize) ?? []
     if (candidates.length === 0) return { status: 'not-cached' }
 
     // 逐一以 HMAC 確定性裁決；命中者即正解
@@ -218,6 +234,7 @@ function decryptWithState(input: DecryptMediaInput, state: MediaCacheState, opti
       try {
         data = fs.readFile(file)
       } catch {
+        try { options.index?.onUnreadable?.(file) } catch { /* 回報失敗不影響其餘候選檔 */ }
         continue
       }
       if (data.length !== targetSize) continue

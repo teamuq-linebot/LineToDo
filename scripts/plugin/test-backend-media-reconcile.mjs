@@ -3,6 +3,7 @@
 //     1.6.8 host can serve through `assets.url()` (`/data/<path>`); failure codes; cache cap; re-index throttle; unsupported open/saveAs
 //   * self-reconcile (`runReconcile`) and the recall scan are wired into createPluginBackend, progress goes to the EventHub
 // (The same media path under the real 1.6.8 permission model + koffi fs is exercised by test-backend-contract.mjs, scenario "media".)
+// media.prepare only queries the local image index (mediaIndex.ts): these tests wait for the background scan (waitForMediaIndexReady) instead of relying on a synchronous walk.
 import assert from 'node:assert/strict'
 import { createCipheriv, createHmac, hkdfSync } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -74,11 +75,36 @@ function mediaFixture() {
   return { root, cacheDir, dataDir: join(root, 'data'), drop: (name, buf) => writeFileSync(join(cacheDir, 'a', 'b', name), buf), cleanup: () => rmSync(root, { recursive: true, force: true }) }
 }
 
+/** Poll backend.info until the image index has finished its first scan (the scan starts right away because the tests pass startDelayMs: 0). */
+async function waitForMediaIndexReady(call, { timeout = 10_000 } = {}) {
+  const t0 = Date.now()
+  for (;;) {
+    const index = (await call('backend.info')).value.media.index
+    if (index.ready && !index.scanning) return index
+    if (Date.now() - t0 > timeout) assert.fail(`the media index did not become ready: ${JSON.stringify(index)}`)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
+/** Wait until the index has completed more passes than `passesBefore` (a delta triggered by a miss runs on the next tick, not inside media.prepare). */
+async function waitForMediaIndexPass(call, passesBefore, { timeout = 10_000 } = {}) {
+  const t0 = Date.now()
+  for (;;) {
+    const index = (await call('backend.info')).value.media.index
+    if (index.passes > passesBefore && !index.scanning) return index
+    if (Date.now() - t0 > timeout) assert.fail(`the media index did not complete a pass: ${JSON.stringify(index)}`)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
 async function withMediaBackend(fx, extra, body) {
   const line = fakeLine()
-  const backend = await createPluginBackend({ pluginId: 'tuqdev.line-todo', version: '1', dataDir: fx.dataDir, line: line.port, media: { fs: createNodeLineFsPort(), cacheDir: fx.cacheDir, ...extra } })
+  const backend = await createPluginBackend({ pluginId: 'tuqdev.line-todo', version: '1', dataDir: fx.dataDir, line: line.port, media: { fs: createNodeLineFsPort(), cacheDir: fx.cacheDir, index: { startDelayMs: 0 }, ...extra } })
   const call = (path, ...args) => backend.call(backendMethodFor(path), { path, args })
-  try { await body({ backend, call, line }) } finally { await backend.dispose() }
+  try {
+    await waitForMediaIndexReady(call)
+    await body({ backend, call, line })
+  } finally { await backend.dispose() }
 }
 
 // ───────────── media ─────────────
@@ -124,15 +150,15 @@ test('media: every failure is a structured in-band code and writes nothing; open
   const fx = mediaFixture()
   const plain = Buffer.concat([JPEG_HEAD, Buffer.alloc(500, 3)])
   fx.drop('wrongkey.eimg', makeEimg(Buffer.concat([JPEG_HEAD, Buffer.alloc(796, 3)]), Buffer.alloc(32, 9).toString('base64')))
+  const notAnImage = Buffer.from('this is not an image at all, just text')
+  fx.drop('weird.eimg', makeEimg(notAnImage))
   try {
-    await withMediaBackend(fx, { reindexMinIntervalMs: 0 }, async ({ call, line }) => {
+    await withMediaBackend(fx, { refreshMinIntervalMs: 0 }, async ({ call, line }) => {
       line.emit(imageMessage(1, { fileSize: plain.length })) // not cached
       line.emit(imageMessage(2, { fileSize: 800 })) // a candidate of the right size exists, but it was encrypted with another key
       line.emit(raw(3, { text: '純文字' }))
       line.emit(imageMessage(4, { fileSize: 10, keyMaterial: null })) // no key material
       line.emit({ ...imageMessage(5, { fileSize: 10, contentType: 14 }), fileName: 'a.pdf' })
-      const notAnImage = Buffer.from('this is not an image at all, just text')
-      fx.drop('weird.eimg', makeEimg(notAnImage))
       line.emit(imageMessage(6, { fileSize: notAnImage.length }))
       const code = async (arg) => (await call('media.prepare', arg)).code
       assert.equal(await code('i:m1'), 'not_cached')
@@ -150,7 +176,7 @@ test('media: every failure is a structured in-band code and writes nothing; open
   } finally { fx.cleanup() }
 })
 
-test('media: without a known LINE cache directory it says so instead of guessing; a .eimg that appears later is found, but the index is rebuilt at most once per interval', async () => {
+test('media: without a known LINE cache directory it says so instead of guessing; a .eimg that appears later is found by the next delta, which a miss schedules at most once per interval', async () => {
   const fx = mediaFixture()
   try {
     const line = fakeLine()
@@ -162,28 +188,36 @@ test('media: without a known LINE cache directory it says so instead of guessing
 
     let clock = 1_000_000
     const plain = pngBytes(900)
-    await withMediaBackend(fx, { reindexMinIntervalMs: 60_000, now: () => clock }, async ({ call, line: l }) => {
+    await withMediaBackend(fx, { refreshMinIntervalMs: 60_000, now: () => clock }, async ({ call, line: l }) => {
       l.emit(imageMessage(2, { fileSize: plain.length }))
-      assert.equal((await call('media.prepare', 'i:m2')).code, 'not_cached')
+      const missed = await call('media.prepare', 'i:m2')
+      assert.equal(missed.code, 'not_cached')
+      assert.ok(!missed.message.includes('索引建立中'), 'the index is ready: LINE simply has not downloaded it yet')
       fx.drop('late.eimg', makeEimg(plain)) // LINE finishes the download after the index was built
+      const passes = (await call('backend.info')).value.media.index.passes
       clock += 10_000
-      assert.equal((await call('media.prepare', 'i:m2')).code, 'not_cached', 'not rebuilt more often than the interval')
+      assert.equal((await call('media.prepare', 'i:m2')).code, 'not_cached', 'a delta is not scheduled more often than the interval')
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      assert.equal((await call('backend.info')).value.media.index.passes, passes, 'no delta ran inside the throttle interval')
       clock += 60_000
+      assert.equal((await call('media.prepare', 'i:m2')).code, 'not_cached', 'the miss itself is answered immediately; the delta runs in the background')
+      await waitForMediaIndexPass(call, passes)
       const found = await call('media.prepare', 'i:m2')
       assert.equal(found.ok, true, JSON.stringify(found))
       assert.equal(found.value.size, plain.length)
+      assert.equal((await call('backend.info')).value.media.index.mode, 'delta')
     })
   } finally { fx.cleanup() }
 })
 
 test('media: the cache is capped (oldest files go first, the newest stays); a dispatcher without a media service refuses cleanly', async () => {
   const fx = mediaFixture()
+  for (let i = 0; i < 4; i += 1) fx.drop(`p${i}.eimg`, makeEimg(pngBytes(4000, 10 + i))) // in the Cache before the first scan: the index knows all four
   try {
     await withMediaBackend(fx, { maxCacheBytes: 10_000 }, async ({ call, line }) => {
       const paths = []
       for (let i = 0; i < 4; i += 1) {
         const n = 4000
-        fx.drop(`p${i}.eimg`, makeEimg(pngBytes(n, 10 + i)))
         line.emit(imageMessage(i + 1, { fileSize: n + PNG_HEAD.length }))
         const r = await call('media.prepare', `i:m${i + 1}`)
         assert.equal(r.ok, true, JSON.stringify(r))

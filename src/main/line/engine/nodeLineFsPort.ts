@@ -7,21 +7,25 @@
  */
 import { execFileSync } from 'node:child_process'
 import {
+  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { copyFile as copyFilePromise } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { LineDirEntry, LineFileStat, LineFsPort } from './fsPort'
+import type { LineDirEntry, LineFileStat, LineFsPort, LineReadDirOptions } from './fsPort'
 
 export interface NodeLineFsPortOptions {
   /** makeTempDir 的根目錄；預設 os.tmpdir()（與原 `mkdtempSync(join(tmpdir(), prefix))` 相同）。 */
@@ -50,12 +54,25 @@ export class NodeLineFsPort implements LineFsPort {
     this.tempRoot = options.tempRoot
   }
 
-  readDir(dir: string): LineDirEntry[] {
-    return readdirSync(dir, { withFileTypes: true }).map((entry) => ({
+  readDir(dir: string, options?: LineReadDirOptions): LineDirEntry[] {
+    const entries: LineDirEntry[] = readdirSync(dir, { withFileTypes: true }).map((entry) => ({
       name: entry.name,
       isFile: entry.isFile(),
       isDirectory: entry.isDirectory(),
     }))
+    if (options?.stat) {
+      for (const entry of entries) {
+        if (!entry.isFile && !entry.isDirectory) continue
+        try {
+          const st = statSync(join(dir, entry.name), { bigint: true })
+          entry.size = Number(st.size)
+          entry.mtimeNs = st.mtimeNs
+        } catch {
+          // 這個項目剛好被刪或讀不到：不帶 size／mtimeNs，由呼叫端決定怎麼處理
+        }
+      }
+    }
+    return entries
   }
 
   stat(path: string): LineFileStat {
@@ -73,6 +90,21 @@ export class NodeLineFsPort implements LineFsPort {
 
   copyFile(src: string, dst: string): void {
     copyFileSync(src, dst)
+  }
+
+  copyFileAsync(src: string, dst: string): Promise<void> {
+    return copyFilePromise(src, dst)
+  }
+
+  readHead(path: string, bytes: number): Buffer {
+    const fd = openSync(path, 'r')
+    try {
+      const buf = Buffer.alloc(bytes)
+      const n = readSync(fd, buf, 0, bytes, 0)
+      return buf.subarray(0, n)
+    } finally {
+      closeSync(fd)
+    }
   }
 
   makeTempDir(prefix: string): string {

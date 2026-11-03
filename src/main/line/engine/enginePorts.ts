@@ -14,6 +14,7 @@ import { join } from 'node:path'
 
 import type { LineFsPort } from './fsPort'
 import type { SqliteEnginePort } from './sqlitePort'
+import type { LineAccess } from './lineAccess'
 import { createNodeLineFsPort } from './nodeLineFsPort'
 import { createBetterSqliteCipherEngine } from './betterSqliteCipherEngine'
 
@@ -27,6 +28,11 @@ export interface LineEnginePorts {
   sqlite: SqliteEnginePort
   /** `findDb()` 搜尋 `qw*.edb` 的目錄。 */
   dbDir: string
+  /**
+   * 開 LINE DB 的單一入口（持久 snapshot + 共用金鑰，lineAccess.ts）。只有外掛 backend 注入；
+   * 沒設（standalone、舊測試、`snapshot.enabled:false`）＝呼叫端退回「解析金鑰 + openDb」的舊流程。
+   */
+  access?: LineAccess
 }
 
 let configured: Partial<LineEnginePorts> = {}
@@ -48,6 +54,7 @@ export function getLineEnginePorts(): LineEnginePorts {
     fs: configured.fs ?? nodeDefaults().fs,
     sqlite: configured.sqlite ?? nodeDefaults().sqlite,
     dbDir: configured.dbDir ?? DEFAULT_LINE_DB_DIR,
+    ...(configured.access ? { access: configured.access } : {}),
   }
 }
 
