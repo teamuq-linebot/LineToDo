@@ -737,7 +737,7 @@ test('dispatcher: CLI/AI provider and Electron-only paths answer unsupported_in_
     assert.equal(r.code, 'unsupported_in_plugin', path)
     assert.equal(r.route, route, path)
   }
-  for (const path of ['db.todos.draftReply', 'db.todos.analyzeNotMine', 'groupTopics.analyze']) assert.ok(SUPPORTED_API_PATHS.includes(path) && !UNSUPPORTED_API_PATHS[path], `${path} is served by the backend`)
+  for (const path of ['db.todos.draftReply', 'db.todos.analyzeNotMine', 'groupTopics.analyze', 'groupTopics.overview']) assert.ok(SUPPORTED_API_PATHS.includes(path) && !UNSUPPORTED_API_PATHS[path], `${path} is served by the backend`)
   dispose()
 })
 
@@ -1556,4 +1556,12 @@ test('m2 saveName and chatPrompt.save need their keys present: an absent key is 
     const noName = (await inv(d, 'settings.prompt.saveName', { myName: null, expectedNameRevision: named.nameRevision })).value
     assert.equal(noName.myName, null, 'an explicit null clears the default name')
   } finally { dispose(); cleanup() }
+})
+
+test('dispatcher: groupTopics.overview is allow-listed under the groupTopics method group and returns the aggregate in-band', async () => {
+  const rows = [{ chatId: 'g1', name: '群一', enabled: true, topics: [], pendingCount: 0, backlogCount: 0 }]
+  const { d, dispose } = makeDispatcher(fakeApi({ groupTopics: { overview: async () => rows } }))
+  assert.equal(backendMethodFor('groupTopics.overview'), 'groupTopics')
+  assert.deepEqual(await inv(d, 'groupTopics.overview'), { ok: true, value: rows })
+  dispose()
 })

@@ -320,6 +320,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
       crossChatEnabled: async (chatId) => groupTopicsService?.crossChatEnabled(chatId) ?? false,
       pendingCount: async (chatId) => groupTopicsService?.pendingCount(chatId) ?? 0,
       list: async (chatId) => groupTopicsService?.list(chatId) ?? { ok: false, topics: [] },
+      overview: async () => groupTopicsService?.overview() ?? [],
       linkCandidates: async (chatId) => groupTopicsService?.listLinkCandidates(chatId) ?? [],
       linkProposals: async (chatId) => listTopicLinkProposals(database.db,{chatId}),
       resolveLinkProposal: async (input) => {

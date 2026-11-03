@@ -206,6 +206,7 @@ test('adapter: identity list/inspect/retry/resolve and both relation decisions u
       'db.todos.identity.todoTopicRelations':[],
       'db.todos.identity.resolveTodoTopicRelation':{ok:true,status:'rejected',revision:2},
       'groupTopics.linkProposals':[],
+      'groupTopics.overview':[{chatId:'synthetic-chat',name:null,enabled:false,topics:[],pendingCount:0,backlogCount:0}],
       'groupTopics.resolveLinkProposal':{ok:true,status:'rejected',linkRevision:2}
     }
     return {ok:true,value:values[request.path]}
@@ -220,6 +221,8 @@ test('adapter: identity list/inspect/retry/resolve and both relation decisions u
     assert.deepEqual(await api.db.todos.identity.todoTopicRelations('synthetic-chat'),[])
     assert.equal((await api.db.todos.identity.resolveTodoTopicRelation({relationId:'relation-1',expectedRevision:1,expectedTodoRevision:1,expectedTopicRevision:1,choice:'reject'})).status,'rejected')
     assert.deepEqual(await api.groupTopics.linkProposals('synthetic-chat'),[])
+    assert.equal((await api.groupTopics.overview())[0].chatId,'synthetic-chat')
+    assert.deepEqual(calls.find((call)=>call.path==='groupTopics.overview'),{method:'groupTopics',path:'groupTopics.overview',args:[]})
     assert.equal((await api.groupTopics.resolveLinkProposal({linkId:'link-1',expectedLinkRevision:1,leftTopicRevision:1,rightTopicRevision:1,choice:'reject'})).status,'rejected')
     assert.ok(calls.filter((call)=>call.path.startsWith('db.todos.identity.')).every((call)=>call.method==='db.todos'))
     assert.ok(calls.filter((call)=>call.path.startsWith('groupTopics.')).every((call)=>call.method==='groupTopics'))

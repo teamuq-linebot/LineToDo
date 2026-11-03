@@ -19,10 +19,17 @@ import { IdentityInboxPanel } from '../../../src/renderer/features/identity/Iden
 import { ResidencyNotice, ResidencyStatusBar } from '../../../src/plugin/ui/ResidencyStatus'
 import type { ResidencyViewSource } from '../../../src/plugin/ui/ResidencyStatus'
 import { UiStateProvider, createLocalUiState } from '../../../src/renderer/lib/uiState'
+import { createOverviewRefresher } from '../../../src/renderer/features/groupTopics/groupTopicsOverview'
+import { GroupTopicsPanel } from '../../../src/renderer/features/groupTopics/GroupTopicsPanel'
+import { sharedRead } from '../../../src/renderer/lib/sharedRead'
 import { createPluginLineTodoApi } from '../../../src/renderer/platform/pluginApi'
 import { BACKEND_METHOD_GROUPS } from '../../../src/shared/pluginWire'
 
-export { BACKEND_METHOD_GROUPS, createPluginLineTodoApi }
+export { BACKEND_METHOD_GROUPS, createPluginLineTodoApi, createOverviewRefresher, sharedRead }
+
+export function groupTopicsScene(api: Api): ReactElement {
+  return <Host api={api}><GroupTopicsPanel hideTitle /></Host>
+}
 
 export function mount(element: ReactElement): { container: HTMLElement; unmount(): void } {
   const container = document.createElement('div')
@@ -49,6 +56,9 @@ export function settingsDraftScene(api: Api, storage: Pick<Storage, 'getItem' | 
 /** The real plugin App and shared settings panel, mounted together for tab interaction evidence. */
 export function appScene(api: Api): ReactElement {
   return <Host api={api}><App /></Host>
+}
+export function appSceneWithState(api: Api, storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>): ReactElement {
+  return <Host api={api}><UiStateProvider value={createLocalUiState(storage)}><App /></UiStateProvider></Host>
 }
 export function identityInboxScene(api: Api): ReactElement {
   return <Host api={api}><IdentityInboxPanel /></Host>

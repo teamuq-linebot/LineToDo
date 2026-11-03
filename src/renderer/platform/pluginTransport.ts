@@ -210,7 +210,7 @@ const REPLAY_SAFE_PATHS: ReadonlySet<string> = new Set([
   'db.chats.list', 'db.chats.get',
   'db.todos.list', 'db.todos.get', 'db.todos.openByChat', 'db.todos.listNotMine', 'db.todos.listNotMineCorrections', 'db.todos.getNotMineReview',
   'db.todos.identity.listPending', 'db.todos.identity.inspect', 'db.todos.identity.todoTopicRelations',
-  'groupTopics.list', 'groupTopics.linkCandidates', 'groupTopics.todoRefs', 'groupTopics.linkProposals', 'groupTopics.pendingCount', 'groupTopics.crossChatEnabled',
+  'groupTopics.list', 'groupTopics.overview', 'groupTopics.linkCandidates', 'groupTopics.todoRefs', 'groupTopics.linkProposals', 'groupTopics.pendingCount', 'groupTopics.crossChatEnabled',
   'pipeline.status', 'pipeline.loadStats',
   'settings.chatPrompt.get', 'settings.chatPrompt.list'
 ])

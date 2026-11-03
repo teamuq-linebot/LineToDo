@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { AiProviderId, TodoDTO, PipelineStatus, ReconcileProgress } from '../types/api'
 import { isOverdue } from './Board/buckets'
 import { notReadyText, providerMeta } from '../lib/aiProvider'
+import { sharedRead } from '../lib/sharedRead'
 
 /**
  * TodaySummary — 「今日摘要」面板（IMPLEMENTATION_PLAN.md M3）。
@@ -94,8 +95,8 @@ export function TodaySummary({ todos, loading, onRefresh }: Props): JSX.Element 
 
   useEffect(() => {
     // 失敗時只是不顯示引擎狀態：同一個 backend 問題會由看板的錯誤列（useTodos.error）說明原因（G-02），這裡不留未處理的 rejection。
-    void api.pipeline.status().then(setStatus, () => undefined)
-    void api.settings.get().then((v) => setProvider(v.aiProvider), () => undefined)
+    void sharedRead(api, 'pipeline.status', () => api.pipeline.status()).then(setStatus, () => undefined)
+    void sharedRead(api, 'settings.get', () => api.settings.get()).then((v) => setProvider(v.aiProvider), () => undefined)
     const off = api.pipeline.onStatus(setStatus)
     return off
   }, [])

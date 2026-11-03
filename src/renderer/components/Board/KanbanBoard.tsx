@@ -12,6 +12,7 @@ import { COLUMNS, columnOf, type ColumnId } from './buckets'
 import { Column } from './Column'
 import { createProgressFrameCoalescer } from './progressFrame'
 import { useTodos } from '../../store/useTodos'
+import { sharedRead } from '../../lib/sharedRead'
 import { TodaySummary } from '../TodaySummary'
 import { DraftReplyDialog } from '../DraftReplyDialog'
 import type { TodoCardActions } from './TodoCard'
@@ -65,7 +66,7 @@ export interface CardDnd {
   onDragEnd: () => void
 }
 
-export function KanbanBoard(): JSX.Element {
+export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = {}): JSX.Element {
   const api = useLineTodoApi()
   const [sortBy, setSortBy] = usePersistentState<TodoSortBy>('board.sortBy', 'updatedAt', parseSortBy)
   const [sortDirection, setSortDirection] = usePersistentState<TodoSortDirection>('board.sortDirection', 'desc', parseSortDirection)
@@ -79,6 +80,10 @@ export function KanbanBoard(): JSX.Element {
     sortDirection,
     chatId: chatFilter || undefined
   })
+  // 第一次載入待辦（成功或失敗）完成後通知外層（總覽頁據此才掛載議題區）。
+  useEffect(() => {
+    if (!t.loading) onFirstLoaded?.()
+  }, [t.loading, onFirstLoaded])
   // 開著的草擬回覆對話框記 todo id（重新開啟畫面後，待辦載入完就回到同一個對話框；草稿內容由對話框自己保存）。
   const [draftTodoId, setDraftTodoId] = usePersistentState<string | null>('board.draftTodoId', null, parseDraftTodoId)
   const draftTodo = useMemo(() => (draftTodoId ? t.todos.find((x) => x.id === draftTodoId) ?? null : null), [draftTodoId, t.todos])
@@ -375,10 +380,10 @@ export function ReviewControls({
 
   useEffect(() => {
     let alive = true
-    void api.pipeline.status().then((s) => { if (alive) setHasApiKey(s.hasApiKey) }).catch(() => {
+    void sharedRead(api, 'pipeline.status', () => api.pipeline.status()).then((s) => { if (alive) setHasApiKey(s.hasApiKey) }).catch(() => {
       if (alive) setHasApiKey(null)
     })
-    void api.settings.get().then((v) => { if (alive) setAiProvider(v.aiProvider) }).catch(() => undefined)
+    void sharedRead(api, 'settings.get', () => api.settings.get()).then((v) => { if (alive) setAiProvider(v.aiProvider) }).catch(() => undefined)
     const coalescer = createProgressFrameCoalescer(
       (callback) => window.requestAnimationFrame(callback),
       (id) => window.cancelAnimationFrame(id),

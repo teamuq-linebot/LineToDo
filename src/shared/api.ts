@@ -698,6 +698,8 @@ export interface LineTodoApi {
     crossChatEnabled(chatId: string): Promise<boolean>
     pendingCount(chatId: string): Promise<number>
     list(chatId: string): Promise<{ ok: boolean; topics: GroupTopicDTO[] }>
+    /** 一次回傳所有未封鎖群組的議題總覽（取代逐群 list）。選填：沒有的宿主，view 退回逐群 list。 */
+    overview?(): Promise<GroupTopicsOverviewDTO[]>
     linkCandidates(chatId: string): Promise<GroupTopicLinkCandidateDTO[]>
     analyze(chatId: string): Promise<{ ok: boolean; reason?: string; failure?: { stage: 'provider_resolve'|'provider_complete'|'response_decode'|'domain_validate'|'persist'; path: string|null; code: string }; count?: number; analyzedCount?: number }>
     todoRefs(topicId: string): Promise<Array<{ todoId: string; status: string; bucket: string; matchedMsgIds: string[] }>>
@@ -725,6 +727,18 @@ export interface GroupTopicDTO {
   observation: 'unknown'
   heat: 'unvalidated'
   trend: 'unknown'
+}
+export interface GroupTopicsOverviewDTO {
+  chatId: string
+  name: string | null
+  enabled: boolean
+  topics: GroupTopicDTO[]
+  /** 該群議題真實總數（topics 可能因筆數或回應大小上限而較少）。 */
+  topicCount?: number
+  /** true：為控制回應大小，topics 內的標題、摘要或證據 id 已縮短；完整內容請進單群詳情。 */
+  compacted?: boolean
+  pendingCount: number
+  backlogCount: number
 }
 export interface GroupTopicLinkCandidateDTO {
   linkId: string

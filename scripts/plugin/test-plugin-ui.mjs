@@ -83,8 +83,8 @@ test('board: plugin and standalone both expose the shared settings tab; standalo
   // App reads the theme from the DOM on first render; a server render has no DOM
   globalThis.document = { documentElement: { dataset: {} } }
   try {
-    assert.deepEqual(tabs(renderApp(STANDALONE)), ['待辦', '聊天', '群組議題', '待確認', '設定'])
-    assert.deepEqual(tabs(renderApp(PLUGIN)), ['待辦', '聊天', '群組議題', '待確認', '設定'])
+    assert.deepEqual(tabs(renderApp(STANDALONE)), ['總覽', '聊天', '待確認', '設定'])
+    assert.deepEqual(tabs(renderApp(PLUGIN)), ['總覽', '聊天', '待確認', '設定'])
   } finally { delete globalThis.document }
 })
 
@@ -165,8 +165,9 @@ test('G-03 / B1: the backend status line, when Core fences the plugin, names the
 test('G-04: a re-created plugin view restores the tab, the sort / filters and grouping from its saved UI state; standalone (no store) starts fresh as before', async () => {
   const { renderAppWithState, PLUGIN, STANDALONE } = await renderer()
   const active = (html) => html.match(/<button class="tab active">([^<]+)<\/button>/)?.[1]
-  assert.equal(active(renderAppWithState(PLUGIN, null)), '待辦')
-  assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'topics' })), '群組議題')
+  assert.equal(active(renderAppWithState(PLUGIN, null)), '總覽')
+  assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'topics' })), '總覽', 'a saved tab value from before the merge falls back to the overview')
+  assert.equal(active(renderAppWithState(STANDALONE, { 'app.tab': 'topics' })), '總覽')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'identity' })), '待確認')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'settings' })), '設定')
   assert.equal(active(renderAppWithState(STANDALONE, { 'app.tab': 'settings' })), '設定')
@@ -271,4 +272,11 @@ test('the plugin entry points are plain files in the repo (no template magic): t
   assert.match(readFileSync(join(ui, 'index.html'), 'utf8'), /<script src="main\.js"><\/script>/)
   assert.match(readFileSync(join(ui, 'settings.html'), 'utf8'), /<script src="settings\.js"><\/script>/)
   writeFileSync(join(work, 'probe.txt'), 'ok')
+})
+
+test('L2: the first paint of the overview topics section shows loading, never the empty-group sentence', async () => {
+  const { renderGroupTopicsFirstPaint, PLUGIN } = await renderer()
+  const html = renderGroupTopicsFirstPaint(PLUGIN)
+  assert.ok(html.includes('正在彙整'), 'loading line on first paint')
+  assert.equal(html.includes('目前沒有可用群組'), false, 'no empty-group sentence before the first reply')
 })
