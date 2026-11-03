@@ -706,3 +706,15 @@ test('Phase 2: the combined bundle has its own versions and tracked hashes disti
   assert.equal(COMBINED_JSON_SCHEMA.additionalProperties, false)
   assert.deepEqual(COMBINED_JSON_SCHEMA.required, ['todo', 'topic'])
 })
+
+test('Phase 0: selectTopicTargets does not filter on messages.processed (processed=1 undecided messages are valid targets)', () => {
+  const db=dbFixture(); createGroupTopicsService(db).enable('group-a',true)
+  const insert=db.prepare(`INSERT INTO messages(msg_id,chat_id,ts,time_iso,direction,sender,text,content_type,processed,unsent,ingested_at)
+    VALUES(?, 'group-a', ?, '2026-09-30T00:00:00Z','in','sender',?,0,?,0,'2026-09-30')`)
+  insert.run('s-done',40,'already processed by the todo pipeline',1)
+  insert.run('s-new',41,'not yet processed',0)
+  assert.deepEqual(selectTopicTargets(db,'group-a',['s-done','s-new']),['s-done','s-new'])
+  assert.deepEqual(selectTopicTargets(db,'group-a',['s-done']),['s-done'])
+  assert.deepEqual(loadPendingMessages(db,'group-a',100,100,{processedFilter:'processed'}).map((m)=>m.msgId).filter((id)=>id.startsWith('s-')),['s-done'])
+  db.close()
+})

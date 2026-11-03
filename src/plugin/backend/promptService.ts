@@ -34,6 +34,8 @@ export interface PromptService {
 export interface PromptServiceOptions {
   chatStore?: ChatPromptStore
   log?: (event: string, detail?: Record<string, unknown>) => void
+  /** 測試用：覆寫合併 bundle 是否可用（預設為建置時的 COMBINED_BUNDLE_ENABLED）。 */
+  combinedEnabled?: boolean
 }
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex')
@@ -50,6 +52,7 @@ export function identitySection(name: string): string {
 
 export function createPromptService(settings: SettingsStore, ai: AiPort, options: PromptServiceOptions = {}): PromptService {
   const chatStore = options.chatStore
+  const combinedEnabled = options.combinedEnabled ?? COMBINED_BUNDLE_ENABLED
   const log = (event: string, detail?: Record<string, unknown>): void => { try { options.log?.(event, detail) } catch { /* 診斷失敗不影響流程 */ } }
   const active = (): string => settings.get().pluginPrompt ?? EXTRACT_SYSTEM_PROMPT
   const defaultName = (): string | null => settings.get().pluginMyName ?? null
@@ -99,7 +102,7 @@ export function createPromptService(settings: SettingsStore, ai: AiPort, options
   }
 
   /** 合併 bundle 建置失敗（失敗閉鎖）時，topics 選項退回純待辦的 system，不會送出空的議題段落。 */
-  const withTopics = (opts: ExtractSystemOptions | undefined): boolean => opts?.topics === true && COMBINED_BUNDLE_ENABLED
+  const withTopics = (opts: ExtractSystemOptions | undefined): boolean => opts?.topics === true && combinedEnabled
 
   const chatState = (chatId: string): ChatPromptState => {
     const override = readOverride(chatId)

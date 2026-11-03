@@ -18,7 +18,7 @@ import { reviewLastDays } from '../src/main/pipeline/backfill.ts'
 import { ExtractQueue } from '../src/plugin/backend/extractQueue.ts'
 import { ReviewCoordinator, ReviewLedger } from '../src/plugin/backend/reviewRun.ts'
 import { getPipelineDefaults } from '../src/main/config/defaults.ts'
-import { ensureGroupTopicsSchema, GROUP_TOPICS_SCHEMA_VERSION, setCrossChatEnabled, setEnabled } from '../src/main/features/groupTopics/repository.ts'
+import { buildTopicSave, ensureGroupTopicsSchema, GROUP_TOPICS_SCHEMA_VERSION, setCrossChatEnabled, setEnabled } from '../src/main/features/groupTopics/repository.ts'
 import { createGroupTopicsService } from '../src/main/features/groupTopics/service.ts'
 import { createIdentityRetryService } from '../src/main/identity/retryService.ts'
 import { explainIdentityInboxQueryPlan, explainTopicLinkProposalQueryPlan, listIdentityInbox, listTodoRelationsForTodo, listTodoTopicRelationsForChat, listTodoTopicRelationsForTopic, listTopicLinkProposals, resolveIdentityDecision, resolveTodoTopicRelation, resolveTopicLinkProposal, retryIdentityDecision } from '../src/main/identity/reviewPorts.ts'
@@ -897,5 +897,27 @@ test('Phase 0: buildTodoApply returns an unexecuted body; skipSnapshotAssert and
     assert.equal(listTodos({},db).length,2)
     const row2=db.prepare("SELECT prompt_version,schema_version FROM todo_identity_decisions WHERE draft_ref='d2'").get()
     assert.deepEqual(row2,{prompt_version:'extract-combined-v1',schema_version:'extract-combined-schema-v1'})
+  }finally{opened.db.close()}
+})
+
+test('Phase 0: buildTopicSave skipSnapshotAssert skips only the leading topic snapshot assertion',()=>{
+  const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+  try{
+    ensureGroupTopicsSchema(db)
+    const text='alpha beta project kickoff'
+    const id=addMessage(db,'p0-topic-1',1000,text)
+    setEnabled(db,chatId,true)
+    const work=buildWork(db,chatId,[id])
+    work.snapshot.topicIdentityRevision+=1
+    const messages=[{msgId:id,ts:1000,direction:'in',text}]
+    const analysis={topics:[],identityDecisions:[],assignments:[{msgId:id,topicRef:null,relation:'uncertain',confidence:.2,relevance:'unknown',relevanceEvidenceMsgIds:[]}]}
+    const versions={promptVersion:'v',promptHash:'h',schemaVersion:'s',schemaHash:'sh',validatorVersion:'t'}
+    const ctx={snapshot:work.snapshot,sourceLease:work.lease,candidates:[],candidatesTruncated:false}
+    assert.throws(()=>buildTopicSave(db,chatId,messages,analysis,versions,ctx).tx(),/identity_candidate_set_stale/,'without the skip the stale topic revision is rejected')
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM topic_message_decisions WHERE chat_id=?').get(chatId).count,0)
+    const built=buildTopicSave(db,chatId,messages,analysis,versions,ctx,{skipSnapshotAssert:true})
+    assert.deepEqual(built.selectedRows,work.snapshot.selectedFingerprints)
+    assert.equal(built.tx(),true,'with the skip the body runs: the caller owns the assertion')
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM topic_message_decisions WHERE chat_id=?').get(chatId).count,1)
   }finally{opened.db.close()}
 })

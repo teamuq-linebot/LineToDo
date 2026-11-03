@@ -201,13 +201,55 @@ test('measured length: the default topics system fits the host systemChars defau
     const plain = f.service.extractSystem('chat-1')
     const withTopics = f.service.extractSystem('chat-1', { topics: true })
     assert.equal(plain.length, 8344, 'plain system length is unchanged from the 0.2.10 baseline')
-    assert.equal(withTopics.length, 11662, 'measured default length of extractSystem(chatId,{topics:true})')
+    assert.equal(withTopics.length, 11651, 'measured default length of extractSystem(chatId,{topics:true})')
     assert.ok(withTopics.length <= AI_CHAT_REFERENCE.systemChars, `${withTopics.length} must be <= ${AI_CHAT_REFERENCE.systemChars}`)
     assert.equal(AI_CHAT_REFERENCE.systemChars, 16000)
     const overhead = withTopics.length - plain.length
-    const worstIdentity = identitySection('"'.repeat(MY_NAME_MAX_CHARS)).length + 2
-    const worstCase = PROMPT_MAX_CHARS + worstIdentity + overhead
-    assert.equal(overhead, 3318)
-    assert.ok(worstCase <= AI_CHAT_REFERENCE.systemChars, `worst case ${worstCase} (max custom prompt + worst identity section + topic overhead) must still fit ${AI_CHAT_REFERENCE.systemChars}`)
+    assert.equal(overhead, 3307)
   } finally { f.cleanup() }
+})
+
+test('measured worst case: a max-length custom prompt with the worst name EXCEEDS the host systemChars, so the systemFits guard is required', () => {
+  const f = promptFixture()
+  try {
+    const worstName = '"'.repeat(MY_NAME_MAX_CHARS)
+    const worstIdentity = identitySection(worstName).length
+    const prompt = 'x'.repeat(PROMPT_MAX_CHARS)
+    f.service.save(prompt, f.service.state().revision)
+    f.service.saveName(worstName, f.service.state().nameRevision)
+    const actualPlain = f.service.extractSystem('chat-1')
+    const actualCombined = f.service.extractSystem('chat-1', { topics: true })
+    const formula = (sectionChars, contractChars) => PROMPT_MAX_CHARS + 2 + worstIdentity + 2 + (sectionChars === null ? 0 : sectionChars + 2) + contractChars
+    const plainFormula = formula(null, EXTRACT_OUTPUT_CONTRACT.length)
+    const combinedFormula = formula(COMBINED_TOPIC_SECTION.length, COMBINED_OUTPUT_CONTRACT.length)
+    assert.equal(actualPlain.length, plainFormula, 'plain worst case = prompt + identity + base output contract')
+    assert.equal(actualCombined.length, combinedFormula, 'combined worst case = prompt + identity + topic section + combined output contract (every "\\n\\n" separator counted)')
+    assert.equal(EXTRACT_OUTPUT_CONTRACT.length, 2592)
+    assert.equal(COMBINED_OUTPUT_CONTRACT.length, 4647)
+    assert.equal(COMBINED_TOPIC_SECTION.length, 1250, 'LF-normalized section length')
+    assert.equal(worstIdentity, 377)
+    assert.equal(actualCombined.length, 18280)
+    assert.ok(actualPlain.length <= AI_CHAT_REFERENCE.systemChars, `${actualPlain.length}: the plain system still fits, so falling back to plain is always possible`)
+    assert.ok(actualCombined.length > AI_CHAT_REFERENCE.systemChars, `${actualCombined.length} exceeds ${AI_CHAT_REFERENCE.systemChars} by ${actualCombined.length - AI_CHAT_REFERENCE.systemChars}: the boundary is crossed`)
+    const budget = AI_CHAT_REFERENCE.systemChars - (2 + worstIdentity + 2 + COMBINED_TOPIC_SECTION.length + 2 + COMBINED_OUTPUT_CONTRACT.length)
+    assert.ok(budget > 0 && budget < PROMPT_MAX_CHARS, `a custom prompt longer than ${budget} chars (with the worst name) overflows`)
+  } finally { f.cleanup() }
+})
+
+test('fail-closed bundle: with the combined bundle disabled, topics:true falls back to the plain system and plain hash', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'line-todo-combined-off-'))
+  try {
+    const service = createPromptService(createSettingsStore({ userDataDir: dir, secrets: noSecrets }), unusedAi, { combinedEnabled: false })
+    const legacy = `${EXTRACT_SYSTEM_PROMPT}\n\n${EXTRACT_OUTPUT_CONTRACT}`
+    assert.equal(service.extractSystem('chat-1', { topics: true }), legacy)
+    assert.equal(service.systemSha256('chat-1', { topics: true }), sha256(EXTRACT_SYSTEM_PROMPT))
+    assert.ok(!service.extractSystem('chat-1', { topics: true }).includes(COMBINED_TOPIC_SECTION))
+    const on = createPromptService(createSettingsStore({ userDataDir: dir, secrets: noSecrets }), unusedAi, { combinedEnabled: true })
+    assert.ok(on.extractSystem('chat-1', { topics: true }).includes(COMBINED_TOPIC_SECTION))
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('the topic section is LF-normalized so its text and hash do not depend on the checkout line endings', () => {
+  assert.ok(!COMBINED_TOPIC_SECTION.includes('\r'))
+  assert.ok(!COMBINED_OUTPUT_CONTRACT.includes('\r'))
 })

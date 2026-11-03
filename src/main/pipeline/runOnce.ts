@@ -190,6 +190,10 @@ export const DEFAULT_TODO_IDENTITY_VERSIONS = { promptVersion: 'extract-identity
 /**
  * 把一個 chat 的已驗證 ExtractResult 的落庫段組成「尚未執行」的交易本體（呼叫端負責交易與 lease）。
  * `skipSnapshotAssert`：呼叫端已在同一交易內先行斷言過 identity 快照時，略過本體開頭的 todo 快照斷言（其餘檢查不變）。
+ *
+ * 警告：開啟後本體內沒有任何替代的快照斷言。呼叫端必須在「同一個交易」、「本體執行之前」，
+ * 對 todo 與 topic 兩類各呼叫一次 assertIdentitySnapshotCurrent；漏做就會在沒有任何提示下，
+ * 以過期的候選快照提交（identity_*_stale 不會被擲出）。只有合併提交路徑（兩邊本體串在同一交易）應該傳 true。
  */
 export function buildTodoApply(
   ctx: TodoApplyContext,

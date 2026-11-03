@@ -306,6 +306,11 @@ export interface TopicIdentitySaveContext {
 /**
  * 組成議題落庫的交易本體（尚未執行）與租約要比對的 selectedRows。saveAnalysis 是它的薄包裝。
  * `skipSnapshotAssert`：呼叫端已在同一交易內先行斷言過 identity 快照時略過本體開頭的 topic 快照斷言。
+ *
+ * 警告：開啟後本體內沒有任何替代的快照斷言。呼叫端必須在「同一個交易」、「本體執行之前」，
+ * 對 todo 與 topic 兩類各呼叫一次 assertIdentitySnapshotCurrent；漏做就會在沒有任何提示下，
+ * 以過期的候選快照提交。只有合併提交路徑應該傳 true。另外 wasIdentityReady 在 build 時取得，
+ * 呼叫端要在交易內才呼叫 buildTopicSave，行為才與 saveAnalysis 一致。
  */
 export function buildTopicSave(db: Database, chatId: string, input: TopicMessageInput[], result: TopicAnalysis, versions: AnalysisVersions, identity?:TopicIdentitySaveContext, opts: {skipSnapshotAssert?:boolean} = {}): { tx: () => boolean | 'inactive'; selectedRows: IdentityContextSnapshot['selectedFingerprints'] } {
   const digest = completionDigest(input, versions)
