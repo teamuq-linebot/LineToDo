@@ -1246,3 +1246,167 @@ test('m1/n4 board: the AI settings panel names the board "設定" tab as the pla
     assert.deepEqual(saves, [{ chatId: 'bni', prompt: null, myName: null, expectedRevision: 'r1' }])
   } finally { scene.unmount(); api.dispose() }
 })
+
+// ───────────── chat tab remount: avatar requests must not pile up in front of the chat list ─────────────
+
+/**
+ * An IntersectionObserver stand-in the test drives by hand: `setVisible(ids)` is "the user scrolled", every live observer is told which of its
+ * targets (data-avatar-chat-id / data-avatar-message-id) are on screen; a newly observed target reports its current state, like the real one.
+ * mini-dom has no querySelectorAll on the document, so the stand-in also answers the effect's lookup from the mounted container.
+ */
+function installVisibility() {
+  const live = new Set()
+  let visible = new Set()
+  const state = { container: null }
+  const previous = { observer: globalThis.IntersectionObserver, query: dom.document.querySelectorAll }
+  const idOf = (node) => node.getAttribute('data-avatar-message-id') ?? node.getAttribute('data-avatar-chat-id')
+  const entryFor = (target) => {
+    const on = visible.has(idOf(target))
+    return { target, isIntersecting: on, intersectionRatio: on ? 1 : 0 }
+  }
+  globalThis.IntersectionObserver = class {
+    constructor(callback) { this.callback = callback; this.targets = new Set(); live.add(this) }
+    observe(target) {
+      this.targets.add(target)
+      queueMicrotask(() => { if (live.has(this) && this.targets.has(target)) this.callback([entryFor(target)]) })
+    }
+    unobserve(target) { this.targets.delete(target) }
+    disconnect() { live.delete(this); this.targets.clear() }
+  }
+  dom.document.querySelectorAll = () => (state.container
+    ? walk(state.container).filter((el) => el.hasAttribute('data-avatar-chat-id') || el.hasAttribute('data-avatar-message-id'))
+    : [])
+  return {
+    attach(container) { state.container = container },
+    setVisible(ids) {
+      visible = new Set(ids)
+      for (const observer of [...live]) if (observer.targets.size > 0) observer.callback([...observer.targets].map(entryFor))
+    },
+    restore() {
+      if (previous.observer === undefined) delete globalThis.IntersectionObserver; else globalThis.IntersectionObserver = previous.observer
+      if (previous.query === undefined) delete dom.document.querySelectorAll; else dom.document.querySelectorAll = previous.query
+    }
+  }
+}
+
+function avatarScrollFixture(count) {
+  const ts0 = Date.UTC(2026, 10, 3, 1, 0, 0)
+  const iso = (ts) => new Date(ts).toISOString()
+  const chat = (chatId, name, ts) => ({ chatId, name, isGroup: true, blocked: false, blockReason: null, firstSeenAt: iso(ts0), lastSeenAt: iso(ts) })
+  const messages = Array.from({ length: count }, (_, index) => {
+    const n = index + 1
+    return { msgId: `i:${n}`, chatId: 'c1', ts: ts0 + n * 1000, timeIso: iso(ts0 + n * 1000), direction: 'in', sender: `成員${n}`, text: `訊息 ${n}`, contentType: 0, processed: true, ingestedAt: iso(ts0 + n * 1000), origFilename: null, fileSize: null, unsent: false }
+  })
+  const chats = [chat('c1', '主要群組', ts0 + count * 1000), chat('c2', '第二群組', ts0)]
+  const pathFor = (id) => `avatar-cache/${id.replace(':', '_')}.jpg`
+  const answer = (ids) => ({ paths: Object.fromEntries(ids.map((id) => [id, pathFor(id)])), names: Object.fromEntries(ids.map((id) => [id, `名稱 ${id}`])) })
+  const ids = (from, to) => Array.from({ length: to - from }, (_, index) => `i:${from + index + 1}`)
+  return { chats, messages, answer, ids }
+}
+
+test('avatar requests while scrolling the chat: no id is sent to the backend twice and the call count stays bounded (IntersectionObserver stand-in)', async (t) => {
+  const f = avatarScrollFixture(40)
+  const sent = { chats: [], messages: [] }
+  const { api } = plugin({
+    ...settingsHandlers(),
+    'db.chats.list': () => f.chats,
+    'db.messages.list': () => f.messages,
+    'db.messages.recentByChat': () => f.messages,
+    'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'media.avatar.prepareChats': async (ids) => { sent.chats.push(ids); await sleep(8); return f.answer(ids) },
+    'media.avatar.prepareMessages': async (_chatId, ids) => { sent.messages.push(ids); await sleep(8); return f.answer(ids) }
+  })
+  const vis = installVisibility()
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    vis.attach(scene.container)
+    await until(() => walk(scene.container).filter((el) => el.hasAttribute('data-avatar-message-id')).length === 40, { message: 'all 40 messages rendered' })
+    const steps = 8
+    for (let step = 0; step < steps; step += 1) {
+      // the window slides by 3 ids and the second chat row flips in and out of view: the id lists change every step but mostly repeat
+      vis.setVisible(['c1', ...(step % 2 === 0 ? ['c2'] : []), ...f.ids(step * 3, step * 3 + 12)])
+      await sleep(30)
+    }
+    await sleep(60)
+    const messageIds = sent.messages.flat()
+    const chatIds = sent.chats.flat()
+    t.diagnostic(`prepareMessages calls=${sent.messages.length} ids sent=${messageIds.length} unique=${new Set(messageIds).size}; prepareChats calls=${sent.chats.length} ids sent=${chatIds.length} unique=${new Set(chatIds).size}`)
+    assert.equal(new Set(messageIds).size, messageIds.length, `a message avatar id was sent more than once: ${JSON.stringify(sent.messages)}`)
+    assert.equal(new Set(chatIds).size, chatIds.length, `a chat avatar id was sent more than once: ${JSON.stringify(sent.chats)}`)
+    assert.ok(sent.messages.length <= steps + 1, `prepareMessages calls ${sent.messages.length} <= ${steps + 1}`)
+    assert.ok(sent.chats.length <= 2, `prepareChats calls ${sent.chats.length} <= 2`)
+    assert.deepEqual([...new Set(messageIds)].sort((a, b) => Number(a.slice(2)) - Number(b.slice(2))), f.ids(0, 33), 'every id that was ever on screen was asked for once')
+    const sources = walk(scene.container).filter((el) => el.localName === 'img').map((el) => el.getAttribute('src'))
+    assert.ok(sources.some((src) => src.endsWith('/avatar-cache/i_33.jpg')), 'the newest window still shows its sender images')
+  } finally {
+    scene?.unmount()
+    vis.restore()
+    api.dispose()
+  }
+})
+
+test('chat tab remount: avatar calls queued by the previous mount are dropped, so the chat list, LINE status and recent messages are not queued behind them', async () => {
+  const f = avatarScrollFixture(40)
+  const order = []
+  const gates = []
+  let slow = true
+  const { api } = plugin({
+    ...settingsHandlers(),
+    'db.chats.list': () => { order.push('db.chats.list'); return f.chats },
+    'db.messages.list': () => { order.push('db.messages.list'); return f.messages },
+    'db.messages.recentByChat': () => f.messages,
+    'messages.recent': () => { order.push('messages.recent'); return [] },
+    'line.status': () => { order.push('line.status'); return { state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 } },
+    'media.avatar.prepareChats': (ids) => f.answer(ids),
+    'media.avatar.prepareMessages': async (_chatId, ids) => {
+      order.push('avatar')
+      if (slow) await new Promise((resolve) => { gates.push(resolve) })
+      return f.answer(ids)
+    }
+  })
+  const vis = installVisibility()
+  let first
+  let second
+  try {
+    first = ui.mount(ui.messageStreamScene(api))
+    vis.attach(first.container)
+    await until(() => walk(first.container).filter((el) => el.hasAttribute('data-avatar-message-id')).length === 40, { message: 'all 40 messages rendered' })
+    // the user scrolls on while the backend is slow: each step asks for new ids (no overlap), three calls fill the whole view budget, the rest queue
+    for (let step = 0; step < 8; step += 1) {
+      vis.setVisible(['c1', ...f.ids(step * 4, step * 4 + 4)])
+      await sleep(20)
+    }
+    await until(() => gates.length === 3, { message: 'three slow avatar calls hold every host call slot' })
+    assert.equal(api.plugin.transportStats().active, 3)
+
+    first.unmount() // the user switches to the todo tab
+    await sleep(10)
+    const queuedAfterUnmount = api.plugin.transportStats().waiting
+    assert.equal(queuedAfterUnmount, 0, 'no avatar call of the unmounted chat page is left waiting for a slot')
+    const mark = order.length
+    vis.setVisible([])
+    second = ui.mount(ui.messageStreamScene(api)) // and back to the chat tab
+    vis.attach(second.container)
+    await sleep(30)
+    assert.deepEqual(order.slice(mark), [], 'nothing reaches the backend while the three slow calls still hold the slots')
+    assert.equal(api.plugin.transportStats().waiting >= 3, true, 'the remount asked for the chat list, messages and status')
+    slow = false
+    for (const open of gates) open() // the three slow calls finish; whatever is next in line gets the freed slots
+    await until(() => ['db.chats.list', 'line.status', 'messages.recent', 'db.messages.list'].every((path) => order.slice(mark).includes(path)), { message: 'the remount requests to reach the backend' })
+    const after = order.slice(mark)
+    for (const path of ['db.chats.list', 'line.status', 'messages.recent', 'db.messages.list']) {
+      const avatarsFirst = after.slice(0, after.indexOf(path)).filter((entry) => entry === 'avatar').length
+      assert.equal(avatarsFirst, 0, `${path} was sent after ${avatarsFirst} stale avatar call(s): ${after.join(',')}`)
+    }
+    await until(() => walk(second.container).some((el) => el.getAttribute('data-avatar-chat-id') === 'c1'), { message: 'the chat list shows its rows' })
+  } finally {
+    slow = false
+    for (const open of gates) open()
+    first?.unmount()
+    second?.unmount()
+    vis.restore()
+    api.dispose()
+  }
+})

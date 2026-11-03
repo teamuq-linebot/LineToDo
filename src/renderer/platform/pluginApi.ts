@@ -18,7 +18,7 @@
  * 不依賴 React／DOM（node:test 以 mock `window.tuqPlugin` 驗證）。
  */
 import type {
-  AvatarUrlBatchDTO, DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult
+  AvatarRequestOptions, AvatarUrlBatchDTO, DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult
 } from '../../shared/api'
 import { PLUGIN_CAPABILITIES, type HostCapabilities } from './capabilities'
 import { normalizeHostAiSelection, type HostAiSelection } from '../../shared/hostAi'
@@ -27,7 +27,12 @@ import { parseResidencyView } from '../../shared/residency'
 import type { ResidencySnapshot } from '../../shared/residency'
 import type { ChatPromptSummary, PromptSuggestion } from '../../shared/promptSettings'
 import { PluginEventPump, type PluginEventPumpOptions, type PluginEventType } from './pluginEvents'
-import { PluginApiError, PluginTransport, PluginUnsupportedError, type BackendLink, type BusyRetryOptions, type TuqPluginHost } from './pluginTransport'
+import { PluginApiError, PluginTransport, PluginUnsupportedError, type BackendLink, type BusyRetryOptions, type InvokeOptions, type TuqPluginHost } from './pluginTransport'
+
+/** 已知頭像／名稱的保留時間（過了才會再問 backend 一次，讓換頭像最終會更新）；沒有頭像的結果只保留較短時間，避免對同一批 id 反覆查。 */
+const AVATAR_KNOWN_TTL_MS = 5 * 60_000
+const AVATAR_UNKNOWN_TTL_MS = 60_000
+const AVATAR_CACHE_MAX = 4000
 
 export { ACCESS_HOST_CODES, PluginApiError, PluginBackendError, PluginUnsupportedError } from './pluginTransport'
 export type { BackendLink, BackendLinkState, TuqPluginHost } from './pluginTransport'
@@ -159,9 +164,16 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
     }
   }
 
-  const avatarUrlBatch = async (path: 'media.avatar.prepareChats' | 'media.avatar.prepareMessages', args: unknown[]): Promise<AvatarUrlBatchDTO> => {
+  // ── 頭像（view 端把關：去重、已知結果快取、合併進行中的相同請求、不再需要時丟掉尚未送出的請求）──
+  // 頭像在 backend 很貴（每次讀來源資料庫；實測 media.avatar.prepare* 平均 2.5 s），而 view 的 host 呼叫預算只有 3 格、先進先出：
+  // 重複或過期的頭像請求不能再擠在使用者真正要等的 db.chats.list／line.status／messages.recent 前面。
+  const rawAvatarBatch = async (
+    path: 'media.avatar.prepareChats' | 'media.avatar.prepareMessages',
+    args: unknown[],
+    invokeOptions?: InvokeOptions
+  ): Promise<AvatarUrlBatchDTO & { ok: boolean }> => {
     try {
-      const prepared = await call<{ paths?: unknown; names?: unknown }>(path, ...args)
+      const prepared = (await transport.invoke(path, args, invokeOptions)) as { paths?: unknown; names?: unknown } | null | undefined
       const urls: Record<string, string> = {}
       if (prepared?.paths && typeof prepared.paths === 'object') {
         for (const [key, value] of Object.entries(prepared.paths as Record<string, unknown>)) {
@@ -176,10 +188,104 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
           if (typeof value === 'string' && value.trim()) names[key] = value
         }
       }
-      return { urls, names }
+      return { ok: true, urls, names }
     } catch {
-      return { urls: {}, names: {} }
+      return { ok: false, urls: {}, names: {} }
     }
+  }
+
+  interface AvatarEntry { url: string | null; name: string | null; expiresAt: number }
+  interface AvatarBatch {
+    readonly controller: AbortController
+    readonly keys: readonly string[]
+    started: boolean
+    refs: number
+    result: Promise<AvatarUrlBatchDTO | null>
+  }
+  const avatarCache = new Map<string, AvatarEntry>()
+  const avatarInflight = new Map<string, AvatarBatch>()
+
+  const startAvatarBatch = (path: 'media.avatar.prepareChats' | 'media.avatar.prepareMessages', lead: unknown[], scope: string, ids: string[]): AvatarBatch => {
+    const keys = ids.map((id) => `${scope}\u0000${id}`)
+    const controller = new AbortController()
+    const batch: AvatarBatch = { controller, keys, started: false, refs: 0, result: Promise.resolve(null) }
+    batch.result = rawAvatarBatch(path, [...lead, ids], { signal: controller.signal, onStart: () => { batch.started = true } }).then((outcome) => {
+      for (const key of keys) if (avatarInflight.get(key) === batch) avatarInflight.delete(key)
+      if (!outcome.ok) return null // 失敗與取消都不記：之後仍可重試
+      const now = Date.now()
+      ids.forEach((id, index) => {
+        const url = outcome.urls[id] ?? null
+        const name = outcome.names[id] ?? null
+        avatarCache.set(keys[index], { url, name, expiresAt: now + (url || name ? AVATAR_KNOWN_TTL_MS : AVATAR_UNKNOWN_TTL_MS) })
+      })
+      while (avatarCache.size > AVATAR_CACHE_MAX) avatarCache.delete(avatarCache.keys().next().value as string)
+      return { urls: outcome.urls, names: outcome.names }
+    })
+    for (const key of keys) avatarInflight.set(key, batch)
+    return batch
+  }
+
+  /** 沒有任何等待者、也還沒送出的批次：中止並從進行中表移除（新請求不會再合併進一個已經死掉的批次）。 */
+  const releaseAvatarBatch = (batch: AvatarBatch): void => {
+    batch.refs -= 1
+    if (batch.refs > 0 || batch.started) return
+    batch.controller.abort()
+    for (const key of batch.keys) if (avatarInflight.get(key) === batch) avatarInflight.delete(key)
+  }
+
+  const avatarUrlBatch = async (
+    path: 'media.avatar.prepareChats' | 'media.avatar.prepareMessages',
+    lead: unknown[],
+    scope: string,
+    ids: readonly string[],
+    options?: AvatarRequestOptions
+  ): Promise<AvatarUrlBatchDTO> => {
+    const empty = (): AvatarUrlBatchDTO => ({ urls: {}, names: {} })
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
+      const { urls, names } = await rawAvatarBatch(path, [...lead, ids])
+      return { urls, names }
+    }
+    const signal = options?.signal
+    if (signal?.aborted) return empty()
+    const wanted = [...new Set(ids)]
+    const out = empty()
+    const batches = new Set<AvatarBatch>()
+    const missing: string[] = []
+    const now = Date.now()
+    for (const id of wanted) {
+      const key = `${scope}\u0000${id}`
+      const known = avatarCache.get(key)
+      if (known && known.expiresAt > now) {
+        if (known.url) out.urls[id] = known.url
+        if (known.name) out.names[id] = known.name
+        continue
+      }
+      const flying = avatarInflight.get(key)
+      if (flying) batches.add(flying)
+      else missing.push(id)
+    }
+    if (missing.length > 0) batches.add(startAvatarBatch(path, lead, scope, missing))
+    for (const batch of batches) batch.refs += 1
+    const settled = Promise.all([...batches].map((batch) => batch.result))
+    let results: Array<AvatarUrlBatchDTO | null>
+    if (signal) {
+      let onAbort = (): void => undefined
+      const aborted = new Promise<null>((resolve) => { onAbort = () => resolve(null); signal.addEventListener('abort', onAbort, { once: true }) })
+      const raced = await Promise.race([settled, aborted])
+      signal.removeEventListener('abort', onAbort)
+      if (raced === null) {
+        for (const batch of batches) releaseAvatarBatch(batch)
+        return empty()
+      }
+      results = raced
+    } else results = await settled
+    const wantedSet = new Set(wanted)
+    for (const result of results) {
+      if (!result) continue
+      for (const [key, value] of Object.entries(result.urls)) if (wantedSet.has(key)) out.urls[key] = value
+      for (const [key, value] of Object.entries(result.names)) if (wantedSet.has(key)) out.names[key] = value
+    }
+    return out
   }
 
   const extract: PluginExtractApi = {
@@ -291,8 +397,8 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       open: (msgId) => orUnsupported(() => call('media.open', msgId), (e) => ({ ok: false, error: unsupportedText(e) })),
       saveAs: (msgId) => orUnsupported(() => call('media.saveAs', msgId), (e) => ({ ok: false, error: unsupportedText(e) })),
       assetUrl,
-      avatarUrls: (chatIds) => avatarUrlBatch('media.avatar.prepareChats', [chatIds]),
-      messageAvatarUrls: (chatId, msgIds) => avatarUrlBatch('media.avatar.prepareMessages', [chatId, msgIds])
+      avatarUrls: (chatIds, options) => avatarUrlBatch('media.avatar.prepareChats', [], 'chat', chatIds, options),
+      messageAvatarUrls: (chatId, msgIds, options) => avatarUrlBatch('media.avatar.prepareMessages', [chatId], `message:${chatId}`, msgIds, options)
     },
     groupTopics: {
       setEnabled: (chatId, enabled) => call('groupTopics.setEnabled', chatId, enabled),

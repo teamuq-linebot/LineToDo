@@ -502,12 +502,13 @@ export function MessageStream(): JSX.Element {
       return
     }
     let active = true
-    void prepare(visibleChatAvatarIds).then((batch) => {
+    const controller = new AbortController()
+    void prepare(visibleChatAvatarIds, { signal: controller.signal }).then((batch) => {
       if (!active) return
       setChatAvatarUrls((current) => mergeRecord(current, batch.urls))
       setChatDisplayNames((current) => mergeRecord(current, batch.names))
     })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [api, visibleChatAvatarIds])
 
   useEffect(() => {
@@ -518,12 +519,13 @@ export function MessageStream(): JSX.Element {
       return
     }
     let active = true
-    void prepare(activeChatId, visibleMessageAvatarIds).then((batch) => {
+    const controller = new AbortController()
+    void prepare(activeChatId, visibleMessageAvatarIds, { signal: controller.signal }).then((batch) => {
       if (!active) return
       setMessageAvatarUrls((current) => mergeRecord(current, batch.urls))
       setMessageDisplayNames((current) => mergeRecord(current, batch.names))
     })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [api, activeChatId, visibleMessageAvatarIds])
   const latestActiveMessage = activeMessages[activeMessages.length - 1] ?? null
 

@@ -100,20 +100,50 @@ export function toWire(path: string, args: readonly unknown[]): { path: string; 
   return JSON.parse(text) as { path: string; args: unknown[] }
 }
 
+/** 排隊中（尚未開始執行）的呼叫被呼叫端取消。已開始執行的呼叫不會收到這個錯誤。 */
+export class CallCancelledError extends Error {
+  constructor() {
+    super('call_cancelled')
+    this.name = 'CallCancelledError'
+  }
+}
+
+export interface LimiterRunOptions {
+  /** 在任務「開始執行之前」abort＝把排隊中的任務丟掉（reject `CallCancelledError`）；任務一旦開始執行，abort 不影響它。 */
+  signal?: AbortSignal
+}
+
+interface LimiterWaiter { resume(): void; cancel(): void }
+
 /** 先進先出的併發上限。 */
 export class Limiter {
   private active = 0
-  private readonly waiting: Array<() => void> = []
+  private readonly waiting: LimiterWaiter[] = []
   private readonly max: number
   constructor(max: number) { this.max = Math.max(1, Math.floor(max)) }
-  async run<T>(task: () => Promise<T>): Promise<T> {
-    if (this.active >= this.max) await new Promise<void>((resolve) => this.waiting.push(resolve))
-    else this.active += 1 // 排隊者由前一個結束者「接棒」（active 不變），所以只有直接進場的人要自己加
+  async run<T>(task: () => Promise<T>, options?: LimiterRunOptions): Promise<T> {
+    const signal = options?.signal
+    if (signal?.aborted) throw new CallCancelledError()
+    if (this.active >= this.max) {
+      await new Promise<void>((resolve, reject) => {
+        const waiter: LimiterWaiter = {
+          resume: () => { signal?.removeEventListener('abort', waiter.cancel); resolve() },
+          cancel: () => {
+            const index = this.waiting.indexOf(waiter)
+            if (index < 0) return
+            this.waiting.splice(index, 1)
+            reject(new CallCancelledError())
+          }
+        }
+        this.waiting.push(waiter)
+        signal?.addEventListener('abort', waiter.cancel, { once: true })
+      })
+    } else this.active += 1 // 排隊者由前一個結束者「接棒」（active 不變），所以只有直接進場的人要自己加
     try {
       return await task()
     } finally {
       const next = this.waiting.shift()
-      if (next) next()
+      if (next) next.resume()
       else this.active -= 1
     }
   }
@@ -144,6 +174,16 @@ export interface TransportOptions {
 }
 
 export const DEFAULT_MAX_CONCURRENT_CALLS = 3
+
+export interface InvokeOptions {
+  /**
+   * 在這次呼叫「第一個 host 呼叫開始執行之前」abort＝丟掉排隊中的呼叫（reject `PluginApiError('cancelled')`，不送給 backend）。
+   * 已經開始執行的呼叫不受影響；`job.poll`／`result.chunk` 這類後續呼叫與事件長輪詢都不吃這個 signal。
+   */
+  signal?: AbortSignal
+  /** 這次呼叫的 host 呼叫真正開始執行（拿到名額）時通知；用來分辨「還在排隊」與「已送出」。 */
+  onStart?(): void
+}
 
 /**
  * 分段結果在 backend 已經不在了（`result_expired`：被擠掉、TTL 到期，或 backend 重新啟動後換了一個新的 dispatcher）時，
@@ -215,11 +255,11 @@ export class PluginTransport {
    * 一般請求：每一次 host 呼叫（含 job 輪詢、分段取回）各自佔用一個併發名額，名額不跨輪詢持有。
    * 唯讀路徑的分段結果中途過期（`result_expired`）時整個重取，最多 `RESULT_REPLAYS` 次；其他錯誤與寫入類路徑照常往外丟。
    */
-  async invoke(path: string, args: readonly unknown[] = []): Promise<unknown> {
+  async invoke(path: string, args: readonly unknown[] = [], options?: InvokeOptions): Promise<unknown> {
     if (this.closed) throw new PluginApiError('disposed', path, 'the plugin API was disposed')
     for (let replay = 0; ; replay += 1) {
       try {
-        return await this.unwrap(path, await this.envelope(path, args))
+        return await this.unwrap(path, await this.envelope(path, args, options))
       } catch (error) {
         const expired = error instanceof PluginApiError && error.code === 'result_expired'
         if (!expired || replay >= RESULT_REPLAYS || this.closed || !isReplaySafePath(path)) throw error
@@ -234,19 +274,23 @@ export class PluginTransport {
   }
 
   /** 一次 host 呼叫：佔用名額；host 說忙就釋放名額、退避、再試（超過次數才 reject）。 */
-  private async envelope(path: string, args: readonly unknown[]): Promise<unknown> {
+  private async envelope(path: string, args: readonly unknown[], options?: InvokeOptions): Promise<unknown> {
     const method = backendMethodFor(path)
     if (method === null) throw new PluginApiError('path_unknown', path, 'the path is not in any backend method group')
     const wire = toWire(path, args)
+    const cancelled = (): PluginApiError => new PluginApiError('cancelled', path, 'the call was cancelled before it started')
     for (let attempt = 0; ; attempt += 1) {
+      if (options?.signal?.aborted) throw cancelled()
       try {
         const env = await this.limiter.run(() => {
           this.maxActive = Math.max(this.maxActive, this.limiter.stats().active)
+          options?.onStart?.()
           return this.host.backend.call(method, wire)
-        })
+        }, options?.signal ? { signal: options.signal } : undefined)
         this.setLink('ok', null)
         return env
       } catch (error) {
+        if (error instanceof CallCancelledError) throw cancelled()
         const code = error instanceof Error && error.message ? error.message.slice(0, 80) : 'backend_call_failed'
         if (ACCESS_HOST_CODES.has(code)) this.setLink('revoked', code)
         if (!BUSY_HOST_CODES.has(code) || attempt >= this.retry.attempts || this.closed) {

@@ -24,7 +24,7 @@ import {
   PluginApiError, PluginBackendError, PluginUnsupportedError, createPluginLineTodoApi
 } from '../../src/renderer/platform/pluginApi.ts'
 import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
-import { Limiter, toWire } from '../../src/renderer/platform/pluginTransport.ts'
+import { CallCancelledError, Limiter, toWire } from '../../src/renderer/platform/pluginTransport.ts'
 import { RESOURCES } from './lib/manifest.mjs'
 import { backendMethodFor } from '../../src/shared/pluginWire.ts'
 
@@ -830,4 +830,189 @@ test('review: when the AI cannot work reviewLastDays answers "not connected" at 
     await backend.dispose()
     rmSync(dataDir, { recursive: true, force: true })
   }
+})
+
+// ───────────── chat tab remount: queued avatar calls can be dropped, avatar requests are de-duplicated and remembered ─────────────
+
+test('Limiter: a queued task can be cancelled before it starts; a running task and the queue behind it are unaffected', async () => {
+  const limiter = new Limiter(1)
+  let releaseRunning
+  const ran = []
+  const running = limiter.run(async () => { ran.push('running'); await new Promise((resolve) => { releaseRunning = resolve }); return 'done' })
+  const early = new AbortController()
+  const late = new AbortController()
+  const cancelled = limiter.run(async () => { ran.push('cancelled'); return 'no' }, { signal: early.signal })
+  const kept = limiter.run(async () => { ran.push('kept'); return 'kept' }, { signal: late.signal })
+  assert.deepEqual(limiter.stats(), { active: 1, waiting: 2 })
+  early.abort()
+  await assert.rejects(cancelled, (e) => e instanceof CallCancelledError)
+  assert.deepEqual(limiter.stats(), { active: 1, waiting: 1 }, 'the cancelled task left the queue at once')
+  const alreadyAborted = new AbortController()
+  alreadyAborted.abort()
+  await assert.rejects(limiter.run(async () => 'x', { signal: alreadyAborted.signal }), (e) => e instanceof CallCancelledError)
+  assert.deepEqual(limiter.stats(), { active: 1, waiting: 1 }, 'an already aborted signal never enters the queue')
+  releaseRunning()
+  assert.equal(await running, 'done')
+  assert.equal(await kept, 'kept')
+  assert.deepEqual(ran, ['running', 'kept'])
+  assert.deepEqual(limiter.stats(), { active: 0, waiting: 0 })
+  // aborting after the task started does nothing to it
+  const started = new AbortController()
+  let finish
+  const inFlight = limiter.run(() => new Promise((resolve) => { finish = resolve }), { signal: started.signal })
+  started.abort()
+  finish('still ran')
+  assert.equal(await inFlight, 'still ran')
+  assert.deepEqual(limiter.stats(), { active: 0, waiting: 0 })
+})
+
+/** a host with gates: `hold(path)` makes the next calls of that path wait for `release(path)`; every call is logged in order */
+function gatedHost({ fail = new Set() } = {}) {
+  const log = []
+  const held = new Map()
+  const holding = new Set()
+  const hold = (path) => { holding.add(path) }
+  const release = (path) => { holding.delete(path); for (const open of held.get(path) ?? []) open(); held.set(path, []) }
+  const pathsFor = (ids) => Object.fromEntries(ids.map((id) => [id, `avatar-cache/${id}.jpg`]))
+  const namesFor = (ids) => Object.fromEntries(ids.map((id) => [id, `N ${id}`]))
+  const host = {
+    assets: { url: (p) => `asset://${p}` },
+    backend: {
+      async call(_method, params) {
+        const { path, args = [] } = params
+        log.push({ path, args })
+        if (holding.has(path)) await new Promise((resolve) => { held.set(path, [...(held.get(path) ?? []), resolve]) })
+        if (path === 'media.avatar.prepareMessages') {
+          const ids = args[1]
+          if (ids.some((id) => fail.has(id))) throw new Error('plugin_backend_crashed')
+          if (ids.includes('i:chunked')) return { ok: true, chunked: true, resultId: 'r1', chunks: 2 }
+          return { ok: true, value: { paths: pathsFor(ids), names: namesFor(ids) } }
+        }
+        if (path === 'media.avatar.prepareChats') return { ok: true, value: { paths: pathsFor(args[0]), names: namesFor(args[0]) } }
+        if (path === 'result.chunk') {
+          const text = JSON.stringify({ paths: pathsFor(['i:chunked']), names: namesFor(['i:chunked']) })
+          const half = Math.ceil(text.length / 2)
+          return { ok: true, value: { data: args[0].index === 0 ? text.slice(0, half) : text.slice(half) } }
+        }
+        return { ok: true, value: path }
+      }
+    }
+  }
+  const avatarCalls = (path = 'media.avatar.prepareMessages') => log.filter((entry) => entry.path === path)
+  return { host, log, hold, release, avatarCalls }
+}
+
+test('avatar requests: duplicates are sent once, known results are remembered, identical in-flight requests are merged, chat scope is separate', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, maxConcurrentCalls: 1, events: { enabled: false } })
+  try {
+    g.hold('ping')
+    const blocker = api.plugin.invoke('ping') // fills the only slot, so the avatar calls below queue behind it
+    await until(() => g.log.length === 1, { message: 'the blocker to start' })
+    const first = api.media.messageAvatarUrls('c1', ['i:1', 'i:2', 'i:1'])
+    const second = api.media.messageAvatarUrls('c1', ['i:2', 'i:1'])
+    await sleep(10)
+    assert.equal(api.plugin.transportStats().waiting, 1, 'the two identical requests share one queued call')
+    g.release('ping')
+    await blocker
+    const [a, b] = await Promise.all([first, second])
+    assert.deepEqual(a, { urls: { 'i:1': 'asset://avatar-cache/i:1.jpg', 'i:2': 'asset://avatar-cache/i:2.jpg' }, names: { 'i:1': 'N i:1', 'i:2': 'N i:2' } })
+    assert.deepEqual(b, a)
+    assert.deepEqual(g.avatarCalls().map((c) => c.args), [['c1', ['i:1', 'i:2']]])
+
+    const partial = await api.media.messageAvatarUrls('c1', ['i:2', 'i:3'])
+    assert.deepEqual(Object.keys(partial.urls).sort(), ['i:2', 'i:3'])
+    assert.deepEqual(g.avatarCalls().map((c) => c.args[1]), [['i:1', 'i:2'], ['i:3']], 'only the unknown id was sent')
+    await api.media.messageAvatarUrls('c1', ['i:3', 'i:1'])
+    assert.equal(g.avatarCalls().length, 2, 'a fully known request sends nothing')
+
+    await api.media.messageAvatarUrls('c2', ['i:1'])
+    assert.deepEqual(g.avatarCalls().map((c) => c.args), [['c1', ['i:1', 'i:2']], ['c1', ['i:3']], ['c2', ['i:1']]], 'the same msgId in another chat is a different avatar')
+
+    await api.media.avatarUrls(['c1', 'c2', 'c1'])
+    await api.media.avatarUrls(['c2', 'c1'])
+    assert.deepEqual(g.avatarCalls('media.avatar.prepareChats').map((c) => c.args), [[['c1', 'c2']]])
+  } finally { api.dispose() }
+})
+
+test('avatar requests: a failed answer is not remembered; an empty id list sends nothing', async () => {
+  const g = gatedHost({ fail: new Set(['i:bad']) })
+  const api = createPluginLineTodoApi({ host: g.host, events: { enabled: false }, busyRetry: { attempts: 0 } })
+  try {
+    assert.deepEqual(await api.media.messageAvatarUrls('c1', ['i:bad']), { urls: {}, names: {} })
+    assert.deepEqual(await api.media.messageAvatarUrls('c1', ['i:bad']), { urls: {}, names: {} })
+    assert.equal(g.avatarCalls().length, 2, 'a failure is retried')
+    assert.deepEqual(await api.media.messageAvatarUrls('c1', []), { urls: {}, names: {} })
+    assert.equal(g.avatarCalls().length, 2, 'an empty id list sends nothing')
+  } finally { api.dispose() }
+})
+
+test('avatar requests: abort drops a queued request (the backend never sees it); a request someone else still waits for survives; a started call finishes and is remembered', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, maxConcurrentCalls: 1, events: { enabled: false } })
+  try {
+    g.hold('ping')
+    const blocker = api.plugin.invoke('ping')
+    await until(() => g.log.length === 1, { message: 'the blocker to start' })
+
+    const lone = new AbortController()
+    const dropped = api.media.messageAvatarUrls('c1', ['i:9'], { signal: lone.signal })
+    await sleep(5)
+    assert.equal(api.plugin.transportStats().waiting, 1)
+    lone.abort()
+    assert.deepEqual(await dropped, { urls: {}, names: {} }, 'an aborted request resolves empty')
+    assert.equal(api.plugin.transportStats().waiting, 0, 'its queued backend call left the queue')
+
+    const sharedA = new AbortController()
+    const leaving = api.media.messageAvatarUrls('c1', ['i:20'], { signal: sharedA.signal })
+    const staying = api.media.messageAvatarUrls('c1', ['i:20'])
+    await sleep(5)
+    assert.equal(api.plugin.transportStats().waiting, 1, 'merged into one queued call')
+    sharedA.abort()
+    assert.deepEqual(await leaving, { urls: {}, names: {} })
+    assert.equal(api.plugin.transportStats().waiting, 1, 'another caller still needs it: not dropped')
+
+    g.release('ping')
+    await blocker
+    assert.deepEqual((await staying).urls, { 'i:20': 'asset://avatar-cache/i:20.jpg' })
+    assert.deepEqual(g.avatarCalls().map((c) => c.args[1]), [['i:20']], 'i:9 was never sent; i:20 was sent once')
+
+    const retry = await api.media.messageAvatarUrls('c1', ['i:9'])
+    assert.deepEqual(Object.keys(retry.urls), ['i:9'], 'a dropped request does not poison later requests for the same id')
+
+    g.hold('media.avatar.prepareMessages')
+    const startedAbort = new AbortController()
+    const started = api.media.messageAvatarUrls('c1', ['i:30'], { signal: startedAbort.signal })
+    await until(() => g.avatarCalls().some((c) => c.args[1].includes('i:30')), { message: 'the call to start' })
+    startedAbort.abort()
+    assert.deepEqual(await started, { urls: {}, names: {} })
+    const merged = api.media.messageAvatarUrls('c1', ['i:30', 'i:31'])
+    await sleep(10)
+    g.release('media.avatar.prepareMessages')
+    assert.deepEqual(Object.keys((await merged).urls).sort(), ['i:30', 'i:31'])
+    assert.deepEqual(g.avatarCalls().map((c) => c.args[1]).slice(-2), [['i:30'], ['i:31']], 'a new request merges into the call that already started and only sends the rest')
+    const before = g.avatarCalls().length
+    await api.media.messageAvatarUrls('c1', ['i:30'])
+    assert.equal(g.avatarCalls().length, before, 'the aborted-but-started call was kept')
+  } finally { api.dispose() }
+})
+
+test('avatar requests: aborting after the call started does not cancel its result.chunk reads', async () => {
+  const g = gatedHost()
+  const api = createPluginLineTodoApi({ host: g.host, events: { enabled: false } })
+  try {
+    g.hold('result.chunk')
+    const abort = new AbortController()
+    const pending = api.media.messageAvatarUrls('c1', ['i:chunked'], { signal: abort.signal })
+    await until(() => g.log.some((entry) => entry.path === 'result.chunk'), { message: 'the first chunk read' })
+    abort.abort()
+    assert.deepEqual(await pending, { urls: {}, names: {} })
+    g.release('result.chunk')
+    await until(() => g.log.filter((entry) => entry.path === 'result.chunk').length === 2, { message: 'both chunks to be read after the abort' })
+    await sleep(10)
+    const calls = g.log.length
+    const again = await api.media.messageAvatarUrls('c1', ['i:chunked'])
+    assert.deepEqual(Object.keys(again.urls), ['i:chunked'], 'the reassembled answer was remembered')
+    assert.equal(g.log.length, calls)
+  } finally { api.dispose() }
 })

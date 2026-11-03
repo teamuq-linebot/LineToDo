@@ -47,6 +47,11 @@ export interface AvatarUrlBatchDTO {
   names: Record<string, string>
 }
 
+/** `signal`: abort when the caller no longer needs the answer; a request that has not been sent to the backend yet is dropped, one already sent finishes (its result is kept for later callers). */
+export interface AvatarRequestOptions {
+  signal?: AbortSignal
+}
+
 export interface MessageDTO {
   msgId: string
   chatId: string
@@ -682,9 +687,9 @@ export interface LineTodoApi {
      */
     assetUrl?(msgId: string): Promise<string | null>
     /** Plugin-host-only, on-demand chat avatars. Source locators and LINE MIDs stay in the backend. */
-    avatarUrls?(chatIds: string[]): Promise<AvatarUrlBatchDTO>
+    avatarUrls?(chatIds: string[], options?: AvatarRequestOptions): Promise<AvatarUrlBatchDTO>
     /** Plugin-host-only, on-demand sender avatars for the given imported message ids. */
-    messageAvatarUrls?(chatId: string, msgIds: string[]): Promise<AvatarUrlBatchDTO>
+    messageAvatarUrls?(chatId: string, msgIds: string[], options?: AvatarRequestOptions): Promise<AvatarUrlBatchDTO>
   }
   /** Optional main-owned group discussion projection. Never carries LINE participant keys or raw source identities. */
   groupTopics?: {
