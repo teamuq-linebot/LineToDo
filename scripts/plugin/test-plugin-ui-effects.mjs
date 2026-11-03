@@ -1626,8 +1626,8 @@ test('L1 overview: the first load goes through the refresher, so a pipeline-run 
   try {
     await until(() => log.some((entry) => entry.path === 'groupTopics.overview') && fireRun, { message: 'first overview read' })
     const first = Date.now()
-    fireRun({})
-    fireRun({})
+    fireRun({ topicChatIds: ['ov-group-1'] })
+    fireRun({ topicChatIds: ['ov-group-1'] })
     await sleep(600)
     assert.equal(log.filter((entry) => entry.path === 'groupTopics.overview').length, 1, 'no second read inside the 2 s window')
     await until(() => log.filter((entry) => entry.path === 'groupTopics.overview').length === 2, { timeout: 4000, message: 'the follow-up read after the spacing' })
@@ -1635,6 +1635,26 @@ test('L1 overview: the first load goes through the refresher, so a pipeline-run 
     assert.ok(gap >= 1500, 'second read came ' + gap + ' ms after the first')
     await sleep(80)
     assert.equal(log.filter((entry) => entry.path === 'groupTopics.overview').length, 2, 'the two run events coalesced into one read')
+  } finally { view.unmount(); api.dispose() }
+})
+
+test('L3 overview: a pipeline-run without topicChatIds (todo-only round) does not re-read the overview; one with topicChatIds does', async () => {
+  const log = []
+  let fireRun
+  const api = groupTopicsApi(log, {}, { onRun: (callback) => { fireRun = callback } })
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  try {
+    await until(() => log.some((entry) => entry.path === 'groupTopics.overview') && fireRun, { message: 'first overview read' })
+    const reads = () => log.filter((entry) => entry.path === 'groupTopics.overview').length
+    assert.equal(reads(), 1)
+    fireRun({})
+    fireRun({ topicChatIds: [] })
+    fireRun({ createdIds: ['t1'] })
+    await sleep(2600)
+    assert.equal(reads(), 1, 'todo-only runs never re-read the overview')
+    fireRun({ topicChatIds: ['ov-group-1'] })
+    await until(() => reads() === 2, { timeout: 4000, message: 'a run that wrote topics re-reads the overview' })
   } finally { view.unmount(); api.dispose() }
 })
 

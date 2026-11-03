@@ -18,6 +18,7 @@
 import { AiPortError } from '../../core/aiPort'
 import type { AiPort } from '../../core/aiPort'
 import { validateExtractResult } from '../../shared/extractResult'
+import { validateCombinedEnvelope } from '../../main/features/groupTopics/combined'
 import type { Clock } from './hostAi'
 import { SYSTEM_CLOCK, codeOf, isTransientAiCode, worstCaseItemMs } from './hostAi'
 import type { ExtractQueue } from './extractQueue'
@@ -59,7 +60,7 @@ export interface ExtractWorkerDeps {
   queue: ExtractQueue
   port: ExtractWorkerPort
   /** 抽取的 system prompt（含固定輸出格式），依項目所屬對話解析生效值。每次領到項目時才讀，所以設定頁改 prompt 馬上生效。 */
-  system(chatId: string): string
+  system(chatId: string, opts?: { topics?: boolean }): string
   clock?: Clock
   config?: Partial<ExtractWorkerConfig>
   log?: (event: string, detail?: Record<string, unknown>) => void
@@ -85,6 +86,12 @@ export function createExtractWorker(deps: ExtractWorkerDeps): ExtractWorker {
     }
   }
 
+  /** 合併整理的 part：只檢查外層封裝與「至少一邊可用」，兩邊的嚴格驗證在 queue.commit。 */
+  const validateCombined = (value: unknown): { ok: true; value: unknown } | { ok: false; reason: string } => {
+    const checked = validateCombinedEnvelope(value)
+    return checked.ok ? { ok: true, value: checked.value } : { ok: false, reason: checked.reason }
+  }
+
   const scheduleWake = (delayMs: number): void => {
     if (stopped) return
     const at = clock.now() + Math.max(0, delayMs)
@@ -95,7 +102,7 @@ export function createExtractWorker(deps: ExtractWorkerDeps): ExtractWorker {
   }
 
   /** 處理一個領到的項目。回傳：要等多久再看（null＝可以馬上領下一個）。 */
-  const runItem = async (item: { itemId: string; chatId: string; user: string; sessionEpoch?: number; onAdditionalUserPayload?: (serializedUserPayload:string)=>boolean }): Promise<number | null> => {
+  const runItem = async (item: { itemId: string; chatId: string; user: string; topics?: boolean; sessionEpoch?: number; onAdditionalUserPayload?: (serializedUserPayload:string)=>boolean }): Promise<number | null> => {
     let heartbeat:unknown=null
     const keepAlive=():void=>{
       if(stopped)return
@@ -104,7 +111,7 @@ export function createExtractWorker(deps: ExtractWorkerDeps): ExtractWorker {
     }
     heartbeat=clock.setTimeout(keepAlive,30_000)
     try {
-      const result = await deps.port.complete({ system: deps.system(item.chatId), user: item.user, conversationScope: { kind: 'line-chat-extract', chatId: item.chatId, ...(item.sessionEpoch!==undefined?{sessionEpoch:item.sessionEpoch}:{}) }, ...(item.onAdditionalUserPayload?{onAdditionalUserPayload:item.onAdditionalUserPayload}:{}), expectJson: true, validate, priority: 'background' })
+      const result = await deps.port.complete({ system: item.topics ? deps.system(item.chatId, { topics: true }) : deps.system(item.chatId), user: item.user, conversationScope: { kind: 'line-chat-extract', chatId: item.chatId, ...(item.sessionEpoch!==undefined?{sessionEpoch:item.sessionEpoch}:{}) }, ...(item.onAdditionalUserPayload?{onAdditionalUserPayload:item.onAdditionalUserPayload}:{}), expectJson: true, validate: item.topics ? validateCombined : validate, priority: 'background' })
       if (stopped) return null
       const committed = deps.queue.commit({ results: [{ itemId: item.itemId, ok: true, result: result.value }] })
       const status = committed.results[0]?.status

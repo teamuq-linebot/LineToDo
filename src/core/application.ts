@@ -73,6 +73,8 @@ export interface LineTodoApplicationPorts {
     openOriginal(chatId: string): Promise<{ ok: boolean; error?: string }>
   }
   onSettingsChanged?(): void
+  /** 合併整理（待辦＋議題一次 AI 呼叫）目前是否會在背景運作；true 時 groupTopics.analyze 只補分析集合 B。省略＝false（standalone）。 */
+  combinedExtractActive?(): boolean
   afterPipelineRun?(result: PipelineRunResult, db: Database, schedule: (job: BackgroundJob) => void): void
   afterStart?(db: Database, schedule: (job: BackgroundJob) => void): void
   onReconcileProgress?(subscribe: (cb: (progress: ReconcileProgress) => void) => () => void): void
@@ -262,7 +264,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   try {
     if (!GROUP_TOPICS_BUNDLE_ENABLED) throw new Error('prompt_bundle_invalid')
     ensureGroupTopicsSchema(database.db)
-    groupTopicsService = createGroupTopicsService(database.db)
+    groupTopicsService = createGroupTopicsService(database.db, { isCombinedActive: () => ports.combinedExtractActive?.() === true })
   } catch (error) {
     console.warn('[group-topics] additive schema unavailable; feature disabled:', error instanceof Error ? error.name : 'unknown')
   }

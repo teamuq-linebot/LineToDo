@@ -703,6 +703,57 @@ test('e2e groupTopics.analyze: the JSON Schema is put in the prompt (no structur
   })
 })
 
+test('e2e combined extraction: with pluginCombinedExtract on, one AI turn per part returns { todo, topic } for an enabled group; the todo and the topic both land, and the run event names the chat', async () => {
+  const replyFor = (ctx) => {
+    const payload = JSON.parse(ctx.user)
+    const first = payload.newMessages[0].msgId
+    const todo = { importance: 'action', newTodos: [{ draftRef: 'c1', bucket: 'todo', title: '訂發表會場地', detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first] }], identityDecisions: [{ draftRef: 'c1', outcome: 'new', candidateType: null, candidateId: null, relationKind: null, reasonCode: 'insufficient_evidence', confidenceBand: 'high', evidenceMsgIds: [first] }], resolved: [], updates: [] }
+    if (!payload.topic) return fenced(todo)
+    const targets = payload.topic.targetMsgIds
+    return fenced({
+      todo,
+      topic: {
+        topics: [{ ref: 'launch', title: '產品發表會', summary: '討論發表會的場地與時間。' }],
+        identityDecisions: [{ draftRef: 'launch', outcome: 'new', candidateType: null, candidateId: null, relationKind: null, reasonCode: 'insufficient_evidence', confidenceBand: 'high', evidenceMsgIds: [targets[0]] }],
+        assignments: targets.map((msgId) => ({ msgId, topicRef: 'launch', relation: 'about', confidence: 0.8, relevance: 'awareness', relevanceEvidenceMsgIds: [msgId] }))
+      }
+    })
+  }
+  await withStack({ settings: { pollIntervalSec: 3600, pluginCombinedExtract: true }, reply: replyFor }, async ({ api, line, calls }) => {
+    const runs = []
+    api.pipeline.onRun((run) => runs.push(run))
+    for (let i = 1; i <= 3; i += 1) line.emit(raw(i, { chatId: 'g-launch', chat: '發表會籌備群', isGroup: true, text: `發表會場地第 ${i} 案要不要訂？` }))
+    await until(async () => (await api.db.chats.get('g-launch')) !== null, { message: 'the group chat to be persisted' })
+    assert.deepEqual(await api.groupTopics.setEnabled('g-launch', true), { ok: true })
+    await until(async () => (await aiState(api)).state === 'running', { message: 'the AI to be ready' })
+    await api.pipeline.runOnce()
+    await until(async () => (await api.groupTopics.list('g-launch')).topics.length === 1, { message: 'the topic written by the same AI turn' })
+    const created = await todos(api)
+    assert.equal(created.length, 1)
+    assert.equal(created[0].title, '訂發表會場地')
+    assert.equal(calls.length, 1, 'ONE ai turn produced both the todo and the topic')
+    assert.ok(calls[0].system.includes('topic.targetMsgIds') && calls[0].system.includes('"todo"'), 'the combined system (topic section + combined output format) was sent')
+    assert.deepEqual(JSON.parse(calls[0].user).topic.targetMsgIds, ['i:m1', 'i:m2', 'i:m3'])
+    assert.equal((await api.groupTopics.list('g-launch')).topics[0].title, '產品發表會')
+    await until(() => runs.some((run) => run.topicChatIds?.includes('g-launch')), { message: 'a pipeline-run that names the chat in topicChatIds' })
+    const overview = (await api.groupTopics.overview()).find((row) => row.chatId === 'g-launch')
+    assert.equal(overview.backlogCount, 0, 'nothing is left for the manual backfill')
+  })
+  await withStack({ settings: { pollIntervalSec: 3600, pluginCombinedExtract: false }, reply: replyFor }, async ({ api, line, calls }) => {
+    for (let i = 1; i <= 2; i += 1) line.emit(raw(i, { chatId: 'g-launch', chat: '發表會籌備群', isGroup: true, text: `發表會場地第 ${i} 案要不要訂？` }))
+    await until(async () => (await api.db.chats.get('g-launch')) !== null, { message: 'the group chat to be persisted' })
+    await api.groupTopics.setEnabled('g-launch', true)
+    await until(async () => (await aiState(api)).state === 'running', { message: 'the AI to be ready' })
+    await api.pipeline.runOnce()
+    await until(async () => (await todos(api)).length === 1, { message: 'the todo' })
+    assert.equal(calls.length, 1)
+    assert.ok(!calls[0].system.includes('topic.targetMsgIds'), 'flag OFF: the plain system')
+    assert.equal(JSON.parse(calls[0].user).topic, undefined)
+    assert.deepEqual((await api.groupTopics.list('g-launch')).topics, [])
+    assert.ok(await api.groupTopics.pendingCount('g-launch') > 0, 'flag OFF: the topic side is still the manual analyze')
+  })
+})
+
 test('e2e reviewLastDays: the long review rides the job channel while the worker answers the extraction items (it was "尚未接上" without a board in 0.1.x); with Codex logged out it fails at once with the reason', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'plugin-ai-e2e-review-'))
   const fake = fakeLine()

@@ -26,6 +26,13 @@ import { EXTRACT_SYSTEM_PROMPT, buildUserPayload } from '../../main/llm/extractP
 import { EXTRACT_JSON_SCHEMA, validateExtractResult } from '../../main/llm/schema'
 import type { ExtractResult } from '../../main/llm/schema'
 import { applyChatExtract } from '../../main/pipeline/runOnce'
+import { applyCombinedExtract } from '../../main/pipeline/combinedApply'
+import { COMBINED_BUNDLE_ENABLED, COMBINED_PROMPT_HASH, COMBINED_PROMPT_VERSION, COMBINED_SCHEMA_HASH, COMBINED_SCHEMA_VERSION, GROUP_TOPICS_BUNDLE_ENABLED } from '../../main/features/groupTopics/prompts/bundle'
+import { splitCombined, topicCandidatesOnly } from '../../main/features/groupTopics/combined'
+import type { CombinedTopicPayload } from '../../main/features/groupTopics/combined'
+import { TopicAnalysisValidationError } from '../../main/features/groupTopics/domain'
+import type { TopicAnalysis, TopicMessageInput } from '../../main/features/groupTopics/domain'
+import { GROUP_TOPICS_VALIDATOR_VERSION, loadTopicCandidates, recordFailure as recordTopicFailure, selectTopicTargets } from '../../main/features/groupTopics/repository'
 import type { ApplyTally, ChatExtractInput, ExtractSink, RunOnceResult } from '../../main/pipeline/runOnce'
 import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, recallTodoIdentityCandidates, recordIdentitySourceAttempt, releaseIdentitySourceAttempt, renewIdentitySourceLease, tableExists } from '../../main/db/identity.repo'
 import { getMessagesByChatAndIds, getRecentByChat } from '../../main/db/messages.repo'
@@ -51,6 +58,19 @@ const DEFAULT_AWAIT_TIMEOUT_MS = 15 * 60_000
 /** 單次 pull 回傳的 JSON 預算（host 上限 64 KiB，留餘裕給 envelope）。 */
 const DEFAULT_PULL_BUDGET_BYTES = 40 * 1024
 const DEFAULT_MAX_ITEMS_PER_PULL = 4
+/** 合併整理：一個 part 最多要分析的議題目標數（等於 GROUP_TOPICS_BATCH_SIZE；測試釘住兩者相等）。 */
+export const COMBINED_TARGETS_PER_PART = 20
+/** topic.existingLocalTopics 最多佔單輪預算的比例（超過先砍它）。 */
+export const COMBINED_LOCAL_TOPICS_RATIO = 0.15
+/** 同一聊天室的議題邊連續失敗這麼多次，就在接下來 COMBINED_DEGRADE_MS 內只送純待辦。 */
+export const COMBINED_DEGRADE_FAILS = 2
+export const COMBINED_DEGRADE_MS = 30 * 60_000
+
+/** 合併整理的診斷計數（replyChars＝已解析的回覆 JSON 序列化後的字元數；decisions／deferDecisions＝議題身分決策總數與 defer 數）。 */
+export interface CombinedCounters {
+  partsWithTopic: number; topicApplied: number; topicFailed: number; topicAbsent: number; topicDiscarded: number; todoFailedTopicApplied: number
+  decisions: number; deferDecisions: number; replyChars: number; replyCharsMax: number; fallbackSystemTooLarge: number; fallbackDegraded: number
+}
 
 // ───────────────────────── 切片：把一個 chat 的輸入切成 ≤ maxChars 的 payload ─────────────────────────
 
@@ -69,7 +89,7 @@ function takeLast<T>(items: T[], n: number): T[] {
   return n <= 0 ? [] : items.slice(-n)
 }
 
-function buildPayload(input: ChatExtractInput, newMessages: MessageDTO[], recentContext: MessageDTO[], openTodos: ChatExtractInput['openTodos']): string {
+function buildPayload(input: ChatExtractInput, newMessages: MessageDTO[], recentContext: MessageDTO[], openTodos: ChatExtractInput['openTodos'], topic?: CombinedTopicPayload): string {
   return buildUserPayload({
     now: input.now,
     chat: input.chat,
@@ -78,9 +98,20 @@ function buildPayload(input: ChatExtractInput, newMessages: MessageDTO[], recent
     openTodos,
     classificationCorrections: input.classificationCorrections,
     identityCandidates:input.identityCandidates,
-    identityCandidatesTruncated:input.identityCandidatesTruncated
+    identityCandidatesTruncated:input.identityCandidatesTruncated,
+    ...(topic ? { topic } : {})
     // 刻意不傳 onCorrectionsPayloadBuilt：那個稽核 hook 只在 payload 真的被領走（pull）時才呼叫。
   })
+}
+
+/** 既有議題清單依序取到序列化長度不超過 budget 為止（超過就從尾端捨棄）。 */
+function fitLocalTopics(list: CombinedTopicPayload['existingLocalTopics'], budget: number): CombinedTopicPayload['existingLocalTopics'] {
+  const picked: CombinedTopicPayload['existingLocalTopics'] = []
+  for (const topic of list) {
+    if (JSON.stringify([...picked, topic]).length > budget) break
+    picked.push(topic)
+  }
+  return picked
 }
 
 /**
@@ -109,6 +140,18 @@ export function partitionExtractInput(input: ChatExtractInput, opts: { maxChars:
     input.identityCandidates=identityCandidates
     input.identityCandidatesTruncated=identityCandidatesTruncated
     input.identitySnapshot.candidatesTruncated=identityCandidatesTruncated
+  }
+
+  // 合併整理：input.topic 存在時，每個 part 只帶自己訊息中的議題目標（≤ COMBINED_TARGETS_PER_PART）。
+  // 放不下時依序退讓：先拿掉 existingLocalTopics，再整個 part 改成純待辦——議題永遠不能讓待辦的 part 過大。
+  const topicTargets = input.topic ? new Set(input.topic.targetMsgIds) : null
+  const localTopics = input.topic ? fitLocalTopics(input.topic.existingLocalTopics, Math.floor(maxChars * COMBINED_LOCAL_TOPICS_RATIO)) : []
+  type TopicMode = 'full' | 'noLocals' | 'none'
+  const topicFor = (slice: MessageDTO[], mode: TopicMode): CombinedTopicPayload | undefined => {
+    if (!topicTargets || mode === 'none') return undefined
+    const ids = slice.filter((m) => topicTargets.has(m.msgId)).map((m) => m.msgId)
+    if (ids.length === 0) return undefined
+    return { targetMsgIds: ids, existingLocalTopics: mode === 'full' ? localTopics : [] }
   }
 
   /** 上下文佔用的字元數（序列化後，扣掉沒有上下文時的基底）。 */
@@ -142,10 +185,14 @@ export function partitionExtractInput(input: ChatExtractInput, opts: { maxChars:
     let used = context
     let chunk: MessageDTO[] = []
     let truncated = 0
+    let topicMode: TopicMode = 'full'
     for (;;) {
       const next = count + 1
       if (index + next > messages.length) break
-      const candidate = buildPayload(input, messages.slice(index, index + next), used, openTodos)
+      const slice = messages.slice(index, index + next)
+      const sliceTopic = topicFor(slice, 'full')
+      if (sliceTopic && sliceTopic.targetMsgIds.length > COMBINED_TARGETS_PER_PART) break
+      const candidate = buildPayload(input, slice, used, openTodos, sliceTopic)
       if (candidate.length > maxChars) break
       count = next
       user = candidate
@@ -153,6 +200,14 @@ export function partitionExtractInput(input: ChatExtractInput, opts: { maxChars:
     if (count > 0) {
       chunk = messages.slice(index, index + count)
     } else {
+      if (topicFor([messages[index]], 'full')) {
+        // 帶議題一則都放不下：先拿掉 existingLocalTopics，仍放不下就整個 part 改成純待辦。
+        const lean = buildPayload(input, [messages[index]], used, openTodos, topicFor([messages[index]], 'noLocals'))
+        if (lean.length <= maxChars) { count = 1; user = lean; chunk = [messages[index]]; topicMode = 'noLocals' }
+        else topicMode = 'none'
+      }
+    }
+    if (count === 0) {
       // 一則都放不下：先縮 context。
       let shrunk = context
       while (shrunk.length > 0 && count === 0) {
@@ -175,8 +230,12 @@ export function partitionExtractInput(input: ChatExtractInput, opts: { maxChars:
       }
     }
     const taken = messages.slice(index, index + count)
+    const partInput: ChatExtractInput = { ...input, newMessages: chunk, recentContext: used, openTodos }
+    const partTopic = truncated === 0 ? topicFor(chunk, topicMode) : undefined
+    if (partTopic) partInput.topic = partTopic
+    else delete partInput.topic
     parts.push({
-      input: { ...input, newMessages: chunk, recentContext: used, openTodos },
+      input: partInput,
       msgIds: taken.map((m) => m.msgId),
       user,
       truncated
@@ -193,8 +252,16 @@ export function partitionExtractInput(input: ChatExtractInput, opts: { maxChars:
 export interface ExtractQueueOptions {
   db: Database
   getConfig(): PipelineDefaults
-  /** system 的雜湊；帶 chatId＝該對話的生效值（逐對話 prompt／名字），不帶＝預設值。 */
-  getSystemSha256?(chatId?: string): string
+  /** system 的雜湊；帶 chatId＝該對話的生效值（逐對話 prompt／名字），不帶＝預設值。`topics`＝合併整理的 part（system 另接議題段落）。 */
+  getSystemSha256?(chatId?: string, opts?: { topics?: boolean }): string
+  /**
+   * 合併整理（待辦＋議題一次 AI 呼叫）。省略＝永遠純待辦（standalone 與既有測試不受影響）。
+   * `enabled`：執行期旗標（pluginCombinedExtract）。`systemFits`：該聊天室帶議題的 system 沒有超過 host 的 systemChars；
+   * 超過就走純待辦（`system_too_large` 不是暫時性錯誤，只會退避，不能靠重試）。
+   */
+  combined?: { enabled(): boolean; systemFits(chatId: string): boolean }
+  /** 診斷 log（不得含訊息內容）。 */
+  log?(event: string, detail?: Record<string, unknown>): void
   getSessionContext?(): string
   /** commit 落庫後回報一輪結果（外掛接到 `scheduler.recordExternalRun`，沿用 pipeline-run / todos-changed 事件）。 */
   onRun?(result: RunOnceResult): void
@@ -232,6 +299,8 @@ export interface PullItem {
   part: number
   parts: number
   truncatedMessages: number
+  /** 合併整理的 part：payload 含 topic 鍵，system 要用 `{ topics: true }` 取、回覆要驗 { todo, topic }。純待辦的 part 沒有這個鍵。 */
+  topics?: boolean
   /** Cache epoch is backend-private metadata used only to choose fresh versus valid same-epoch Host resume. */
   sessionEpoch?: number
   /** Records each additional serialized model request before Host submission; never crosses IPC. */
@@ -350,6 +419,10 @@ export class ExtractQueue implements ExtractSink {
   private uiSeenAt: number
   /** UI 最近一次交回結果（commit，不論成功失敗）的時間——「有在做事」的證據。只有領了又還回去（Codex 沒登入、被限流）不算。 */
   private commitAt: number
+  /** 合併整理的議題邊自動降級（設計 §4.3）：連續失敗 COMBINED_DEGRADE_FAILS 次後 COMBINED_DEGRADE_MS 內只送純待辦；議題成功一次就清零；重啟後清空。 */
+  private readonly topicDegrade = new Map<string, { fails: number; until: number }>()
+  private readonly fallbackLogged = new Set<string>()
+  private readonly combinedCounters: CombinedCounters = { partsWithTopic: 0, topicApplied: 0, topicFailed: 0, topicAbsent: 0, topicDiscarded: 0, todoFailedTopicApplied: 0, decisions: 0, deferDecisions: 0, replyChars: 0, replyCharsMax: 0, fallbackSystemTooLarge: 0, fallbackDegraded: 0 }
 
   constructor(opts: ExtractQueueOptions) {
     this.opts = opts
@@ -383,7 +456,11 @@ export class ExtractQueue implements ExtractSink {
     for (const [id, e] of this.entries) if (e.chatId === chatId && e.mode === 'apply' && e.state === 'pending') this.entries.delete(id)
     const fresh = input.newMessages.filter((m) => wanted.has(m.msgId) && !inflight.has(m.msgId))
     if (fresh.length === 0) return
-    const parts = partitionExtractInput({ ...input, newMessages: fresh }, { maxChars: this.maxChars, contextLimit: this.opts.getConfig().recentContextLimit })
+    const partitionInput: ChatExtractInput = { ...input, newMessages: fresh }
+    delete partitionInput.topic
+    const topic = this.combinedTopic(chatId, fresh.map((m) => m.msgId))
+    if (topic) partitionInput.topic = topic
+    const parts = partitionExtractInput(partitionInput, { maxChars: this.maxChars, contextLimit: this.opts.getConfig().recentContextLimit })
     const fail = this.chatFail.get(chatId)
     parts.forEach((part, partIndex) => {
       const id = randomUUID()
@@ -534,6 +611,12 @@ export class ExtractQueue implements ExtractSink {
           }
         }
       }
+      if (e.mode === 'apply') {
+        // 議題目標與既有議題每次領取都重算（旗標被關、聊天室被降級、訊息已被分析過，這一片就退回純待辦）。
+        const freshTopic = this.combinedTopic(e.chatId, e.msgIds)
+        if (freshTopic) e.input.topic = freshTopic
+        else delete e.input.topic
+      }
       if (e.mode === 'apply' || e.input.identitySnapshot) {
         const latestOpenTodos = getOpenTodosByChat(e.chatId, this.opts.db)
         if(e.group?.identityInputRef)e.group.identityInputRef.openTodos=latestOpenTodos
@@ -575,6 +658,8 @@ export class ExtractQueue implements ExtractSink {
         itemId: randomUUID(), chatId: e.chatId, chatName: e.chatName, user: e.user, userChars: e.user.length, messageCount: e.msgIds.length,
         attempts: e.attempts, part: e.partIndex + 1, parts: e.partCount, truncatedMessages: e.truncated
       }
+      const withTopics = e.mode === 'apply' && e.input.topic !== undefined
+      if (withTopics) item.topics = true
       const size = Buffer.byteLength(JSON.stringify(item))
       if (items.length > 0 && bytes + size > budget) break
       if (e.input.identitySnapshot) {
@@ -585,7 +670,8 @@ export class ExtractQueue implements ExtractSink {
           if(!attempt.ok){releaseIdentitySourceAttempt(this.opts.db,lease,true);if(e.group)this.failGroup(e.group,new Error('identity_context_stale'));else this.recordFailure(e,'identity_context_stale');continue}
           lease=attempt.lease
         } else {
-          const sessionFingerprint=createHash('sha256').update(JSON.stringify({systemSha256:this.opts.getSystemSha256?.(e.chatId)??EXTRACT_SYSTEM_SHA256,schema:EXTRACT_JSON_SCHEMA.schema,identityQuery:IDENTITY_QUERY_VERSION,sessionContext:this.opts.getSessionContext?.()??''})).digest('hex')
+          const systemSha=(withTopics?this.opts.getSystemSha256?.(e.chatId,{topics:true}):this.opts.getSystemSha256?.(e.chatId))??EXTRACT_SYSTEM_SHA256
+          const sessionFingerprint=createHash('sha256').update(JSON.stringify({systemSha256:systemSha,schema:EXTRACT_JSON_SCHEMA.schema,identityQuery:IDENTITY_QUERY_VERSION,sessionContext:this.opts.getSessionContext?.()??'',...(withTopics?{combined:{prompt:COMBINED_PROMPT_HASH,schema:COMBINED_SCHEMA_HASH}}:{})})).digest('hex')
           const begun=beginIdentitySourceAttempt(this.opts.db,e.chatId,e.input.identitySnapshot,e.user,sessionFingerprint)
           if(!begun.lease) {
             if(begun.reason==='lease_busy') {e.notBefore=now+1000;soonest=soonest===null?e.notBefore:Math.min(soonest,e.notBefore);continue}
@@ -636,6 +722,7 @@ export class ExtractQueue implements ExtractSink {
     const tally: ApplyTally & { chatsProcessed: number; chatsFailed: number } = {
       todosCreated: 0, todosMerged: 0, todosResolvedDone: 0, todosSuggestedDone: 0, createdIds: [], resolvedIds: [], updatedIds: [], chatsProcessed: 0, chatsFailed: 0
     }
+    const topicChatIds = new Set<string>()
     let runId: string | null = null
     const leased = new Map<string, Entry>()
     for (const e of this.entries.values()) if (e.state === 'leased' && e.itemId) leased.set(e.itemId, e)
@@ -650,21 +737,51 @@ export class ExtractQueue implements ExtractSink {
       if (!item.ok) {
         const code = typeof item.failCode === 'string' && /^[a-z0-9_]{1,48}$/.test(item.failCode) ? item.failCode : 'ai_failed'
         if(entry.sourceLease) releaseIdentitySourceAttempt(this.opts.db,entry.sourceLease,true)
+        const failedWithTopic = entry.mode === 'apply' && entry.input.topic !== undefined
         const retryInMs = this.recordFailure(entry, code, item.retryAfterMs)
+        if (failedWithTopic) this.noteTopicFailure(entry.chatId, code === 'system_too_large')
         tally.chatsFailed += 1
         out.push({ itemId, status: 'failed_recorded', chatId: entry.chatId, code, retryInMs })
         continue
       }
 
-      let extract: ExtractResult
+      const topicSent = entry.mode === 'apply' && !!entry.input.identitySnapshot && entry.input.topic !== undefined
+      let extract = null as ExtractResult | null
+      let combinedTopic = null as TopicAnalysis | null
+      let topicTargets: TopicMessageInput[] = []
+      let topicFailure: { reason: string; path: string | null; stage: 'domain_validate' } | null = null
+      let todoError: unknown = null
       try {
-        extract = entry.input.identitySnapshot ? validateExtractResult(item.result,{
-          candidates:entry.input.identityCandidates,candidatesTruncated:entry.input.identityCandidatesTruncated,
-          selectedMessageIds:entry.msgIds,targetType:'todo',allowedTodoIds:entry.input.openTodos.map((todo)=>todo.id)
-        }) : validateExtractResult(item.result)
+        if (topicSent) {
+          topicTargets = this.topicTargetsOf(entry)
+          const split = splitCombined(item.result, {
+            todo: {
+              candidates: entry.input.identityCandidates, candidatesTruncated: entry.input.identityCandidatesTruncated,
+              selectedMessageIds: entry.msgIds, targetType: 'todo', allowedTodoIds: entry.input.openTodos.map((todo) => todo.id)
+            },
+            topic: { targets: topicTargets, candidates: entry.input.identityCandidates, candidatesTruncated: entry.input.identityCandidatesTruncated }
+          })
+          this.noteReply(item.result)
+          if (split.topic.state === 'ok') combinedTopic = split.topic.value
+          else if (split.topic.state === 'fail') {
+            const err = split.topic.error
+            topicFailure = err instanceof TopicAnalysisValidationError
+              ? { stage: 'domain_validate', reason: err.reason, path: err.path }
+              : { stage: 'domain_validate', reason: 'invalid_shape', path: '$' }
+          } else topicFailure = { stage: 'domain_validate', reason: 'invalid_shape', path: '$' }
+          if (split.todo.ok) extract = split.todo.value
+          else { extract = null; todoError = split.todo.error }
+          if (extract === null && combinedTopic === null) throw todoError
+        } else {
+          extract = entry.input.identitySnapshot ? validateExtractResult(item.result,{
+            candidates:entry.input.identityCandidates,candidatesTruncated:entry.input.identityCandidatesTruncated,
+            selectedMessageIds:entry.msgIds,targetType:'todo',allowedTodoIds:entry.input.openTodos.map((todo)=>todo.id)
+          }) : validateExtractResult(item.result)
+        }
       } catch (error) {
         if(entry.sourceLease) releaseIdentitySourceAttempt(this.opts.db,entry.sourceLease,true)
         const retryInMs = this.recordFailure(entry, 'invalid_result')
+        if (topicSent) this.noteTopicFailure(entry.chatId, false)
         tally.chatsFailed += 1
         out.push({ itemId, status: 'rejected', chatId: entry.chatId, code: 'invalid_result', issues: issuesOf(error), retryInMs })
         continue
@@ -676,7 +793,7 @@ export class ExtractQueue implements ExtractSink {
         if (!group.settled) {
           if(group.identitySnapshotRef) group.identitySnapshotRef.sourceLease=entry.sourceLease??undefined
           group.progressAt = this.stallNow()
-          group.results[entry.partIndex] = extract
+          group.results[entry.partIndex] = extract!
           group.remaining -= 1
           if (group.remaining === 0) this.settleGroup(group, mergeResults(group.results as ExtractResult[]))
         }
@@ -693,7 +810,22 @@ export class ExtractQueue implements ExtractSink {
           candidatesTruncated:entry.input.identityCandidatesTruncated,selectedMessageIds:entry.msgIds,targetType:'todo' as const,
           allowedTodoIds:entry.input.openTodos.map((todo)=>todo.id)
         }:undefined
-        applyChatExtract({ db: this.opts.db, cfg: this.opts.getConfig(), now: new Date(this.now()).toISOString(), ...(identity?{identity}:{}) }, entry.chatId, entry.msgIds, extract, local)
+        let topicApplied = false
+        if (topicSent) {
+          const applied = applyCombinedExtract({
+            db: this.opts.db, cfg: this.opts.getConfig(), now: new Date(this.now()).toISOString(), chatId: entry.chatId, msgIds: entry.msgIds,
+            identity: identity!, todo: extract,
+            topic: combinedTopic ? {
+              input: topicTargets, result: combinedTopic, candidates: topicCandidatesOnly(entry.input.identityCandidates),
+              versions: { promptVersion: COMBINED_PROMPT_VERSION, promptHash: COMBINED_PROMPT_HASH, schemaVersion: COMBINED_SCHEMA_VERSION, schemaHash: COMBINED_SCHEMA_HASH, validatorVersion: GROUP_TOPICS_VALIDATOR_VERSION }
+            } : null,
+            identityVersions: { promptVersion: COMBINED_PROMPT_VERSION, schemaVersion: COMBINED_SCHEMA_VERSION },
+            tally: local
+          })
+          topicApplied = applied.topic === 'applied'
+          this.afterTopicOutcome(entry, applied.topic, applied.topicError, combinedTopic, topicFailure, topicTargets)
+          if (topicApplied) topicChatIds.add(entry.chatId)
+        } else applyChatExtract({ db: this.opts.db, cfg: this.opts.getConfig(), now: new Date(this.now()).toISOString(), ...(identity?{identity}:{}) }, entry.chatId, entry.msgIds, extract!, local)
         tally.todosCreated += local.todosCreated
         tally.todosMerged += local.todosMerged
         tally.todosResolvedDone += local.todosResolvedDone
@@ -701,6 +833,14 @@ export class ExtractQueue implements ExtractSink {
         tally.createdIds.push(...local.createdIds)
         tally.resolvedIds.push(...local.resolvedIds)
         tally.updatedIds.push(...local.updatedIds)
+        if (extract === null) {
+          // 待辦邊失敗、議題邊已寫入：待辦走現有失敗路徑（退避、訊息維持未處理）；下一次領取時議題目標已被決策過，只送純待辦。
+          this.combinedCounters.todoFailedTopicApplied += 1
+          const retryInMs = this.recordFailure(entry, 'invalid_result')
+          tally.chatsFailed += 1
+          out.push({ itemId, status: 'rejected', chatId: entry.chatId, code: 'invalid_result', issues: issuesOf(todoError), retryInMs })
+          continue
+        }
         tally.chatsProcessed += 1
         this.entries.delete(entry.id)
         // 這個 chat 已經有一片成功 → 清掉失敗記憶（後面的片段不再被退避）。
@@ -721,7 +861,8 @@ export class ExtractQueue implements ExtractSink {
         runId, lineBridge: 'ok', llmStatus, newMsgs: 0, chatsSeen: tally.chatsProcessed + tally.chatsFailed, chatsProcessed: tally.chatsProcessed,
         chatsSkippedNoise: 0, chatsSkipped: 0, chatsFailed: tally.chatsFailed, todosCreated: tally.todosCreated, todosMerged: tally.todosMerged,
         todosResolvedDone: tally.todosResolvedDone, todosSuggestedDone: tally.todosSuggestedDone, createdIds: tally.createdIds,
-        resolvedIds: tally.resolvedIds, updatedIds: tally.updatedIds, note: null
+        resolvedIds: tally.resolvedIds, updatedIds: tally.updatedIds, note: null,
+        ...(topicChatIds.size ? { topicChatIds: [...topicChatIds] } : {})
       }
       try {
         finishRun(runId, { newMsgs: 0, chatsSeen: result.chatsSeen, todosCreated: result.todosCreated, todosResolved: result.resolvedIds.length, lineBridge: 'ok', llmStatus, note: null }, this.opts.db)
@@ -778,9 +919,112 @@ export class ExtractQueue implements ExtractSink {
     }
     this.entries.clear()
     this.chatFail.clear()
+    this.topicDegrade.clear()
+    this.fallbackLogged.clear()
+  }
+
+  /** 合併整理的診斷計數（測試與診斷用；不含任何訊息內容）。 */
+  combinedStats(): Readonly<CombinedCounters> & { degradedChats: number } {
+    const now = this.now()
+    let degradedChats = 0
+    for (const d of this.topicDegrade.values()) if (d.until > now) degradedChats += 1
+    return { ...this.combinedCounters, degradedChats }
   }
 
   // ── 內部 ──
+
+  /** 這個聊天室現在要不要走合併整理：旗標、bundle、群組已啟用議題、沒被降級、system 放得下。 */
+  private combinedActiveFor(chatId: string): boolean {
+    const combined = this.opts.combined
+    if (!combined || !combined.enabled()) return false
+    if (!COMBINED_BUNDLE_ENABLED || !GROUP_TOPICS_BUNDLE_ENABLED) return false
+    try {
+      if (!tableExists(this.opts.db, 'discussion_topics') || !tableExists(this.opts.db, 'group_topic_preferences')) return false
+      const row = this.opts.db.prepare(
+        'SELECT c.is_group AS isGroup, c.blocked AS blocked, p.enabled AS enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?'
+      ).get(chatId) as { isGroup: number; blocked: number; enabled: number | null } | undefined
+      if (!row || row.isGroup !== 1 || row.blocked === 1 || row.enabled !== 1) return false
+    } catch { return false }
+    const degraded = this.topicDegrade.get(chatId)
+    if (degraded && degraded.until > this.now()) { this.noteFallback(chatId, 'degraded'); return false }
+    let fits = true
+    try { fits = combined.systemFits(chatId) } catch { fits = false }
+    if (!fits) { this.noteFallback(chatId, 'system_too_large'); return false }
+    this.fallbackLogged.delete(`${chatId}:degraded`)
+    this.fallbackLogged.delete(`${chatId}:system_too_large`)
+    return true
+  }
+
+  private noteFallback(chatId: string, reason: 'degraded' | 'system_too_large'): void {
+    if (reason === 'degraded') this.combinedCounters.fallbackDegraded += 1
+    else this.combinedCounters.fallbackSystemTooLarge += 1
+    const key = `${chatId}:${reason}`
+    if (this.fallbackLogged.has(key)) return
+    this.fallbackLogged.add(key)
+    try { this.opts.log?.('combined_fallback_todo_only', { chatId, reason }) } catch { /* 診斷失敗不影響流程 */ }
+  }
+
+  /** 這批訊息中要送議題分析的目標與聊天室既有議題；不適用（旗標關、未啟用、沒有目標…）時回 undefined＝純待辦。 */
+  private combinedTopic(chatId: string, msgIds: string[]): CombinedTopicPayload | undefined {
+    if (!this.combinedActiveFor(chatId)) return undefined
+    try {
+      const targetMsgIds = selectTopicTargets(this.opts.db, chatId, msgIds)
+      if (targetMsgIds.length === 0) return undefined
+      return { targetMsgIds, existingLocalTopics: loadTopicCandidates(this.opts.db, chatId) }
+    } catch { return undefined }
+  }
+
+  private topicTargetsOf(entry: Entry): TopicMessageInput[] {
+    const wanted = new Set(entry.input.topic?.targetMsgIds ?? [])
+    return entry.input.newMessages.filter((m) => wanted.has(m.msgId))
+      .map((m) => ({ msgId: m.msgId, ts: m.ts, direction: m.direction, text: (m.text ?? '').slice(0, 3000) }))
+  }
+
+  private noteReply(result: unknown): void {
+    let chars = 0
+    try { chars = JSON.stringify(result)?.length ?? 0 } catch { chars = 0 }
+    this.combinedCounters.partsWithTopic += 1
+    this.combinedCounters.replyChars += chars
+    this.combinedCounters.replyCharsMax = Math.max(this.combinedCounters.replyCharsMax, chars)
+  }
+
+  private noteTopicFailure(chatId: string, immediate: boolean): void {
+    this.combinedCounters.topicFailed += 1
+    const now = this.now()
+    const prev = this.topicDegrade.get(chatId) ?? { fails: 0, until: 0 }
+    const fails = immediate ? Math.max(prev.fails + 1, COMBINED_DEGRADE_FAILS) : prev.fails + 1
+    const until = fails >= COMBINED_DEGRADE_FAILS ? now + COMBINED_DEGRADE_MS : prev.until
+    this.topicDegrade.set(chatId, { fails, until })
+    if (fails >= COMBINED_DEGRADE_FAILS && prev.until <= now) {
+      try { this.opts.log?.('combined_topic_degraded', { chatId, fails, minutes: COMBINED_DEGRADE_MS / 60_000 }) } catch { /* 診斷失敗不影響流程 */ }
+    }
+  }
+
+  /** 合併提交成功後的議題邊記帳：成功清零降級計數；缺席、驗證失敗、寫入被捨棄各記一筆失敗（議題的訊息進入集合 B）。 */
+  private afterTopicOutcome(entry: Entry, outcome: string, topicError: unknown, topicOk: TopicAnalysis | null, failure: { reason: string; path: string | null; stage: 'domain_validate' } | null, targets: TopicMessageInput[]): void {
+    const versions = { promptVersion: COMBINED_PROMPT_VERSION, promptHash: COMBINED_PROMPT_HASH, schemaVersion: COMBINED_SCHEMA_VERSION, schemaHash: COMBINED_SCHEMA_HASH, validatorVersion: GROUP_TOPICS_VALIDATOR_VERSION }
+    const record = (stage: 'domain_validate' | 'persist', code: string, reason: string, path: string | null): void => {
+      try { recordTopicFailure(this.opts.db, entry.chatId, targets, versions, { stage, code, path, reason, providerKind: 'unknown' }) } catch { /* 記錄失敗不影響已落庫的待辦 */ }
+    }
+    if (outcome === 'applied') {
+      this.combinedCounters.topicApplied += 1
+      this.topicDegrade.delete(entry.chatId)
+      for (const decision of topicOk?.identityDecisions ?? []) { this.combinedCounters.decisions += 1; if (decision.outcome === 'defer') this.combinedCounters.deferDecisions += 1 }
+      return
+    }
+    if (outcome === 'discarded') {
+      this.combinedCounters.topicDiscarded += 1
+      this.noteTopicFailure(entry.chatId, false)
+      record('persist', 'persistence_failed', 'persistence_failed', null)
+      try { this.opts.log?.('combined_topic_discarded', { chatId: entry.chatId, error: topicError instanceof Error ? topicError.message.slice(0, 120) : 'unknown' }) } catch { /* 診斷失敗不影響流程 */ }
+      return
+    }
+    if (topicOk === null) {
+      if (failure && failure.path === '$' && failure.reason === 'invalid_shape') this.combinedCounters.topicAbsent += 1
+      this.noteTopicFailure(entry.chatId, false)
+      record('domain_validate', 'invalid_output', failure?.reason ?? 'invalid_shape', failure?.path ?? '$')
+    }
+  }
 
   private countState(state: Entry['state']): number {
     let n = 0

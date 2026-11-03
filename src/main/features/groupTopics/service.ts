@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { LlmProviderError, type LlmErrorCode, type LlmProvider } from '../../llm/provider/types'
 import { GROUP_TOPICS_BUNDLE_ENABLED, GROUP_TOPICS_JSON_SCHEMA, GROUP_TOPICS_PROMPT, GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_PROMPT_VERSION, GROUP_TOPICS_SCHEMA_HASH, GROUP_TOPICS_SCHEMA_VERSION } from './prompts/bundle'
 import { TopicAnalysisValidationError, validateTopicAnalysis, type TopicFailurePath, type TopicValidationReason } from './domain'
-import { completedInputExists, countPendingMessages, crossChatIsEnabled, GROUP_TOPICS_VALIDATOR_VERSION, isEnabled, listLinkCandidates, listTopics, loadPendingMessages, loadTopicCandidates, recordFailure, saveAnalysis, setCrossChatEnabled, setEnabled, todoRefs, type TopicFailureStage, type TopicProviderKind } from './repository'
+import { completedInputExists, countBacklogMessages, countPendingMessages, crossChatIsEnabled, GROUP_TOPICS_VALIDATOR_VERSION, isEnabled, listLinkCandidates, listTopics, loadPendingMessages, loadTopicCandidates, recordFailure, saveAnalysis, setCrossChatEnabled, setEnabled, todoRefs, type TopicFailureStage, type TopicProviderKind } from './repository'
 import { getMessagesByChatAndIds } from '../../db/messages.repo'
 import { listChats } from '../../db/chats.repo'
 import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, recallTopicIdentityCandidates, recordIdentitySourceAttempt, releaseIdentitySourceAttempt } from '../../db/identity.repo'
@@ -136,7 +136,13 @@ function safeProviderCode(error:unknown):LlmErrorCode {
   return codes.includes(error.code)?error.code:'unknown'
 }
 
-export function createGroupTopicsService(db: Database): GroupTopicsService {
+export interface GroupTopicsServiceOptions {
+  /** 合併整理（待辦＋議題一次 AI 呼叫）正在背景運作：analyze 與 pendingCount／backlogCount 只算集合 B（processed=1 且尚無議題決策）。 */
+  isCombinedActive?: () => boolean
+}
+
+export function createGroupTopicsService(db: Database, options: GroupTopicsServiceOptions = {}): GroupTopicsService {
+  const combinedActive = (): boolean => options.isCombinedActive?.() === true
   const analysisLocks = new Map<string, Promise<void>>()
   return {
     enable(chatId, enabled) { return { ok: setEnabled(db, chatId, enabled) } },
@@ -148,7 +154,7 @@ export function createGroupTopicsService(db: Database): GroupTopicsService {
     pendingCount(chatId) {
       const chat = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as {blocked:number}|undefined
       if (!chat || chat.blocked === 1 || !isEnabled(db,chatId)) return 0
-      return countPendingMessages(db,chatId)
+      return combinedActive() ? countPendingMessages(db,chatId,100,{processedFilter:'processed'}) : countPendingMessages(db,chatId)
     },
     listLinkCandidates(chatId) { return listLinkCandidates(db, chatId) },
     list(chatId) {
@@ -160,8 +166,9 @@ export function createGroupTopicsService(db: Database): GroupTopicsService {
       const rows = listChats({}, db).filter((chat) => chat.isGroup && !chat.blocked).map((chat): GroupTopicsOverviewRow => {
         const enabled = isEnabled(db, chat.chatId)
         const pendingCount = enabled ? countPendingMessages(db, chat.chatId) : 0
+        const backlogCount = enabled ? (combinedActive() ? countBacklogMessages(db, chat.chatId) : pendingCount) : 0
         const all = enabled ? listTopics(db, chat.chatId) : []
-        return { chatId: chat.chatId, name: chat.name, enabled, topics: all.slice(0, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT), topicCount: all.length, pendingCount, backlogCount: pendingCount }
+        return { chatId: chat.chatId, name: chat.name, enabled, topics: all.slice(0, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT), topicCount: all.length, pendingCount, backlogCount }
       })
       return fitOverviewToBudget(rows, GROUP_TOPICS_OVERVIEW_BYTE_LIMIT)
     },
@@ -177,7 +184,9 @@ export function createGroupTopicsService(db: Database): GroupTopicsService {
       const chat = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as {blocked:number}|undefined
       if (!chat || chat.blocked === 1) return { ok: false, reason: 'unsupported_chat' }
       if (!isEnabled(db, chatId)) return { ok: false, reason: 'disabled' }
-      const messages = loadPendingMessages(db, chatId, GROUP_TOPICS_BATCH_SIZE, 100)
+      const messages = combinedActive()
+        ? loadPendingMessages(db, chatId, GROUP_TOPICS_BATCH_SIZE, 100, { processedFilter: 'processed' })
+        : loadPendingMessages(db, chatId, GROUP_TOPICS_BATCH_SIZE, 100)
       if (!messages.length) return { ok: true, count: listTopics(db, chatId).length, analyzedCount: 0 }
       if(!advanceIdentityIndex(db,chatId,'topic')) return {ok:false,reason:'identity_indexing'}
       const recalled=recallTopicIdentityCandidates(db,chatId,messages.map((message)=>message.text),messages.map((message)=>message.msgId))

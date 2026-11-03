@@ -286,8 +286,16 @@ export function selectTopicTargets(db: Database, chatId: string, msgIds: string[
   return selectPendingMessageIds(db, chatId, Math.min(100, msgIds.length), 100, { restrictToMsgIds: msgIds })
 }
 
-export function countPendingMessages(db: Database, chatId: string, limit = 100): number {
-  const pending = loadPendingMessages(db,chatId,Math.min(100,limit)).length
+/**
+ * 集合 B（processed=1 且尚無議題決策）的真實數量：與 loadPendingMessages 同一組資格條件與視窗，但不受單次 100 則的上限截斷。
+ * 合併整理開啟時，「補分析舊訊息」只處理這一集合。
+ */
+export function countBacklogMessages(db: Database, chatId: string): number {
+  return selectPendingMessageIds(db, chatId, 1_000_000, 100, { processedFilter: 'processed' }).length
+}
+
+export function countPendingMessages(db: Database, chatId: string, limit = 100, opts: PendingMessageOptions = {}): number {
+  const pending = loadPendingMessages(db,chatId,Math.min(100,limit),Math.min(100,limit),opts).length
   return pending === Math.min(100,limit) ? pending + 1 : pending
 }
 
@@ -295,7 +303,7 @@ export function loadTopicCandidates(db: Database, chatId: string): Array<{ref:st
   return db.prepare('SELECT local_ref AS ref,title,summary FROM discussion_topics WHERE chat_id=? ORDER BY last_source_ts DESC LIMIT 100').all(chatId) as Array<{ref:string;title:string;summary:string}>
 }
 
-type AnalysisVersions={promptVersion:string;promptHash:string;schemaVersion:string;schemaHash:string;validatorVersion:string}
+export type AnalysisVersions={promptVersion:string;promptHash:string;schemaVersion:string;schemaHash:string;validatorVersion:string}
 export interface TopicIdentitySaveContext {
   snapshot:IdentityContextSnapshot
   sourceLease:ChatSourceLease

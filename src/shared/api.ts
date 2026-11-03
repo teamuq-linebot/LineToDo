@@ -163,6 +163,8 @@ export interface PipelineRunResult {
   resolvedIds: string[]
   updatedIds: string[]
   note: string | null
+  /** 這一輪有議題被寫入的聊天室（合併整理才有；缺席或空陣列＝議題沒有變動，UI 不必重拉議題總覽）。 */
+  topicChatIds?: string[]
 }
 
 /** evt:todos-changed push payload。 */
@@ -313,6 +315,8 @@ export interface SettingsView {
   pluginAi?: HostAiSelection
   pluginPrompt?: string | null
   pluginMyName?: string | null
+  /** 已啟用議題的群組，背景整理時一次 AI 呼叫同時產出待辦與議題。 */
+  pluginCombinedExtract?: boolean
   /** 草稿填入 LINE 設定。 */
   driverPost: DriverPostSettings
   /** AI 引擎是否已就緒（http=有金鑰；CLI=設定無誤）。欄位名沿用歷史，語意見 main scheduler。 */
@@ -341,6 +345,7 @@ export type SettingsPatch = Partial<{
   pluginAi: HostAiSelection
   pluginPrompt: string | null
   pluginMyName: string | null
+  pluginCombinedExtract: boolean
   /** 部分更新草稿填入 LINE 設定（mode 一律正規化成 fillOnly）。 */
   driverPost: Partial<DriverPostSettings>
 }>

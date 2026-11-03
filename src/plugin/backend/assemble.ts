@@ -63,7 +63,8 @@ import { ExtractQueue } from './extractQueue'
 import type { ExtractQueueOptions } from './extractQueue'
 import { createExtractWorker } from './extractWorker'
 import type { ExtractWorker, ExtractWorkerConfig } from './extractWorker'
-import { createHostAiPort, createNoHostAiPort } from './hostAi'
+import { AI_CHAT_REFERENCE, createHostAiPort, createNoHostAiPort } from './hostAi'
+import { COMBINED_BUNDLE_ENABLED } from '../../main/features/groupTopics/prompts/bundle'
 import type { Clock, HostAiConfig, HostAiPort } from './hostAi'
 import { createAiSessionMapStore } from './aiSessionMapStore'
 import type { AiSessionMapDatabase } from './aiSessionMapStore'
@@ -366,6 +367,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       participantIdentity: UNKNOWN_IDENTITY,
       settings,
       pipelineConfig: { getDefaults, getQwenConfig, isProviderConfigured: () => true },
+      // 舊的「補分析」只處理集合 B（processed=1 且尚無議題決策）：只在合併整理真的會跑的時候（外掛 backend、旗標開、bundle 可用）。
+      combinedExtractActive: () => settings.get().pluginCombinedExtract === true && COMBINED_BUNDLE_ENABLED,
       providers: { resolveProvider: () => aiProvider },
       onSettingsChanged: () => {
         scheduler?.notifySettingsChanged()
@@ -384,7 +387,13 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
           ...options.extract,
           db,
           getConfig: getDefaults,
-          getSystemSha256: (chatId) => prompts.systemSha256(chatId),
+          getSystemSha256: (chatId, opts) => opts?.topics ? prompts.systemSha256(chatId, opts) : prompts.systemSha256(chatId),
+          // 待辦＋議題合併整理（執行期旗標，設定頁即時生效）。帶議題的 system 超過 host 的 systemChars 時該聊天室退回純待辦。
+          combined: {
+            enabled: () => settings.get().pluginCombinedExtract === true,
+            systemFits: (chatId) => prompts.extractSystem(chatId, { topics: true }).length <= AI_CHAT_REFERENCE.systemChars
+          },
+          log: (event, detail) => log(`[extract-queue] ${event} ${JSON.stringify(detail ?? {})}`),
           getSessionContext: () => JSON.stringify(settings.get().pluginAi),
           onRun: (result) => scheduler?.recordExternalRun(result),
           onPending: () => worker?.kick(),
@@ -396,7 +405,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
         worker = createExtractWorker({
           queue,
           port: aiPort,
-          system: (chatId) => prompts.extractSystem(chatId),
+          system: (chatId, opts) => opts ? prompts.extractSystem(chatId, opts) : prompts.extractSystem(chatId),
           ...(options.ai?.clock ? { clock: options.ai.clock } : {}),
           ...(options.ai?.worker ? { config: options.ai.worker } : {}),
           log: (event, detail) => log(`[extract] ${event} ${JSON.stringify(detail ?? {})}`)

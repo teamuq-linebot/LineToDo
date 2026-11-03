@@ -136,7 +136,8 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     setOverviewLoaded(false)
     const refresher = createOverviewRefresher(load)
     refresher.request()
-    const stopListening = lineTodoApi.pipeline.onRun(() => refresher.request())
+    // 只在這一輪真的有議題被寫入時才重拉（待辦-only 的輪次議題總覽不會變，省下一次 host 呼叫）。
+    const stopListening = lineTodoApi.pipeline.onRun((run) => { if (run.topicChatIds && run.topicChatIds.length > 0) refresher.request() })
     return () => {
       active = false
       refresher.dispose()

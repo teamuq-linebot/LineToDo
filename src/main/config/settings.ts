@@ -116,6 +116,8 @@ export interface AppSettings {
   pluginPrompt?: string | null
   /** 預設的「我的名字」（各對話可個別覆寫）；null／缺席＝未設定。 */
   pluginMyName?: string | null
+  /** 已啟用議題的群組，背景整理時一次 AI 呼叫同時產出待辦與議題（外掛 backend 的 extractSink 模式）；缺席時依 DEFAULT_COMBINED_EXTRACT。 */
+  pluginCombinedExtract?: boolean
   /** 草稿填入 LINE（driver_post）設定。 */
   driverPost: DriverPostSettings
 }
@@ -150,6 +152,7 @@ export type SettingsPatch = Partial<{
   pluginAi: HostAiSelection
   pluginPrompt: string | null
   pluginMyName: string | null
+  pluginCombinedExtract: boolean
   /** 部分更新草稿填入 LINE 設定（mode 一律正規化成 fillOnly）。 */
   driverPost: Partial<DriverPostSettings>
 }>
@@ -262,6 +265,9 @@ function keyPath(): string {
   return join(userDataDir(), KEY_FILE)
 }
 
+/** 「待辦與議題合併整理」的預設值；設定檔沒有這個欄位時（舊版升級）也用它。 */
+export const DEFAULT_COMBINED_EXTRACT = false
+
 /** 預設設定（從 defaults.ts 衍生，深拷貝 blocklist 避免共用參考被改）。 */
 function defaultSettings(): AppSettings {
   return {
@@ -287,7 +293,8 @@ function defaultSettings(): AppSettings {
     claudeCli: { execPath: '', model: '', timeoutMs: CLI_TIMEOUT_DEFAULT_MS },
     codexCli: { execPath: '', model: '', timeoutMs: CLI_TIMEOUT_DEFAULT_MS },
     // 草稿填入 LINE：預設啟用、只填入；開啟後 DB 已讀檢查預設開啟（使用者裁定）。
-    driverPost: { enabled: true, mode: 'fillOnly', verifyReadByDb: true }
+    driverPost: { enabled: true, mode: 'fillOnly', verifyReadByDb: true },
+    pluginCombinedExtract: DEFAULT_COMBINED_EXTRACT
   }
 }
 
@@ -381,6 +388,7 @@ function normalize(input: Partial<AppSettings>): AppSettings {
     pluginAi: normalizeHostAiSelection(input.pluginAi),
     pluginPrompt: typeof input.pluginPrompt === 'string' && input.pluginPrompt.trim() && input.pluginPrompt.length <= PROMPT_MAX_CHARS ? input.pluginPrompt.replace(/\r\n?/g, '\n').trim() : null,
     pluginMyName: normalizeMyName(input.pluginMyName),
+    pluginCombinedExtract: typeof input.pluginCombinedExtract === 'boolean' ? input.pluginCombinedExtract : DEFAULT_COMBINED_EXTRACT,
     // 缺席（舊 settings.json）→ 預設；已存的 fillAndSend 一律改成 fillOnly。
     driverPost: normalizeDriverPost(input.driverPost, d.driverPost)
   }

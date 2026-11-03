@@ -36,6 +36,7 @@ import type { IdentityValidationContext } from '../../shared/identityDecision'
 import { IdentityDecisionValidationError } from '../../shared/identityDecision'
 import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, recallTodoIdentityCandidates, releaseIdentitySourceAttempt } from '../db/identity.repo'
 import { buildUserPayload, EXTRACT_SYSTEM_PROMPT } from '../llm/extractPrompt'
+import type { CombinedTopicPayload } from '../features/groupTopics/combined'
 import { EXTRACT_JSON_SCHEMA } from '../llm/schema'
 
 /**
@@ -116,6 +117,11 @@ export interface ChatExtractInput {
   isIdentityLedgerApplied?: () => boolean
   identityLedgerSkip?: boolean
   classificationCorrections?: Array<{ id: string; revision: number; condition: string; effect: string }>
+  /**
+   * 合併整理（待辦＋議題）：本輸入同時要議題分析的訊息與聊天室既有議題。只由外掛 ExtractQueue 在 offer／pull 時設定；
+   * targetMsgIds 一定是 newMessages 的子集。缺席＝純待辦，payload 與舊版逐字相同。
+   */
+  topic?: CombinedTopicPayload
   /** Called by the owning extractor only after it has constructed the serialized user payload. */
   onCorrectionsPayloadBuilt?: () => void
 }
@@ -149,6 +155,8 @@ export interface RunOnceResult {
   resolvedIds: string[]
   updatedIds: string[]
   note: string | null
+  /** 合併整理（外掛 ExtractQueue）這一輪有議題被寫入的聊天室；standalone 與純待辦的輪次不帶。 */
+  topicChatIds?: string[]
 }
 
 /** bucket → 該 todo 建立時的 active 狀態（§4 status 對應）。 */

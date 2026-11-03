@@ -133,6 +133,8 @@ export interface BuildUserPayloadInput {
   /** Bounded historic identity recall; revisions remain application-owned and are never serialized. */
   identityCandidates?: IdentityCandidate[]
   identityCandidatesTruncated?: boolean
+  /** 合併整理：要議題分析的訊息 id 與既有議題；缺席時 payload 不含 topic 鍵（與舊版逐字相同）。 */
+  topic?: { targetMsgIds: string[]; existingLocalTopics: Array<{ ref: string; title: string; summary: string }> }
   /** Internal audit hook. It is never serialized into the provider payload. */
   onCorrectionsPayloadBuilt?: () => void
 }
@@ -174,6 +176,7 @@ export function buildUserPayload(input: BuildUserPayloadInput): string {
       status:candidate.status,bucket:candidate.bucket,dueAt:candidate.dueAt,sourceMsgIds:candidate.sourceMsgIds,
       recallReasons:candidate.recallReasons,completionEventTs:candidate.completionEventTs
     })), historicalCandidatesTruncated:input.identityCandidatesTruncated===true } : {}),
+    ...(input.topic ? { topic: { targetMsgIds: input.topic.targetMsgIds, existingLocalTopics: input.topic.existingLocalTopics } } : {}),
     ...(input.classificationCorrections?.length ? { chatScopedClassificationCorrections: input.classificationCorrections.map(r=>({id:r.id,revision:r.revision,condition:r.condition,effect:r.effect,scope:'this chat only'})) } : {})
   }
   // ensure UTF-8 中文不被轉義（JSON.stringify 預設即保留非 ASCII）。
