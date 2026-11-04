@@ -831,6 +831,40 @@ test('Topic prompt candidate-budget truncation records visible defer and removes
   }finally{opened.close()}
 })
 
+test('provider-reported payload room truncates Topic candidates in the service: the model, validation and the stored snapshot all see the same truncated candidate set',async()=>{
+  const run=async(outcome)=>{
+    const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+    try{
+      const source=addMessage(db,'topic-room-source',1000,'alpha project topic has an ambiguous follow-up')
+      ensureGroupTopicsSchema(db);setEnabled(db,chatId,true)
+      const insert=db.prepare('INSERT INTO discussion_topics(topic_id,chat_id,local_ref,title,summary,created_at,last_source_ts,revision) VALUES(?,?,?,?,?,?,?,1)')
+      for(let i=0;i<8;i+=1) insert.run(`room-topic-${i}`,chatId,`room-${i}`,`Alpha project topic ${i}`,('alpha project activity summary ').repeat(4),NOW,1000-i)
+      drainIndex(db,chatId,'topic',25)
+      const service=createGroupTopicsService(db)
+      let seen=null
+      const provider={id:'http',kind:'http',health:async()=>({ok:true,summary:'fixture',details:{}}),userPayloadLimit:()=>1800,complete:async(request)=>{
+        const payload=JSON.parse(request.user)
+        const enumIds=request.jsonSchema.schema.properties.identityDecisions.items.properties.candidateId.enum.filter((id)=>id!==null)
+        seen={payload,enumIds,length:request.user.length}
+        return {text:'',structured:{topics:[{ref:'ambiguous',title:'Alpha project follow-up',summary:'Unclear follow-up'}],
+          identityDecisions:[{draftRef:'ambiguous',outcome,candidateType:null,candidateId:null,relationKind:null,reasonCode:outcome==='defer'?'candidate_cap':'insufficient_evidence',confidenceBand:'low',evidenceMsgIds:[source]}],
+          assignments:[{msgId:source,topicRef:'ambiguous',relation:'uncertain',confidence:.2,relevance:'unknown',relevanceEvidenceMsgIds:[]}]},meta:{provider:'http',model:'fixture',durationMs:0}}
+      }}
+      const result=await service.analyze(chatId,()=>provider)
+      return {result,seen}
+    }finally{opened.close()}
+  }
+  const deferred=await run('defer')
+  assert.equal(deferred.result.ok,true,JSON.stringify(deferred.result))
+  assert.ok(deferred.seen.length<=1800,`payload respects the provider room: ${deferred.seen.length}`)
+  assert.equal(deferred.seen.payload.historicalCandidatesTruncated,true)
+  assert.ok(deferred.seen.payload.historicalCandidates.length<8,'some candidates were dropped for the room')
+  assert.deepEqual(deferred.seen.payload.historicalCandidates.map((candidate)=>candidate.entityId),deferred.seen.enumIds,'the model sees exactly the candidates the service validates and stores')
+  const forced=await run('new')
+  assert.equal(forced.result.ok,false,'candidatesTruncated=true forces defer: a "new" outcome is rejected')
+  assert.equal(forced.result.failure.stage,'domain_validate')
+})
+
 test('GroupTopics keeps its user-priority provider path and rotates its durable epoch when the effective Host model/effort fingerprint changes',async()=>{
   const opened=openFixture();const db=opened.db;const chatId='identity-chat'
   try{

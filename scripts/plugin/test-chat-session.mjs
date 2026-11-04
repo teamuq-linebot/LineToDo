@@ -12,7 +12,7 @@ import { draftReply } from '../../src/main/llm/draftReply.ts'
 import { AiPortError } from '../../src/core/aiPort.ts'
 import { AI_SESSION_ACTIVE_KEY, AI_SESSION_MAP_KEY_PREFIX, AI_SESSION_MAP_V1_KEY_PREFIX, GLOBAL_SCOPE_KEY, chatScopeKey, createAiSessionMapStore } from '../../src/plugin/backend/aiSessionMapStore.ts'
 import { createPortAiProvider, fitUserPayload, maxUserCharsFor } from '../../src/plugin/backend/aiProvider.ts'
-import { GROUP_TOPICS_BATCH_SIZE, requestSchemaForBatch } from '../../src/main/features/groupTopics/service.ts'
+import { GROUP_TOPICS_BATCH_SIZE, fitTopicRequestPayload, requestSchemaForBatch } from '../../src/main/features/groupTopics/service.ts'
 import { identitySchema } from '../../src/main/identity/retryService.ts'
 import { CHAT_SESSION_SYSTEM_V1, RULE_DOC_SEGMENT_MAX_CHARS, TASK_TURN_OVERHEAD_CHARS, buildRuleDoc, buildTaskTurn } from '../../src/plugin/backend/chatSessionProtocol.ts'
 import { createHostAiPort } from '../../src/plugin/backend/hostAi.ts'
@@ -356,10 +356,17 @@ test('A9b the real dynamic schemas of group topics (full 20-message batch, 30 ca
     messages: ids.map((message, i) => ({ msgId: message.msgId, ts: 1_700_000_000_000 + i, direction: 'in', text: `第 ${i} 則訊息 ${'內容'.repeat(150)}` }))
   })
   assert.ok(payload.length > 7_000)
-  const fitted = JSON.parse(fitUserPayload(payload, cap))
+  const input = JSON.parse(payload)
+  const service = fitTopicRequestPayload(input.existingLocalTopics, candidates.map((candidate, i) => ({ entityType: 'topic', entityId: candidate.entityId, title: '歷史議題'.repeat(15), summary: '歷史摘要'.repeat(30), recallReasons: ['lexical'] })), input.messages, false, cap)
+  const fitted = JSON.parse(service.user)
   assert.equal(fitted.messages.length, GROUP_TOPICS_BATCH_SIZE, 'assignments must cover every message: none is dropped')
-  assert.equal(fitted.historicalCandidatesTruncated, true)
-  assert.ok(JSON.stringify(fitted).length <= cap)
+  assert.equal(fitted.historicalCandidatesTruncated, true, 'the service itself reports the dropped candidates')
+  assert.equal(service.candidateTruncated, true)
+  assert.deepEqual(service.candidates.map((candidate) => candidate.entityId), fitted.historicalCandidates.map((candidate) => candidate.entityId), 'what the service records is what the model is shown')
+  assert.ok(service.candidates.length < candidates.length)
+  assert.ok(service.user.length <= cap)
+  assert.equal(fitUserPayload(service.user, cap), service.user, 'the provider layer no longer changes (or silently drops from) an already fitted group-topics payload')
+  assert.throws(() => fitUserPayload(payload, cap), (error) => error.code === 'input_too_large', 'the provider never drops candidates on its own')
   const context = { draftRef: 'draft_1', messages: ids.slice(0, 8), candidates: candidates.slice(0, 20) }
   const identityContract = outputContractFor(identitySchema(context))
   assert.ok(identityContract.length < 3_000, `identity retry contract: ${identityContract.length}`)

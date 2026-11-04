@@ -130,6 +130,11 @@ export interface LlmProvider {
   complete(req: LlmRequest): Promise<LlmResponse>
   /** Stable fingerprint of the actual runtime destination, when provided by a Host adapter. */
   runtimeFingerprint?(): Promise<string | null>
+  /**
+   * 這個請求的 user payload 最多可用幾個字（扣掉該用途的固定開銷與動態輸出格式）。
+   * 呼叫端據此在送出前自行裁切並記錄實際送出的內容；沒實作＝呼叫端用自己的預設上限。
+   */
+  userPayloadLimit?(req: Pick<LlmRequest, 'jsonSchema' | 'conversation'>): number
   /** 設定頁「檢查/測試」用。不得快取結果（登入狀態隨時會變）。 */
   health(): Promise<ProviderHealth>
 }

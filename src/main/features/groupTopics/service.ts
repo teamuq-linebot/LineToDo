@@ -16,21 +16,21 @@ export const GROUP_TOPICS_USER_CHAR_LIMIT=7500
 export const GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT=30
 export const GROUP_TOPICS_OVERVIEW_BYTE_LIMIT=48*1024
 
-function fitTopicRequestPayload(existingLocalTopics:Array<{ref:string;title:string;summary:string}>,candidates:IdentityCandidate[],messages:Array<{msgId:string;ts:number;direction:'in'|'out';text:string}>,candidateTruncated:boolean):{user:string;candidates:IdentityCandidate[];candidateTruncated:boolean} {
+export function fitTopicRequestPayload(existingLocalTopics:Array<{ref:string;title:string;summary:string}>,candidates:IdentityCandidate[],messages:Array<{msgId:string;ts:number;direction:'in'|'out';text:string}>,candidateTruncated:boolean,limit:number=GROUP_TOPICS_USER_CHAR_LIMIT):{user:string;candidates:IdentityCandidate[];candidateTruncated:boolean} {
   let local=[...existingLocalTopics]
   let history=[...candidates]
   const sourceMessages=messages.map((message)=>({...message}))
   let truncated=candidateTruncated
   const render=()=>JSON.stringify({existingLocalTopics:local,historicalCandidates:history.map((candidate)=>({entityType:candidate.entityType,entityId:candidate.entityId,title:candidate.title,summary:candidate.summary,recallReasons:candidate.recallReasons})),historicalCandidatesTruncated:truncated,messages:sourceMessages})
-  while(local.length>0&&render().length>GROUP_TOPICS_USER_CHAR_LIMIT)local.pop()
-  while(history.length>0&&render().length>GROUP_TOPICS_USER_CHAR_LIMIT){history=history.slice(0,Math.floor(history.length/2));truncated=true}
+  while(local.length>0&&render().length>limit)local.pop()
+  while(history.length>0&&render().length>limit){history=history.slice(0,Math.floor(history.length/2));truncated=true}
   let cap=400
-  while(render().length>GROUP_TOPICS_USER_CHAR_LIMIT&&cap>=20){
+  while(render().length>limit&&cap>=20){
     for(const message of sourceMessages) if(message.text.length>cap) message.text=message.text.slice(0,cap)+'…'
     cap=Math.floor(cap/2)
   }
   const user=render()
-  if(user.length>GROUP_TOPICS_USER_CHAR_LIMIT) throw new Error('group_topics_input_too_large')
+  if(user.length>limit) throw new Error('group_topics_input_too_large')
   return {user,candidates:history,candidateTruncated:truncated}
 }
 
@@ -194,8 +194,16 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
       if(!recalled.ready) return {ok:false,reason:'identity_indexing'}
       const sourceRows=getMessagesByChatAndIds(chatId,messages.map((message)=>message.msgId),db)
       if(sourceRows.length!==messages.length) return {ok:false,reason:'source_changed'}
+      let provider: LlmProvider | null = null
+      let providerResolveFailed = false
+      try { provider = resolveProvider() } catch { providerResolveFailed = true }
+      let payloadLimit=GROUP_TOPICS_USER_CHAR_LIMIT
+      try {
+        const room=provider?.userPayloadLimit?.({jsonSchema:{name:'group_topics',schema:requestSchemaForBatch(messages,recalled.candidates)},conversation:{chatId,kind:'groupTopics'}})
+        if(typeof room==='number'&&Number.isFinite(room)) payloadLimit=Math.max(0,Math.min(GROUP_TOPICS_USER_CHAR_LIMIT,Math.floor(room)))
+      } catch { /* no usable room report: keep the default cap */ }
       let fitted:{user:string;candidates:IdentityCandidate[];candidateTruncated:boolean}
-      try { fitted=fitTopicRequestPayload(loadTopicCandidates(db,chatId),recalled.candidates,messages.map((m)=>({msgId:m.msgId,ts:m.ts,direction:m.direction,text:m.text})),recalled.truncated) }
+      try { fitted=fitTopicRequestPayload(loadTopicCandidates(db,chatId),recalled.candidates,messages.map((m)=>({msgId:m.msgId,ts:m.ts,direction:m.direction,text:m.text})),recalled.truncated,payloadLimit) }
       catch { return {ok:false,reason:'input_too_large'} }
       const candidateIds=new Set(fitted.candidates.map((candidate)=>candidate.entityId))
       const candidateRevisions=recalled.candidateRevisions.filter((candidate)=>candidateIds.has(candidate.entityId))
@@ -203,8 +211,7 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
       if(!identitySnapshot) return {ok:false,reason:'source_changed'}
       if (completedInputExists(db, chatId, messages, versions)) return { ok: true, count: listTopics(db, chatId).length, analyzedCount: 0 }
       const userPayload=fitted.user
-      let provider: LlmProvider | null
-      try { provider = resolveProvider() } catch {
+      if (providerResolveFailed) {
         const failure={stage:'provider_resolve' as const,path:null,code:'invalid_config' as const,reason:'provider_unavailable',providerKind:'unknown' as const}
         try { recordFailure(db,chatId,messages,versions,failure) } catch { /* retryable; no source rows change */ }
         return { ok: false, reason: 'provider_unavailable', failure:{stage:failure.stage,path:failure.path,code:failure.code} }

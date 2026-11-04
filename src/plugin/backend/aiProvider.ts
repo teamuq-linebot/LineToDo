@@ -89,7 +89,7 @@ export function toProviderError(error: unknown): LlmProviderError {
 
 /**
  * groupTopics 的 user payload（`{existingLocalTopics, historicalCandidates, messages}`）可能超過 ai:chat 的單輪 8,000 字：
- * 先丟最舊的既有議題、再丟歷史候選，再把過長的訊息文字縮短（assignments 必須涵蓋每則訊息，所以不能丟訊息）。其他形狀的 payload 原樣檢查長度。
+ * 先丟最舊的既有議題，再把過長的訊息文字縮短（assignments 必須涵蓋每則訊息，所以不能丟訊息）。其他形狀的 payload 原樣檢查長度。
  */
 export function fitUserPayload(user: string, maxChars: number): string {
   if (user.length <= maxChars) return user
@@ -101,11 +101,7 @@ export function fitUserPayload(user: string, maxChars: number): string {
   if (Array.isArray(root.existingLocalTopics)) {
     while (root.existingLocalTopics.length > 0 && render().length > maxChars) root.existingLocalTopics.pop()
   }
-  // 專屬 Session 的任務 turn 要和動態 schema 共用單輪上限（20 則訊息的議題 schema 約 3.4k–4.6k 字），可用字數可能很小：歷史候選只是參考脈絡，先減半丟掉並標記截斷，再縮短訊息。
-  if (Array.isArray(root.historicalCandidates) && render().length > maxChars) {
-    while (root.historicalCandidates.length > 0 && render().length > maxChars) root.historicalCandidates = root.historicalCandidates.slice(0, Math.floor(root.historicalCandidates.length / 2))
-    root.historicalCandidatesTruncated = true
-  }
+  // 歷史候選不在這裡丟：呼叫端（groupTopics service）依 `userPayloadLimit` 先裁好並記錄實際送出的候選，這裡再丟會讓驗證與存檔看不到截斷。
   if (Array.isArray(root.messages)) {
     let cap = 400
     while (render().length > maxChars && cap >= 20) {
@@ -151,6 +147,10 @@ export function createPortAiProvider(port: AiPort, options: PortAiProviderOption
       } catch (error) {
         throw toProviderError(error)
       }
+    },
+    userPayloadLimit(req) {
+      const contract = req.jsonSchema ? outputContractFor(req.jsonSchema.schema) : undefined
+      return maxUserCharsFor(req.conversation !== undefined, contract)
     },
     async health() {
       return options.usable?.() === false
