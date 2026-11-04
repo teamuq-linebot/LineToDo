@@ -17,6 +17,8 @@ import {
   SOURCE_TEXT_BYTES_GLOBAL_LIMIT,
   SOURCE_TEXT_BYTES_PER_CHAT_LIMIT,
   fingerprintSourceMessage,
+  ROLLING_SOURCE_SESSION_POLICY,
+  configureSourceSessionPolicy,
   recoverAbandonedSourceLeases,
   readChatSourceState,
   sharedSourceRows
@@ -809,4 +811,57 @@ test('GroupTopics v1 conflict preserves duplicate evidence and refuses readiness
   } finally {
     db.close()
   }
+})
+
+test('SourceSessionPolicy: the default stops at 64 requests and 128 KiB per epoch; the rolling (plugin) policy zeroes the counters in place, keeping epoch, window and fingerprint', () => {
+  for (const [label, policy] of [['default', null], ['rolling', ROLLING_SOURCE_SESSION_POLICY]]) {
+    const opened = openFixture()
+    const db = opened.db
+    try {
+      configureSourceSessionPolicy(db, policy)
+      insertMessages([makeMessage('policy-row', 'chat-a', 10)], db)
+      const cache = sharedSourceRows(db)
+      let lease = acquire(cache, 'chat-a', 'policy-lease-' + label)
+      lease = cache.setSessionFingerprint(lease, 'host-model-prompt-v1', FIXED_NOW)
+      assert.ok(lease)
+      let accepted = 0
+      let refused = null
+      for (let i = 0; i < 70; i += 1) {
+        const result = cache.beginAttempt(lease, 'p', FIXED_NOW)
+        if (!result.ok) { refused = result.reason; break }
+        accepted += 1
+      }
+      assert.equal(accepted, 64, label)
+      assert.equal(refused, 'request_limit', label + ': the database CHECK bounds the counters, so both policies stop here')
+      const before = readChatSourceState(db, 'chat-a')
+      if (policy === null) continue
+      const rolled = cache.resetSessionCounters(lease, FIXED_NOW)
+      assert.ok(rolled)
+      const after = readChatSourceState(db, 'chat-a')
+      assert.deepEqual([after.submittedRequests, after.submittedUserUtf8Bytes, after.acceptedTurns], [0, 0, 0])
+      assert.equal(after.sessionEpoch, before.sessionEpoch, 'the epoch did not move')
+      assert.equal(after.sessionFingerprint, before.sessionFingerprint)
+      assert.equal(after.windowDigest, before.windowDigest)
+      assert.equal(cache.beginAttempt(rolled, 'p', FIXED_NOW).ok, true, 'and the next attempt is accepted')
+      const stale = { ...rolled, leaseId: 'someone-else' }
+      assert.equal(cache.resetSessionCounters(stale, FIXED_NOW), null, 'only the lease owner can roll the counters')
+    } finally { opened.close() }
+  }
+})
+
+test('SourceSessionPolicy: tainted still rotates the epoch under the unbounded policy (the Host session is not what rotates, the context-reset marker is)', () => {
+  const opened = openFixture()
+  const db = opened.db
+  try {
+    configureSourceSessionPolicy(db, ROLLING_SOURCE_SESSION_POLICY)
+    insertMessages([makeMessage('taint-row', 'chat-a', 10)], db)
+    const cache = sharedSourceRows(db)
+    let lease = cache.setSessionFingerprint(acquire(cache, 'chat-a', 'taint-lease-1'), 'host-model-prompt-v1', FIXED_NOW)
+    assert.ok(lease)
+    assert.equal(cache.releaseLease(lease, false, FIXED_NOW), true)
+    assert.equal(cache.taintChat('chat-a', FIXED_NOW), true, 'a chat without a running lease can be marked context-lost')
+    const next = cache.setSessionFingerprint(acquire(cache, 'chat-a', 'taint-lease-2'), 'host-model-prompt-v1', FIXED_NOW)
+    assert.equal(next.sessionEpoch, lease.sessionEpoch + 1)
+    assert.equal(cache.taintChat('chat-a', FIXED_NOW), false, 'a chat with a running lease is never tainted underneath its owner')
+  } finally { opened.close() }
 })

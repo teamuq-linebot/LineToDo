@@ -184,9 +184,10 @@ test('the AI port sends every turn (repair turns too) with the Task, and recreat
   } finally { host.close() }
 })
 
-// ───────────── per-chat system (A13): a changed system for one chat makes the Host close the old session and open a new one ─────────────
+// ───────────── per-chat system (A13): a changed system for one chat sends one new rule document to the SAME Host session ─────────────
 
-function sessionAwareHost() {
+function sessionAwareHost(options = {}) {
+  const completes = []
   const sessions = new Map()
   const operations = []
   let nextId = 0
@@ -226,10 +227,14 @@ function sessionAwareHost() {
         defaultProviderId: 'codex',
         limits: { systemChars: 16_000, transcriptLines: 40, transcriptChars: 60_000, inputChars: 8_000, imageBytes: 2 * 1024 * 1024, turnsPerMinute: 20 },
         quota: { state: 'ok', retryAfterMs: null },
-        capabilities: { closedSessionResume: true }
+        ...(options.closedSessionResume === false ? {} : { capabilities: { closedSessionResume: true } })
       }
     },
-    async complete() { throw new Error('the extraction path must use sessions') },
+    async complete(input) {
+      if (options.closedSessionResume !== false) throw new Error('the extraction path must use sessions')
+      completes.push(structuredClone(input))
+      return { sessionId: '900', requestId: `plugin:900:complete-${completes.length}`, providerTurnId: null, text: JSON.stringify({ importance: 'noise', newTodos: [], identityDecisions: [], resolved: [], updates: [] }), historySaved: 'saved' }
+    },
     async openSession(input) {
       if ('resume' in input) {
         operations.push({ op: 'resume', id: input.resume })
@@ -241,48 +246,78 @@ function sessionAwareHost() {
       }
       if (active() > 0) throw failure('session_limit')
       const id = String(++nextId)
-      const row = { id, effective: { providerId: 'codex', modelId: 'model-a', effort: 'medium' }, active: true, turns: 0, sends: [], lastTurnId: null, lastOutput: null }
+      const row = { id, effective: { providerId: 'codex', modelId: 'model-a', effort: 'medium' }, system: input.system, active: true, turns: 0, sends: [], lastTurnId: null, lastOutput: null }
       sessions.set(id, row)
       operations.push({ op: 'fresh', id, system: input.system })
       return sessionFor(row)
     }
   }
-  return { api, sessions, operations }
+  return { api, sessions, operations, completes }
 }
 
-test('A13 the Host session of a chat is replaced when that chat\'s effective system changes, and only that chat\'s', async () => {
+test('A13 a changed effective system of a chat sends ONE new rule document to the SAME Host session; no chat gets a new session', async () => {
   const { createChatPromptStore } = await import('../../src/plugin/backend/chatPromptStore.ts')
   const { createPromptService } = await import('../../src/plugin/backend/promptService.ts')
   const { createHostAiPort } = await import('../../src/plugin/backend/hostAi.ts')
+  const { CHAT_SESSION_SYSTEM_V1 } = await import('../../src/plugin/backend/chatSessionProtocol.ts')
   const { openDatabase } = await import('../../src/main/db/database.ts')
   const dir = mkdtempSync(join(tmpdir(), 'line-todo-host-ai-chat-prompt-'))
   const opened = openDatabase({ dbPath: ':memory:' })
   for (const chatId of ['u-alice', 'u-bob']) opened.db.prepare('INSERT INTO chats(chat_id, name, is_group, blocked, first_seen_at, last_seen_at) VALUES (?, ?, 0, 0, ?, ?)').run(chatId, chatId, '2026-11-02T00:00:00.000Z', '2026-11-02T00:00:00.000Z')
   const records = new Map()
   const sessionMapStore = {
-    async get(chatId) { return structuredClone(records.get(chatId) ?? null) },
-    async put(record) { records.set(record.chatId, structuredClone(record)) },
-    async remove(chatId) { records.delete(chatId) }
+    async get(scopeKey) { return structuredClone(records.get(scopeKey) ?? null) },
+    async put(record) { records.set(record.scopeKey, structuredClone(record)) },
+    async remove(scopeKey) { records.delete(scopeKey) }
   }
   const host = sessionAwareHost()
   const prompts = createPromptService(createSettingsStore({ userDataDir: dir, secrets: noSecrets }), { complete: async () => { throw new Error('unused') } }, { chatStore: createChatPromptStore({ getDatabase: () => opened.db }) })
   const port = createHostAiPort({ ai: host.api, selection: () => ({ providerId: 'codex', modelId: 'model-a', effort: 'medium' }), sessionMapStore })
-  const extract = (chatId) => port.complete({ system: prompts.extractSystem(chatId), user: JSON.stringify({ chatId, newMessages: [] }), expectJson: true, validate: (value) => ({ ok: true, value }), priority: 'background', conversationScope: { kind: 'line-chat-extract', chatId } })
+  const extract = (chatId) => port.complete({ system: prompts.extractSystem(chatId), user: JSON.stringify({ chatId, newMessages: [] }), expectJson: true, validate: (value) => ({ ok: true, value }), priority: 'background', conversationScope: { kind: 'line-chat', chatId, taskKind: 'extract' } })
   const history = () => host.operations.map(({ op, id }) => `${op}:${id}`)
+  const ruleDocs = (id) => host.sessions.get(id).sends.filter((text) => text.startsWith('【規則文件 extract r'))
+  const tasks = (id) => host.sessions.get(id).sends.filter((text) => text.startsWith('【任務 extract r'))
   try {
     await extract('u-alice')
+    const aliceRulesBefore = ruleDocs('1').length
+    assert.ok(aliceRulesBefore >= 1, 'the first use of a session sends the rule document')
     await extract('u-bob')
     await extract('u-alice')
     assert.deepEqual(history(), ['fresh:1', 'fresh:2', 'resume:1'], 'same system: the chat\'s session is resumed')
-    const bobSession = records.get('u-bob').hostSessionId
+    const bobSession = records.get('chat:u-bob').hostSessionId
+    assert.equal(ruleDocs('1').length, aliceRulesBefore, 'resuming with an unchanged system does not resend the rule document')
+    assert.equal(host.sessions.get('1').system, CHAT_SESSION_SYSTEM_V1, 'the session system is frozen and purpose independent')
+
     prompts.chatSave('u-alice', { prompt: null, myName: '阿華' }, prompts.chatState('u-alice').revision)
     await extract('u-alice')
-    assert.equal(host.operations.at(-1).op, 'fresh', 'a new name for alice changed her system: a new Host session, the old one is not resumed')
-    assert.ok(host.operations.at(-1).system.includes('"阿華"'), 'the new session was opened with alice\'s own system')
+    assert.equal(history().filter((entry) => entry.startsWith('fresh')).length, 2, 'a new name for alice does NOT open a new Host session')
+    assert.equal(host.operations.filter((entry) => entry.op === 'resume').at(-1).id, '1', 'alice\'s same session is resumed')
+    assert.equal(records.get('chat:u-alice').hostSessionId, '1')
+    assert.equal(ruleDocs('1').length, aliceRulesBefore * 2, 'one new rule document (same number of segments) was sent')
+    assert.ok(ruleDocs('1').some((text) => text.includes('"阿華"')), 'and it carries alice\'s new own system')
+    assert.equal(tasks('1').length, 3)
     await extract('u-bob')
-    assert.equal(host.operations.at(-1).op, 'resume', 'bob is untouched by alice\'s override')
-    assert.equal(host.operations.at(-1).id, bobSession)
-    assert.equal(records.get('u-bob').hostSessionId, bobSession)
-    assert.notEqual(records.get('u-alice').hostSessionId, '1')
+    assert.equal(host.operations.filter((entry) => entry.op === 'resume').at(-1).id, bobSession)
+    assert.equal(records.get('chat:u-bob').hostSessionId, bobSession)
+    assert.equal(ruleDocs('2').length, aliceRulesBefore, 'bob: only the first use sent the rule document')
+    assert.equal(tasks('2').length, 2)
   } finally { port.stop(); opened.db.close(); rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('A11 a Core without closedSessionResume falls back to the one-shot complete (no crash, no session map access) and records a diagnostic', async () => {
+  const { createHostAiPort } = await import('../../src/plugin/backend/hostAi.ts')
+  const host = sessionAwareHost({ closedSessionResume: false })
+  const events = []
+  let mapTouched = 0
+  const touch = async () => { mapTouched += 1; return null }
+  const port = createHostAiPort({ ai: host.api, selection: () => ({ providerId: 'codex', modelId: 'model-a', effort: 'medium' }), sessionMapStore: { get: touch, put: touch, remove: touch }, log: (event) => events.push(event) })
+  try {
+    const result = await port.complete({ system: 'RULES', user: '{}', expectJson: true, validate: (value) => ({ ok: true, value }), priority: 'user', dynamicContract: 'CONTRACT', conversationScope: { kind: 'line-chat', chatId: 'u-alice', taskKind: 'draftReply' } })
+    assert.equal(result.value.importance, 'noise')
+    assert.equal(host.completes.length, 1)
+    assert.equal(host.completes[0].system, 'RULES\n\nCONTRACT')
+    assert.deepEqual(host.operations, [])
+    assert.equal(mapTouched, 0)
+    assert.ok(events.includes('no_resume_capability'))
+  } finally { port.stop() }
 })

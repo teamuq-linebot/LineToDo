@@ -16,11 +16,25 @@ export type AiPriority = 'user' | 'background'
 
 export type AiJsonCheck = (value: unknown) => { ok: true; value: unknown } | { ok: false; reason: string }
 
+/** 外掛內所有 AI 用途的種類；同一個聊天室的所有用途共用一個 Host Session，種類只決定要套用哪一份規則文件。 */
+export type AiConversationKind = 'extract' | 'extractTopics' | 'draftReply' | 'analyzeNotMine' | 'groupTopics' | 'identityRetry' | 'promptRefine'
+
+/**
+ * 外掛內部的對話歸屬提示，不會送給 Host AI API：
+ *   - `line-chat`：這個 LINE 聊天室專屬的 Host Session（所有用途共用，永遠接續）；`epoch` 是 SourceCache 的上下文版本（只有抽取帶）。
+ *   - `line-global`：不綁聊天室的用途（prompt 修正）共用的單一全域 Host Session。
+ */
+export type AiConversationScope =
+  | { kind: 'line-chat'; chatId: string; taskKind: Exclude<AiConversationKind, 'promptRefine'>; epoch?: number }
+  | { kind: 'line-global'; taskKind: 'promptRefine' }
+
 export interface AiPortRequest {
+  /** 帶 `conversationScope` 時是該用途的「靜態規則文件」（port 以規則文件 turn 送進 Session）；否則是一次性呼叫的 system。 */
   system: string
   user: string
-  /** 外掛內部的對話連續性提示；只供 LINE Todo 抽取使用，不會送給 Host AI API。 */
-  conversationScope?: { kind: 'line-chat-extract'; chatId: string; sessionEpoch?: number }
+  conversationScope?: AiConversationScope
+  /** 只有帶 `conversationScope` 才有意義：這一輪才有的輸出格式（動態 JSON schema），放在任務 turn 內而不是規則文件。 */
+  dynamicContract?: string
   /** Called before every additional serialized host request (repair, retry, or task/session recovery). */
   onAdditionalUserPayload?(serializedUserPayload: string): boolean
   /** 回覆必須是一個 JSON 物件：port 取出 JSON、用 `validate` 驗證，不合格時最多重問一次。 */
@@ -36,6 +50,8 @@ export interface AiPortResult {
   value?: unknown
   /** 實際使用的模型 id（未知＝null）。 */
   model: string | null
+  /** 這個 scope 原本有 Host Session、但在這一個工作中被重建（刪除、不可續、使用者換了模型）：模型沒有先前的增量上下文，呼叫端要讓 SourceCache 進位 epoch。第一次建立不算。 */
+  contextLost?: boolean
 }
 
 /**

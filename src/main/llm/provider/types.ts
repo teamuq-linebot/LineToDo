@@ -36,6 +36,16 @@ export interface LlmRequest {
   signal?: AbortSignal
   /** Internal Host accounting hook; it is not serialized to an AI provider. */
   onAdditionalUserPayload?(serializedUserPayload: string): boolean
+  /**
+   * 這次呼叫屬於哪個 LINE 聊天室、是哪種用途。外掛的 AI port 用它把同一個聊天室的所有用途接到同一個專屬 Host Session；
+   * standalone provider 一律忽略（不序列化、不影響請求）。
+   */
+  conversation?: LlmConversation
+}
+
+export interface LlmConversation {
+  chatId: string
+  kind: 'draftReply' | 'analyzeNotMine' | 'groupTopics' | 'identityRetry'
 }
 
 export interface LlmResponse {

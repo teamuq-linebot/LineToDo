@@ -60,7 +60,7 @@ export interface GroupTopicsService {
   analyze(chatId: string, resolveProvider: () => LlmProvider | null): Promise<{ ok: boolean; reason?: string; failure?: {stage:TopicFailureStage;path:TopicFailurePath|null;code:LlmErrorCode|'invalid_json'|'persistence_failed'|TopicValidationReason}; count?: number; analyzedCount?: number }>
 }
 
-function requestSchemaForBatch(messages:Array<{msgId:string}>,candidates:IdentityCandidate[]): unknown {
+export function requestSchemaForBatch(messages:Array<{msgId:string}>,candidates:IdentityCandidate[]): unknown {
   const schema=GROUP_TOPICS_JSON_SCHEMA as unknown as {properties:Record<string,unknown>}
   const properties=schema.properties as Record<string,Record<string,unknown>>
   const assignments=properties.assignments as Record<string,unknown>
@@ -226,6 +226,7 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
           user: userPayload,
           temperature: 0,
           jsonSchema: { name: 'group_topics', schema: requestSchemaForBatch(messages,fitted.candidates) },
+          conversation: { chatId, kind: 'groupTopics' },
           onAdditionalUserPayload: (serializedUserPayload) => recordIdentitySourceAttempt(db,lease.lease!,serializedUserPayload,new Date(),false).ok
         })
       } catch (error) {

@@ -111,12 +111,16 @@ export function createExtractWorker(deps: ExtractWorkerDeps): ExtractWorker {
     }
     heartbeat=clock.setTimeout(keepAlive,30_000)
     try {
-      const result = await deps.port.complete({ system: item.topics ? deps.system(item.chatId, { topics: true }) : deps.system(item.chatId), user: item.user, conversationScope: { kind: 'line-chat-extract', chatId: item.chatId, ...(item.sessionEpoch!==undefined?{sessionEpoch:item.sessionEpoch}:{}) }, ...(item.onAdditionalUserPayload?{onAdditionalUserPayload:item.onAdditionalUserPayload}:{}), expectJson: true, validate: item.topics ? validateCombined : validate, priority: 'background' })
+      const result = await deps.port.complete({ system: item.topics ? deps.system(item.chatId, { topics: true }) : deps.system(item.chatId), user: item.user, conversationScope: { kind: 'line-chat', chatId: item.chatId, taskKind: item.topics ? 'extractTopics' : 'extract', ...(item.sessionEpoch!==undefined?{epoch:item.sessionEpoch}:{}) }, ...(item.onAdditionalUserPayload?{onAdditionalUserPayload:item.onAdditionalUserPayload}:{}), expectJson: true, validate: item.topics ? validateCombined : validate, priority: 'background' })
       if (stopped) return null
       const committed = deps.queue.commit({ results: [{ itemId: item.itemId, ok: true, result: result.value }] })
       const status = committed.results[0]?.status
       if (status === 'applied' || status === 'accepted') counters.extracted += 1
       else { counters.rejected += 1; log('extract commit not applied', { status }) }
+      // 這個聊天室原有的 Host Session 在這項中被重建：模型沒有先前的增量上下文，讓這個聊天室的 SourceCache 下一輪進位 epoch（送完整視窗）；Host Session 本身不受影響。
+      if (result.contextLost) {
+        try { deps.queue.markContextLost?.(item.chatId) } catch (inner) { log('extract context-lost mark failed', { code: codeOf(inner) }) }
+      }
       return null
     } catch (error) {
       const code = codeOf(error)

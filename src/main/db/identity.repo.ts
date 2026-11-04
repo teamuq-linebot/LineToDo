@@ -3,7 +3,7 @@ import type { Database } from 'better-sqlite3'
 import type { IdentityCandidate, IdentityContextSnapshot } from '../../shared/identityDecision'
 import { IDENTITY_QUERY_VERSION } from '../../shared/identityDecision'
 import type { MessageDTO } from './dto'
-import { fingerprintSourceMessage, readChatSourceState, runImmediateTransaction, sharedSourceRows, SOURCE_SESSION_REQUESTS_LIMIT, SOURCE_SESSION_TURNS_LIMIT, SOURCE_SESSION_USER_BYTES_LIMIT, type ChatSourceLease } from './sourceCache'
+import { fingerprintSourceMessage, readChatSourceState, runImmediateTransaction, sharedSourceRows, sourceSessionPolicy, type ChatSourceLease } from './sourceCache'
 
 export type IdentityEntityType = 'todo' | 'topic'
 export const IDENTITY_CANDIDATE_LIMIT = 50
@@ -317,7 +317,10 @@ export function beginIdentitySourceAttempt(db:Database,chatId:string,snapshot:Id
   const acquired=coordinator.acquireLease(chatId,leaseId,expiresAt,now.toISOString())
   if (!acquired.ok) return {lease:null,reason:acquired.reason}
   const payloadBytes=Buffer.byteLength(serializedUserPayload,'utf8')
-  const rotate=state.sessionFingerprint===sessionFingerprint&&(state.tainted||state.acceptedTurns>=SOURCE_SESSION_TURNS_LIMIT||state.submittedRequests>=SOURCE_SESSION_REQUESTS_LIMIT||state.submittedUserUtf8Bytes+payloadBytes>SOURCE_SESSION_USER_BYTES_LIMIT||(state.lastAcceptedAt!==null&&now.getTime()-Date.parse(state.lastAcceptedAt)>24*60*60_000))
+  const policy=sourceSessionPolicy(db)
+  const overBudget=state.acceptedTurns>=policy.turns||state.submittedRequests>=policy.requests||state.submittedUserUtf8Bytes+payloadBytes>policy.userBytes
+  const idleExpired=state.lastAcceptedAt!==null&&now.getTime()-Date.parse(state.lastAcceptedAt)>policy.idleMs
+  const rotate=state.sessionFingerprint===sessionFingerprint&&(state.tainted||(policy.rollover==='epoch'&&(overBudget||idleExpired)))
   const session=coordinator.setSessionFingerprint(acquired.lease,sessionFingerprint,now.toISOString(),rotate)
   if (!session) return {lease:null,reason:'session_stale'}
   const attempt=recordIdentitySourceAttempt(db,session,serializedUserPayload,now)
@@ -332,10 +335,14 @@ export function recordIdentitySourceAttempt(db:Database,lease:ChatSourceLease,se
   const state=readChatSourceState(db,renewed.chatId)
   if(!state)return{ok:false,reason:'chat_missing'}
   const payloadBytes=Buffer.byteLength(serializedUserPayload,'utf8')
-  const idleExpired=state.lastAcceptedAt!==null&&now.getTime()-Date.parse(state.lastAcceptedAt)>24*60*60_000
-  const rotate=state.tainted||idleExpired||state.acceptedTurns>=SOURCE_SESSION_TURNS_LIMIT||state.submittedRequests>=SOURCE_SESSION_REQUESTS_LIMIT||state.submittedUserUtf8Bytes+payloadBytes>SOURCE_SESSION_USER_BYTES_LIMIT
+  const policy=sourceSessionPolicy(db)
+  const idleExpired=state.lastAcceptedAt!==null&&now.getTime()-Date.parse(state.lastAcceptedAt)>policy.idleMs
+  const overBudget=state.acceptedTurns>=policy.turns||state.submittedRequests>=policy.requests||state.submittedUserUtf8Bytes+payloadBytes>policy.userBytes
+  const rotate=state.tainted||idleExpired||(policy.rollover==='epoch'&&overBudget)
   if(rotate&&!allowEpochRotate)return{ok:false,reason:'attempt_limit'}
-  const current=rotate&&state.sessionFingerprint?coordinator.setSessionFingerprint(renewed,state.sessionFingerprint,now.toISOString(),true):renewed
+  // 外掛政策：Host Session 永遠接續，預算用完只歸零計數（資料庫的 CHECK 不允許放寬門檻），epoch 與 tainted 不動。
+  const rolled=!rotate&&policy.rollover==='counters'&&overBudget?coordinator.resetSessionCounters(renewed,now.toISOString()):renewed
+  const current=rotate&&state.sessionFingerprint?coordinator.setSessionFingerprint(renewed,state.sessionFingerprint,now.toISOString(),true):rolled
   if(!current)return{ok:false,reason:'session_stale'}
   const attempt=coordinator.beginAttempt(current,serializedUserPayload,now.toISOString())
   return attempt.ok?{ok:true,userUtf8Bytes:attempt.userUtf8Bytes,lease:current}:{ok:false,reason:attempt.reason}

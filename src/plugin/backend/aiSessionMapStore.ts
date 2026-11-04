@@ -1,6 +1,18 @@
 import { createHash } from 'node:crypto'
+import { CHAT_TASK_KINDS } from './chatSessionProtocol'
 
-export const AI_SESSION_MAP_KEY_PREFIX = 'line-todo.ai-chat-session.v1.'
+/**
+ * v2 對照表：每個 scope（一個 LINE 聊天室，或全域 prompt 修正）一列，value 是它專屬的 opaque Host Session id。
+ * v1 列（`line-todo.ai-chat-session.v1.`，每次換 fingerprint 就換新）一律不讀、不寫、不刪；它們指的舊 Session 留在 Core 不動。
+ */
+export const AI_SESSION_MAP_KEY_PREFIX = 'line-todo.ai-chat-session.v2.'
+/** v1 前綴只用來讓測試證明它從未被碰；production 程式不使用。 */
+export const AI_SESSION_MAP_V1_KEY_PREFIX = 'line-todo.ai-chat-session.v1.'
+/** 「上次行程沒關乾淨的 Session」：開 Session 時寫、close 成功後清。 */
+export const AI_SESSION_ACTIVE_KEY = `${AI_SESSION_MAP_KEY_PREFIX}active`
+export const GLOBAL_SCOPE_KEY = 'global:main'
+
+export const chatScopeKey = (chatId: string): string => `chat:${chatId}`
 
 export interface AiSessionMapEffective {
   readonly providerId: string
@@ -8,17 +20,36 @@ export interface AiSessionMapEffective {
   readonly effort: string | null
 }
 
+export interface AiSessionDocState {
+  /** 這個 Session 已收過的規則文件版本（sha256 前 16 hex）。 */
+  readonly rev: string
+  readonly at: number
+}
+
 export interface AiSessionMapRecord {
-  readonly chatId: string
+  readonly scopeKey: string
   readonly hostSessionId: string
   readonly effective: AiSessionMapEffective
-  readonly continuityFingerprint: string
+  readonly contractRevision: string
+  /** 每種任務已送進這個 Session 的規則文件。 */
+  readonly docs: Readonly<Record<string, AiSessionDocState>>
+  /** 這個 Session 上次收到的 SourceCache epoch（只有抽取會用）。 */
+  readonly epoch: number
+  readonly createdAt: number
+}
+
+export interface AiSessionActiveRecord {
+  readonly scopeKey: string
+  readonly hostSessionId: string
 }
 
 export interface AiSessionMapStore {
-  get(chatId: string): Promise<AiSessionMapRecord | null>
+  get(scopeKey: string): Promise<AiSessionMapRecord | null>
   put(record: AiSessionMapRecord): Promise<void>
-  remove(chatId: string): Promise<void>
+  remove(scopeKey: string): Promise<void>
+  getActive?(): Promise<AiSessionActiveRecord | null>
+  putActive?(record: AiSessionActiveRecord): Promise<void>
+  clearActive?(): Promise<void>
 }
 
 export interface AiSessionMapStatement {
@@ -46,10 +77,11 @@ const canonicalSessionId = (value: unknown): value is string => {
   if (typeof value !== 'string' || !/^[1-9][0-9]{0,18}$/u.test(value)) return false
   try { return BigInt(value) <= 9_223_372_036_854_775_807n } catch { return false }
 }
+const validScopeKey = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 520
 
-function mapKey(chatId: string): string {
-  if (typeof chatId !== 'string' || chatId.length === 0 || chatId.length > 512) throw new AiSessionMapStoreError('corrupt')
-  return `${AI_SESSION_MAP_KEY_PREFIX}${createHash('sha256').update(chatId, 'utf8').digest('hex')}`
+function mapKey(scopeKey: string): string {
+  if (!validScopeKey(scopeKey)) throw new AiSessionMapStoreError('corrupt')
+  return `${AI_SESSION_MAP_KEY_PREFIX}${createHash('sha256').update(scopeKey, 'utf8').digest('hex')}`
 }
 
 function parseEffective(value: unknown): AiSessionMapEffective | null {
@@ -60,16 +92,37 @@ function parseEffective(value: unknown): AiSessionMapEffective | null {
   return { providerId: value.providerId, modelId: value.modelId, effort: value.effort as string | null }
 }
 
-function parseRecord(value: unknown, expectedChatId: string): AiSessionMapRecord {
-  if (!isRecord(value) || !exactKeys(value, ['schemaVersion', 'chatId', 'hostSessionId', 'effective', 'continuityFingerprint'])) throw new AiSessionMapStoreError('corrupt')
+function parseDocs(value: unknown): Record<string, AiSessionDocState> | null {
+  if (!isRecord(value)) return null
+  const docs: Record<string, AiSessionDocState> = {}
+  for (const [kind, entry] of Object.entries(value)) {
+    if (!(CHAT_TASK_KINDS as readonly string[]).includes(kind)) return null
+    if (!isRecord(entry) || !exactKeys(entry, ['rev', 'at'])) return null
+    if (typeof entry.rev !== 'string' || !/^[0-9a-f]{16}$/u.test(entry.rev) || typeof entry.at !== 'number' || !Number.isFinite(entry.at)) return null
+    docs[kind] = { rev: entry.rev, at: entry.at }
+  }
+  return docs
+}
+
+function parseRecord(value: unknown, expectedScopeKey: string): AiSessionMapRecord {
+  if (!isRecord(value) || !exactKeys(value, ['schemaVersion', 'scopeKey', 'hostSessionId', 'effective', 'contractRevision', 'docs', 'epoch', 'createdAt'])) throw new AiSessionMapStoreError('corrupt')
   const effective = parseEffective(value.effective)
-  if (value.schemaVersion !== 1 || value.chatId !== expectedChatId || !canonicalSessionId(value.hostSessionId) || effective === null || typeof value.continuityFingerprint !== 'string' || !/^[0-9a-f]{64}$/u.test(value.continuityFingerprint)) throw new AiSessionMapStoreError('corrupt')
-  return { chatId: expectedChatId, hostSessionId: value.hostSessionId, effective, continuityFingerprint: value.continuityFingerprint }
+  const docs = parseDocs(value.docs)
+  if (value.schemaVersion !== 2 || value.scopeKey !== expectedScopeKey || !canonicalSessionId(value.hostSessionId) || effective === null || docs === null) throw new AiSessionMapStoreError('corrupt')
+  if (typeof value.contractRevision !== 'string' || value.contractRevision.length === 0 || value.contractRevision.length > 64) throw new AiSessionMapStoreError('corrupt')
+  if (typeof value.epoch !== 'number' || !Number.isSafeInteger(value.epoch) || value.epoch < 0) throw new AiSessionMapStoreError('corrupt')
+  if (typeof value.createdAt !== 'number' || !Number.isFinite(value.createdAt)) throw new AiSessionMapStoreError('corrupt')
+  return { scopeKey: expectedScopeKey, hostSessionId: value.hostSessionId, effective, contractRevision: value.contractRevision, docs, epoch: value.epoch, createdAt: value.createdAt }
 }
 
 function parseInput(record: AiSessionMapRecord): AiSessionMapRecord {
   if (!isRecord(record)) throw new AiSessionMapStoreError('corrupt')
-  return parseRecord({ schemaVersion: 1, ...record }, record.chatId)
+  return parseRecord({ schemaVersion: 2, ...record }, record.scopeKey)
+}
+
+function parseActive(value: unknown): AiSessionActiveRecord {
+  if (!isRecord(value) || !exactKeys(value, ['scopeKey', 'hostSessionId']) || !validScopeKey(value.scopeKey) || !canonicalSessionId(value.hostSessionId)) throw new AiSessionMapStoreError('corrupt')
+  return { scopeKey: value.scopeKey, hostSessionId: value.hostSessionId }
 }
 
 export function createAiSessionMapStore(options: { readonly getDatabase: () => AiSessionMapDatabase | null }): AiSessionMapStore {
@@ -80,35 +133,52 @@ export function createAiSessionMapStore(options: { readonly getDatabase: () => A
     } catch { /* an unopened/closing app database is unavailable */ }
     throw new AiSessionMapStoreError('unavailable')
   }
+  const readRaw = (key: string): unknown => {
+    const row = database().prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value?: unknown } | undefined
+    if (row === undefined) return undefined
+    if (typeof row.value !== 'string') throw new AiSessionMapStoreError('corrupt')
+    try { return JSON.parse(row.value) } catch { throw new AiSessionMapStoreError('corrupt') }
+  }
+  const upsert = (key: string, value: string): void => {
+    database().prepare('INSERT INTO app_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
+  }
+  const wrap = <T>(work: () => T): T => {
+    try { return work() } catch (error) {
+      if (error instanceof AiSessionMapStoreError) throw error
+      throw new AiSessionMapStoreError('unavailable')
+    }
+  }
 
   return {
-    async get(chatId) {
-      const key = mapKey(chatId)
-      try {
-        const row = database().prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value?: unknown } | undefined
-        if (row === undefined) return null
-        if (typeof row.value !== 'string') throw new AiSessionMapStoreError('corrupt')
-        let value: unknown
-        try { value = JSON.parse(row.value) } catch { throw new AiSessionMapStoreError('corrupt') }
-        return parseRecord(value, chatId)
-      } catch (error) {
-        if (error instanceof AiSessionMapStoreError) throw error
-        throw new AiSessionMapStoreError('unavailable')
-      }
+    async get(scopeKey) {
+      const key = mapKey(scopeKey)
+      return wrap(() => {
+        const value = readRaw(key)
+        return value === undefined ? null : parseRecord(value, scopeKey)
+      })
     },
     async put(input) {
       const record = parseInput(input)
-      const key = mapKey(record.chatId)
-      const value = JSON.stringify({ schemaVersion: 1, ...record })
-      try {
-        database().prepare('INSERT INTO app_settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
-      } catch {
-        throw new AiSessionMapStoreError('unavailable')
-      }
+      const key = mapKey(record.scopeKey)
+      const value = JSON.stringify({ schemaVersion: 2, ...record })
+      wrap(() => upsert(key, value))
     },
-    async remove(chatId) {
-      const key = mapKey(chatId)
-      try { database().prepare('DELETE FROM app_settings WHERE key = ?').run(key) } catch { throw new AiSessionMapStoreError('unavailable') }
+    async remove(scopeKey) {
+      const key = mapKey(scopeKey)
+      wrap(() => { database().prepare('DELETE FROM app_settings WHERE key = ?').run(key) })
     },
+    async getActive() {
+      return wrap(() => {
+        const value = readRaw(AI_SESSION_ACTIVE_KEY)
+        return value === undefined ? null : parseActive(value)
+      })
+    },
+    async putActive(record) {
+      const parsed = parseActive(record)
+      wrap(() => upsert(AI_SESSION_ACTIVE_KEY, JSON.stringify(parsed)))
+    },
+    async clearActive() {
+      wrap(() => { database().prepare('DELETE FROM app_settings WHERE key = ?').run(AI_SESSION_ACTIVE_KEY) })
+    }
   }
 }

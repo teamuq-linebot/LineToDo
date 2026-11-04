@@ -399,7 +399,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
               chatName: chat?.name ?? null,
               isGroup: chat?.isGroup ?? false,
               recentMessages: recent.map((message) => ({ direction: message.direction, sender: message.sender, text: message.text, timeIso: message.timeIso }))
-            }, {})
+            }, { chatId: todo.chatId })
             return { draft }
           } catch (error) { return { error: error instanceof Error ? error.message : String(error) } }
         },
@@ -423,7 +423,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
           try {
             const provider = ports.providers.resolveProvider()
             if (!provider) return {ok:false,reason:'尚未設定可用的 AI provider；來源檢視、標記與復原仍可使用'}
-            const response=await provider.complete({system:'你是分類誤判分析助手。只能根據提供的紀錄提出可能原因，不能聲稱知道舊模型思路。回傳 JSON: inferredCauseCode, summary, suggestedCondition, suggestedEffect。條件與效果須簡短、可人工檢查，限本聊天室未來抽取。',user:JSON.stringify({todo:{bucket:review.todo.bucket,status:review.todo.status,title:review.todo.title,detail:review.todo.detail,confidence:review.todo.confidence},feedback:{reasonCode:review.reasonCode,note:review.note},evidence})})
+            const response=await provider.complete({system:'你是分類誤判分析助手。只能根據提供的紀錄提出可能原因，不能聲稱知道舊模型思路。回傳 JSON: inferredCauseCode, summary, suggestedCondition, suggestedEffect。條件與效果須簡短、可人工檢查，限本聊天室未來抽取。',user:JSON.stringify({todo:{bucket:review.todo.bucket,status:review.todo.status,title:review.todo.title,detail:review.todo.detail,confidence:review.todo.confidence},feedback:{reasonCode:review.reasonCode,note:review.note},evidence}),conversation:{chatId:review.todo.chatId,kind:'analyzeNotMine'}})
             if(response.text.length>16000) return {ok:false,reason:'分析回覆超過可保存大小'}
             const parsed=JSON.parse(response.text) as Record<string,unknown>
             const bounded=(x:unknown,max:number):string=>typeof x==='string'?x.trim().slice(0,max):''

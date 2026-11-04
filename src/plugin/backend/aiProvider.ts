@@ -12,11 +12,12 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
 import { AiPortError } from '../../core/aiPort'
-import type { AiPort } from '../../core/aiPort'
+import type { AiPort, AiPortRequest } from '../../core/aiPort'
 import { LlmProviderError } from '../../main/llm/provider/types'
 import type { LlmErrorCode, LlmProvider, LlmRequest, LlmResponse } from '../../main/llm/provider/types'
 import { AI_CHAT_ALLOW_STEPS } from '../../shared/teamuqPlaces'
 import { outputContractFor } from './aiOutputContract'
+import { TASK_TURN_OVERHEAD_CHARS } from './chatSessionProtocol'
 
 export type AiTaskKind = 'draftReply' | 'analyzeNotMine' | 'groupTopics' | 'promptRefine' | 'unknown'
 
@@ -29,6 +30,16 @@ export const AI_RUN_PATHS: Readonly<Record<'draftReply' | 'analyzeNotMine' | 'gr
 
 /** `AI_CHAT_LIMITS.inputChars` 是 8000；留餘裕。 */
 export const AI_TASK_MAX_USER_CHARS = 7500
+const HOST_INPUT_CHARS = 8000
+
+/**
+ * 這個請求的 payload 最多幾個字：一次性呼叫維持 `AI_TASK_MAX_USER_CHARS`；專屬 Session 的任務 turn 要把標籤、提醒與動態輸出格式一起放進單輪上限，
+ * 所以扣掉 `TASK_TURN_OVERHEAD_CHARS` 與動態合約長度（port 送出前還會再檢查一次）。
+ */
+export function maxUserCharsFor(scoped: boolean, dynamicContract: string | undefined): number {
+  if (!scoped) return AI_TASK_MAX_USER_CHARS
+  return Math.max(500, Math.min(AI_TASK_MAX_USER_CHARS, HOST_INPUT_CHARS - TASK_TURN_OVERHEAD_CHARS - (dynamicContract?.length ?? 0)))
+}
 
 const kindStore = new AsyncLocalStorage<AiTaskKind>()
 
@@ -77,18 +88,23 @@ export function toProviderError(error: unknown): LlmProviderError {
 }
 
 /**
- * groupTopics 的 user payload（`{existingLocalTopics, messages}`）可能超過 ai:chat 的單輪 8,000 字：
- * 先丟最舊的既有議題，再把過長的訊息文字縮短（assignments 必須涵蓋每則訊息，所以不能丟訊息）。其他形狀的 payload 原樣檢查長度。
+ * groupTopics 的 user payload（`{existingLocalTopics, historicalCandidates, messages}`）可能超過 ai:chat 的單輪 8,000 字：
+ * 先丟最舊的既有議題、再丟歷史候選，再把過長的訊息文字縮短（assignments 必須涵蓋每則訊息，所以不能丟訊息）。其他形狀的 payload 原樣檢查長度。
  */
 export function fitUserPayload(user: string, maxChars: number): string {
   if (user.length <= maxChars) return user
   let parsed: unknown
   try { parsed = JSON.parse(user) } catch { throw new AiPortError('input_too_large') }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new AiPortError('input_too_large')
-  const root = parsed as { existingLocalTopics?: unknown[]; messages?: Array<{ text?: unknown }> }
+  const root = parsed as { existingLocalTopics?: unknown[]; historicalCandidates?: unknown[]; historicalCandidatesTruncated?: boolean; messages?: Array<{ text?: unknown }> }
   const render = (): string => JSON.stringify(root)
   if (Array.isArray(root.existingLocalTopics)) {
     while (root.existingLocalTopics.length > 0 && render().length > maxChars) root.existingLocalTopics.pop()
+  }
+  // 專屬 Session 的任務 turn 要和動態 schema 共用單輪上限（20 則訊息的議題 schema 約 3.4k–4.6k 字），可用字數可能很小：歷史候選只是參考脈絡，先減半丟掉並標記截斷，再縮短訊息。
+  if (Array.isArray(root.historicalCandidates) && render().length > maxChars) {
+    while (root.historicalCandidates.length > 0 && render().length > maxChars) root.historicalCandidates = root.historicalCandidates.slice(0, Math.floor(root.historicalCandidates.length / 2))
+    root.historicalCandidatesTruncated = true
   }
   if (Array.isArray(root.messages)) {
     let cap = 400
@@ -120,9 +136,17 @@ export function createPortAiProvider(port: AiPort, options: PortAiProviderOption
       const kind = kindStore.getStore() ?? 'unknown'
       const expectJson = req.jsonSchema !== undefined || kind === 'analyzeNotMine' || kind === 'groupTopics'
       try {
-        const system = req.jsonSchema ? `${req.system}\n\n${outputContractFor(req.jsonSchema.schema)}` : req.system
-        const user = fitUserPayload(req.user, AI_TASK_MAX_USER_CHARS)
-        const result = await port.complete({ system, user, expectJson, priority: 'user', ...(req.onAdditionalUserPayload ? { onAdditionalUserPayload: req.onAdditionalUserPayload } : {}) })
+        const contract = req.jsonSchema ? outputContractFor(req.jsonSchema.schema) : undefined
+        const conversation = req.conversation
+        // 帶聊天室歸屬：system 是該用途的「靜態規則文件」，這一輪才有的輸出格式（動態 schema）隨任務 turn 送；沒帶＝一次性呼叫，合約接在 system 後面。
+        const scope: AiPortRequest['conversationScope'] = conversation ? { kind: 'line-chat', chatId: conversation.chatId, taskKind: conversation.kind } : undefined
+        const system = scope === undefined && contract !== undefined ? `${req.system}\n\n${contract}` : req.system
+        const user = fitUserPayload(req.user, maxUserCharsFor(scope !== undefined, contract))
+        const result = await port.complete({
+          system, user, expectJson, priority: 'user',
+          ...(scope !== undefined ? { conversationScope: scope, ...(contract !== undefined ? { dynamicContract: contract } : {}) } : {}),
+          ...(req.onAdditionalUserPayload ? { onAdditionalUserPayload: req.onAdditionalUserPayload } : {})
+        })
         return { text: result.text, meta: { provider: id, model: result.model, durationMs: Date.now() - started } }
       } catch (error) {
         throw toProviderError(error)

@@ -63,6 +63,23 @@ test('port provider: complete() hands system/user to the AI port as a user-prior
   assert.equal((await createPortAiProvider(port, { usable: () => false }).health()).ok, false)
 })
 
+test('port provider: a request with a chat becomes a line-chat scoped port request (system = static rules, schema travels as dynamicContract); without it nothing changes', async () => {
+  const port = fakePort(() => ({ text: '好的', model: 'gpt-5-codex' }))
+  const provider = createPortAiProvider(port)
+  const schema = { type: 'object', properties: { a: { type: 'string' } } }
+  await runAs('draftReply', () => provider.complete({ system: 'DRAFT', user: '{"a":1}', conversation: { chatId: 'u-alice', kind: 'draftReply' } }))
+  assert.deepEqual(port.requests[0], { system: 'DRAFT', user: '{"a":1}', expectJson: false, priority: 'user', conversationScope: { kind: 'line-chat', chatId: 'u-alice', taskKind: 'draftReply' } })
+  await runAs('groupTopics', () => provider.complete({ system: 'TOPICS', user: '{}', jsonSchema: { name: 'group_topics', schema }, conversation: { chatId: 'g-1', kind: 'groupTopics' } }))
+  assert.equal(port.requests[1].system, 'TOPICS', 'a scoped request keeps the rules static: the per-call schema is not appended')
+  assert.equal(port.requests[1].dynamicContract, outputContractFor(schema))
+  assert.deepEqual(port.requests[1].conversationScope, { kind: 'line-chat', chatId: 'g-1', taskKind: 'groupTopics' })
+  assert.equal(port.requests[1].expectJson, true)
+  await provider.complete({ system: 'TOPICS', user: '{}', jsonSchema: { name: 'group_topics', schema } })
+  assert.equal(port.requests[2].system, `TOPICS\n\n${outputContractFor(schema)}`, 'no chat: the one-shot request is unchanged')
+  assert.equal(port.requests[2].conversationScope, undefined)
+  assert.equal(port.requests[2].dynamicContract, undefined)
+})
+
 test('port provider: every failure arrives as the LlmProviderError core already understands (right class, code, and a message the user can act on)', async () => {
   const cases = [
     ['ai_task_timeout', 'timeout', /逾時/], ['turn_timeout', 'timeout', /逾時/],

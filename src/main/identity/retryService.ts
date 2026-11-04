@@ -23,7 +23,7 @@ interface RetryContext {
   candidatesTruncated: boolean
 }
 
-function boundedPayload(context: RetryContext): { user: string; contextTruncated: boolean } {
+function boundedPayload(context: RetryContext, limit: number = USER_CHAR_LIMIT): { user: string; contextTruncated: boolean } {
   let titleLimit = 48
   let detailLimit = 180
   let messageLimit = 100
@@ -55,13 +55,13 @@ function boundedPayload(context: RetryContext): { user: string; contextTruncated
     evidenceTextTruncated: context.messages.some((message) => message.text.length > messageLimit)
   })
   let user = render()
-  while (user.length > USER_CHAR_LIMIT && (messageLimit > 24 || titleLimit > 20 || detailLimit > 48)) {
+  while (user.length > limit && (messageLimit > 24 || titleLimit > 20 || detailLimit > 48)) {
     messageLimit = Math.max(24, Math.floor(messageLimit / 2))
     titleLimit = Math.max(20, Math.floor(titleLimit / 2))
     detailLimit = Math.max(48, Math.floor(detailLimit / 2))
     user = render()
   }
-  if (user.length > USER_CHAR_LIMIT) throw new Error('identity_retry_input_too_large')
+  if (user.length > limit) throw new Error('identity_retry_input_too_large')
   const contextTruncated = context.candidatesTruncated ||
     context.messages.some((message) => message.text.length > messageLimit) ||
     context.candidates.some((candidate) => candidate.title.length > titleLimit || (candidate.summary?.length ?? 0) > detailLimit)
@@ -74,7 +74,7 @@ function boundedPayload(context: RetryContext): { user: string; contextTruncated
   return { user, contextTruncated }
 }
 
-function identitySchema(context: RetryContext): unknown {
+export function identitySchema(context: RetryContext): unknown {
   const candidateIds = context.candidates.map((candidate) => candidate.entityId)
   const evidenceIds = context.messages.map((message) => message.msgId)
   return {
@@ -118,9 +118,11 @@ export function createIdentityRetryService(db: Database) {
         candidates: retried.candidates.map(({ entityType, entityId, title, summary, status, bucket, dueAt, completionEventTs }) => ({ entityType, entityId, title, summary, status, bucket, dueAt, completionEventTs })),
         candidatesTruncated: retried.candidatesTruncated
       }
-      let fitted: ReturnType<typeof boundedPayload>
-      try { fitted = boundedPayload(context) } catch { return { ok: false, reason: 'input_too_large', item } }
       const schema = identitySchema(context)
+      // 專屬 Session 的任務 turn 把這個 schema（輸出格式）和 payload 放在同一個單輪上限（8,000 字）內：schema 越長，payload 能用的字數越少。
+      const payloadRoom = Math.max(2_000, Math.min(USER_CHAR_LIMIT, 7_300 - JSON.stringify(schema).length))
+      let fitted: ReturnType<typeof boundedPayload>
+      try { fitted = boundedPayload(context, payloadRoom) } catch { return { ok: false, reason: 'input_too_large', item } }
       const system = `${IDENTITY_RETRY_SYSTEM}\n\n回應必須是單一陣列，恰好一筆 decision。候選／證據只能使用輸入內的 ID。若 candidatesTruncated 或 evidenceTextTruncated 為 true，只能 defer。`
       const sessionFingerprint = createHash('sha256').update(JSON.stringify({
         purpose: 'identity-review-retry', provider: provider.id, kind: provider.kind, runtimeFingerprint,
@@ -136,6 +138,7 @@ export function createIdentityRetryService(db: Database) {
           user: fitted.user,
           temperature: 0,
           jsonSchema: { name: 'identity_retry', schema },
+          conversation: { chatId: item.chatId, kind: 'identityRetry' },
           onAdditionalUserPayload: (serializedUserPayload) => recordIdentitySourceAttempt(db, lease, serializedUserPayload, new Date(), false).ok
         })
         if (response.structured !== undefined) raw = response.structured

@@ -12,7 +12,7 @@ import type { LlmProvider } from './provider/types'
  * 失敗一律 throw，IPC 呼叫端 catch 後回友善錯誤。
  */
 
-const DRAFT_SYSTEM_PROMPT = `你是使用者的 LINE 訊息助理，幫使用者「草擬」一則要傳給對方的回覆。
+export const DRAFT_SYSTEM_PROMPT = `你是使用者的 LINE 訊息助理，幫使用者「草擬」一則要傳給對方的回覆。
 規則：
 - 用繁體中文，語氣自然、口語、有禮貌，符合一般 LINE 對話習慣（簡短、不要像公文）。
 - 只輸出「要傳出去的訊息本文」，不要加任何前後綴、不要解釋、不要用引號或 Markdown 包起來。
@@ -56,6 +56,8 @@ function buildDraftUserPayload(input: DraftReplyInput): string {
 
 export interface DraftReplyOptions {
   temperature?: number
+  /** 這份草稿屬於哪個聊天室（外掛用它接到該聊天室的專屬 Host Session）。 */
+  chatId?: string
 }
 
 /** 呼叫 LLM provider 產一段回覆草稿。回傳純文字（已 trim）。 */
@@ -67,7 +69,8 @@ export async function draftReply(
   const res = await provider.complete({
     system: DRAFT_SYSTEM_PROMPT,
     user: buildDraftUserPayload(input),
-    temperature: opts.temperature ?? 0.5
+    temperature: opts.temperature ?? 0.5,
+    ...(opts.chatId !== undefined ? { conversation: { chatId: opts.chatId, kind: 'draftReply' as const } } : {})
   })
   const content = res.text
   if (!content.trim()) {

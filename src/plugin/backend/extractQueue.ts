@@ -37,6 +37,7 @@ import type { ApplyTally, ChatExtractInput, ExtractSink, RunOnceResult } from '.
 import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, recallTodoIdentityCandidates, recordIdentitySourceAttempt, releaseIdentitySourceAttempt, renewIdentitySourceLease, tableExists } from '../../main/db/identity.repo'
 import { getMessagesByChatAndIds, getRecentByChat } from '../../main/db/messages.repo'
 import { IDENTITY_QUERY_VERSION } from '../../shared/identityDecision'
+import { sharedSourceRows } from '../../main/db/sourceCache'
 import type { ChatSourceLease } from '../../main/db/sourceCache'
 
 export const EXTRACT_SYSTEM_SHA256 = createHash('sha256').update(EXTRACT_SYSTEM_PROMPT).digest('hex')
@@ -899,6 +900,14 @@ export class ExtractQueue implements ExtractSink {
     }
     if (released > 0) this.announce()
     return { ok: true, released, unknown: [...wanted] }
+  }
+
+  /**
+   * AI port 回報這個聊天室原有的 Host Session 被重建，模型沒有先前的增量上下文：讓下一次供料進位 SourceCache epoch、送完整視窗。
+   * Host Session 本身不因此更換；沒有租約在跑的聊天室才標記（多段項目的中途不動，避免後續段落的 commit 因 tainted 失敗）。
+   */
+  markContextLost(chatId: string): void {
+    sharedSourceRows(this.opts.db).taintChat(chatId)
   }
 
   // ── 觀測 ──

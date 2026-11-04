@@ -26,6 +26,34 @@ export const SOURCE_APPEND_EVENTS_GLOBAL_LIMIT = 4096
 export const SOURCE_SESSION_TURNS_LIMIT = 64
 export const SOURCE_SESSION_REQUESTS_LIMIT = 64
 export const SOURCE_SESSION_USER_BYTES_LIMIT = 131072
+export const SOURCE_SESSION_IDLE_MS = 24 * 60 * 60_000
+
+/**
+ * 一個 SourceCache epoch 的預算，以及用完時怎麼辦。
+ *   - `rollover: 'epoch'`（預設，standalone）：用完或閒置逾時就進位 session epoch（下一輪送完整視窗、換新 Host session）。
+ *   - `rollover: 'counters'`（外掛）：Host Session 的身分與 epoch 脫鉤、永遠接續，所以用完時只把計數歸零、epoch 不動、不看閒置時間。
+ *     計數欄位在資料庫裡有 CHECK（<= 64／64／131072），所以門檻值不能放寬，只能在門檻處歸零。tainted 仍會進位 epoch（由 port 的「上下文重設」標記處理）。
+ */
+export interface SourceSessionPolicy {
+  readonly turns: number
+  readonly requests: number
+  readonly userBytes: number
+  readonly idleMs: number
+  readonly rollover: 'epoch' | 'counters'
+}
+export const DEFAULT_SOURCE_SESSION_POLICY: SourceSessionPolicy = Object.freeze({
+  turns: SOURCE_SESSION_TURNS_LIMIT, requests: SOURCE_SESSION_REQUESTS_LIMIT, userBytes: SOURCE_SESSION_USER_BYTES_LIMIT, idleMs: SOURCE_SESSION_IDLE_MS, rollover: 'epoch'
+})
+export const ROLLING_SOURCE_SESSION_POLICY: SourceSessionPolicy = Object.freeze({
+  turns: SOURCE_SESSION_TURNS_LIMIT, requests: SOURCE_SESSION_REQUESTS_LIMIT, userBytes: SOURCE_SESSION_USER_BYTES_LIMIT, idleMs: Number.POSITIVE_INFINITY, rollover: 'counters'
+})
+const sessionPolicies = new WeakMap<object, SourceSessionPolicy>()
+/** 依資料庫連線注入政策；沒注入＝預設值。 */
+export function configureSourceSessionPolicy(db: object, policy: SourceSessionPolicy | null): void {
+  if (policy === null) sessionPolicies.delete(db)
+  else sessionPolicies.set(db, policy)
+}
+export function sourceSessionPolicy(db: object): SourceSessionPolicy { return sessionPolicies.get(db) ?? DEFAULT_SOURCE_SESSION_POLICY }
 
 interface SourceDbRow {
   msg_id: string
@@ -715,9 +743,10 @@ export class SharedSourceRows {
       if (state.sessionEpoch !== lease.sessionEpoch || state.sessionFingerprint !== lease.sessionFingerprint) return { ok: false, reason: 'session_stale' } as const
       if (!state.sessionFingerprint) return { ok: false, reason: 'session_unset' } as const
       if (state.tainted) return { ok: false, reason: 'tainted' } as const
-      if (state.acceptedTurns >= SOURCE_SESSION_TURNS_LIMIT) return { ok: false, reason: 'turn_limit' } as const
-      if (state.submittedRequests >= SOURCE_SESSION_REQUESTS_LIMIT) return { ok: false, reason: 'request_limit' } as const
-      if (state.submittedUserUtf8Bytes + bytes > SOURCE_SESSION_USER_BYTES_LIMIT) return { ok: false, reason: 'byte_limit' } as const
+      const policy = sourceSessionPolicy(this.db)
+      if (state.acceptedTurns >= policy.turns) return { ok: false, reason: 'turn_limit' } as const
+      if (state.submittedRequests >= policy.requests) return { ok: false, reason: 'request_limit' } as const
+      if (state.submittedUserUtf8Bytes + bytes > policy.userBytes) return { ok: false, reason: 'byte_limit' } as const
 
       const result = this.db.prepare(
         'UPDATE chat_context_cache SET submitted_requests = submitted_requests + 1, ' +
@@ -731,6 +760,31 @@ export class SharedSourceRows {
       return { ok: true, attempt: updated.submittedRequests, userUtf8Bytes: bytes, state: updated } as const
     })
     return runImmediateTransaction(tx)
+  }
+
+  /** 外掛政策（rollover: 'counters'）：預算用完時只把這個租約的計數歸零，session epoch、視窗、tainted 都不動。 */
+  resetSessionCounters(lease: ChatSourceLease, now = new Date().toISOString()): ChatSourceLease | null {
+    const tx = this.db.transaction(() => {
+      const state = readChatSourceState(this.db, lease.chatId)
+      if (!state || state.activeLeaseId !== lease.leaseId || isExpired(state.leaseExpiresAt, now) ||
+        state.sourceEpoch !== lease.sourceEpoch || state.scopeRevision !== lease.scopeRevision ||
+        state.sessionEpoch !== lease.sessionEpoch || state.sessionFingerprint !== lease.sessionFingerprint) return null
+      this.db.prepare(
+        'UPDATE chat_context_cache SET accepted_turns = 0, submitted_requests = 0, submitted_user_utf8_bytes = 0, ' +
+        'state_version = state_version + 1, updated_at = ? WHERE chat_id = ? AND active_lease_id = ? AND source_epoch = ? AND session_epoch = ?'
+      ).run(now, lease.chatId, lease.leaseId, lease.sourceEpoch, lease.sessionEpoch)
+      return readChatSourceState(this.db, lease.chatId)
+    })
+    const state = runImmediateTransaction(tx)
+    return state ? leaseFromState(state, lease.leaseId, lease.expiresAt, lease.window) : null
+  }
+
+  /** 沒有租約在跑的聊天室標記為 tainted：下一次 beginAttempt 會進位 session epoch（Host Session 被重建、模型沒有先前的增量上下文時用）。 */
+  taintChat(chatId: string, now = new Date().toISOString()): boolean {
+    const result = this.db.prepare(
+      'UPDATE chat_context_cache SET tainted = 1, state_version = state_version + 1, updated_at = ? WHERE chat_id = ? AND active_lease_id IS NULL'
+    ).run(now, chatId)
+    return result.changes === 1
   }
 
   releaseLease(lease: ChatSourceLease, taint = false, now = new Date().toISOString()): boolean {
@@ -776,7 +830,7 @@ export class SharedSourceRows {
         this.releaseLease(input.lease, true, now)
         return { ok: false, reason: 'identity_stale' } as const
       }
-      if (state.acceptedTurns >= SOURCE_SESSION_TURNS_LIMIT) return { ok: false, reason: 'turn_limit' } as const
+      if (state.acceptedTurns >= sourceSessionPolicy(this.db).turns) return { ok: false, reason: 'turn_limit' } as const
       if (!state.sessionFingerprint) return { ok: false, reason: 'session_unset' } as const
       if (state.submittedRequests === 0) return { ok: false, reason: 'attempt_missing' } as const
       if (state.tainted) return { ok: false, reason: 'tainted' } as const
@@ -854,7 +908,7 @@ export class SharedSourceRows {
         'WHERE chat_id = ? AND source_epoch = ? AND scope_revision = ? AND active_lease_id = ? ' +
         'AND lease_expires_at > ? AND accepted_turns < ?'
       ).run(fingerprintSourceWindow(committedWindow), now, now, input.lease.chatId,
-        input.lease.sourceEpoch, input.lease.scopeRevision, input.lease.leaseId, now, SOURCE_SESSION_TURNS_LIMIT)
+        input.lease.sourceEpoch, input.lease.scopeRevision, input.lease.leaseId, now, sourceSessionPolicy(this.db).turns)
       if (update.changes !== 1) return { ok: false, reason: 'lease_stale' } as const
       if (input.apply) input.apply()
       this.db.prepare('DELETE FROM chat_context_cache_window WHERE chat_id = ?').run(input.lease.chatId)

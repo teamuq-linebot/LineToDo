@@ -3,8 +3,11 @@
  *
  * 0.2.0 起 AI 不再經 view：抽取（ExtractWorker）、草擬回覆、誤判分析、群組議題分析、prompt 修正都在 backend 呼叫這個 port，
  * 所以看板沒開、不可見時也照常整理已收進來的訊息。宿主對每個外掛的限制（`aiChatContracts.ts` AI_CHAT_LIMITS，本檔逐項遵守）：
- *   - 同時只能有 1 個 session：`complete` 每次開新 session、回覆後一定關掉（所有結果路徑），我們也把所有呼叫序列化（一次一個），
+ *   - 同時只能有 1 個 session：每個工作結束一定關掉 session（所有結果路徑），我們也把所有呼叫序列化（一次一個），
  *     使用者按鈕觸發的工作（priority `user`）排在背景抽取之前；
+ *   - 每個 LINE 聊天室（與全域的 prompt 修正）固定一個專屬 Host session，所有 AI 用途共用、永遠接續（`openSession({resume})`，歷史保留）：
+ *     帶 `conversationScope` 的請求走 `runWithScopedSession`（協議見 chatSessionProtocol.ts）；只有使用者換模型或 session 失效時才重建；
+ *     沒帶 scope、或 Core 沒有 `closedSessionResume` 時才退回一次性 `complete`（每次新 session）；
  *   - 20 輪/分、400 輪/時（`rate_limited`）：自己維護滑動視窗（與 aiChatService 相同的判斷式），背景抽取保留 `extractReserve` 輪/分與 `extractHourReserve` 輪/時
  *     給使用者動作（每分鐘、每小時都保留，否則大量背景整理會把整個小時的額度用光，使用者按「草擬回覆」只拿到 rate_limited）；
  *     視窗滿了就等（背景最多等 ~61 s，使用者動作最多等 30 s），等不到就以 `rate_limited`＋retryAfterMs（＋是哪個視窗滿了）失敗，由呼叫端退避；
@@ -14,18 +17,19 @@
  *
  * 不依賴 DOM／Electron；時間是注入的（測試用手動時鐘與假的 `host.ai`）。
  */
-import { createHash } from 'node:crypto'
 import type { PluginBackendAiApiV1, PluginBackendAiOptionsV1, PluginBackendAiSessionV1 } from '@teamuq/plugin-sdk'
 import { AiPortError } from '../../core/aiPort'
-import type { AiPort, AiPortRequest, AiPortResult, AiPriority } from '../../core/aiPort'
+import type { AiConversationScope, AiPort, AiPortRequest, AiPortResult, AiPriority } from '../../core/aiPort'
 import { EMPTY_AI_COUNTERS } from '../../shared/aiStatus'
 import type { AiCounters, AiStatus } from '../../shared/aiStatus'
 import { normalizeHostAiSelection } from '../../shared/hostAi'
 import type { HostAiEffort } from '../../shared/hostAi'
 import { parseModelJson } from '../../shared/jsonReply'
 import type { TeamuqTaskBinding } from './teamuqTask'
-import { AiSessionMapStoreError } from './aiSessionMapStore'
+import { AiSessionMapStoreError, GLOBAL_SCOPE_KEY, chatScopeKey } from './aiSessionMapStore'
 import type { AiSessionMapRecord, AiSessionMapStore } from './aiSessionMapStore'
+import { CHAT_SESSION_CONTRACT_REVISION, CHAT_SESSION_SYSTEM_V1, RULE_DOC_SEGMENT_MAX_CHARS, buildRuleDoc, buildTaskTurn } from './chatSessionProtocol'
+import type { RuleDoc } from './chatSessionProtocol'
 
 export interface Clock {
   now(): number
@@ -191,7 +195,6 @@ export const PROVIDER_CODES: ReadonlySet<string> = new Set(['provider_unavailabl
 export const BUSY_CODES: ReadonlySet<string> = new Set(['busy', 'session_limit', 'session_not_found', 'turn_in_progress', 'session_closed'])
 const SESSION_IDENTITY_CODES: ReadonlySet<string> = new Set(['session_not_found', 'session_closed'])
 const SUPPORTED_EFFORTS: ReadonlySet<string> = new Set(['minimal', 'low', 'medium', 'high', 'xhigh'])
-const CONTINUITY_VALIDATOR_REVISION = 'line-todo.extract-result.v1'
 /** host 在受理一輪之前就拒絕的代碼：這一輪不算進我們的視窗。 */
 const NOT_ACCEPTED: ReadonlySet<string> = new Set([
   ...ACCESS_CODES, ...PROVIDER_CODES, ...BUSY_CODES, 'plugin_host_unavailable', 'rate_limited', 'quota_exhausted', 'request_invalid', 'input_too_large', 'unsupported_image', 'task_not_found',
@@ -221,7 +224,7 @@ export interface HostAiPortOptions {
   selection?: () => unknown
   /** 每一輪掛在哪個 TeamUQ Task（teamuqTask.ts）；省略或回 null＝不帶 `taskId`。 */
   task?: TeamuqTaskBinding
-  /** app_settings 的每聊天室 opaque Host session 對照表；透過 lazy DB getter 注入。 */
+  /** app_settings 的每 scope（聊天室／全域）opaque Host session 對照表；透過 lazy DB getter 注入。 */
   sessionMapStore?: AiSessionMapStore
   clock?: Clock
   config?: Partial<HostAiConfig>
@@ -602,10 +605,6 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
   const sameEffective = (left: AiSessionMapRecord['effective'], right: AiSessionMapRecord['effective']): boolean =>
     left.providerId === right.providerId && left.modelId === right.modelId && left.effort === right.effort
 
-  const removeChatMapping = async (chatId: string, store: AiSessionMapStore): Promise<void> => {
-    try { await store.remove(chatId) } catch { throw new AiPortError('continuity_store_unavailable') }
-  }
-
   const closeChatSession = async (session: PluginBackendAiSessionV1): Promise<void> => {
     try { await session.close() } catch (error) {
       if (SESSION_IDENTITY_CODES.has(codeOf(error))) return
@@ -626,109 +625,168 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
     }
   }
 
-  const continuityFingerprint = (chatId: string, system: string, effective: AiSessionMapRecord['effective'], sessionEpoch = 0): string => createHash('sha256').update(JSON.stringify({
-    chatId,
-    sessionEpoch,
-    providerId: effective.providerId,
-    modelId: effective.modelId,
-    effort: effective.effort,
-    systemSha256: createHash('sha256').update(system, 'utf8').digest('hex'),
-    validatorRevision: CONTINUITY_VALIDATOR_REVISION
-  }), 'utf8').digest('hex')
+  type HostInput = Parameters<PluginBackendAiApiV1['complete']>[0]
+  type SendTurn = (input: HostInput) => Promise<string>
 
-  const runWithChatSession = async (
-    chatId: string,
-    fingerprint: string,
-    expected: AiSessionMapRecord['effective'],
-    base: { system: string; providerId: string; modelId?: string; effort?: HostAiEffort },
-    runTurns: (send: (input: Parameters<PluginBackendAiApiV1['complete']>[0]) => Promise<string>) => Promise<AiPortResult>,
-    recordAttempt: (input: Parameters<PluginBackendAiApiV1['complete']>[0], session?: PluginBackendAiSessionV1) => boolean
-  ): Promise<AiPortResult> => {
+  /**
+   * 上次行程沒關乾淨的 Session（對照表的 active 列）：在第一個工作之前 resume 再 close 一次，否則 Core「每個外掛同時 1 個 active Session」會讓所有聊天室卡在 session_limit。
+   * 只在成功（或確定 Session 已不存在）時清掉 active 列；host 忙碌之類的暫時失敗留到下一個工作再試。
+   */
+  let orphanChecked = false
+  const closeOrphanSession = async (store: AiSessionMapStore): Promise<void> => {
+    if (orphanChecked || store.getActive === undefined) return
+    try {
+      const orphan = await store.getActive()
+      if (orphan === null) { orphanChecked = true; return }
+      let leftover: PluginBackendAiSessionV1 | null = null
+      try { leftover = await opts.ai.openSession({ resume: orphan.hostSessionId }) } catch (error) {
+        if (!SESSION_IDENTITY_CODES.has(codeOf(error))) { log('orphan_session_resume_failed', { code: codeOf(error) }); return }
+      }
+      if (leftover !== null) {
+        try { await leftover.close() } catch (error) {
+          if (!SESSION_IDENTITY_CODES.has(codeOf(error))) { log('orphan_session_close_failed', { code: codeOf(error) }); return }
+        }
+      }
+      await store.clearActive?.()
+      orphanChecked = true
+      log('orphan_session_closed')
+    } catch (error) { log('orphan_session_check_failed', { code: codeOf(error) }) }
+  }
+
+  interface ScopedJob {
+    scope: AiConversationScope
+    scopeKey: string
+    expected: AiSessionMapRecord['effective']
+    /** 開 Session 用的欄位（system 是與用途無關的 CHAT_SESSION_SYSTEM_V1）。 */
+    base: { system: string; providerId: string; modelId?: string; effort?: HostAiEffort }
+    doc: RuleDoc
+    /** 規則文件 turn 也是真的 host 輪：送之前先等配額視窗。 */
+    beforeExtraTurn: () => Promise<void>
+    runTurns: (send: SendTurn, resetEpoch: number | null) => Promise<AiPortResult>
+    recordAttempt: (input: HostInput, session?: PluginBackendAiSessionV1) => boolean
+  }
+
+  /**
+   * 一個工作在「這個 scope 專屬的 Host Session」上跑：resume 對照表上的 Session（沒有就建）→ 規則文件（rev 不同才送）→ 任務 turn → close（歷史保留，可再次接續）。
+   * Session 只有在不存在／不可續／使用者換了模型時才重建；system、名字、prompt、SourceCache epoch 的變動都不會換 Session。
+   */
+  const runWithScopedSession = async (job: ScopedJob): Promise<AiPortResult> => {
     const store = opts.sessionMapStore
     if (store === undefined) throw new AiPortError('continuity_store_unavailable')
-    let mapping: AiSessionMapRecord | null
-    try { mapping = await store.get(chatId) } catch (error) {
-      if (error instanceof AiSessionMapStoreError && error.code === 'corrupt') {
-        await removeChatMapping(chatId, store)
-        throw new AiPortError('continuity_lost')
+    await closeOrphanSession(store)
+    const epoch = job.scope.kind === 'line-chat' && job.scope.epoch !== undefined ? job.scope.epoch : null
+
+    const removeMapping = async (): Promise<void> => {
+      try { await store.remove(job.scopeKey) } catch (error) {
+        if (error instanceof AiSessionMapStoreError && error.code === 'corrupt') return
+        throw new AiPortError('continuity_store_unavailable')
       }
-      throw new AiPortError('continuity_store_unavailable')
+    }
+    const putRecord = async (record: AiSessionMapRecord): Promise<void> => {
+      try { await store.put(record) } catch { throw new AiPortError('continuity_store_unavailable') }
+    }
+    const loadMapping = async (): Promise<AiSessionMapRecord | null> => {
+      let record: AiSessionMapRecord | null
+      try { record = await store.get(job.scopeKey) } catch (error) {
+        if (error instanceof AiSessionMapStoreError && error.code === 'corrupt') { await removeMapping(); return null }
+        throw new AiPortError('continuity_store_unavailable')
+      }
+      // 協議本身改版：這一列不再適用。只覆蓋自己的 v2 列，舊 Session 留在 Core 不動。
+      if (record !== null && record.contractRevision !== CHAT_SESSION_CONTRACT_REVISION) return null
+      return record
+    }
+    const markActive = async (record: AiSessionMapRecord): Promise<void> => {
+      try { await store.putActive?.({ scopeKey: record.scopeKey, hostSessionId: record.hostSessionId }) } catch { log('active_session_mark_failed') }
     }
 
-    let session: PluginBackendAiSessionV1 | null = null
-    let activeMapping: AiSessionMapRecord | null = null
-    try {
-      if (mapping !== null && mapping.continuityFingerprint !== fingerprint) {
-        let old: PluginBackendAiSessionV1 | null = null
-        try { old = await opts.ai.openSession({ resume: mapping.hostSessionId }) } catch (error) {
-          const code = codeOf(error)
-          if (!SESSION_IDENTITY_CODES.has(code)) throw await classify(code)
-        }
-        if (old !== null) {
-          if (old.sessionId !== mapping.hostSessionId || !sameEffective(old.effective, mapping.effective)) {
-            if (old.sessionId === mapping.hostSessionId) await closeChatSession(old)
-            await removeChatMapping(chatId, store)
-            throw new AiPortError('continuity_lost')
+    let lostBefore = false
+    const attempt = async (): Promise<AiPortResult> => {
+      let session: PluginBackendAiSessionV1 | null = null
+      let lost = lostBefore
+      try {
+        let record = await loadMapping()
+        if (record !== null) {
+          try { session = await opts.ai.openSession({ resume: record.hostSessionId }) } catch (error) {
+            const code = codeOf(error)
+            if (!SESSION_IDENTITY_CODES.has(code)) throw await classify(code)
+            await removeMapping()
+            record = null
+            lost = true
           }
-          await closeChatSession(old)
         }
-        await removeChatMapping(chatId, store)
-        mapping = null
-      }
+        if (session !== null && record !== null) {
+          if (session.sessionId !== record.hostSessionId || !sameEffective(session.effective, record.effective) || !sameEffective(session.effective, job.expected)) {
+            // 使用者在設定頁換了模型（或 host 回了不同的 Session）：這個 Session 的 effective 固定在建立當下，唯一合理的換新理由。
+            if (session.sessionId === record.hostSessionId) await closeChatSession(session)
+            session = null
+            await removeMapping()
+            record = null
+            lost = true
+          } else if (session.turn !== null && session.turn.terminal === null) {
+            await closeChatSession(session)
+            session = null
+            throw new AiPortError('busy', cfg.busyBackoffMs)
+          } else await markActive(record)
+        }
+        if (record === null) {
+          session = await openFreshChatSession(job.base)
+          if (session.sessionId === '' || !sameEffective(session.effective, job.expected)) {
+            await closeChatSession(session)
+            session = null
+            throw new AiPortError('model_unavailable')
+          }
+          record = {
+            scopeKey: job.scopeKey,
+            hostSessionId: session.sessionId,
+            effective: session.effective,
+            contractRevision: CHAT_SESSION_CONTRACT_REVISION,
+            docs: {},
+            epoch: epoch ?? 0,
+            createdAt: now()
+          }
+          await markActive(record)
+          await putRecord(record)
+        }
 
-      if (mapping !== null) {
-        try { session = await opts.ai.openSession({ resume: mapping.hostSessionId }) } catch (error) {
-          const code = codeOf(error)
-          if (SESSION_IDENTITY_CODES.has(code)) {
-            await removeChatMapping(chatId, store)
-            throw new AiPortError('continuity_lost')
-          } else {
-            throw await classify(code)
+        const live = session!
+        if (record.docs[job.doc.kind]?.rev !== job.doc.rev) {
+          for (const segment of job.doc.segments) {
+            await job.beforeExtraTurn()
+            await callHost({ ...job.base, text: segment }, live, undefined)
           }
+          record = { ...record, docs: { ...record.docs, [job.doc.kind]: { rev: job.doc.rev, at: now() } } }
+          await putRecord(record)
         }
-        if (session !== null && mapping !== null && (session.sessionId !== mapping.hostSessionId || !sameEffective(session.effective, mapping.effective) || !sameEffective(session.effective, expected))) {
-          if (session.sessionId === mapping.hostSessionId) await closeChatSession(session)
-          await removeChatMapping(chatId, store)
-          session = null
-          throw new AiPortError('continuity_lost')
-        }
-        if (session !== null && session.turn !== null && session.turn.terminal === null) {
-          await closeChatSession(session)
-          session = null
-          throw new AiPortError('busy', cfg.busyBackoffMs)
-        }
-        if(session!==null&&mapping!==null) activeMapping = mapping
-      }
-      if (mapping === null) {
-        session = await openFreshChatSession(base)
-        if (session.sessionId === '' || !sameEffective(session.effective, expected)) {
-          await closeChatSession(session)
-          session = null
-          throw new AiPortError('model_unavailable')
-        }
-        const fresh: AiSessionMapRecord = {
-          chatId,
-          hostSessionId: session.sessionId,
-          effective: session.effective,
-          continuityFingerprint: fingerprint
-        }
-        try { await store.put(fresh) } catch { throw new AiPortError('continuity_store_unavailable') }
-        activeMapping = fresh
-      }
 
-      const send = async (input: Parameters<PluginBackendAiApiV1['complete']>[0]): Promise<string> => {
-        try { return await callHost(input, session!, recordAttempt) } catch (error) {
-          if (SESSION_IDENTITY_CODES.has(codeOf(error)) && activeMapping !== null) {
-            await removeChatMapping(chatId, store)
-            activeMapping = null
-            throw new AiPortError('continuity_lost')
+        let pendingEpoch: number | null = epoch !== null && record.epoch !== epoch ? epoch : null
+        const resetEpoch = pendingEpoch
+        const send: SendTurn = async (input) => {
+          const reply = await callHost(input, live, job.recordAttempt)
+          if (pendingEpoch !== null) {
+            record = { ...record!, epoch: pendingEpoch }
+            pendingEpoch = null
+            await putRecord(record)
           }
-          throw error
+          return reply
+        }
+        const result = await job.runTurns(send, resetEpoch)
+        return lost ? { ...result, contextLost: true } : result
+      } finally {
+        if (session !== null) {
+          await closeChatSession(session)
+          try { await store.clearActive?.() } catch { log('active_session_clear_failed') }
         }
       }
-      return await runTurns(send)
-    } finally {
-      if (session !== null) await closeChatSession(session)
+    }
+
+    for (let round = 0; ; round += 1) {
+      try { return await attempt() } catch (error) {
+        // 一輪進行中 Session 被刪／關：同一個工作內在新 Session 整輪重送，不讓按鈕的第一下就失敗。
+        if (!(error instanceof AiPortError) || !SESSION_IDENTITY_CODES.has(error.code)) throw error
+        await removeMapping()
+        lostBefore = true
+        if (round >= 1) throw new AiPortError('continuity_lost')
+      }
     }
   }
 
@@ -742,8 +800,18 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
       return req.onAdditionalUserPayload(session ? input.text : userPayloadForAttempt(input))
     }
     await ensureOptions()
-    if (req.system.length > limits.systemChars) throw new AiPortError('system_too_large')
-    if (req.user.length > limits.inputChars) throw new AiPortError('input_too_large')
+    const scope = req.conversationScope
+    // 帶 conversationScope 且 host 支援接續已關閉的 Session：走專屬 Session。舊 Core 沒有這個能力，退回一次性 complete（唯一會新開 Session 的降級）。
+    const scoped = scope !== undefined && closedSessionResume
+    if (scope !== undefined && !closedSessionResume) log('no_resume_capability', { kind: scope.taskKind })
+    const legacySystem = scope !== undefined && !closedSessionResume && req.dynamicContract ? `${req.system}\n\n${req.dynamicContract}` : req.system
+    if (legacySystem.length > limits.systemChars) throw new AiPortError('system_too_large')
+    if (!scoped && req.user.length > limits.inputChars) throw new AiPortError('input_too_large')
+    const doc = scoped ? buildRuleDoc(scope.taskKind, req.system, Math.min(RULE_DOC_SEGMENT_MAX_CHARS, Math.max(500, limits.inputChars - 100))) : null
+    const scopedEpoch = scope?.kind === 'line-chat' && scope.epoch !== undefined ? scope.epoch : null
+    const taskTurn = (resetEpoch: number | null): string => buildTaskTurn({ kind: scope!.taskKind, rev: doc!.rev, resetEpoch, ...(req.dynamicContract ? { dynamicContract: req.dynamicContract } : {}), payload: req.user })
+    // 任務 turn（標籤＋動態合約＋payload）要放得進單輪上限；以帶上下文重設標記的最壞情況檢查，超過就在開 Session 之前失敗。
+    if (scoped && taskTurn(scopedEpoch).length > limits.inputChars) throw new AiPortError('input_too_large')
     const picked = choice!
     const reserve = req.priority === 'background' ? cfg.extractReserve : 0
     const hourReserve = req.priority === 'background' ? cfg.extractHourReserve : 0
@@ -759,11 +827,11 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
     if (blocked) await sleep(blocked.until - now(), preemptible).then((early) => { if (early) throw PREEMPTED })
     await waitForSlot(reserve, hourReserve, maxWait, preemptible)
 
-    const base = { system: req.system, providerId: picked.providerId, ...(picked.modelId !== null ? { modelId: picked.modelId } : {}), ...(picked.effort !== null ? { effort: picked.effort } : {}) }
+    const base = { system: scoped ? CHAT_SESSION_SYSTEM_V1 : legacySystem, providerId: picked.providerId, ...(picked.modelId !== null ? { modelId: picked.modelId } : {}), ...(picked.effort !== null ? { effort: picked.effort } : {}) }
     const model = picked.modelId
     const expected: AiSessionMapRecord['effective'] = { providerId: picked.providerId, modelId: picked.modelId ?? '', effort: picked.effort ?? selectedDefaultEffort }
-    const runTurns = async (send: (input: Parameters<PluginBackendAiApiV1['complete']>[0]) => Promise<string>): Promise<AiPortResult> => {
-      const first = await send({ ...base, text: req.user })
+    const runTurns = async (send: (input: Parameters<PluginBackendAiApiV1['complete']>[0]) => Promise<string>, resetEpoch: number | null = null): Promise<AiPortResult> => {
+      const first = await send({ ...base, text: scoped ? taskTurn(resetEpoch) : req.user })
       if (!req.expectJson) return { text: first.trim(), model }
       let reply = first
       for (let repair = 0; ; repair += 1) {
@@ -781,20 +849,28 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
         }
         if (repair >= cfg.maxRepairs) throw new AiPortError(failure)
         counters.repairs += 1
-        // 有續接能力時 repair 是同一個 Host session 的下一輪；舊 Host 則沿用 transcript one-shot 行為。
+        // 專屬 Session 的 repair 是同一個 Session 的下一輪（歷史已在 Session 內，不再帶 transcript）；舊 Host 則沿用 transcript one-shot 行為。
         await waitForSlot(reserve, hourReserve, maxWait, false)
         const lineMax = AI_CHAT_REFERENCE.transcriptLineChars
         reply = await send({
           ...base,
-          transcript: [{ role: 'user', text: req.user.slice(0, lineMax) }, { role: 'assistant', text: reply.slice(0, lineMax) }],
+          ...(scoped ? {} : { transcript: [{ role: 'user' as const, text: req.user.slice(0, lineMax) }, { role: 'assistant' as const, text: reply.slice(0, lineMax) }] }),
           text: repairPrompt(reason)
         })
       }
     }
 
-    if (req.conversationScope?.kind === 'line-chat-extract' && closedSessionResume) {
-      const fingerprint = continuityFingerprint(req.conversationScope.chatId, req.system, expected, req.conversationScope.sessionEpoch ?? 0)
-      return runWithChatSession(req.conversationScope.chatId, fingerprint, expected, base, runTurns, recordHostAttempt)
+    if (scoped && doc !== null) {
+      return runWithScopedSession({
+        scope,
+        scopeKey: scope.kind === 'line-chat' ? chatScopeKey(scope.chatId) : GLOBAL_SCOPE_KEY,
+        expected,
+        base,
+        doc,
+        beforeExtraTurn: () => waitForSlot(reserve, hourReserve, maxWait, false),
+        runTurns,
+        recordAttempt: recordHostAttempt
+      })
     }
     return runTurns((input) => callOnTask(input, recordHostAttempt))
   }

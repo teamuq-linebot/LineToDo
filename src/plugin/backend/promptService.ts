@@ -183,6 +183,7 @@ export function createPromptService(settings: SettingsStore, ai: AiPort, options
       try {
         result = await ai.complete({
           ...input,
+          conversationScope: { kind: 'line-global', taskKind: 'promptRefine' },
           expectJson: true,
           priority: 'user',
           // 形狀不對（多餘欄位、changes 不合規）也算「回覆不合格」，由 port 重問一次。

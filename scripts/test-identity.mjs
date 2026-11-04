@@ -10,8 +10,8 @@ import { createTodo, getOpenTodosByChat, listTodos, updateStatus } from '../src/
 import { getMessagesByChatAndIds, insertMessages } from '../src/main/db/messages.repo.ts'
 import { migrate } from '../src/main/db/migrate.ts'
 import { SCHEMA_VERSION, SOURCE_CACHE_DDL } from '../src/main/db/schema.ts'
-import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, explainIdentityCandidateQuery, listIdentityBackfillIssues, recallTodoIdentityCandidates, recallTopicIdentityCandidates, releaseIdentitySourceAttempt } from '../src/main/db/identity.repo.ts'
-import { readChatSourceState } from '../src/main/db/sourceCache.ts'
+import { advanceIdentityIndex, beginIdentitySourceAttempt, recordIdentitySourceAttempt, captureIdentitySnapshot, explainIdentityCandidateQuery, listIdentityBackfillIssues, recallTodoIdentityCandidates, recallTopicIdentityCandidates, releaseIdentitySourceAttempt } from '../src/main/db/identity.repo.ts'
+import { ROLLING_SOURCE_SESSION_POLICY, configureSourceSessionPolicy, readChatSourceState } from '../src/main/db/sourceCache.ts'
 import { applyChatExtract, buildTodoApply } from '../src/main/pipeline/runOnce.ts'
 import { runOnce } from '../src/main/pipeline/runOnce.ts'
 import { reviewLastDays } from '../src/main/pipeline/backfill.ts'
@@ -920,4 +920,37 @@ test('Phase 0: buildTopicSave skipSnapshotAssert skips only the leading topic sn
     assert.equal(built.tx(),true,'with the skip the body runs: the caller owns the assertion')
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM topic_message_decisions WHERE chat_id=?').get(chatId).count,1)
   }finally{opened.db.close()}
+})
+
+test('SourceSessionPolicy: identity attempts rotate the epoch at 64 requests by default; the rolling policy zeroes the counters and keeps the epoch (and tainted still rotates)',()=>{
+  for(const [label,policy] of [['default',null],['rolling',ROLLING_SOURCE_SESSION_POLICY]]){
+    const opened=openFixture();const db=opened.db
+    try{
+      configureSourceSessionPolicy(db,policy)
+      const msgId=addMessage(db,'policy-row-'+label,1000,'alpha beta action')
+      const work=buildWork(db,'identity-chat',[msgId])
+      const epoch=readChatSourceState(db,'identity-chat').sessionEpoch
+      let lease=work.lease
+      let last=null
+      let ok=1
+      for(let i=0;i<70;i+=1){
+        const result=recordIdentitySourceAttempt(db,lease,'{"again":'+i+'}',new Date(NOW),false)
+        if(!result.ok){last=result.reason;break}
+        lease=result.lease
+        ok+=1
+      }
+      const state=readChatSourceState(db,'identity-chat')
+      if(policy===null){assert.equal(last,'attempt_limit',label);assert.ok(ok<=64,label)}
+      else{
+        assert.equal(last,null,label);assert.equal(ok,71,label)
+        assert.equal(state.sessionEpoch,epoch,label+': no epoch rotation')
+        assert.ok(state.submittedRequests<64,label+': the counters rolled over')
+        releaseIdentitySourceAttempt(db,lease,true)
+        const again=beginIdentitySourceAttempt(db,'identity-chat',work.snapshot,'{"after":"taint"}',SESSION,new Date(NOW))
+        assert.ok(again.lease,again.reason)
+        assert.equal(readChatSourceState(db,'identity-chat').sessionEpoch,epoch+1,label+': tainted still moves the epoch')
+        releaseIdentitySourceAttempt(db,again.lease,false)
+      }
+    }finally{opened.close()}
+  }
 })

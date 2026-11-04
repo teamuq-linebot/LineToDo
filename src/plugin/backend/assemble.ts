@@ -72,6 +72,7 @@ import { AI_CHAT_REFERENCE, createHostAiPort, createNoHostAiPort } from './hostA
 import { COMBINED_BUNDLE_ENABLED } from '../../main/features/groupTopics/prompts/bundle'
 import type { Clock, HostAiConfig, HostAiPort } from './hostAi'
 import { createAiSessionMapStore } from './aiSessionMapStore'
+import { ROLLING_SOURCE_SESSION_POLICY, configureSourceSessionPolicy } from '../../main/db/sourceCache'
 import type { AiSessionMapDatabase } from './aiSessionMapStore'
 import type { AiStatus } from '../../shared/aiStatus'
 import { createResidencyTracker } from './residency'
@@ -465,6 +466,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       runtimeOwnerProof: ownerLockProof,
       appDbEngine: options.appDbEngine ?? createBetterSqlite3AppEngine(),
       onDatabase: (db) => {
+        // Host Session 的身分與 SourceCache 的上下文 epoch 脫鉤：每聊天室的 Host Session 永遠接續，預算（64 輪／64 請求／128 KiB）用完只歸零計數、閒置 24h 不再進位 epoch（tainted 仍會，由上下文重設標記處理）。
+        configureSourceSessionPolicy(db, ROLLING_SOURCE_SESSION_POLICY)
         appDb = db
         appDbForMedia = db
         avatarDb = db
