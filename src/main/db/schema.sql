@@ -1,4 +1,4 @@
--- schema.sql (user_version = 8)
+-- schema.sql (user_version = 10)
 -- Readable reference for the app-owned sidecar SQLite schema.
 -- Runtime DDL is embedded in src/main/db/schema.ts; keep this generated reference aligned.
 PRAGMA journal_mode = WAL;
@@ -33,8 +33,7 @@ CREATE TABLE IF NOT EXISTS messages (
   unsent INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
 );
-CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_id, ts);
-CREATE INDEX IF NOT EXISTS idx_messages_unproc  ON messages(processed, chat_id);
+CREATE INDEX IF NOT EXISTS idx_messages_pending_ts ON messages(ts) WHERE processed = 0;
 
 CREATE TABLE IF NOT EXISTS todos (
   id                  TEXT PRIMARY KEY,

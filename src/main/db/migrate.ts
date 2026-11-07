@@ -1,5 +1,94 @@
 import type { Database } from 'better-sqlite3'
-import { IDENTITY_CORE_DDL, SCHEMA_DDL, SCHEMA_VERSION, SOURCE_CACHE_DDL } from './schema'
+import { IDENTITY_CORE_DDL, MESSAGE_PARTICIPANTS_DDL, SCHEMA_DDL, SCHEMA_VERSION, SOURCE_CACHE_DDL } from './schema'
+
+export type StorageMaintenanceStep = 'M-I2' | 'M-I1' | 'M-P1'
+export interface StorageMaintenanceStepResult {
+  step: StorageMaintenanceStep
+  status: 'done' | 'skipped' | 'noop'
+  reason?: string
+  rows?: number
+}
+export interface StorageMaintenanceReport {
+  steps: StorageMaintenanceStepResult[]
+  changed: boolean
+}
+
+const PENDING_INDEX = 'idx_messages_pending_ts'
+const CHAT_TS_MSG_INDEX = 'idx_messages_chat_ts_msg'
+
+function schemaObjectExists(db: Database, type: 'index' | 'table', name: string): boolean {
+  return db.prepare('SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?').get(type, name) !== undefined
+}
+
+/**
+ * v10 storage maintenance（WP-M，使用者 2026-11-03 核准的步驟）：M-I2、M-I1、M-P1（含 M-I3）。
+ * 不做 VACUUM、不做 M-Q。每一步的前置條件在此檢查；不成立就只略過該步並 console.warn 原因，其餘照常。
+ * 全部可重複執行：已完成的步驟再跑只會回報 noop。必須在 migrate 的交易內（或自行開交易）呼叫。
+ * M-W（wal_checkpoint）不能在交易內做，由 migrate 在交易提交後執行。
+ */
+export function runStorageMaintenanceV10(db: Database): StorageMaintenanceReport {
+  const steps: StorageMaintenanceStepResult[] = []
+  const skip = (step: StorageMaintenanceStep, reason: string): void => {
+    console.warn(`[db] migrate v10 ${step} skipped: ${reason}`)
+    steps.push({ step, status: 'skipped', reason })
+  }
+
+  // M-I2：idx_messages_unproc 只能在 partial pending index 存在之後刪（舊 pending 查詢才有索引可走）。
+  if (!schemaObjectExists(db, 'index', 'idx_messages_unproc')) {
+    steps.push({ step: 'M-I2', status: 'noop', reason: 'already absent' })
+  } else if (!schemaObjectExists(db, 'index', PENDING_INDEX)) {
+    skip('M-I2', `${PENDING_INDEX} does not exist`)
+  } else {
+    db.exec('DROP INDEX idx_messages_unproc;')
+    steps.push({ step: 'M-I2', status: 'done' })
+  }
+
+  // M-I1：idx_messages_chat_ts 被 idx_messages_chat_ts_msg 涵蓋；後者不在就不刪。
+  if (!schemaObjectExists(db, 'index', 'idx_messages_chat_ts')) {
+    steps.push({ step: 'M-I1', status: 'noop', reason: 'already absent' })
+  } else if (!schemaObjectExists(db, 'index', CHAT_TS_MSG_INDEX)) {
+    skip('M-I1', `${CHAT_TS_MSG_INDEX} does not exist`)
+  } else {
+    db.exec('DROP INDEX idx_messages_chat_ts;')
+    steps.push({ step: 'M-I1', status: 'done' })
+  }
+
+  // M-P1（含 M-I3）：只清「全是 unknown、沒有任何 keyed」的 message_participants；缺一條件就整步略過。
+  if (!schemaObjectExists(db, 'table', 'message_participants')) {
+    steps.push({ step: 'M-P1', status: 'noop', reason: 'table does not exist yet' })
+  } else if (db.prepare('SELECT 1 FROM message_participants WHERE participant_key IS NOT NULL LIMIT 1').get() !== undefined) {
+    skip('M-P1', 'a row with participant_key IS NOT NULL exists')
+  } else if (db.prepare("SELECT 1 FROM message_participants WHERE NOT (scope = 'unknown' AND identity_status = 'unknown') LIMIT 1").get() !== undefined) {
+    skip('M-P1', 'a row that is not scope=unknown AND identity_status=unknown exists')
+  } else {
+    const rows = (db.prepare('SELECT COUNT(*) AS n FROM message_participants').get() as { n: number }).n
+    const hasIndex = schemaObjectExists(db, 'index', 'idx_message_participants_chat_key')
+    if (rows === 0 && !hasIndex) {
+      steps.push({ step: 'M-P1', status: 'noop', reason: 'table already empty', rows: 0 })
+    } else {
+      // DROP TABLE 連同索引一起釋放頁面，WAL 寫入量遠小於逐列 DELETE；重建用與 ensureLineImportSchema 相同的 DDL。
+      db.exec('DROP TABLE message_participants;')
+      db.exec(MESSAGE_PARTICIPANTS_DDL)
+      steps.push({ step: 'M-P1', status: 'done', rows })
+    }
+  }
+
+  const changed = steps.some((s) => s.status === 'done')
+  if (changed) {
+    console.info(`[db] migrate v10 storage maintenance: ${steps.map((s) => `${s.step}=${s.status}${s.rows !== undefined ? `(${s.rows} rows)` : ''}`).join(' ')}`)
+  }
+  return { steps, changed }
+}
+
+/** M-W。交易外執行；失敗只記錄，不影響已提交的 migration。 */
+function checkpointWal(db: Database): void {
+  try {
+    const result = db.pragma('wal_checkpoint(TRUNCATE)')
+    console.info('[db] migrate v10 M-W wal_checkpoint(TRUNCATE):', JSON.stringify(result))
+  } catch (err) {
+    console.warn('[db] migrate v10 M-W wal_checkpoint failed:', err instanceof Error ? err.message : String(err))
+  }
+}
 
 /**
  * migrate.ts — 用 PRAGMA user_version 管理 schema 版本。
@@ -23,6 +112,7 @@ export function migrate(db: Database): { from: number; to: number } {
     return { from, to: from }
   }
 
+  let maintenance: StorageMaintenanceReport | null = null
   const runUpgrades = db.transaction((current: number) => {
     let v = current
     // v0（全新 DB）：SCHEMA_DDL 已是最新全 schema（含媒體 3 欄），套用後直接跳到
@@ -93,10 +183,25 @@ export function migrate(db: Database): { from: number; to: number } {
       db.exec(IDENTITY_CORE_DDL)
       v = 8
     }
+    // v8 -> v9: additive partial index for the pipeline's pending-message selection. Nothing is
+    // dropped here; v10 below removes idx_messages_chat_ts and idx_messages_unproc.
+    if (v < 9) {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_messages_pending_ts ON messages(ts) WHERE processed = 0;')
+      v = 9
+    }
+    // v9 -> v10: user-approved destructive storage maintenance (WP-M): drop idx_messages_unproc and
+    // idx_messages_chat_ts, and clear the all-unknown message_participants table. Each step checks its own
+    // precondition and is skipped (with a warning) when it does not hold. The whole version step shares the
+    // migrate transaction, so a failure anywhere rolls back every step and user_version.
+    if (v < 10) {
+      maintenance = runStorageMaintenanceV10(db)
+      v = 10
+    }
     db.pragma(`user_version = ${v}`)
     return v
   })
 
   const to = runUpgrades(from)
+  if ((maintenance as StorageMaintenanceReport | null)?.changed) checkpointWal(db)
   return { from, to }
 }

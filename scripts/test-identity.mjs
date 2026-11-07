@@ -112,7 +112,7 @@ test('Core v7 upgrades add identity objects transactionally and preserves the Ph
   try{
     db.exec(SOURCE_CACHE_DDL);db.pragma('user_version=7')
     const before=db.prepare('SELECT id,source_msg_ids,status FROM todos').get()
-    assert.deepEqual(migrate(db),{from:7,to:8})
+    assert.deepEqual(migrate(db),{from:7,to:10})
     assert.equal(db.pragma('user_version',{simple:true}),SCHEMA_VERSION)
     assert.deepEqual(db.prepare('SELECT id,source_msg_ids,status FROM todos').get(),before)
     assert.equal(db.prepare('SELECT entity_revision FROM todos WHERE id=?').get('legacy-todo').entity_revision,1)

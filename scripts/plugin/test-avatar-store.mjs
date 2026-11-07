@@ -283,7 +283,7 @@ test('A-4 wiring: through createPluginBackend the avatar tables exist (user_vers
     assert.equal(state.avatarStore.schemaReady, true)
     const db = appDb(s)
     try {
-      assert.equal(db.pragma('user_version', { simple: true }), 8)
+      assert.equal(db.pragma('user_version', { simple: true }), 10)
       await until(() => db.prepare('SELECT COUNT(*) AS n FROM messages').get().n === 30, { message: 'all 30 messages imported' })
       const incoming = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE direction='in'").get().n
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_message_sender').get().n, incoming, 'every incoming message is linked, no outgoing one')

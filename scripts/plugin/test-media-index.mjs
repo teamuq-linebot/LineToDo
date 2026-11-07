@@ -1717,7 +1717,7 @@ test('production wiring: when the index tables cannot be created the index is of
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
-test('production wiring: the index tables are created by the backend next to the app DB without touching user_version (still 8); dispose stops the scan and leaves no timer or file access behind', async () => {
+test('production wiring: the index tables are created by the backend next to the app DB without touching user_version (still the current version); dispose stops the scan and leaves no timer or file access behind', async () => {
   const fake = makeFakeCache({ tops: 120, leaves: 3, files: 4 })
   const root = mkdtempSync(join(tmpdir(), 'wpb-dispose-'))
   const dataDir = join(root, 'data')
@@ -1738,7 +1738,7 @@ test('production wiring: the index tables are created by the backend next to the
     assert.ok(process.getActiveResourcesInfo().filter((k) => k === 'Timeout').length <= timersBefore + 1, 'no index timer is left running')
     const db = new Database(join(dataDir, 'line-todo.db'), { readonly: true })
     try {
-      assert.equal(db.pragma('user_version', { simple: true }), 8, 'user_version is not touched')
+      assert.equal(db.pragma('user_version', { simple: true }), 10, 'user_version is not touched')
       assert.equal(isMediaIndexSchemaReady(db), true)
       assert.equal(db.prepare('SELECT value FROM line_media_index_meta WHERE key = ?').get('cache_root').value, fake.root)
       assert.equal(db.prepare('SELECT value FROM line_media_index_meta WHERE key = ?').get('initial_scan_done'), undefined, 'an interrupted first scan is not marked done')

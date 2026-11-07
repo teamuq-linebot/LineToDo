@@ -313,7 +313,7 @@ test('A21 settings.json written by the previous release (no pluginMyName) loads,
     assert.equal(createSettingsStore({ userDataDir: dir, secrets: noSecrets }).get().pluginMyName, '小明', 'unrelated updates keep the name')
     writeFileSync(join(dir, 'settings.json'), JSON.stringify({ pluginMyName: 'a\nb' }))
     assert.equal(createSettingsStore({ userDataDir: dir, secrets: noSecrets }).get().pluginMyName, null, 'an invalid stored name is dropped by normalize')
-    assert.equal(SCHEMA_VERSION, 8)
+    assert.equal(SCHEMA_VERSION, 10)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

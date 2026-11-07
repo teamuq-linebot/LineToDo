@@ -45,7 +45,7 @@ const pipelineIds = (db, limit = 100) => getUnprocessedForPipeline(limit, db).ma
 
 // ───────────────────────── 資料層 ─────────────────────────
 
-test('T1 ensureChatTodoPrefsSchema is repeatable, a chat without a row is enabled, user_version stays 8', () => {
+test('T1 ensureChatTodoPrefsSchema is repeatable, a chat without a row is enabled, user_version stays at the current version (10)', () => {
   const { db, close } = fixture({ prefs: false })
   try {
     addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'hello']])
@@ -56,14 +56,14 @@ test('T1 ensureChatTodoPrefsSchema is repeatable, a chat without a row is enable
     assert.equal(chatTodoPrefsReady(db), true)
     assert.equal(isTodoExtractEnabled(db, 'g1'), true)
     assert.equal(isTodoExtractEnabled(db, 'never-seen'), true)
-    assert.equal(db.pragma('user_version', { simple: true }), 8)
-    assert.equal(SCHEMA_VERSION, 8)
+    assert.equal(db.pragma('user_version', { simple: true }), 10)
+    assert.equal(SCHEMA_VERSION, 10)
     assert.equal(n(db, "SELECT COUNT(*) AS n FROM sqlite_master WHERE name='chat_todo_preferences'"), 1)
     assert.equal(TODO_BACKFILL_DAYS, 7)
   } finally { close() }
 })
 
-test('T2 an existing v8 database without the table keeps its rows; ensure adds the table without touching them', () => {
+test('T2 an existing v8-shaped database without the table keeps its rows; ensure adds the table without touching them', () => {
   const { db, close } = fixture({ prefs: false })
   try {
     addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'alpha'], ['m2', NOW_MS - 2000, 'beta']])
@@ -74,7 +74,7 @@ test('T2 an existing v8 database without the table keeps its rows; ensure adds t
     ensureChatTodoPrefsSchema(db)
     assert.deepEqual({ chats: n(db, 'SELECT COUNT(*) AS n FROM chats'), messages: n(db, 'SELECT COUNT(*) AS n FROM messages'), todos: n(db, 'SELECT COUNT(*) AS n FROM todos') }, before)
     assert.equal(n(db, 'SELECT COUNT(*) AS n FROM chat_todo_preferences'), 0)
-    assert.equal(db.pragma('user_version', { simple: true }), 8)
+    assert.equal(db.pragma('user_version', { simple: true }), 10)
   } finally { close() }
 })
 

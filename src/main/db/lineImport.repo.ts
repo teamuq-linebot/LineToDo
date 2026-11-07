@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Database } from 'better-sqlite3'
-import { deriveMsgId } from './schema'
+import { deriveMsgId, MESSAGE_PARTICIPANTS_DDL } from './schema'
 import { insertMessages } from './messages.repo'
 import type { LineImportBatch } from '../line/importTypes'
 import type { ParticipantIdentityProvider } from '../line/identity'
@@ -21,18 +21,7 @@ export function ensureLineImportSchema(db: Database): void {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS message_participants (
-        msg_id TEXT PRIMARY KEY,
-        chat_id TEXT NOT NULL,
-        participant_key TEXT,
-        scope TEXT NOT NULL CHECK(scope IN ('chat','unknown')),
-        key_version INTEGER,
-        identity_status TEXT NOT NULL CHECK(identity_status IN ('keyed','unknown')),
-        identity_reason TEXT CHECK(identity_reason IN ('source_id_missing','account_unknown','safe_storage_unavailable','identity_failure','identity_epoch_changed')),
-        is_me INTEGER CHECK(is_me IN (0,1) OR is_me IS NULL),
-        FOREIGN KEY(msg_id) REFERENCES messages(msg_id) ON DELETE CASCADE,
-        FOREIGN KEY(chat_id) REFERENCES chats(chat_id)
-      );
+      ${MESSAGE_PARTICIPANTS_DDL}
       CREATE TABLE IF NOT EXISTS line_import_batches (
         batch_id TEXT PRIMARY KEY,
         source TEXT NOT NULL CHECK(source IN ('line-watch','line-backfill')),

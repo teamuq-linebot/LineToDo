@@ -10,7 +10,24 @@ import { createHash } from 'node:crypto'
  *
  * SCHEMA_VERSION 對應 PRAGMA user_version；migrate.ts 以此決定要不要建表/升級。
  */
-export const SCHEMA_VERSION = 8
+export const SCHEMA_VERSION = 10
+
+/**
+ * message_participants 的建表 DDL。ensureLineImportSchema 與 migrate v10 的 M-P1（DROP 後重建）共用，
+ * 兩處必須是同一份。表不含 idx_message_participants_chat_key（A1 起不再建立）。
+ */
+export const MESSAGE_PARTICIPANTS_DDL = `CREATE TABLE IF NOT EXISTS message_participants (
+        msg_id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        participant_key TEXT,
+        scope TEXT NOT NULL CHECK(scope IN ('chat','unknown')),
+        key_version INTEGER,
+        identity_status TEXT NOT NULL CHECK(identity_status IN ('keyed','unknown')),
+        identity_reason TEXT CHECK(identity_reason IN ('source_id_missing','account_unknown','safe_storage_unavailable','identity_failure','identity_epoch_changed')),
+        is_me INTEGER CHECK(is_me IN (0,1) OR is_me IS NULL),
+        FOREIGN KEY(msg_id) REFERENCES messages(msg_id) ON DELETE CASCADE,
+        FOREIGN KEY(chat_id) REFERENCES chats(chat_id)
+      );`
 
 /**
  * Durable source/cache coordination. This derived window must not block legal
@@ -219,8 +236,7 @@ CREATE TABLE IF NOT EXISTS messages (
   unsent INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
 );
-CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_id, ts);
-CREATE INDEX IF NOT EXISTS idx_messages_unproc  ON messages(processed, chat_id);
+CREATE INDEX IF NOT EXISTS idx_messages_pending_ts ON messages(ts) WHERE processed = 0;
 
 CREATE TABLE IF NOT EXISTS todos (
   id                  TEXT PRIMARY KEY,

@@ -78,13 +78,13 @@ test('A9 overrides are stored under hashed app_settings keys, survive a restart 
   } finally { ctx.cleanup() }
 })
 
-test('A21 the override store adds no table and no schema version: SCHEMA_VERSION stays 8', () => {
+test('A21 the override store adds no table and no schema version: SCHEMA_VERSION stays at the current version (10)', () => {
   const ctx = setup()
   try {
-    assert.equal(SCHEMA_VERSION, 8)
+    assert.equal(SCHEMA_VERSION, 10)
     const tables = ctx.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name)
     assert.ok(!tables.some((name) => /prompt/i.test(name)), `no prompt table in ${tables.join(',')}`)
-    assert.equal(ctx.db.pragma('user_version', { simple: true }), 8)
+    assert.equal(ctx.db.pragma('user_version', { simple: true }), 10)
   } finally { ctx.cleanup() }
 })
 

@@ -88,8 +88,8 @@ function startAttempt(cache, lease, fingerprint = 'todo-session-fingerprint-v1',
 test('the product appDbEngine opens the pinned plugin alias on its actual native SQLite driver', () => {
   const opened = openFixture()
   try {
-    assert.equal(SCHEMA_VERSION, 8)
-    assert.equal(opened.db.pragma('user_version', { simple: true }), 8)
+    assert.equal(SCHEMA_VERSION, 10)
+    assert.equal(opened.db.pragma('user_version', { simple: true }), 10)
     assert.equal(opened.db.pragma('foreign_keys', { simple: true }), 1)
     assert.equal(opened.db.prepare('SELECT sqlite_version() AS version').get().version, '3.53.4')
     const trigger = opened.db.prepare("SELECT 1 AS yes FROM sqlite_master WHERE type='trigger' AND name='trg_messages_cache_after_insert'").get()
@@ -130,13 +130,13 @@ test('runtime SCHEMA_DDL and the readable schema.sql reference expose matching c
   }
 })
 
-test('Core v6 to v8 backfills cold cache and identity index state while preserving canonical IDs and source JSON', () => {
+test('Core v6 to v10 backfills cold cache and identity index state while preserving canonical IDs and source JSON', () => {
   const db = makeLegacyV6()
   try {
     const sourceJson = db.prepare('SELECT source_msg_ids FROM todos WHERE id=?').get('legacy-todo').source_msg_ids
     const migration = migrate(db)
-    assert.deepEqual(migration, { from: 6, to: 8 })
-    assert.equal(db.pragma('user_version', { simple: true }), 8)
+    assert.deepEqual(migration, { from: 6, to: 10 })
+    assert.equal(db.pragma('user_version', { simple: true }), 10)
     assert.deepEqual(db.prepare('SELECT msg_id,text FROM messages').get(), { msg_id: 'legacy-msg', text: 'legacy source' })
     assert.deepEqual(db.prepare('SELECT id,status,source_msg_ids FROM todos').get(), {
       id: 'legacy-todo',
