@@ -8,21 +8,15 @@ export const PUBLISHER = 'tuqdev'
 export const PLATFORM_ID = 'win32-x64'
 export const ICON_PATH = 'ui/icon.png'
 
-/**
- * minCoreVersion `>=1.7.13` (0.2.0): the backend runs the AI itself through `context.host.ai.complete`. `context.host.ai` first appears in Core 1.7.12 and
- * `complete` (one turn, session opened and closed by the host) in 1.7.13 (_devkit docs/plugin-endpoints.md「context.host.ai.complete」; the SDK declarations are
- * pinned to 1.7.15, src/plugin/sdk). A Core older than that has no way to run the AI without the board open, so the install is refused instead of
- * shipping a plugin whose AI silently does nothing. This also covers what `>=1.7.1` was for (G-08): the package is UNSIGNED (`pack --unsigned`, G-09), and
- * TeamUQ 1.6.8 / 1.7.0 refuse a package without signature.json (`signature_missing`, reviewArtifact.ts @ b8b96cb3:156).
- */
-export const MIN_CORE_VERSION = '>=1.7.13'
+/** 0.2.14 targets the verified TeamUQ 1.8.10 SDK, author tool, session resume and background residency contracts. */
+export const MIN_CORE_VERSION = '>=1.8.10'
 
 /**
  * minCoreVersion of the DEVELOPMENT-KEY-SIGNED variant (build-plugin-devsigned.mjs), the only manifest field it changes. It used to be `>=1.6.8`
  * (machines that run 0.1.1 on 1.6.8); 0.2.0 needs `host.ai.complete` and so the same Core as the unsigned package. NOTE: that variant's build and verify
  * scripts still review the package with Core 1.6.8's code, which refuses `>=1.7.13` — they are not part of the 0.2.0 gates and would need a 1.7.x review to run again.
  */
-export const DEV_SIGNED_MIN_CORE_VERSION = '>=1.7.13'
+export const DEV_SIGNED_MIN_CORE_VERSION = MIN_CORE_VERSION
 
 /** Native files, in the order they are listed in `native.files`. Both live next to the backend bundle (backend/index.mjs finds them by `import.meta.url`). */
 export const NATIVE_FILES = Object.freeze([
@@ -67,11 +61,8 @@ const DESCRIPTION_TAIL =
 
 export const DESCRIPTION = `${DESCRIPTION_HEAD}（TeamUQ 在外掛閒置一段時間後會停止背景程式，之後開啟看板會補整理；每分鐘與每小時有輪數限制）${DESCRIPTION_TAIL}`
 
-// ── 背景執行（`background:resident`）：預設關閉的建置選項 ──────────────────────────────────────────────────────────────────────────────────────
-// TeamUQ Core 還沒發版含此權限的版本，而且 vendored 的 1.7.15 author tool 不認得它（`validate` 會回 `permission_unknown`），所以預設的套件完全不變（權限 5 項、`>=1.7.13`）。
-// 開啟選項（`--resident` 加 `--resident-min-core <範圍>`，或環境變數 LINE_TODO_RESIDENT=1 加 LINE_TODO_RESIDENT_MIN_CORE=<範圍>）時，manifest 才多宣告
-// `background:resident`、`minCoreVersion` 改成指定的值（含此權限與 `context.residency` 的第一個 Core 版本；沒有預設值，Core 發版後才知道）、描述改成常駐說法。
-// 不宣告 `residency` 或 `reason` 欄位（宣告即驗證失敗：Core 設計 D:108、manifestV2.ts:230）；`background:resident` 需要 full-trust 且不能同時有 `provides`（manifestV2.ts:249-252），本外掛兩者皆符合。
+// 正式套件與開發連結預設宣告背景執行能力。這不是授權：使用者仍須在 TeamUQ 開啟對應開關，Core 才會給 resident。
+// `--resident=false` 或 LINE_TODO_RESIDENT=0 可建置不宣告此能力的套件。manifest 不放 residency / reason；實際狀態由 context.residency 回報。
 export const RESIDENT_PERMISSION = 'background:resident'
 
 /** 範圍格式與 author tool 的 RANGE_PATTERN 相同（`^`／`>=` 加 x.y.z）。 */
@@ -81,27 +72,26 @@ const RANGE_PATTERN = /^(?:\^|>=)?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9
 export const RESIDENT_DESCRIPTION = `${DESCRIPTION_HEAD}。在 TeamUQ 的「它可以做的事」打開「關閉畫面後繼續在背景執行」後（預設是關閉的），只要 TeamUQ 還開著，背景程式就不會因為閒置而停止，看板沒開也會持續整理新訊息；沒有打開時，TeamUQ 會在外掛閒置一段時間後停止背景程式，之後開啟看板會補整理。每分鐘與每小時有輪數限制${DESCRIPTION_TAIL}`
 
 /**
- * 解析建置選項。`argv` 是 parseArgs 的結果（`resident`、`resident-min-core`），`env` 通常是 process.env。
- * 回 `{ enabled:false }`（預設）或 `{ enabled:true, minCoreVersion }`；開了選項卻沒給（或給了格式不對的）版本範圍就丟錯——不猜 Core 版本。
+ * 解析建置選項；預設使用已驗證的 1.8.10。保留明確停用與自訂版本範圍，命令列優先於環境變數。
  */
 export function resolveResidentOption({ args = {}, env = {} } = {}) {
-  const flag = args.resident
-  const fromEnv = env.LINE_TODO_RESIDENT
-  const enabled = flag === true || flag === 'true' || flag === '1' || (flag === undefined && (fromEnv === '1' || fromEnv === 'true'))
+  const flag = args.resident ?? env.LINE_TODO_RESIDENT ?? true
+  if (![true, false, 'true', 'false', '1', '0'].includes(flag)) throw new Error(`invalid resident option: ${JSON.stringify(flag)}`)
+  const enabled = flag === true || flag === 'true' || flag === '1'
   if (!enabled) return { enabled: false }
-  const minCoreVersion = typeof args['resident-min-core'] === 'string' ? args['resident-min-core'] : env.LINE_TODO_RESIDENT_MIN_CORE
+  const minCoreVersion = args['resident-min-core'] ?? env.LINE_TODO_RESIDENT_MIN_CORE ?? MIN_CORE_VERSION
   if (typeof minCoreVersion !== 'string' || !RANGE_PATTERN.test(minCoreVersion)) {
-    throw new Error(`the resident build option needs --resident-min-core <range> (or LINE_TODO_RESIDENT_MIN_CORE), e.g. ">=1.8.0": the first TeamUQ Core that has background:resident and context.residency; got ${JSON.stringify(minCoreVersion ?? null)}`)
+    throw new Error(`invalid --resident-min-core (or LINE_TODO_RESIDENT_MIN_CORE): expected a version range such as ">=1.8.10", got ${JSON.stringify(minCoreVersion)}`)
   }
   return { enabled: true, minCoreVersion }
 }
 
-/** The permission list of a build: the five the plugin always uses, plus background:resident only when the resident option is on. */
-export function permissionsFor(resident) {
+/** The base permissions plus background:resident unless the build explicitly opts out. */
+export function permissionsFor(resident = resolveResidentOption({})) {
   return resident?.enabled === true ? [...PERMISSIONS, RESIDENT_PERMISSION] : [...PERMISSIONS]
 }
 
-export function buildManifest({ version, resident }) {
+export function buildManifest({ version, resident = resolveResidentOption({}) }) {
   const residentOn = resident?.enabled === true
   return {
     schemaVersion: 2,
@@ -123,7 +113,7 @@ export function buildManifest({ version, resident }) {
     permissions: permissionsFor(resident),
     contributes: {
       views: [
-        { id: 'board', title: 'LINE 待辦', icon: ICON_PATH, entry: 'ui/index.html', presentations: ['tab', 'fullpage'], defaultPresentation: 'tab' },
+        { id: 'board', title: 'LINE 待辦', icon: ICON_PATH, entry: 'ui/index.html', presentations: ['tab', 'fullpage'], defaultPresentation: 'tab', remote: true },
         // the settings view (not settingsSchema; the two are mutually exclusive — G-06 keeps the view)
         { id: 'settings', title: 'LINE 待辦設定', entry: 'ui/settings.html', presentations: ['settings'], defaultPresentation: 'settings' },
       ],

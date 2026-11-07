@@ -1,5 +1,5 @@
 // Checks a built .tuqplugin's manifest with the official author tool (G-08): the package is unpacked into dist/, integrity.json is left out
-// (the tool's stage must not contain generated files), and `tuq-plugin-tool validate <stage>` runs for TeamUQ 1.7.1 / win32-x64
+// (the tool's stage must not contain generated files), and `tuq-plugin-tool validate <stage>` runs for TeamUQ 1.8.10 / win32-x64
 // (Manifest V2 schema, Core support, every referenced entry / view / icon / native file present). Nothing is read from teamuq-electron.
 //   node scripts/plugin/check-manifest.mjs [file.tuqplugin]
 // Fails (exit 1) when validate fails, or when a view icon is missing, is not a PNG, is not square, or is 30 KB or more.

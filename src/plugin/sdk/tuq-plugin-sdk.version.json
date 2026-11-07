@@ -1,6 +1,6 @@
 {
   "contractVersion": "1",
-  "coreVersion": "1.7.15",
+  "coreVersion": "1.8.10",
   "file": "tuq-plugin-sdk.d.ts",
-  "sha256": "8e42b0b0a31ecb29c78c40e83c78d05c41486b70a7687f325108fa321506e96c"
+  "sha256": "16357c3e14f9713968f62759366b40cd062cf14f40a5ee5416be2c1aa4743e33"
 }

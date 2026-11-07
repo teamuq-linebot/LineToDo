@@ -1,0 +1,270 @@
+{
+  "schemaVersion": 1,
+  "kitVersion": "1.8.10",
+  "coreVersion": "1.8.10",
+  "specVersion": "0.7.2",
+  "casesVersion": "0.5.2",
+  "bundledEsbuild": {
+    "package": "@esbuild/win32-x64",
+    "platform": "win32",
+    "arch": "x64",
+    "version": "0.21.5"
+  },
+  "files": [
+    {
+      "path": "bin/node_modules/@esbuild/win32-x64/esbuild.exe",
+      "size": 9913856,
+      "sha256": "b868c8d988ffe76006c03c91f856312c312e42e2f3932a6bb56d7f4a1790c8b3"
+    },
+    {
+      "path": "bin/node_modules/@esbuild/win32-x64/package.json",
+      "size": 374,
+      "sha256": "5fefc397d9fe3a69260545a7bfe570493b41498f3a949652e416a153dfdf695b"
+    },
+    {
+      "path": "bin/node_modules/esbuild/lib/main.js",
+      "size": 87654,
+      "sha256": "ac0772cb9176e4dd1d896be746b82edff699103940c8535a286493cecb69bdee"
+    },
+    {
+      "path": "bin/node_modules/esbuild/LICENSE.md",
+      "size": 1069,
+      "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681"
+    },
+    {
+      "path": "bin/node_modules/esbuild/package.json",
+      "size": 1340,
+      "sha256": "0f35e0d63bd60a43ed85879604a40f7e9688b321904cf28a95be5b1bc629559c"
+    },
+    {
+      "path": "bin/tuq-plugin-tool.mjs",
+      "size": 9058298,
+      "sha256": "d61a389059e7b1fd6b3c2dc3027342759308d0214492216fc31da3200293cf83"
+    },
+    {
+      "path": "docs/plugin-capability-categories.md",
+      "size": 14725,
+      "sha256": "f044752b86e8ad41c0ea7624747a5389f2bd0075550f113e9f1c9812998d3482"
+    },
+    {
+      "path": "docs/plugin-capability-diagnostics.md",
+      "size": 13257,
+      "sha256": "e39d9ae6d8fdb7ac17cc073459c26c6fca6a3094f5bc1fb4f68ff78830d98586"
+    },
+    {
+      "path": "docs/plugin-capability-link-ticket.md",
+      "size": 13015,
+      "sha256": "ff68f8d3ce98bd10b53d551aa950b11065046e3040e6c15351223d763a5a490b"
+    },
+    {
+      "path": "docs/plugin-capability-revocation.md",
+      "size": 9842,
+      "sha256": "e9ad95cf770c8ea4ae7839ea6f50d3814242314d36e37695a2c1fc6e3366016c"
+    },
+    {
+      "path": "docs/plugin-developer-guide.md",
+      "size": 22022,
+      "sha256": "ea75359bdcd4e956893fd011c77bd28ad5ad2e68d4ac2994de18b2bd47dc4b4c"
+    },
+    {
+      "path": "docs/plugin-endpoint-guide.md",
+      "size": 8904,
+      "sha256": "32605a1535a2e7c007759aefdae3eeb4d02dedebb0f8191449a2d4d13a0388df"
+    },
+    {
+      "path": "docs/plugin-endpoints.md",
+      "size": 37969,
+      "sha256": "2f587cdb562307ab04166585b2f5c6011ca0e345b33c5a1665edfa163313272b"
+    },
+    {
+      "path": "docs/plugin-network-loopback.md",
+      "size": 21428,
+      "sha256": "7ce1519a5853949dde8e18b597a83031cbe376d3cefae284b4f674611cee6bd0"
+    },
+    {
+      "path": "docs/plugin-testing.md",
+      "size": 8081,
+      "sha256": "b8a5b36b03b6089845f1e6b5e9141ec82e5965b83b337fce1e21d849944a418f"
+    },
+    {
+      "path": "lib/tuq-capability-client.d.mts",
+      "size": 12596,
+      "sha256": "1725199d3aeea2eb13673f341d2d22da0dbcdf6ac7bec11aa3b2c655898477bf"
+    },
+    {
+      "path": "lib/tuq-capability-client.mjs",
+      "size": 78083,
+      "sha256": "9a7bd83784d9fcf4957ba9ac482eed8ca134dee9433207d53d16e16754b896a5"
+    },
+    {
+      "path": "README.md",
+      "size": 1481,
+      "sha256": "9841d7357e4577f5d336accdd4cfc0d395fee958038e5ee5e13e67cd45ae2610"
+    },
+    {
+      "path": "starter/app-backend/backend/main.mjs",
+      "size": 1631,
+      "sha256": "4a051ef1777656af70274162ed520a594e907be25c619ea9eca6ccbc4407744a"
+    },
+    {
+      "path": "starter/app-backend/lib/app-policy.mjs",
+      "size": 4883,
+      "sha256": "1a58feda80c9a4b057127148143c4b518cc7f0899ea84610bc352e3ece376680"
+    },
+    {
+      "path": "starter/app-backend/lib/tuq-capability-client.mjs",
+      "size": 78083,
+      "sha256": "9a7bd83784d9fcf4957ba9ac482eed8ca134dee9433207d53d16e16754b896a5"
+    },
+    {
+      "path": "starter/app-backend/manifest.json",
+      "size": 581,
+      "sha256": "b16cd2f00072f0eb1cc0f3eeaeecce8da5c37123c6128778c1e4fe229e152431"
+    },
+    {
+      "path": "starter/app-backend/README.md",
+      "size": 1243,
+      "sha256": "fcd05a27546a88f0ac042b9c1aeea7e17a63191c6bb4c439b29449995ad7e894"
+    },
+    {
+      "path": "starter/app-view/lib/app-policy.mjs",
+      "size": 4883,
+      "sha256": "1a58feda80c9a4b057127148143c4b518cc7f0899ea84610bc352e3ece376680"
+    },
+    {
+      "path": "starter/app-view/lib/tuq-capability-client.mjs",
+      "size": 78083,
+      "sha256": "9a7bd83784d9fcf4957ba9ac482eed8ca134dee9433207d53d16e16754b896a5"
+    },
+    {
+      "path": "starter/app-view/manifest.json",
+      "size": 775,
+      "sha256": "b9f55ee45afebf7557f439789726a5a3af6eb77409123d83a102824ec246a8d1"
+    },
+    {
+      "path": "starter/app-view/README.md",
+      "size": 1240,
+      "sha256": "a6cc30c8024a65331b012bab09d8b42c3901164c2d84564e377871b26a231650"
+    },
+    {
+      "path": "starter/app-view/ui/app.js",
+      "size": 5641,
+      "sha256": "0213a87350345d00c245724130da01c29116f683af846b423379813f539c8a69"
+    },
+    {
+      "path": "starter/app-view/ui/index.html",
+      "size": 764,
+      "sha256": "fbe48524ba596e2fdd51c382d66ae1421552b0d2fa99ca1ffc42420eabeb6f9e"
+    },
+    {
+      "path": "starter/app-view/ui/style.css",
+      "size": 342,
+      "sha256": "1f43cfc7ae8d20ef26fe94a872c7ea7a665b6b5ed6ac011dfd5fd6dd384466d5"
+    },
+    {
+      "path": "starter/hello/manifest.json",
+      "size": 632,
+      "sha256": "173a9881b0a58328ae993c2528e951bf41140dde893b0ca6c8d3761da6405a8b"
+    },
+    {
+      "path": "starter/hello/README.md",
+      "size": 2759,
+      "sha256": "29686435944938f66eec769c81dfd0405647e2870cbc7c97a39d7fa63c90e422"
+    },
+    {
+      "path": "starter/hello/ui/app.js",
+      "size": 1496,
+      "sha256": "ea4f82bdc023a160ccf8057cba6ff86b62cc570eab046ff7a4e1ea65c291ad96"
+    },
+    {
+      "path": "starter/hello/ui/index.html",
+      "size": 918,
+      "sha256": "1bc93f57e9db7bd30cd8016c9310450d62ce4b04842b063881f584bf21b9c85a"
+    },
+    {
+      "path": "starter/hello/ui/style.css",
+      "size": 850,
+      "sha256": "c1a8c082787791c2932bffcda19a6fd6541d5992f61513d5c8ea65604726e3b3"
+    },
+    {
+      "path": "starter/provider-memory/backend/describe.mjs",
+      "size": 2393,
+      "sha256": "e9ab3688a0483b8eaca71f313940b006837d801bc19e6727a276aa7df810b531"
+    },
+    {
+      "path": "starter/provider-memory/backend/errors.mjs",
+      "size": 2401,
+      "sha256": "59ad5704ce55fb73bb9a24e284ddce04ba17c6b0799b67974b5898b7875c113f"
+    },
+    {
+      "path": "starter/provider-memory/backend/file-service/index.mjs",
+      "size": 11433,
+      "sha256": "4c31a939fd9b771f30d6405e52d6791ea918c2ccc06de00d23d4dc5bbfe42e36"
+    },
+    {
+      "path": "starter/provider-memory/backend/file-service/validation.mjs",
+      "size": 5770,
+      "sha256": "6d6bbabc580cfce89c98d070b9fb07119d548b61684cfae9201b36cf8e563660"
+    },
+    {
+      "path": "starter/provider-memory/backend/files.mjs",
+      "size": 55,
+      "sha256": "5e0b2c998e526f35d8aa4025244174e64a3a0ab323893f8a2e09803479fa4ed8"
+    },
+    {
+      "path": "starter/provider-memory/backend/groups/memory-store.mjs",
+      "size": 11058,
+      "sha256": "62d37c312bb571b36dc4d914c090cfed25113961251461bfb1b97f1831f60b61"
+    },
+    {
+      "path": "starter/provider-memory/backend/guard.mjs",
+      "size": 2006,
+      "sha256": "ea53fb49ddccd4356763dcd1986879b268cc3a575b708a4d238ae9c17a20b8df"
+    },
+    {
+      "path": "starter/provider-memory/backend/main.mjs",
+      "size": 1709,
+      "sha256": "0de660023b3997db30756fb846c426326c707964487d857f37cffc5bf2305e73"
+    },
+    {
+      "path": "starter/provider-memory/backend/provider.mjs",
+      "size": 6827,
+      "sha256": "fbd346f12a769cd01c7c36c905775959d6b3be9b5b9473b5a5fe645fccb72a5d"
+    },
+    {
+      "path": "starter/provider-memory/manifest.json",
+      "size": 653,
+      "sha256": "62585ad815a28c7fc3bc6f53ed45fab4c539c3fa220b7662b6d7708355b39332"
+    },
+    {
+      "path": "starter/provider-memory/README.md",
+      "size": 5892,
+      "sha256": "74453026354f9e3cab3a44d93a9782d4584744f070cb52ff12a9f4dbb5d0ba6c"
+    },
+    {
+      "path": "testing/tuq-plugin-test-host.d.mts",
+      "size": 3137,
+      "sha256": "2dcb56574c0ea7b9a9cc61f9aef81de7c055529e1c814b125e6946943fd5e36c"
+    },
+    {
+      "path": "testing/tuq-plugin-test-host.mjs",
+      "size": 865948,
+      "sha256": "ba24f3410e0c6bfb90c1304338341253fdb5236066082f58a536ba22f5fcce72"
+    },
+    {
+      "path": "testing/tuq-plugin-test-host.version.json",
+      "size": 148,
+      "sha256": "9f797af7aba31d8ad552933cad4f38ef01097f81fb8f6583bb9eff41fe4bd119"
+    },
+    {
+      "path": "types/tuq-plugin-sdk.d.ts",
+      "size": 41988,
+      "sha256": "16357c3e14f9713968f62759366b40cd062cf14f40a5ee5416be2c1aa4743e33"
+    },
+    {
+      "path": "types/tuq-plugin-sdk.version.json",
+      "size": 169,
+      "sha256": "d6bda388f4ba18099f2a23b935cddb62ea384896aa98685146623c2b853501fe"
+    }
+  ]
+}

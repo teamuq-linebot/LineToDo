@@ -87,6 +87,91 @@ const VIEW = {
   driverPost: { enabled: false, mode: 'fillOnly', verifyReadByDb: true },
   hasApiKey: true, apiKeySource: 'none', safeStorageAvailable: false,
 }
+
+test('message composer stays disabled in flow with active residency status and long synthetic history', async () => {
+  const chat = { chatId: 'composer-synthetic', name: '合成長訊息聊天室', isGroup: false, blocked: false, blockReason: null, firstSeenAt: '2026-11-06T02:00:00.000Z', lastSeenAt: '2026-11-06T03:11:00.000Z' }
+  const rows = Array.from({ length: 72 }, (_, index) => {
+    const ts = Date.UTC(2026, 10, 6, 2, 0) + index * 60_000
+    return {
+      msgId: `composer-${index}`, chatId: chat.chatId, ts, timeIso: new Date(ts).toISOString(),
+      direction: index % 2 === 0 ? 'in' : 'out', sender: chat.name,
+      text: index === 71 ? 'synthetic last row 71' : `synthetic row ${index}`,
+      contentType: 0, processed: true, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: false
+    }
+  })
+  const { backend, api } = plugin({
+    'db.chats.list': () => [chat],
+    'db.messages.list': () => [],
+    'db.messages.recentByChat': (chatId) => { assert.equal(chatId, chat.chatId); return rows },
+    'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: rows.length, lastError: null, restarts: 0 }),
+    'media.avatar.prepareChats': () => ({ paths: {}, names: {} }),
+    'settings.chatPrompt.list': () => ({ items: [] }),
+    'groupTopics.list': () => ({ ok: true, topics: [] }),
+    'groupTopics.pendingCount': () => 0,
+    'db.todos.openByChat': () => []
+  })
+  let snapshot = { supported: true, requested: true, level: 'resident', reason: null }
+  let onResidency = () => undefined
+  const source = {
+    residency: async () => snapshot,
+    onResidency: (listener) => { onResidency = listener; return () => { onResidency = () => undefined } },
+    backendLink: () => ({ state: 'connected', code: null }),
+    onBackendLink: () => () => undefined
+  }
+  const scene = ui.mount(ui.messageWithResidencyScene(api, source))
+  const hasClass = (element, name) => (element.getAttribute('class') ?? '').split(/\s+/).includes(name)
+  const find = (name) => walk(scene.container).find((element) => hasClass(element, name))
+  const paneButton = (label) => walk(scene.container).find((element) => element.localName === 'button' && element.textContent.trim() === label && element.hasAttribute('aria-pressed'))
+  try {
+    await until(() => find('chat-message-composer') && find('residency-status-bar')?.textContent.includes('背景執行中') && scene.container.textContent.includes('synthetic last row 71'), { message: 'the active residency footer, composer and final synthetic message render together' })
+    const layout = find('plugin-root-layout')
+    const rendererSlot = find('plugin-renderer-slot')
+    const footer = find('residency-status-bar')
+    const latest = walk(scene.container).find((element) => hasClass(element, 'chat-message') && element.textContent.includes('synthetic last row 71'))
+    assert.ok(layout && footer.parentNode === layout, 'the active footer is a direct row in the plugin root layout')
+    assert.ok(rendererSlot && rendererSlot.parentNode === layout, 'the renderer has its own flex row above the footer')
+    assert.equal(footer.getAttribute('data-residency-level'), 'resident', 'the active background state remains visible')
+    assert.ok(walk(latest).some((element) => element.localName === 'time' && element.textContent.trim()), 'the final synthetic message keeps its timestamp in the rendered row')
+
+    const composer = find('chat-message-composer')
+    const input = walk(composer).find((element) => element.localName === 'input')
+    const controls = walk(composer).filter((element) => element.localName === 'button')
+    assert.ok(input && reactProps(input).disabled === true, 'the composer input is natively disabled')
+    assert.equal(reactProps(input).onChange, undefined, 'typing has no event handler')
+    assert.equal(reactProps(input).onKeyDown, undefined, 'Enter and Ctrl+Enter have no send handler')
+    assert.equal(input.getAttribute('placeholder'), '訊息功能尚未開啟')
+    assert.equal(controls.length, 3, 'only the visible attachment, emoji and send affordances are present')
+    assert.ok(controls.every((button) => reactProps(button).disabled === true), 'all composer buttons are natively disabled')
+    assert.ok(controls.every((button) => reactProps(button).onClick === undefined), 'disabled buttons have no picker or send handlers')
+    assert.equal(walk(composer).some((element) => element.localName === 'form'), false, 'there is no Enter-submit form')
+    assert.ok(composer.textContent.includes('功能尚未開啟'), 'the unavailable state is visible without opening a tooltip')
+    assert.deepEqual(backend.unknown, [], 'the synthetic UI made no unmocked backend call')
+
+    snapshot = { supported: true, requested: true, level: 'on-demand', reason: 'resident_not_granted' }
+    onResidency(snapshot)
+    await until(() => footer.textContent.includes('背景執行尚未開啟'), { message: 'a necessary permission state remains visible in the footer' })
+    assert.equal(footer.getAttribute('data-residency-reason'), 'resident_not_granted')
+
+    reactProps(paneButton('議題與待辦')).onClick()
+    await until(() => paneButton('議題與待辦')?.getAttribute('aria-pressed') === 'true', { message: 'the selected chat switches to its combined non-message pane' })
+    assert.equal(find('chat-message-composer'), undefined, 'the message composer is absent from the selected chat topics-and-todos pane')
+    assert.ok(find('residency-status-bar')?.textContent.includes('背景執行尚未開啟'), 'the warning footer remains visible in other chat panes')
+    reactProps(paneButton('訊息')).onClick()
+    await until(() => paneButton('訊息')?.getAttribute('aria-pressed') === 'true' && find('chat-message-composer'), { message: 'the disabled composer returns with the message view' })
+
+    const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
+    const residency = readFileSync(resolve(ROOT, 'src', 'plugin', 'ui', 'ResidencyStatus.tsx'), 'utf8')
+    assert.match(css, /\.plugin-root-layout\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*height:\s*100%/s, 'the plugin root reserves separate vertical rows')
+    assert.match(css, /\.plugin-renderer-slot\s*\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0/s, 'the renderer uses only the space above the footer')
+    assert.match(css, /\.residency-status-bar\s*\{[^}]*flex:\s*0 0 auto[^}]*width:\s*100%/s, 'the residency message retains its own in-flow row')
+    assert.match(css, /\.chat-message-view\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*min-height:\s*0/s, 'the message view splits a scroll area from a fixed-height composer row')
+    assert.match(css, /\.chat-message-log\s*\{[^}]*flex:\s*1[^}]*overflow-y:\s*auto/s, 'the message list keeps its own vertical viewport')
+    assert.match(css, /\.chat-message-composer\s*\{[^}]*flex:\s*0 0 auto[^}]*border-top:/s, 'the composer reserves real layout height below the scroll viewport')
+    assert.doesNotMatch(residency, /position:\s*['"]fixed['"]/, 'the status is no longer fixed over message content')
+  } finally { scene.unmount(); api.dispose() }
+})
+
 const settingsHandlers = (extra = {}) => ({
   'settings.prompt.get': () => ({ initialPrompt: '初始：只抽出明確的待辦。', activePrompt: '初始：只抽出明確的待辦。', customized: false, revision: 'initial', maxChars: 12000, outputFormat: '只輸出固定 JSON 欄位。' }),
   'settings.get': () => VIEW,
@@ -925,14 +1010,16 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
     const click = (button) => reactProps(button).onClick({ currentTarget: button })
     try {
       await until(() => chatButton(direct.name) && chatButton(group.name), { message: 'both synthetic chats are listed' })
-      assert.ok(paneButton('待辦'), 'the chat header has a todo pane')
-      assert.ok(paneButton('議題'), 'a direct chat has its own topics pane')
+      assert.ok(paneButton('議題與待辦'), 'the chat header has one combined topics-and-todos pane')
+      assert.equal(paneButton('議題'), undefined, 'the old separate topics tab is removed')
+      assert.equal(paneButton('待辦'), undefined, 'the old separate todos tab is removed')
       assert.equal(paneButton('訊息').getAttribute('aria-pressed'), 'true')
 
-      click(paneButton('議題'))
-      await until(() => topicListQueries.includes(direct.chatId) && view.container.textContent.includes('啟用此聊天室議題分析'), { message: 'direct topics load from the selected chat and offer opt-in enable' })
+      click(paneButton('議題與待辦'))
+      await until(() => topicListQueries.includes(direct.chatId) && view.container.textContent.includes('啟用此聊天室議題分析') && view.container.textContent.includes(directTodo.title), { message: 'the combined pane independently loads direct topics and todos from the selected chat' })
       assert.ok(view.container.textContent.includes('此聊天室的議題'))
       assert.equal(view.container.textContent.includes('跨群語意候選'), false, 'direct topics do not expose cross-group controls')
+      assert.ok(view.container.textContent.includes(directTodo.title), 'the todo remains visible beside the topic controls')
       assert.deepEqual(topicAnalyzeQueries, [], 'opening the topic pane does not auto-analyze')
       assert.deepEqual(topicEnableQueries, [], 'opening the topic pane does not auto-enable')
       const directEnable = walk(view.container).find((element) => element.localName === 'input' && element.getAttribute('type') === 'checkbox')
@@ -945,26 +1032,24 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
       await until(() => topicAnalyzeQueries.includes(direct.chatId) && view.container.textContent.includes('已整理 1 則新訊息'), { message: 'manual direct chat analysis calls the topic API for the selected chat' })
       assert.deepEqual(topicAnalyzeQueries, [direct.chatId])
       assert.ok(view.container.textContent.includes(directTopic.title))
+      assert.ok(view.container.textContent.includes(directTodo.title), 'the todo content remains visible while using topic actions')
       assert.deepEqual(crossTopicQueries.filter((value) => value.startsWith('cross:')), [], 'direct chats never query cross-group authorization')
 
-      click(paneButton('待辦'))
-      await until(() => view.container.textContent.includes(directTodo.title), { message: 'direct chat todos render' })
-      assert.equal(paneButton('待辦').getAttribute('aria-pressed'), 'true')
+      assert.equal(paneButton('議題與待辦').getAttribute('aria-pressed'), 'true')
       assert.ok(view.container.textContent.includes('待辦'))
       assert.ok(view.container.textContent.includes('來源訊息 1 則'))
       assert.ok(view.container.textContent.includes(directTodo.detail), 'complete detail is available on demand')
-      assert.ok(paneButton('議題'), 'the direct chat keeps its topics pane while viewing todos')
 
       click(paneButton('訊息'))
       await until(() => paneButton('訊息')?.getAttribute('aria-pressed') === 'true', { message: 'message pane is selected before reopening todos' })
-      click(paneButton('待辦'))
+      click(paneButton('議題與待辦'))
       await until(() => directCalls === 2 && view.container.textContent.includes('正在載入「合成單人聊天室」的待辦'), { message: 'direct refresh enters loading before its delayed reply' })
       click(chatButton(group.name))
-      await until(() => groupCalls === 1 && view.container.textContent.includes('讀取此聊天室待辦失敗'), { message: 'group-scoped request failure is shown as an error' })
+      await until(() => groupCalls === 1 && view.container.textContent.includes('讀取此聊天室待辦失敗') && view.container.textContent.includes(groupTopic.title), { message: 'the group todo error is shown independently while its topic loads' })
       assert.ok(view.container.textContent.includes('synthetic group todo failure'), 'the backend failure reason remains visible')
       assert.equal(view.container.textContent.includes(directTodo.title), false, 'the previous chat data is cleared on chat switch')
-      assert.equal(paneButton('待辦').getAttribute('aria-pressed'), 'true', 'todo pane follows the selected chat')
-      assert.ok(paneButton('議題'), 'group chat keeps its topics pane')
+      assert.equal(view.container.textContent.includes(directTopic.title), false, 'the previous chat topics are cleared on chat switch')
+      assert.equal(paneButton('議題與待辦').getAttribute('aria-pressed'), 'true', 'the combined pane follows the selected chat')
 
       click(walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === '重試'))
       await until(() => groupCalls === 2 && view.container.textContent.includes(groupTodo.title), { message: 'retry loads the selected group todos' })
@@ -979,13 +1064,11 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
       assert.equal(view.container.textContent.includes(groupTodo.title), false, 'the group todos do not remain after switching back')
 
       click(chatButton(group.name))
-      await until(() => groupCalls === 3 && view.container.textContent.includes(groupTodo.title), { message: 'switching back to the group refreshes its todos' })
       deferGroupTopics = true
-      click(paneButton('議題'))
-      await until(() => topicListQueries.includes(group.chatId) && view.container.textContent.includes('正在載入「合成群組聊天室」的議題'), { message: 'the group topic request is pending for the selected group' })
-      assert.ok(view.container.textContent.includes(groupTopic.title) === false, 'the delayed group result has not appeared early')
+      await until(() => groupCalls === 3 && view.container.textContent.includes(groupTodo.title) && view.container.textContent.includes('正在載入「合成群組聊天室」的議題'), { message: 'switching back loads group todos while its topic request is pending' })
+      assert.equal(view.container.textContent.includes(groupTopic.title), false, 'the delayed group topic result has not appeared early')
       click(chatButton(direct.name))
-      await until(() => topicListQueries.filter((chatId) => chatId === direct.chatId).length >= 3 && view.container.textContent.includes(directTopic.title), { message: 'switching back opens the direct chat topics for its own chat id' })
+      await until(() => directCalls === 4 && topicListQueries.filter((chatId) => chatId === direct.chatId).length >= 3 && view.container.textContent.includes(directTopic.title), { message: 'switching back loads the direct chat content for its own chat id' })
       resolveGroupTopicRequest({ ok: true, topics: [groupTopic] })
       await sleep(20)
       assert.ok(view.container.textContent.includes(directTopic.title), 'the current direct chat topic remains visible after a late group response')
@@ -995,17 +1078,77 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
       assert.equal(topicLinkQueries.includes(direct.chatId), false, 'direct chat topics never request cross-group candidates')
       click(paneButton('訊息'))
       await until(() => walk(view.container).some((element) => hasClass(element, 'chat-message-log')), { message: 'the existing message pane still opens' })
-      assert.deepEqual(todoQueries, [direct.chatId, direct.chatId, group.chatId, group.chatId, direct.chatId, group.chatId], 'every read is scoped to the selected chat id')
+      assert.deepEqual(todoQueries, [direct.chatId, direct.chatId, group.chatId, group.chatId, direct.chatId, group.chatId, direct.chatId], 'every read is scoped to the selected chat id')
       assert.ok(crossTopicQueries.filter((value) => value.startsWith('cross:')).every((value) => value === `cross:${group.chatId}`), 'group cross-chat checks remain group-only')
       assert.ok(topicLinkQueries.every((chatId) => chatId === group.chatId), 'group cross-chat candidate reads remain group-only')
 
       const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
-      assert.match(css, /\.chat-todos-content\s*\{[^}]*overflow:\s*auto/s, 'the todo pane scrolls within the chat area')
-      assert.match(css, /\.chat-todos-content\s*\{[^}]*padding:\s*16px clamp\(14px, 3vw, 34px\)/s, 'the content padding adapts to viewport width')
+      assert.match(css, /\.chat-topics-todos-content\s*\{[^}]*overflow:\s*auto/s, 'the combined pane scrolls within the chat area')
+      assert.match(css, /\.chat-topics-todos-content\s*\{[^}]*padding:\s*16px clamp\(14px, 3vw, 34px\)/s, 'the combined content padding adapts to viewport width')
+      assert.match(css, /\.chat-topics-todos-content\s*>\s*\.chat-todos-content\s*\{[^}]*border-top:\s*1px solid var\(--border\)/s, 'the two data types remain visually distinct in one scroll area')
+      assert.match(css, /@media \(max-width:\s*420px\)[\s\S]*?\.chat-pane-view-toggle button\s*\{[^}]*white-space:\s*nowrap/s, 'the combined tab label stays on one line on narrow screens')
       assert.match(css, /\.chat-todo-card\s*\{[^}]*cursor:\s*default[^}]*user-select:\s*text/s, 'read-only todo cards do not advertise drag actions')
     } finally { view.unmount(); api.dispose() }
   })
   assert.deepEqual(unhandled, [], 'no unhandled rejection from chat todo loading or the late response')
+})
+
+test('chat topics and todos (effects): a topic read failure does not hide selected-chat todos, and both recover independently', async () => {
+  const chat = { chatId: 'synthetic-independent', name: '合成隔離聊天室', isGroup: false, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
+  const topic = { topicId: 'independent-topic', chatId: chat.chatId, title: '合成議題', summary: '只屬於目前聊天室的議題。', evidenceCount: 1, evidenceMsgIds: ['synthetic-independent-source'], userParticipation: 'unknown', relevance: 'unknown', relevanceEvidence: [], participantLowerBound: null, observation: 'unknown', heat: 'unvalidated', trend: 'unknown' }
+  const todo = { id: 'independent-todo', chatId: chat.chatId, bucket: 'todo', status: 'pending', title: '合成待辦', detail: null, priority: 1, dueAt: null, sourceMsgIds: ['synthetic-independent-source'], confidence: 0.9, completionEvidence: null, createdAt: '2026-10-29T00:00:00.000Z', updatedAt: '2026-10-30T00:00:00.000Z', resolvedAt: null }
+  let failTopics = true
+  let topicReads = 0
+  let todoReads = 0
+  const { api } = plugin({
+    'db.chats.list': () => [chat],
+    'db.messages.list': () => [],
+    'db.messages.recentByChat': () => [],
+    'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'groupTopics.list': () => {
+      topicReads += 1
+      if (failTopics) throw Object.assign(new Error('synthetic topic read failure'), { code: 'internal' })
+      return { ok: true, topics: [topic] }
+    },
+    'groupTopics.pendingCount': () => 0,
+    'db.todos.openByChat': (chatId) => { assert.equal(chatId, chat.chatId); todoReads += 1; return [todo] }
+  })
+  const view = ui.mount(ui.messageStreamScene(api))
+  const paneButton = (label) => walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === label && element.hasAttribute('aria-pressed'))
+  const click = (button) => reactProps(button).onClick({ currentTarget: button })
+  try {
+    await until(() => paneButton('議題與待辦'), { message: 'the selected-chat combined pane is available' })
+    click(paneButton('議題與待辦'))
+    await until(() => view.container.textContent.includes('synthetic topic read failure') && view.container.textContent.includes(todo.title), { message: 'topic error and todo content render independently' })
+    assert.equal(view.container.textContent.includes(topic.title), false, 'a failed topic read does not invent topic data')
+    assert.equal(todoReads, 1, 'the healthy todos are read once before retrying topics')
+    const retry = walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === '重試議題')
+    assert.ok(retry, 'the topic load error exposes its own in-place retry button')
+
+    failTopics = false
+    click(retry)
+    await until(() => topicReads === 2 && view.container.textContent.includes(topic.title) && view.container.textContent.includes(todo.title), { timeout: 5000, message: 'the topic panel recovers in place while the todo remains visible' })
+    assert.equal(view.container.textContent.includes('synthetic topic read failure'), false, 'the old topic error clears after a successful read')
+    assert.equal(todoReads, 1, 'topic retry does not issue another db.todos.openByChat call')
+    assert.equal(view.container.textContent.includes('正在載入「合成隔離聊天室」的待辦'), false, 'topic retry does not put the healthy todo panel into loading')
+
+    const topicCard = walk(view.container).find((element) => element.localName === 'article' && element.textContent.includes(topic.title))
+    const compactStatus = byAttr(topicCard, 'data-testid', 'group-topic-status')
+    assert.ok(compactStatus, 'the default topic card keeps its compact status line')
+    assert.match(compactStatus.textContent, /參與不確定/)
+    assert.match(compactStatus.textContent, /關聯未驗證/)
+    assert.match(compactStatus.textContent, /熱度未校準/)
+    assert.match(compactStatus.textContent, /趨勢不確定/)
+    assert.equal(compactStatus.textContent.includes('已知參與者下界'), false, 'the detailed participant metric is on demand')
+    const qualityDetails = byAttr(topicCard, 'data-testid', 'group-topic-details')
+    assert.ok(qualityDetails, 'quality and source details remain available')
+    assert.equal(qualityDetails.hasAttribute('open'), false, 'the quality details are collapsed by default')
+    assert.ok(walk(qualityDetails).some((element) => element.localName === 'summary' && element.textContent.includes('品質與來源細節')), 'the disclosure uses a native summary control that supports keyboard activation')
+    assert.match(qualityDetails.textContent, /模型相關性描述（未驗證）/)
+    assert.match(qualityDetails.textContent, /已知參與者下界/)
+    assert.match(qualityDetails.textContent, /觀測完整性未校準/)
+  } finally { view.unmount(); api.dispose() }
 })
 
 // ───────────── WP-C: the chat list does not wait for auxiliary calls; phase wording; timeout + retry; diagnostics (all non-device: mini-dom + scripted host) ─────────────
@@ -1638,7 +1781,7 @@ const noOverride = (extra = {}) => ({
   defaultName: '預設名', maxChars: 12000, maxNameChars: 40, corrupt: false, ...extra
 })
 
-test('A17/A18 board: the chat pane has a fourth "AI 設定" tab, marked only when the chat has an override; the editor stays closed until asked for; save sends the whole pair; conflicts and validation errors read in Chinese; reset returns to "沿用預設"', async () => {
+test('A17/A18 board: the chat pane keeps a third "AI 設定" tab after the combined content tab, marked only when the chat has an override; the editor stays closed until asked for; save sends the whole pair; conflicts and validation errors read in Chinese; reset returns to "沿用預設"', async () => {
   let state = noOverride()
   let listItems = []
   const saves = []
@@ -1666,7 +1809,7 @@ test('A17/A18 board: the chat pane has a fourth "AI 設定" tab, marked only whe
   const aiTab = () => toggleButtons().find((button) => button.textContent.includes('AI 設定'))
   try {
     await until(() => aiTab(), { message: 'chat pane header with the AI settings tab' })
-    assert.deepEqual(toggleButtons().map((button) => button.textContent.trim()), ['訊息', '議題', '待辦', 'AI 設定'], 'fourth tab after 待辦')
+    assert.deepEqual(toggleButtons().map((button) => button.textContent.trim()), ['訊息', '議題與待辦', 'AI 設定'], 'AI settings follow the combined content tab')
     await sleep(30)
     assert.equal(field('ai-settings-customized'), null, 'no override: no mark')
     assert.equal(field('chat-prompt-panel'), null, 'the message view stays the default')
@@ -1730,12 +1873,12 @@ test('A18 board: the mark shows for a chat whose override already exists when th
   let scene = ui.mount(ui.messageStreamScene(api))
   try {
     await until(() => byAttr(scene.container, 'data-testid', 'ai-settings-customized'), { message: 'mark for the chat that already has an override' })
-    assert.deepEqual(toggleLabels(scene), ['訊息', '議題', '待辦', 'AI 設定'])
+    assert.deepEqual(toggleLabels(scene), ['訊息', '議題與待辦', 'AI 設定'])
   } finally { scene.unmount() }
   scene = ui.mount(ui.messageStreamScene({ ...api, hostAi: { ...api.hostAi, chatPrompts: undefined } }))
   try {
     await until(() => toggleLabels(scene).length > 0, { message: 'pane header without chatPrompts' })
-    assert.deepEqual(toggleLabels(scene), ['訊息', '議題', '待辦'])
+    assert.deepEqual(toggleLabels(scene), ['訊息', '議題與待辦'])
   } finally { scene.unmount(); api.dispose() }
 })
 
@@ -1942,7 +2085,7 @@ test('chat tab remount: avatar calls queued by the previous mount are dropped, a
   }
 })
 
-// ───────────── overview tab: board on top, collapsible group topics below ─────────────
+// ───────────── overview tab: the todo board remains; chat topics live with chat todos ─────────────
 
 function recordingHandlers(handlers, log) {
   return new Proxy(handlers, {
@@ -1975,105 +2118,59 @@ function overviewHandlers(log, extra = {}) {
     ...extra
   }, log)
 }
-const memoryStorage = (seed = {}) => {
-  const data = new Map(Object.entries(seed).map(([key, value]) => [`lt-ui:${key}`, JSON.stringify({ v: value, at: Date.now() })]))
-  return { data, getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value), removeItem: (key) => data.delete(key) }
-}
-const topicsToggle = (view) => walk(view.container).find((element) => hasClassName(element, 'overview-topics-toggle'))
-
-test('overview tab: mounting the board and the group topics section stays within 6 host calls and asks the aggregate once instead of listing every group', async () => {
+test('overview tab: the todo board loads and does not mount the group-topics overview', async () => {
   const log = []
   const { api } = plugin(overviewHandlers(log))
   dom.document.documentElement.dataset ??= {}
   const view = ui.mount(ui.appScene(api))
   try {
-    await until(() => view.container.textContent.includes('總覽議題0') && view.container.textContent.includes('總覽議題2'), { message: 'the topics section shows the aggregate result' })
+    await until(() => log.some((entry) => entry.path === 'db.todos.list') && walk(view.container).some((element) => hasClassName(element, 'board-wrap')), { message: 'the overview board loads' })
     await sleep(60)
     const paths = log.map((entry) => entry.path)
-    // 6 is the deliberate ceiling from design R10 (host call queue), not a measured value: a new mount-phase call must be justified, not just allowed here.
-    assert.ok(log.length <= 6, `mount-phase host calls: ${log.length} (${paths.join(', ')})`)
-    assert.equal(paths.filter((path) => path === 'groupTopics.overview').length, 1, 'one aggregate read')
-    assert.equal(paths.filter((path) => path === 'groupTopics.list').length, 0, 'no per-group list')
-    assert.deepEqual(log.filter((entry) => entry.path === 'db.chats.list').map((entry) => entry.args), [[true]], 'only the board reads the chat list; the topics section does not')
-    assert.ok(view.container.textContent.includes('總覽群組5'), 'disabled groups are still listed in the overview')
+    assert.ok(walk(view.container).some((element) => hasClassName(element, 'summary')), 'the overview still includes the board summary')
+    for (const column of ['待辦', '等回覆', '行程', '已完成']) assert.ok(view.container.textContent.includes(column), `the ${column} board column remains`)
+    assert.equal(walk(view.container).some((element) => hasClassName(element, 'overview-topics-toggle')), false, 'the group topics section toggle is absent')
+    assert.equal(paths.some((path) => path.startsWith('groupTopics.')), false, 'the overview does not load group topics')
+    assert.equal(paths.includes('db.todos.list'), true, 'the board continues loading todos')
   } finally { view.unmount(); api.dispose() }
 })
 
-test('overview tab: the topics section sends nothing until the board has finished its first todo load', async () => {
+test('group-topics root tab: an old saved topics value opens the all-groups overview directly and remains selectable', async () => {
   const log = []
-  let releaseTodos
-  const todosGate = new Promise((resolve) => { releaseTodos = resolve })
-  const { api } = plugin(overviewHandlers(log, { 'db.todos.list': () => todosGate.then(() => []) }))
-  dom.document.documentElement.dataset ??= {}
-  const view = ui.mount(ui.appScene(api))
-  try {
-    await until(() => log.some((entry) => entry.path === 'db.todos.list'), { message: 'the board asks for its todos' })
-    await sleep(80)
-    assert.deepEqual(log.filter((entry) => entry.path.startsWith('groupTopics.')), [], 'no topics request while the board is still loading')
-    assert.equal(log.filter((entry) => entry.path === 'db.chats.list' && entry.args[0] === false).length, 0, 'no second chat list either')
-    releaseTodos()
-    await until(() => log.some((entry) => entry.path === 'groupTopics.overview'), { message: 'the topics section loads once the todos are in' })
-    assert.ok(log.findIndex((entry) => entry.path === 'groupTopics.overview') > log.findIndex((entry) => entry.path === 'db.todos.list'))
-  } finally { releaseTodos(); view.unmount(); api.dispose() }
-})
-
-test('overview tab: a collapsed topics section makes no request at all, the collapsed state is saved, and expanding loads it', async () => {
-  const log = []
-  const storage = memoryStorage({ 'overview.topicsOpen': false })
-  const { api } = plugin(overviewHandlers(log))
-  dom.document.documentElement.dataset ??= {}
-  const view = ui.mount(ui.appSceneWithState(api, storage))
-  try {
-    await until(() => log.some((entry) => entry.path === 'db.todos.list') && topicsToggle(view), { message: 'the board loaded and the toggle exists' })
-    await sleep(80)
-    assert.deepEqual(log.filter((entry) => entry.path.startsWith('groupTopics.')), [], 'collapsed: no groupTopics request')
-    assert.equal(log.filter((entry) => entry.path === 'db.chats.list' && entry.args[0] === false).length, 0, 'collapsed: no topics chat list')
-    assert.equal(topicsToggle(view).getAttribute('aria-expanded'), 'false')
-    assert.equal(view.container.textContent.includes('總覽議題0'), false)
-
-    reactProps(topicsToggle(view)).onClick()
-    await until(() => view.container.textContent.includes('總覽議題0'), { message: 'expanding loads the topics' })
-    assert.equal(JSON.parse(storage.data.get('lt-ui:overview.topicsOpen')).v, true, 'the open state is saved')
-    assert.equal(log.filter((entry) => entry.path === 'groupTopics.overview').length, 1)
-
-    reactProps(topicsToggle(view)).onClick()
-    await until(() => !view.container.textContent.includes('總覽議題0'), { message: 'collapsing unmounts the section' })
-    assert.equal(JSON.parse(storage.data.get('lt-ui:overview.topicsOpen')).v, false, 'the collapsed state is saved')
-    const mark = log.length
-    await sleep(80)
-    assert.equal(log.length, mark, 'collapsed again: nothing more is requested')
-  } finally { view.unmount(); api.dispose() }
-})
-
-test('overview tab: a group opened from the overview keeps the single-group detail (enable switch, analyze) and returning re-reads the aggregate', async () => {
-  const log = []
-  const enabled = new Set(['ov-group-0'])
+  const saved = { 'lt-ui:app.tab': JSON.stringify({ v: 'topics', at: Date.now() }) }
+  const writes = []
+  const storage = {
+    getItem: (key) => saved[key] ?? null,
+    setItem: (key, value) => { saved[key] = value; writes.push([key, value]) },
+    removeItem: (key) => { delete saved[key] }
+  }
   const { api } = plugin(overviewHandlers(log, {
-    'groupTopics.list': (chatId) => ({ ok: enabled.has(chatId), topics: [] }),
     'groupTopics.crossChatEnabled': () => false,
     'groupTopics.linkCandidates': () => [],
-    'groupTopics.pendingCount': () => 0,
-    'groupTopics.setEnabled': (chatId, value) => { if (value) enabled.add(chatId); else enabled.delete(chatId); return { ok: true } },
-    'groupTopics.analyze': () => ({ ok: true, count: 0, analyzedCount: 0 })
+    'groupTopics.pendingCount': () => 0
   }))
   dom.document.documentElement.dataset ??= {}
-  const view = ui.mount(ui.appScene(api))
+  const view = ui.mount(ui.appSceneWithState(api, storage))
+  const tab = (label) => walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === label && hasClassName(element.parentNode, 'app-tabs'))
   try {
-    await until(() => view.container.textContent.includes('總覽議題0'), { message: 'overview shown' })
-    const select = walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
-    assert.ok(select, 'the group picker is there')
-    reactProps(select).onChange({ target: { value: 'ov-group-1' } })
-    await until(() => log.some((entry) => entry.path === 'groupTopics.list' && entry.args[0] === 'ov-group-1') && view.container.textContent.includes('啟用此群組議題分析'), { message: 'single-group detail loads with the per-group requests' })
-    const enable = walk(view.container).find((element) => element.localName === 'input' && element.getAttribute('type') === 'checkbox' && hasClassName(element.parentNode.parentNode, 'group-topics-controls'))
-    reactProps(enable).onChange({ target: { checked: true } })
-    await until(() => log.some((entry) => entry.path === 'groupTopics.setEnabled' && entry.args[1] === true), { message: 'enable switch calls setEnabled' })
-    const analyze = () => walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === '分析最近群組訊息')
-    await until(() => analyze() && !analyze().hasAttribute('disabled'), { message: 'analyze button is available once enabled' })
-    reactProps(analyze()).onClick()
-    await until(() => log.some((entry) => entry.path === 'groupTopics.analyze'), { message: 'analyze runs' })
-    const before = log.filter((entry) => entry.path === 'groupTopics.overview').length
-    reactProps(select).onChange({ target: { value: '__all_groups__' } })
-    await until(() => log.filter((entry) => entry.path === 'groupTopics.overview').length === before + 1, { message: 'back to all groups re-reads the aggregate' })
+    await until(() => tab('群組議題') && log.some((entry) => entry.path === 'groupTopics.overview') && view.container.textContent.includes('總覽議題0'), { message: 'the saved group-topics tab opens its all-groups results' })
+    assert.equal(hasClassName(tab('群組議題'), 'active'), true, 'the old persisted topics tab is restored as the new root tab')
+    assert.ok(view.container.textContent.includes('所有群組'), 'the initial view is the all-groups overview')
+    assert.ok(walk(view.container).some((element) => hasClassName(element, 'group-topics-overview')), 'the existing global panel is mounted')
+    assert.equal(log.some((entry) => entry.path === 'db.todos.list'), false, 'opening the topic tab did not depend on overview-board loading')
+    assert.equal(log.some((entry) => entry.path.startsWith('messages.')), false, 'opening the topic tab did not depend on selecting a chat')
+
+    const groupSelect = walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
+    assert.ok(groupSelect, 'the existing group selector stays available')
+    reactProps(groupSelect).onChange({ target: { value: 'ov-group-1' } })
+    await until(() => log.some((entry) => entry.path === 'groupTopics.list' && entry.args[0] === 'ov-group-1') && view.container.textContent.includes('此群組近期議題'), { message: 'choosing a group opens its existing topic controls' })
+    assert.ok(view.container.textContent.includes('啟用此群組議題分析'), 'the existing per-group action remains available')
+    reactProps(tab('總覽')).onClick()
+    await until(() => walk(view.container).some((element) => hasClassName(element, 'board-wrap')), { message: 'the existing overview board opens' })
+    reactProps(tab('群組議題')).onClick()
+    await until(() => log.filter((entry) => entry.path === 'groupTopics.overview').length >= 2 && view.container.textContent.includes('總覽議題0'), { message: 'the saved root tab can be reopened' })
+    assert.equal(JSON.parse(saved['lt-ui:app.tab']).v, 'topics', 'the group-topics selection is persisted with the existing app.tab key')
+    assert.ok(writes.some(([key]) => key === 'lt-ui:app.tab'), 'tab changes use the existing persistent UI state store')
   } finally { view.unmount(); api.dispose() }
 })
 
@@ -2306,7 +2403,7 @@ test('Phase 4 groupTopics panel: while the combined path is active the button is
     'groupTopics.analyze': () => ({ ok: true, count: 0, analyzedCount: 3 })
   }))
   dom.document.documentElement.dataset ??= {}
-  const view = ui.mount(ui.appScene(api))
+  const view = ui.mount(ui.groupTopicsScene(api))
   try {
     await until(() => view.container.textContent.includes('總覽議題0'), { message: 'overview shown' })
     const select = walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
@@ -2326,7 +2423,7 @@ test('Phase 4 groupTopics panel: while the combined path is active the button is
     'groupTopics.linkCandidates': () => [],
     'groupTopics.pendingCount': () => 0
   }))
-  const view2 = ui.mount(ui.appScene(quiet.api))
+  const view2 = ui.mount(ui.groupTopicsScene(quiet.api))
   try {
     await until(() => view2.container.textContent.includes('總覽議題0'), { message: 'overview shown (second mount)' })
     const select = walk(view2.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))

@@ -27,7 +27,7 @@ import { pathToFileURL } from 'node:url'
 import { runPermissionSelfCheck } from './teamuq-contract.mjs'
 import { createMockTuqAiFor } from './mock-tuq-ai-core.mjs'
 import { createResidencyStandin } from './residency-standin.mjs'
-import CONTRACT from '../plugin/fixtures/ai-chat-contract-bf4801ecc.json'
+import CONTRACT from '../plugin/fixtures/ai-chat-contract-1.8.10.json'
 import { backendMethodFor } from '../../src/shared/pluginWire.ts'
 
 /** the view's wire (pluginTransport.ts): backend.call(<method group of the path>, { path, args }) */

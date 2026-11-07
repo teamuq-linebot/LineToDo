@@ -1,6 +1,6 @@
 // Verifies a built .tuqplugin with the official author tool and audits its content (G-08: no teamuq-electron checkout, no pinned 1.6.8 validators,
 // no development key — the package is unsigned, G-09):
-//   1. `tuq-plugin-tool verify <file>` for the vendored tool's Core (1.7.15) / win32-x64: the same reviewArtifact Core runs when the user picks the file
+//   1. `tuq-plugin-tool verify <file>` for the vendored tool's Core (1.8.10) / win32-x64: the same reviewArtifact Core runs when the user picks the file
 //      (zip structure, integrity.json coverage and hashes, manifest schema + support, native whitelist, icon). Expected signer: unsigned.
 //   2. negative controls with the same tool (the check is not vacuous): one flipped byte, an older Core (1.7.0, and 1.7.12 which has no host.ai.complete) and another platform must be refused.
 //   3. the content audit (lib/audit.mjs) on the unpacked zip: no .ps1 / line-driver, no better-sqlite3-multiple-ciphers, no key file or private-key
@@ -31,15 +31,19 @@ function walk(dir, base = dir) {
   return out.sort((a, b) => (a.path < b.path ? -1 : 1))
 }
 
-/** sha256 of the STANDALONE app's better-sqlite3 11.x and better-sqlite3-multiple-ciphers binaries (this worktree and the main checkout), which must never be in the package. */
+/** Hash the standalone binaries, including a separately supplied Electron 31 fixture runtime, which must never be in the package. */
 function standaloneBinaries() {
   const common = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd: ROOT, encoding: 'utf8' })
   const mainTree = common.status === 0 ? path.dirname(path.resolve(ROOT, common.stdout.trim())) : null
   const found = []
-  for (const base of [ROOT, mainTree]) {
-    if (!base) continue
+  const moduleRoots = new Set([
+    path.join(ROOT, 'node_modules'),
+    ...(mainTree ? [path.join(mainTree, 'node_modules')] : []),
+    ...(process.env.LINE_TODO_BSQLITE3MC_DIR ? [path.dirname(path.resolve(process.env.LINE_TODO_BSQLITE3MC_DIR))] : []),
+  ])
+  for (const modules of moduleRoots) {
     for (const pkg of ['better-sqlite3', 'better-sqlite3-multiple-ciphers']) {
-      const file = path.join(base, 'node_modules', pkg, 'build', 'Release', 'better_sqlite3.node')
+      const file = path.join(modules, pkg, 'build', 'Release', 'better_sqlite3.node')
       if (fs.existsSync(file)) found.push({ pkg, file: file.split(path.sep).join('/'), sha256: sha256Hex(fs.readFileSync(file)) })
     }
   }

@@ -77,14 +77,14 @@ test('settings: the plugin host hides provider choice / CLI / custom endpoint / 
   assert.ok(!renderSettings(PLUGIN, cli).includes('CLI 執行檔路徑'), 'even if the stored provider is a CLI, the plugin UI shows no CLI controls')
 })
 
-test('board: plugin and standalone both expose the shared settings tab; standalone keeps its four tabs', async () => {
+test('board: plugin and standalone both expose the five main tabs including group topics', async () => {
   const { renderApp, PLUGIN, STANDALONE } = await renderer()
   const tabs = (html) => [...html.matchAll(/<button class="tab[^"]*">([^<]+)<\/button>/g)].map((m) => m[1])
   // App reads the theme from the DOM on first render; a server render has no DOM
   globalThis.document = { documentElement: { dataset: {} } }
   try {
-    assert.deepEqual(tabs(renderApp(STANDALONE)), ['總覽', '聊天', '待確認', '設定'])
-    assert.deepEqual(tabs(renderApp(PLUGIN)), ['總覽', '聊天', '待確認', '設定'])
+    assert.deepEqual(tabs(renderApp(STANDALONE)), ['總覽', '聊天', '群組議題', '待確認', '設定'])
+    assert.deepEqual(tabs(renderApp(PLUGIN)), ['總覽', '聊天', '群組議題', '待確認', '設定'])
   } finally { delete globalThis.document }
 })
 
@@ -166,11 +166,12 @@ test('G-04: a re-created plugin view restores the tab, the sort / filters and gr
   const { renderAppWithState, PLUGIN, STANDALONE } = await renderer()
   const active = (html) => html.match(/<button class="tab active">([^<]+)<\/button>/)?.[1]
   assert.equal(active(renderAppWithState(PLUGIN, null)), '總覽')
-  assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'topics' })), '總覽', 'a saved tab value from before the merge falls back to the overview')
-  assert.equal(active(renderAppWithState(STANDALONE, { 'app.tab': 'topics' })), '總覽')
+  assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'topics' })), '群組議題', 'the previously saved group-topics tab is restored')
+  assert.equal(active(renderAppWithState(STANDALONE, { 'app.tab': 'topics' })), '群組議題')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'identity' })), '待確認')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'settings' })), '設定')
   assert.equal(active(renderAppWithState(STANDALONE, { 'app.tab': 'settings' })), '設定')
+  assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'unknown-tab' })), '總覽', 'unknown saved values still fall back to the overview')
   const board = renderAppWithState(PLUGIN, { 'board.sortBy': 'priority', 'board.sortDirection': 'asc', 'board.chatKindFilter': 'group', 'board.localViewedFilter': 'unviewed', 'board.groupByChat': true })
   assert.match(board, /<option value="priority" selected="">/)
   assert.match(board, /<option value="asc" selected="">/)
@@ -244,6 +245,29 @@ test('A18 bundle: the production board bundle mounts the per-chat AI settings (C
   assert.ok(files['settings.js'].includes('default-my-name') && files['settings.js'].includes('chat-overrides') && files['settings.js'].includes('settings.prompt.saveName'), 'settings bundle: name field, per-chat list, saveName path')
 })
 
+test('production bundle: root group-topics tab and one chat tab wire their topic panels', async () => {
+  const { files, metafiles } = await getBuilt()
+  const inputs = [...new Set(metafiles.flatMap((m) => Object.keys(m.inputs).map((i) => i.replaceAll(String.fromCharCode(92), '/'))))]
+  assert.ok(inputs.includes('src/renderer/App.tsx'), 'App is part of the production board bundle')
+  assert.ok(inputs.includes('src/renderer/components/MessageStream.tsx'), 'MessageStream is an actual production caller')
+  assert.ok(inputs.includes('src/renderer/features/groupTopics/GroupTopicsPanel.tsx'), 'the existing topics panel is imported into the production bundle')
+  assert.ok(inputs.includes('src/renderer/features/chatTodos/ChatTodosPanel.tsx'), 'the existing todos panel is imported into the production bundle')
+  assert.ok(files['main.js'].includes('群組議題'), 'the built board exposes the top-level group-topics entry')
+  assert.ok(files['main.js'].includes('議題與待辦') && files['main.js'].includes('chat-topics-todos-content'), 'the built chat pane contains one combined tab and its content container')
+})
+
+test('production bundle: the disabled message composer and residency footer are wired into the plugin view', async () => {
+  const { files, metafiles } = await getBuilt()
+  const inputs = [...new Set(metafiles.flatMap((m) => Object.keys(m.inputs).map((i) => i.replaceAll(String.fromCharCode(92), '/'))))]
+  assert.ok(inputs.includes('src/plugin/ui/main.tsx'), 'the plugin entry is part of the board bundle')
+  assert.ok(inputs.includes('src/plugin/ui/PluginRootLayout.tsx'), 'the plugin uses its flow layout wrapper')
+  assert.ok(inputs.includes('src/plugin/ui/ResidencyStatus.tsx'), 'the visible residency status remains wired')
+  assert.ok(inputs.includes('src/renderer/components/MessageStream.tsx'), 'the message view is part of the board bundle')
+  assert.ok(files['main.js'].includes('訊息功能尚未開啟') && files['main.js'].includes('附加檔案功能尚未開啟') && files['main.js'].includes('傳送功能尚未開啟'), 'the bundle contains only explicitly disabled composer controls')
+  assert.ok(files['main.js'].includes('residency-status-bar') && files['main.js'].includes('plugin-root-layout'), 'the status and renderer are connected through the root layout')
+  assert.ok(files['main.css'].includes('.chat-message-view') && files['main.css'].includes('.chat-message-composer') && files['main.css'].includes('.residency-status-bar'), 'the production stylesheet reserves space for both rows')
+})
+
 test('the bundle guard really flags forbidden content (it is not vacuous)', () => {
   const bad = analyzeUiBundle({
     files: {
@@ -274,7 +298,7 @@ test('the plugin entry points are plain files in the repo (no template magic): t
   writeFileSync(join(work, 'probe.txt'), 'ok')
 })
 
-test('L2: the first paint of the overview topics section shows loading, never the empty-group sentence', async () => {
+test('L2: the first paint of the group-topics panel shows loading, never the empty-group sentence', async () => {
   const { renderGroupTopicsFirstPaint, PLUGIN } = await renderer()
   const html = renderGroupTopicsFirstPaint(PLUGIN)
   assert.ok(html.includes('正在彙整'), 'loading line on first paint')

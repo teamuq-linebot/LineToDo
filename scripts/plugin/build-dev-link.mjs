@@ -12,7 +12,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { collectPackageFiles } from './build-plugin.mjs'
 import { DEV_LINK_DIR, DEV_LINK_STATE, DEV_LINK_WORK, DevLinkLockedError, devLinkFiles, syncDevLink } from './lib/devLink.mjs'
-import { PLUGIN_ID, buildManifest } from './lib/manifest.mjs'
+import { PLUGIN_ID, buildManifest, resolveResidentOption } from './lib/manifest.mjs'
 import { ROOT } from './lib/paths.mjs'
 import { parseArgs } from './lib/pack.mjs'
 
@@ -25,10 +25,10 @@ const WATCHED = Object.freeze([
 ])
 
 /** One build: returns the sync report plus the manifest id and the file list it produced. */
-export async function buildDevLink({ dir = DEV_LINK_DIR, stateFile = DEV_LINK_STATE, workDir = DEV_LINK_WORK } = {}) {
+export async function buildDevLink({ dir = DEV_LINK_DIR, stateFile = DEV_LINK_STATE, workDir = DEV_LINK_WORK, resident = resolveResidentOption({}) } = {}) {
   const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version
   const { files } = await collectPackageFiles({ workDir })
-  const manifest = buildManifest({ version, resident: { enabled: false } })
+  const manifest = buildManifest({ version, resident })
   const outputs = devLinkFiles({ manifest, files })
   let report
   try {
@@ -88,11 +88,12 @@ function startWatch(run) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = parseArgs(process.argv.slice(2))
+  const resident = resolveResidentOption({ args, env: process.env })
   if (args.watch) {
-    await startWatch(() => buildDevLink())
+    await startWatch(() => buildDevLink({ resident }))
   } else {
     try {
-      printReport(await buildDevLink())
+      printReport(await buildDevLink({ resident }))
     } catch (error) {
       console.error(error instanceof DevLinkLockedError ? error.message : `build failed: ${error.stack ?? error}`)
       process.exitCode = 1

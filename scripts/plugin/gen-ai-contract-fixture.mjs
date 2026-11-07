@@ -1,5 +1,5 @@
-// Regenerates scripts/plugin/fixtures/ai-chat-contract-bf4801ecc.json from the READ-ONLY TeamUQ 1.7.15 source (git show of the v1.7.15 tag; nothing in TeamUQ is touched):
-//   packages/plugin-sdk/src/aiChatContracts.ts @ bf4801ecc  (limits, error codes, failure codes, efforts, event kinds incl. contentSaved)
+// Regenerates scripts/plugin/fixtures/ai-chat-contract-1.8.10.json from the READ-ONLY TeamUQ 1.8.10 source (git show of the v1.8.10 tag; nothing in TeamUQ is touched):
+//   packages/plugin-sdk/src/aiChatContracts.ts @ 992a8fcec2f4bb3c65db01b6c75f3ac0797baaa5  (limits, error codes, failure codes, efforts, event kinds incl. contentSaved)
 // The committed JSON is what test-ai-orchestrator's mock `context.host.ai` (scripts/lib/mock-tuq-ai.mjs) and the backend AI port's AI_CHAT_REFERENCE (src/plugin/backend/hostAi.ts) are checked against (drift guard),
 // so the gate never needs the TeamUQ checkout; run this script only to refresh the fixture.
 //
@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const REPO = process.argv[2] ?? 'C:/teamuq/teamuq-electron'
-const COMMIT = 'bf4801ecc' // tag v1.7.15
+const COMMIT = '992a8fcec2f4bb3c65db01b6c75f3ac0797baaa5' // tag v1.8.10
 const FILE = 'packages/plugin-sdk/src/aiChatContracts.ts'
 const source = execFileSync('git', ['-C', REPO, 'show', `${COMMIT}:${FILE}`], { encoding: 'utf8', maxBuffer: 1 << 24 })
 
@@ -32,7 +32,7 @@ const eventKinds = [...between(source, 'export const AiChatFailureSchema', 'expo
 const providerStates = evaluate(`[${between(source, "state: z.enum([", '])')}]`)
 
 const out = { source: { repo: 'teamuq-electron', commit: COMMIT, file: FILE }, limits, efforts, errorCodes, failureCodes, eventKinds, providerStates }
-const target = join(ROOT, 'scripts', 'plugin', 'fixtures', 'ai-chat-contract-bf4801ecc.json')
+const target = join(ROOT, 'scripts', 'plugin', 'fixtures', 'ai-chat-contract-1.8.10.json')
 mkdirSync(dirname(target), { recursive: true })
 writeFileSync(target, `${JSON.stringify(out, null, 2)}\n`)
 console.log(JSON.stringify(out))

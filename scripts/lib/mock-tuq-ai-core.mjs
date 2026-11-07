@@ -6,7 +6,7 @@
 //                                                                        provider_not_ready / model_unavailable, the new Session is closed on every result path
 //   packages/platform/plugin-runtime/src/main/externalBackend/backendHostServices.ts   backend calls always count as visible (no view_not_visible), same rate-limit window as a view
 //
-// The numeric limits and code lists come from scripts/plugin/fixtures/ai-chat-contract-bf4801ecc.json (generated from the contract file by
+// The numeric limits and code lists come from scripts/plugin/fixtures/ai-chat-contract-1.8.10.json (generated from the contract file by
 // gen-ai-contract-fixture.mjs); test-ai-orchestrator asserts this mock and the backend AI port (src/plugin/backend/hostAi.ts) agree with it.
 //
 // Not reproduced (and not needed by the port): images, attachSession / resume, the hidden-input credit exception (backend calls are never hidden).

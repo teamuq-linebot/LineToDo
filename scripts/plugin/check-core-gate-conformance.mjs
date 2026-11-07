@@ -34,7 +34,7 @@ import { buildSync } from 'esbuild'
 
 import { ROOT } from './lib/paths.mjs'
 import {
-  BACKEND_TRUST_REQUIREMENT, BOARD_VIEW_TITLE, CORE_AI_CHAT_TITLE, CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, CORE_PLUGIN_PAGE_LABEL, CORE_PLUGIN_SETTINGS_TAB_LABEL,
+  BACKEND_TRUST_REQUIREMENT, BOARD_VIEW_TITLE, CORE_AI_CHAT_TITLE, CORE_BACKEND_INVOKE_TITLE, CORE_PERMISSIONS_SECTION_TITLE, CORE_PLUGIN_PAGE_LABEL, CORE_PLUGIN_SETTINGS_TAB_LABEL, CORE_RESIDENT_TOGGLE_TITLE,
   EXPECTED_AI_CHAT_REVOKED_TASK_TEXT, EXPECTED_AI_CHAT_REVOKED_TEXT, EXPECTED_AI_FENCED_TEXT, EXPECTED_FENCED_TEXT, EXPECTED_NOT_IN_HOST_TEXT,
   EXPECTED_TIMEOUT_TEXT, EXPECTED_UNDO_HINT_PLUGIN, PLUGIN_PAGE_PLACE_TEXT, R1_PLACE_SENTENCES, VERSION_SPECIFIC_PLACE, namesVersionSpecificPlace
 } from './lib/fenced-text.mjs'
@@ -101,6 +101,13 @@ const check = (label, body) => {
 // ── 3. the switch title ──
 const titleMatch = read(PLUGIN_TEXT).match(/"backend:invoke":\s*\{\s*title:\s*"([^"]+)"/u)
 const backendPermissionDefinition = read(PERMISSION_ENDPOINTS).match(/\{ id: 'backend:invoke',[^}]+\}/u)?.[0]
+check('background residency is supported, full-trust and opt-in, with the toggle title used by the plugin', () => {
+  const definition = read(PERMISSION_ENDPOINTS).match(/\{ id: 'background:resident',[^}]+\}/u)?.[0]
+  assert.ok(definition, 'background:resident definition exists')
+  for (const field of ['revocable: true', 'fullTrustOnly: true', 'optIn: true', 'coreSupported: true']) assert.ok(definition.includes(field), field)
+  const title = read(PLUGIN_TEXT).match(/\[BACKGROUND_RESIDENT_PERMISSION\]:\s*\{\s*title:\s*"([^"]+)"/u)?.[1]
+  assert.equal(title, CORE_RESIDENT_TOGGLE_TITLE)
+})
 const productBackendText = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'lib', 'backendError.ts'), 'utf8')
 const productFencedMessage = productBackendText.match(/const FENCED_TEXT = `([^`]+)`/u)?.[1]
 check(`Core's backend:invoke field is legacy/non-revocable and product guidance does not present it as a switch (Core: 「${titleMatch?.[1]}」)`, () => {

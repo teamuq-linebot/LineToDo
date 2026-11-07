@@ -416,7 +416,7 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
     revoked = false
     optionsAt = now()
     limits = options.limits
-    closedSessionResume = (options as PluginBackendAiOptionsV1 & { capabilities?: { closedSessionResume?: boolean } }).capabilities?.closedSessionResume === true
+    closedSessionResume = options.capabilities?.closedSessionResume === true
     turnWindow.perMinute = Math.min(cfg.perMinute, options.limits.turnsPerMinute)
     blockers.quota = options.quota.state === 'exhausted' ? now() + (options.quota.retryAfterMs && options.quota.retryAfterMs > 0 ? options.quota.retryAfterMs : cfg.quotaDefaultMs) : 0
     const wanted = sel.providerId ?? options.defaultProviderId

@@ -1,9 +1,9 @@
 declare module '@teamuq/plugin-sdk' {
-export const PLUGIN_PROGRAM_PERMISSION_SCOPES_V1: Readonly<{ readonly 'program:conversation:dispatch': "conversation:dispatch"; readonly 'program:conversation:read': "conversation:read"; readonly 'program:conversation:followup': "conversation:followup"; readonly 'program:data:projects:read': "data:projects:read"; readonly 'program:data:projects:write': "data:projects:write"; readonly 'program:data:milestones:read': "data:milestones:read"; readonly 'program:data:milestones:write': "data:milestones:write"; readonly 'program:data:tasks:read': "data:tasks:read"; readonly 'program:data:tasks:write': "data:tasks:write"; }>
-export const PLUGIN_PROGRAM_PERMISSION_OPERATIONS_V1: Readonly<{ readonly 'program:conversation:dispatch': readonly ["conversation.dispatch"]; readonly 'program:conversation:read': readonly ["conversation.read"]; readonly 'program:conversation:followup': readonly ["conversation.followUp"]; readonly 'program:data:projects:read': readonly ["data.projects.list", "data.projects.get"]; readonly 'program:data:projects:write': readonly ["data.projects.create", "data.projects.update", "data.projects.delete"]; readonly 'program:data:milestones:read': readonly ["data.milestones.list", "data.milestones.get"]; readonly 'program:data:milestones:write': readonly ["data.milestones.create", "data.milestones.update", "data.milestones.delete"]; readonly 'program:data:tasks:read': readonly ["data.tasks.list", "data.tasks.get"]; readonly 'program:data:tasks:write': readonly ["data.tasks.create", "data.tasks.update", "data.tasks.delete"]; }>
+export const PLUGIN_PROGRAM_PERMISSION_SCOPES_V1: Readonly<{ readonly 'program:conversation:dispatch': "conversation:dispatch"; readonly 'program:conversation:read': "conversation:read"; readonly 'program:conversation:followup': "conversation:followup"; readonly 'program:data:projects:read': "data:projects:read"; readonly 'program:data:projects:write': "data:projects:write"; readonly 'program:data:milestones:read': "data:milestones:read"; readonly 'program:data:milestones:write': "data:milestones:write"; readonly 'program:data:tasks:read': "data:tasks:read"; readonly 'program:data:tasks:write': "data:tasks:write"; readonly 'program:data:tasks:status': "data:tasks:status"; }>
+export const PLUGIN_PROGRAM_PERMISSION_OPERATIONS_V1: Readonly<{ readonly 'program:conversation:dispatch': readonly ["conversation.dispatch"]; readonly 'program:conversation:read': readonly ["conversation.read"]; readonly 'program:conversation:followup': readonly ["conversation.followUp"]; readonly 'program:data:projects:read': readonly ["data.projects.list", "data.projects.get"]; readonly 'program:data:projects:write': readonly ["data.projects.create", "data.projects.update", "data.projects.delete"]; readonly 'program:data:milestones:read': readonly ["data.milestones.list", "data.milestones.get"]; readonly 'program:data:milestones:write': readonly ["data.milestones.create", "data.milestones.update", "data.milestones.delete"]; readonly 'program:data:tasks:read': readonly ["data.tasks.list", "data.tasks.get"]; readonly 'program:data:tasks:write': readonly ["data.tasks.create", "data.tasks.update", "data.tasks.delete"]; readonly 'program:data:tasks:status': readonly ["data.tasks.update"]; }>
 export const PLUGIN_PROGRAM_API_CHANNELS_V1: Readonly<{ REQUEST: "plugin-view:program-api"; }>
 export const PLUGIN_PROGRAM_OPERATION_NAMES_V1: readonly ["program.describe", "conversation.dispatch", "conversation.read", "conversation.followUp", "data.projects.list", "data.projects.get", "data.projects.create", "data.projects.update", "data.projects.delete", "data.milestones.list", "data.milestones.get", "data.milestones.create", "data.milestones.update", "data.milestones.delete", "data.tasks.list", "data.tasks.get", "data.tasks.create", "data.tasks.update", "data.tasks.delete"]
-export const PLUGIN_PROGRAM_SCOPE_NAMES_V1: readonly ["admin", "conversation:dispatch", "conversation:read", "conversation:followup", "data:projects:read", "data:projects:write", "data:milestones:read", "data:milestones:write", "data:tasks:read", "data:tasks:write", "none"]
+export const PLUGIN_PROGRAM_SCOPE_NAMES_V1: readonly ["admin", "conversation:dispatch", "conversation:read", "conversation:followup", "data:projects:read", "data:projects:write", "data:milestones:read", "data:milestones:write", "data:tasks:read", "data:tasks:write", "data:tasks:status", "none"]
 export interface PluginStoreApiV1 {
     status(options?: Readonly<{
         refresh?: boolean;
@@ -120,6 +120,7 @@ export type PluginProgramInputByOperationV1 = {
         expectedAuthoredRevision: number;
         name?: string;
         description?: string | null;
+        status?: PluginProgramTaskStatusV1;
     }>;
     'data.tasks.delete': Readonly<{
         taskId: string;
@@ -207,7 +208,7 @@ export type PluginProgramResultByOperationV1 = {
     'data.tasks.delete': PluginProgramTaskV1;
 };
 export type PluginProgramErrorCodeV1 = 'invalid_request' | 'unsupported_version' | 'operation_not_supported' | 'unauthenticated' | 'forbidden' | 'not_found' | 'conflict' | 'rate_limited' | 'unavailable' | 'internal_error';
-export type PluginProgramFieldV1 = 'apiVersion' | 'requestId' | 'operation' | 'input' | 'target' | 'provider' | 'name' | 'description' | 'projectId' | 'milestoneId' | 'taskId' | 'expectedAuthoredRevision' | 'conversationId' | 'text' | 'limit' | 'cursor' | 'snapshotGeneration' | 'startSequence';
+export type PluginProgramFieldV1 = 'apiVersion' | 'requestId' | 'operation' | 'input' | 'target' | 'provider' | 'name' | 'description' | 'projectId' | 'milestoneId' | 'taskId' | 'expectedAuthoredRevision' | 'conversationId' | 'text' | 'limit' | 'cursor' | 'snapshotGeneration' | 'startSequence' | 'status';
 export type PluginProgramFieldIssueV1 = 'required' | 'invalid_type' | 'unknown_key' | 'invalid_value' | 'too_small' | 'too_large' | 'invalid_format' | 'empty' | 'unsupported';
 export type PluginProgramErrorV1 = Readonly<{
     code: PluginProgramErrorCodeV1;
@@ -309,6 +310,7 @@ export type PluginAgentAvatarResultV1 = Readonly<{
         bytes: Uint8Array;
     }> | null;
 }>;
+export type PluginProgramTaskStatusV1 = 'PREPARATION' | 'WAITING' | 'IN_PROGRESS' | 'PENDING_CONFIRMATION' | 'PENDING' | 'COMPLETED';
 export interface PluginBackendAiApiV1 {
     getOptions(): Promise<PluginBackendAiOptionsV1>;
     openSession(options: PluginBackendAiOpenOptionsV1): Promise<PluginBackendAiSessionV1>;
@@ -321,11 +323,27 @@ export interface PluginBackendSecretsApiV1 {
     list(): Promise<string[]>;
     available(): Promise<boolean>;
 }
+export interface PluginBackendTeamUpQuickApiV1 {
+    request(input: TeamUpQuickApiRequestV1): Promise<TeamUpQuickApiResultV1>;
+    currentAccount(): Promise<TeamUpQuickAccountV1>;
+    onAccountChanged(listener: (event: TeamUpQuickAccountV1) => void): () => void;
+}
+export interface PluginBackendSlotsApiV1 {
+    invalidate(request: Readonly<{
+        slot: PluginSlotKind;
+        taskIds?: readonly string[];
+    }>): Promise<PluginSlotInvalidateResultV1>;
+}
+export interface PluginBackendBackgroundApiV1 {
+    onWake(listener: (event: PluginBackgroundWakeV1) => void): () => void;
+}
+export type PluginHostWorkSnapshotDiagnosticsV1 = { snapshotId: string; generation: string; highWatermark: string | null; processed: number; scanned: number; returned: number; schemaSkipped: number; complete: boolean; }
 export interface CapabilityHostPort {
     list(): Promise<readonly CapabilityListEntry[]>;
     openLink(category: string, request?: OpenLinkOptions): Promise<HostLinkTicket>;
     onChange(handler: (event: CapabilityHostEvent) => void): Unsubscribe;
 }
+export type PluginBackendResidencyV1 = { requested: boolean; level: "on-demand" | "resident"; reason: "resident_not_granted" | "resident_inactive" | "resident_budget_exceeded" | "resident_crash_budget_exhausted" | "resident_boot_failed" | "resident_artifact_revoked" | "resident_revalidation_failed" | "resident_policy_error" | null; }
 export interface PluginStoreEntryViewV1 {
     readonly entryId: string;
     readonly packId: string;
@@ -362,6 +380,9 @@ export type PluginBackendAiOptionsV1 = {
         }>;
     }>;
     defaultProviderId: string | null;
+    capabilities?: {
+        closedSessionResume?: boolean;
+    };
     limits: {
         systemChars: number;
         transcriptLines: number;
@@ -417,6 +438,36 @@ export interface PluginBackendAiSessionV1 {
 }
 export type PluginBackendAiCompleteInputV1 = { text: string; system: string; taskId?: string | undefined; effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined; providerId?: string | undefined; modelId?: string | undefined; transcript?: { text: string; role: "user" | "assistant"; }[] | undefined; image?: { mime: "image/jpeg" | "image/png"; data: Uint8Array<ArrayBufferLike>; } | undefined; } | { text: string; sessionId: string; taskId?: string | undefined; effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | undefined; modelId?: string | undefined; image?: { mime: "image/jpeg" | "image/png"; data: Uint8Array<ArrayBufferLike>; } | undefined; }
 export type PluginBackendAiCompleteResultV1 = AiChatCompleteResult;
+export type TeamUpQuickApiRequestV1 = {
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    path: string;
+    query?: Record<string, string>;
+    body?: unknown;
+    timeoutMs?: number;
+};
+export type TeamUpQuickApiResultV1 = {
+    ok: true;
+    status: number;
+    headers: Record<string, string>;
+    body: unknown;
+    accountKey: string;
+} | {
+    ok: false;
+    code: TeamUpQuickApiErrorCodeV1;
+    retryable: boolean;
+    status: number | null;
+    body?: unknown;
+    retryAfterMs?: number;
+    outcomeUnknown?: true;
+    accountKey: string | null;
+};
+export type TeamUpQuickAccountV1 = {
+    state: 'signed_in' | 'signed_out' | 'needs_relogin' | 'unavailable' | 'not_allowed';
+    accountKey: string | null;
+};
+export type PluginSlotKind = 'project.connection' | 'task.badge';
+export type PluginSlotInvalidateResultV1 = { ok: true; } | { code: "unavailable" | "slot_not_declared" | "request_invalid"; ok: false; }
+export type PluginBackgroundWakeV1 = { reason: "startup" | "tick"; }
 export interface CapabilityListEntry {
     readonly category: string;
     readonly status: ViewStatus;
@@ -471,6 +522,7 @@ export type PluginBackendAiTurnEventV1 = PluginBackendAiTurnBodyV1 & {
     turnId: string;
 };
 export type AiChatCompleteResult = { text: string; requestId: string; sessionId: string; providerTurnId: string | null; historySaved: "pending" | "saved"; }
+export type TeamUpQuickApiErrorCodeV1 = 'plugin_not_allowed' | 'permission_denied' | 'request_invalid' | 'method_not_allowed' | 'path_not_allowed' | 'query_not_allowed' | 'payload_too_large' | 'rate_limited' | 'account_unavailable' | 'needs_relogin' | 'unauthorized' | 'forbidden' | 'upstream_rate_limited' | 'server_error' | 'http_error' | 'timeout' | 'network_error' | 'response_invalid' | 'response_too_large' | 'unavailable';
 export type ViewStatus = 'available' | 'provider_not_ready' | 'provider_not_allowed' | 'unresolved' | 'not_granted';
 export interface CandidateProvider extends ProviderView {
     readonly dataClass: 'local' | 'cloud';
@@ -505,6 +557,10 @@ export interface PluginPresentationApiV1 {
     visible: boolean
     reason: 'user' | 'plugin' | 'core' | 'escape' | 'window'
   }) => void): () => void
+}
+export interface PluginViewApiV1 {
+  getContext(): Promise<{ projectId: string | null; taskId: string | null }>
+  onContextChanged(listener: (event: { projectId: string | null; taskId: string | null }) => void): () => void
 }
 export interface PluginStorageApiV1 {
   read(path: string, range?: { offset?: number; length?: number }): Promise<Uint8Array>
@@ -625,6 +681,7 @@ export interface PluginAiApiV1 {
       }[]
     }[]
     defaultProviderId: string | null
+    capabilities?: { closedSessionResume?: boolean }
     limits: {
       systemChars: number
       transcriptLines: number
@@ -781,6 +838,7 @@ export interface PluginAssetPacksApiV1 {
 interface Window {
   tuqPlugin: {
     presentation: import('@teamuq/plugin-sdk').PluginPresentationApiV1
+    view: import('@teamuq/plugin-sdk').PluginViewApiV1
     storage: import('@teamuq/plugin-sdk').PluginStorageApiV1
     settings: import('@teamuq/plugin-sdk').PluginSettingsApiV1
     secrets: import('@teamuq/plugin-sdk').PluginSecretsApiV1
@@ -798,7 +856,11 @@ declare module '@teamuq/plugin-sdk/external' {
 type PluginProgramApiV1 = import('@teamuq/plugin-sdk').PluginProgramApiV1
 type PluginBackendAiApiV1 = import('@teamuq/plugin-sdk').PluginBackendAiApiV1
 type PluginBackendSecretsApiV1 = import('@teamuq/plugin-sdk').PluginBackendSecretsApiV1
+type PluginBackendTeamUpQuickApiV1 = import('@teamuq/plugin-sdk').PluginBackendTeamUpQuickApiV1
+type PluginBackendSlotsApiV1 = import('@teamuq/plugin-sdk').PluginBackendSlotsApiV1
+type PluginBackendBackgroundApiV1 = import('@teamuq/plugin-sdk').PluginBackendBackgroundApiV1
 type CapabilityHostPort = import('@teamuq/plugin-sdk').CapabilityHostPort
+type PluginBackendResidencyV1 = import('@teamuq/plugin-sdk').PluginBackendResidencyV1
 export interface PluginProcessHelperApiV1 {
     openBundledHelper(helperId: string): Promise<void>;
     write(helperId: string, bytes: Uint8Array): Promise<void>;
@@ -809,6 +871,9 @@ export interface PluginHostApiV1 {
     readonly program: PluginProgramApiV1;
     readonly ai: PluginBackendAiApiV1;
     readonly secrets: PluginBackendSecretsApiV1;
+    readonly teamUpQuick: PluginBackendTeamUpQuickApiV1;
+    readonly slots: PluginBackendSlotsApiV1;
+    readonly background: PluginBackendBackgroundApiV1;
     readonly workRecords: Readonly<{
         readPage(request: {
             snapshotId?: string;
@@ -825,6 +890,7 @@ export interface PluginHostApiV1 {
                 id: string;
                 agentId: string;
                 projectId: string | null;
+                taskId?: string | null;
                 sessionId: string | null;
                 providerId: string | null;
                 punchId: string;
@@ -834,9 +900,46 @@ export interface PluginHostApiV1 {
                 model: string | null;
                 name: string | null;
                 description: string | null;
+                textTruncated?: boolean;
             }>;
             nextCursor: string | null;
         }>;
+        readChanges(request: {
+            cursor: string | null;
+            limit: number;
+        }): Promise<{
+            idEpoch: string;
+            changes: Array<{
+                kind: 'upsert';
+                record: {
+                    id: string;
+                    agentId: string;
+                    projectId: string | null;
+                    taskId: string | null;
+                    sessionId: string | null;
+                    providerId: string | null;
+                    punchId: string;
+                    punchType: 'main' | 'subagent';
+                    startedAtMs: number;
+                    endedAtMs: number;
+                    model: string | null;
+                    name: string | null;
+                    description: string | null;
+                    textTruncated: boolean;
+                };
+                updatedAtMs: number;
+            } | {
+                kind: 'retracted';
+                id: string;
+                updatedAtMs: number;
+                reason: 'not_done' | 'deleted';
+            }>;
+            nextCursor: string;
+            hasMore: boolean;
+        }>;
+        readSnapshotDiagnostics?(request: {
+            readonly snapshotId: string;
+        }): Promise<PluginHostWorkSnapshotDiagnosticsV1>;
         subscribeSettledChanges(listener: (event: {
             protocolVersion: 1;
             kind: 'ext-capability-event';
@@ -844,6 +947,38 @@ export interface PluginHostApiV1 {
             event: 'settled-changed';
             generation: string;
             highWatermark: string | null;
+            idEpoch?: string;
+        }) => void): () => void;
+    }>;
+    readonly taskChanges: Readonly<{
+        watchProjects(request: {
+            projectIds: readonly string[];
+        }): Promise<{
+            watched: number;
+        }>;
+        readChanges(request: {
+            cursor: string | null;
+            limit: number;
+        }): Promise<{
+            epoch: string;
+            changes: Array<{
+                taskId: string;
+                projectId: string | null;
+                authoredRevision: number;
+                status: string;
+                deleted: boolean;
+                changedAtMs: number;
+            }>;
+            nextCursor: string;
+            hasMore: boolean;
+            gap: boolean;
+        }>;
+        onChanged(listener: (event: {
+            protocolVersion: 1;
+            kind: 'ext-capability-event';
+            capabilityId: 'teamuq.task-changes@1';
+            event: 'changed';
+            epoch: string;
         }) => void): () => void;
     }>;
     readonly agentDirectory: Readonly<{
@@ -922,6 +1057,10 @@ export type PluginBackendContextV1 = Readonly<{
         all(): Readonly<Record<string, boolean | number | string>>;
         get(key: string): boolean | number | string | undefined;
         onChange(listener: (values: Readonly<Record<string, boolean | number | string>>) => void): () => void;
+    }>;
+    readonly residency: Readonly<{
+        current(): PluginBackendResidencyV1;
+        onChange(listener: (residency: PluginBackendResidencyV1) => void): () => void;
     }>;
 }>;
 }

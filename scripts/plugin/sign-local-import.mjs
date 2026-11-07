@@ -115,7 +115,7 @@ function currentBindings(runDir) {
   }
   if (request.target.coreVersion !== TARGET_CORE || request.target.platform !== TARGET_PLATFORM) throw new Error('review request target mismatch')
   if (request.sourceCommit !== readJson(sourcePath).head || request.sourceTree !== readJson(sourcePath).tree) throw new Error('review request committed source identity mismatch')
-  if (storedTool.sha256 !== AUTHORING_TOOL_SHA256 || fileHash(toolPath) !== AUTHORING_TOOL_SHA256) throw new Error('Core 1.8.4 author tool hash mismatch')
+  if (storedTool.sha256 !== AUTHORING_TOOL_SHA256 || fileHash(toolPath) !== AUTHORING_TOOL_SHA256) throw new Error('Core 1.8.10 author tool hash mismatch')
   if (storedTool.builtFromCore !== AUTHORING_TOOL_CORE) throw new Error('author tool Core metadata mismatch')
   const version = spawn(process.execPath, [toolPath, '--version'], REPO)
   if (version.status !== 0 || version.stdout.trim() !== AUTHORING_TOOL_VERSION_TEXT) throw new Error('Core author tool version mismatch')

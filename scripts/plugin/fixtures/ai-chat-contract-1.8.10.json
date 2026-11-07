@@ -1,7 +1,7 @@
 {
   "source": {
     "repo": "teamuq-electron",
-    "commit": "bf4801ecc",
+    "commit": "992a8fcec2f4bb3c65db01b6c75f3ac0797baaa5",
     "file": "packages/plugin-sdk/src/aiChatContracts.ts"
   },
   "limits": {

@@ -1,16 +1,15 @@
 // Builds the line-todo plugin package (.tuqplugin): a COMPOSED full-trust plugin (sandboxed board + settings views, own backend).
 //
 //   node scripts/plugin/build-plugin.mjs [--out <dir>] [--suffix name]        (default out: dist/plugin-package)
-//   node scripts/plugin/build-plugin.mjs --resident --resident-min-core ">=X.Y.Z" --out dist/plugin-package-resident --suffix resident
-//        the OFF-by-default resident option (lib/manifest.mjs): the manifest also declares background:resident, with the given minCoreVersion and the resident
-//        description. It needs a Core / author tool that knows the permission; with the vendored 1.7.15 tool `validate` answers permission_unknown and the build stops there.
+//   node scripts/plugin/build-plugin.mjs --resident=false  (omit background residency capability)
+//   Residency is declared by default for Core >=1.8.10; the user's TeamUQ grant still decides whether it runs resident.
 //
 // Chain (TeamUQ plugin developer guide, "快速開始"; G-08 / G-09):
 //   1. esbuild UI (build-ui.mjs, CSP-checked) + esbuild backend (build-backend.mjs, `koffi: 'inline'`: koffi's JS is bundled and loads ONLY
 //      backend/native/win32-x64/koffi.node) + the two pinned native modules + the WASM SQLite3MC engine + licences;
 //   2. all of it is laid out as a STAGE directory (<out>/stage) with manifest.json (lib/manifest.mjs);
 //   3. the official author tool (scripts/plugin/vendor/tuq-plugin-tool.mjs, sha256-checked) runs `validate <stage>` and then
-//      `pack <stage> --unsigned --out <file> --overrides <overrides.json>` for TeamUQ 1.7.1 on win32-x64. `pack` writes integrity.json and the zip and
+//      `pack <stage> --unsigned --out <file> --overrides <overrides.json>` for TeamUQ 1.8.10 on win32-x64. `pack` writes integrity.json and the zip and
 //      reviews the result with the same reviewArtifact Core uses at install time. The overrides only restate each file's integrity kind
 //      (the two .node files are `native` + platform; html / css / wasm stay `code` as before); everything else is the tool's default.
 // No signature: the package is unsigned (Core installs it and labels it 未簽章). No teamuq-electron checkout, test fixture or key file is read.
@@ -124,7 +123,7 @@ const toolRun = (run) => ({ command: run.command, exit: run.exit, stdout: run.js
  * Builds the package into `outDir`: `<outDir>/stage/`, `<outDir>/overrides.json`, `<outDir>/<outName>`. Returns { file, zip, manifest, files, report, outName }.
  * Throws (after recording the tool output in `report`) when `validate` or `pack` does not exit 0.
  */
-export async function buildPackage({ outDir = DIST, workDir = path.join(WORK, 'bundle'), suffix = '', resident = { enabled: false } } = {}) {
+export async function buildPackage({ outDir = DIST, workDir = path.join(WORK, 'bundle'), suffix = '', resident = resolveResidentOption({}) } = {}) {
   const version = JSON.parse(read('package.json').toString('utf8')).version
   const tool = assertToolIntact()
   const { files, backendAnalysis, uiAnalysis } = await collectPackageFiles({ workDir })

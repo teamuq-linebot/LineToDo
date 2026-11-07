@@ -3987,6 +3987,16 @@ var PluginViewDeclarationV1Schema = external_exports.object({
   presentations: external_exports.array(external_exports.enum(["tab", "window", "fullpage", "overlay", "settings"])).min(1).max(5),
   defaultPresentation: external_exports.enum(["tab", "window", "fullpage", "overlay", "settings"])
 }).strict();
+var PLUGIN_SLOT_KINDS = ["project.connection", "task.badge"];
+var PluginSlotDeclarationV1Schema = external_exports.object({
+  slot: external_exports.enum(PLUGIN_SLOT_KINDS),
+  title: external_exports.string().min(1).max(48).nullable(),
+  dataMethod: external_exports.string().min(1).max(64).regex(/^[A-Za-z0-9._@-]+$/),
+  openView: external_exports.string().regex(IDENTIFIER_PATTERN).max(32).nullable(),
+  openViewContext: external_exports.array(external_exports.enum(["projectId", "taskId"])).max(2),
+  externalOrigins: external_exports.array(external_exports.string().min(1).max(200)).max(4),
+  runMethod: external_exports.string().min(1).max(64).regex(/^[A-Za-z0-9._@-]+$/).nullable().optional()
+}).strict();
 var PluginDependencyProviderV1Schema = external_exports.object({
   id: external_exports.string().regex(IDENTIFIER_PATTERN),
   version: external_exports.string().regex(VERSION_PATTERN),
@@ -4014,6 +4024,7 @@ var PluginRuntimeEntrySnapshotV1Schema = external_exports.object({
   errorCode: external_exports.string().min(1).max(96).nullable(),
   iconDataUrl: external_exports.string().max(Math.ceil(64 * 1024 / 3) * 4 + "data:image/png;base64,".length).regex(/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/).nullable().default(null),
   views: external_exports.array(PluginViewDeclarationV1Schema).max(3).default([]),
+  slots: external_exports.array(PluginSlotDeclarationV1Schema).max(4).default([]),
   dependencies: external_exports.array(PluginDependencyStatusV1Schema).max(64).default([])
 }).strict();
 var PluginRuntimeSnapshotV1Schema = external_exports.object({
@@ -4231,11 +4242,11 @@ var GROUP_ROWS = [
   { id: "web-search", category: "teamuq.web@1", resourceClass: "net", open: false }
 ];
 var GROUP_DIRECTORY = Object.freeze(GROUP_ROWS.map((row) => Object.freeze({ ...row })));
-var byId = new Map(CATEGORY_DIRECTORY.map((entry2) => [entry2.id, entry2]));
-var byPermission = new Map(CATEGORY_DIRECTORY.map((entry2) => [entry2.permission, entry2]));
+var byId = new Map(CATEGORY_DIRECTORY.map((entry3) => [entry3.id, entry3]));
+var byPermission = new Map(CATEGORY_DIRECTORY.map((entry3) => [entry3.permission, entry3]));
 var categoryEntry = (id7) => byId.get(id7);
 function deriveCategoryGatePermissions(directory) {
-  return Object.freeze(directory.map((entry2) => entry2.permission));
+  return Object.freeze(directory.map((entry3) => entry3.permission));
 }
 var CATEGORY_DIRECTORY_JSON_SCHEMA = Object.freeze({
   $schema: "http://json-schema.org/draft-07/schema#",
@@ -4639,7 +4650,7 @@ var ContentPolicyDeclarationSchema = external_exports.object({
   filteredBy: external_exports.enum(CONTENT_FILTERED_BY),
   categories: external_exports.array(external_exports.object({ category: external_exports.enum(CONTENT_CATEGORIES), level: external_exports.enum(CONTENT_LEVELS) }).strict()).max(CONTENT_CATEGORIES.length)
 }).strict().superRefine((value, ctx) => {
-  if (!unique3(value.categories.map((entry2) => entry2.category))) ctx.addIssue({ code: "custom", message: "categories must not repeat a category" });
+  if (!unique3(value.categories.map((entry3) => entry3.category))) ctx.addIssue({ code: "custom", message: "categories must not repeat a category" });
   if (value.filteredBy === "none" && value.categories.length !== 0) ctx.addIssue({ code: "custom", message: "filteredBy none declares no categories" });
   if (value.filteredBy !== "none" && value.categories.length === 0) ctx.addIssue({ code: "custom", message: "a filter declares at least one category" });
 });
@@ -4800,11 +4811,11 @@ var LinkCapabilityEntrySchema = external_exports.object({
   status: viewStatus,
   providers: external_exports.array(LinkCandidateProviderSchema).max(LINK_MAX_PROVIDERS),
   selected: providerId.optional()
-}).strict().superRefine((entry2, ctx) => {
-  if (entry2.selected !== void 0 && !entry2.providers.some((provider3) => provider3.id === entry2.selected)) {
+}).strict().superRefine((entry3, ctx) => {
+  if (entry3.selected !== void 0 && !entry3.providers.some((provider3) => provider3.id === entry3.selected)) {
     ctx.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["selected"], message: "selected must name one of the candidate providers" });
   }
-  if (new Set(entry2.providers.map((provider3) => provider3.id)).size !== entry2.providers.length) {
+  if (new Set(entry3.providers.map((provider3) => provider3.id)).size !== entry3.providers.length) {
     ctx.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["providers"], message: "candidate providers must be unique" });
   }
 });
@@ -4849,9 +4860,9 @@ var LinkWhoSchema = external_exports.object({
   if (who.intent !== void 0 && who.highRisk[0] !== "speech-speaker") issue("intent", "an intent only goes with the speech-speaker group");
   if (who.intent === "manage" && who.source.kind !== "core") issue("intent", "manage is the Core settings intent");
   if (who.intent !== void 0 && who.intent !== "manage" && who.source.kind !== "plugin") issue("intent", "enroll and recognize belong to a plugin consumer");
-  const entry2 = categoryEntry(who.category);
+  const entry3 = categoryEntry(who.category);
   for (const group of who.highRisk) {
-    if (entry2 !== void 0 && !entry2.highRiskGroups.includes(group)) issue("highRisk", `${group} is not a high risk group of ${who.category}`);
+    if (entry3 !== void 0 && !entry3.highRiskGroups.includes(group)) issue("highRisk", `${group} is not a high risk group of ${who.category}`);
   }
 });
 var LinkCapabilityChangeEventSchema = external_exports.object({
@@ -5022,6 +5033,118 @@ var LoopbackServiceSchema = external_exports.object({
   purpose: external_exports.string().min(1).max(LOOPBACK_SERVICE_LIMITS.maxPurposeUtf16).refine(isPlainText, { message: "must be plain text" })
 }).strict().refine((service) => new Set(service.protocols).size === service.protocols.length, { message: "protocols must not contain duplicates", path: ["protocols"] });
 
+var PLUGIN_SLOT_LIMITS = Object.freeze({
+  slots: 4,
+  timeoutMs: 2e3,
+  projectThrottleMs: 5e3,
+  taskIds: 200,
+  cardTitle: 48,
+  cardLines: 3,
+  cardLine: 120,
+  cardActionLabel: 16,
+  runMessage: 120,
+  runTimeoutMs: 1e4,
+  badgeLabel: 16,
+  badgeTitle: 200,
+  badgeCounts: 2,
+  badgeCountLabel: 16,
+  badgeCountMax: 999999,
+  externalUrl: 2048,
+  externalOrigins: 4
+});
+var PROJECT_CONNECTION_STATES = ["not_connected", "connected", "needs_attention", "syncing", "account_mismatch"];
+var TASK_BADGE_STATES = ["synced", "pending", "error", "conflict", "blocked"];
+var PLUGIN_VIEW_CONTEXT_KEYS = ["projectId", "taskId"];
+var INT64_MAX = 9223372036854775807n;
+function isCanonicalEntityId(value) {
+  return typeof value === "string" && /^[1-9][0-9]{0,18}$/u.test(value) && BigInt(value) <= INT64_MAX;
+}
+var PluginViewContextV1Schema = external_exports.object({
+  projectId: external_exports.string().max(19).refine(isCanonicalEntityId, { message: "must be a canonical id" }).nullable(),
+  taskId: external_exports.string().max(19).refine(isCanonicalEntityId, { message: "must be a canonical id" }).nullable()
+}).strict();
+var EMPTY_PLUGIN_VIEW_CONTEXT = Object.freeze({ projectId: null, taskId: null });
+function isHttpsOrigin(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 200) return false;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.protocol === "https:" && url.username === "" && url.password === "" && url.origin === value && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/u.test(url.hostname);
+}
+var PLUGIN_SLOT_CHANNELS = Object.freeze({
+  PROJECT_CONNECTIONS: "plugin-runtime:slot-project-connections",
+  TASK_BADGES: "plugin-runtime:slot-task-badges",
+  OPEN_VIEW: "plugin-runtime:slot-open-view",
+  OPEN_EXTERNAL: "plugin-runtime:slot-open-external",
+  RUN_ACTION: "plugin-runtime:slot-run-action",
+  INVALIDATED: "plugin-runtime:slot-invalidated"
+});
+var PLUGIN_SLOT_ERROR_CODES = ["slot_not_declared", "context_invalid", "context_not_found", "context_unavailable", "plugin_unavailable", "timeout", "external_url_not_allowed", "request_invalid"];
+var protocolVersion3 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
+var pluginId4 = external_exports.string().min(3).max(96).regex(IDENTIFIER_PATTERN);
+var viewId = external_exports.string().min(1).max(32).regex(IDENTIFIER_PATTERN);
+var slotKind = external_exports.enum(PLUGIN_SLOT_KINDS);
+var entityId = external_exports.string().max(64);
+var errorEnvelope = external_exports.object({ code: external_exports.enum(PLUGIN_SLOT_ERROR_CODES), message: external_exports.string().min(1).max(256) }).strict();
+var envelope = (value) => external_exports.discriminatedUnion("ok", [
+  external_exports.object({ protocolVersion: protocolVersion3, ok: external_exports.literal(true), value }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion3, ok: external_exports.literal(false), error: errorEnvelope }).strict()
+]);
+var plain = (max) => external_exports.string().max(max * 2);
+var ProjectConnectionSlotV1Schema = external_exports.object({
+  state: external_exports.enum(PROJECT_CONNECTION_STATES),
+  title: plain(PLUGIN_SLOT_LIMITS.cardTitle).min(1),
+  lines: external_exports.array(plain(PLUGIN_SLOT_LIMITS.cardLine)).max(PLUGIN_SLOT_LIMITS.cardLines),
+  actionLabel: plain(PLUGIN_SLOT_LIMITS.cardActionLabel).min(1),
+  runLabel: plain(PLUGIN_SLOT_LIMITS.cardActionLabel).min(1).optional()
+}).strict();
+var TaskBadgeV1Schema = external_exports.object({
+  taskId: entityId,
+  label: plain(PLUGIN_SLOT_LIMITS.badgeLabel).min(1),
+  state: external_exports.enum(TASK_BADGE_STATES),
+  title: plain(PLUGIN_SLOT_LIMITS.badgeTitle).nullable(),
+  counts: external_exports.array(external_exports.object({ label: plain(PLUGIN_SLOT_LIMITS.badgeCountLabel).min(1), value: external_exports.number().int().min(0).max(PLUGIN_SLOT_LIMITS.badgeCountMax) }).strict()).max(PLUGIN_SLOT_LIMITS.badgeCounts),
+  externalUrl: external_exports.string().max(PLUGIN_SLOT_LIMITS.externalUrl).nullable()
+}).strict();
+var PluginSlotProjectConnectionsRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion3, projectId: entityId }).strict();
+var PluginSlotProjectCardV1Schema = external_exports.object({
+  pluginId: pluginId4,
+  title: plain(PLUGIN_SLOT_LIMITS.cardTitle).min(1),
+  openView: external_exports.boolean(),
+  run: external_exports.boolean().optional(),
+  outcome: external_exports.discriminatedUnion("kind", [
+    external_exports.object({ kind: external_exports.literal("ready"), data: ProjectConnectionSlotV1Schema }).strict(),
+    external_exports.object({ kind: external_exports.literal("unavailable"), code: external_exports.enum(["timeout", "plugin_unavailable", "invalid_response", "busy"]) }).strict()
+  ])
+}).strict();
+var PluginSlotProjectConnectionsEnvelopeV1Schema = envelope(external_exports.object({ projectId: entityId, cards: external_exports.array(PluginSlotProjectCardV1Schema).max(32), freshForMs: external_exports.number().int().min(0).max(6e4) }).strict());
+var PluginSlotTaskBadgesRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion3, taskIds: external_exports.array(entityId).min(1).max(PLUGIN_SLOT_LIMITS.taskIds) }).strict();
+var PluginSlotBadgeV1Schema = TaskBadgeV1Schema.extend({ pluginId: pluginId4, openView: external_exports.boolean() }).strict();
+var PluginSlotTaskBadgesEnvelopeV1Schema = envelope(external_exports.object({ badges: external_exports.array(PluginSlotBadgeV1Schema).max(PLUGIN_SLOT_LIMITS.taskIds * 32), unavailable: external_exports.array(pluginId4).max(32) }).strict());
+var PluginSlotOpenViewRequestV1Schema = external_exports.object({
+  protocolVersion: protocolVersion3,
+  pluginId: pluginId4,
+  slot: slotKind,
+  context: external_exports.object({ projectId: entityId.optional(), taskId: entityId.optional() }).strict()
+}).strict();
+var PluginSlotOpenViewEnvelopeV1Schema = envelope(external_exports.object({ pluginId: pluginId4, viewId, tabId: external_exports.string().min(1).max(160), context: PluginViewContextV1Schema }).strict());
+var PluginSlotOpenExternalRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion3, pluginId: pluginId4, url: external_exports.string().min(1).max(PLUGIN_SLOT_LIMITS.externalUrl) }).strict();
+var PluginSlotOpenExternalEnvelopeV1Schema = envelope(external_exports.object({ opened: external_exports.literal(true) }).strict());
+var PluginSlotRunActionRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion3, pluginId: pluginId4, slot: external_exports.literal("project.connection"), projectId: entityId }).strict();
+var PluginSlotRunActionEnvelopeV1Schema = envelope(external_exports.object({ pluginId: pluginId4, message: plain(PLUGIN_SLOT_LIMITS.runMessage).nullable() }).strict());
+var PluginSlotInvalidatedEventV1Schema = external_exports.object({ protocolVersion: protocolVersion3, pluginId: pluginId4, slot: slotKind, taskIds: external_exports.array(entityId).max(PLUGIN_SLOT_LIMITS.taskIds).nullable() }).strict();
+var PluginSlotInvalidateRequestV1Schema = external_exports.object({
+  slot: slotKind,
+  taskIds: external_exports.array(external_exports.string().max(19).refine(isCanonicalEntityId)).min(1).max(PLUGIN_SLOT_LIMITS.taskIds).optional()
+}).strict().refine((value) => value.taskIds === void 0 || value.slot === "task.badge", { message: "taskIds only apply to task.badge" });
+var PluginSlotInvalidateResultV1Schema = external_exports.discriminatedUnion("ok", [
+  external_exports.object({ ok: external_exports.literal(true) }).strict(),
+  external_exports.object({ ok: external_exports.literal(false), code: external_exports.enum(["slot_not_declared", "request_invalid", "unavailable"]) }).strict()
+]);
+
 var SETTINGS_SCHEMA_LIMITS = Object.freeze({ fields: 16, options: 16, labelChars: 48, helpChars: 200, textChars: 200, unitChars: 12 });
 var KEY_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 var OPTION_VALUE_PATTERN = /^[A-Za-z0-9._-]{1,48}$/;
@@ -5103,17 +5226,17 @@ function effectiveSettingValues(schema, stored) {
 }
 var SETTINGS_SCHEMA_PERMISSION = "settings:plugin";
 var NAMESPACE_PATTERN = /^[a-z0-9]+(?:[.-][a-z0-9]+)*-$/u;
-function assetPackNamespaceOf(pluginId9) {
-  const dot = pluginId9.indexOf(".");
-  if (dot <= 0 || dot === pluginId9.length - 1 || !IDENTIFIER_PATTERN.test(pluginId9)) return null;
-  return `${pluginId9.slice(0, dot)}.asset.${pluginId9.slice(dot + 1)}-`;
+function assetPackNamespaceOf(pluginId10) {
+  const dot = pluginId10.indexOf(".");
+  if (dot <= 0 || dot === pluginId10.length - 1 || !IDENTIFIER_PATTERN.test(pluginId10)) return null;
+  return `${pluginId10.slice(0, dot)}.asset.${pluginId10.slice(dot + 1)}-`;
 }
-function isAssetPackPrefixOf(pluginId9, prefix) {
-  const namespace = assetPackNamespaceOf(pluginId9);
+function isAssetPackPrefixOf(pluginId10, prefix) {
+  const namespace = assetPackNamespaceOf(pluginId10);
   return namespace !== null && prefix.length <= 90 && NAMESPACE_PATTERN.test(prefix) && prefix.startsWith(namespace);
 }
 
-var pluginId4 = external_exports.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/).max(96);
+var pluginId5 = external_exports.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/).max(96);
 var identifier = external_exports.string().min(1).max(128).regex(/^[A-Za-z0-9._:/-]+$/);
 var cursor = external_exports.string().min(1).max(512);
 var generation = external_exports.string().min(1).max(96);
@@ -5127,10 +5250,35 @@ var PLUGIN_HOST_DATA_CAPABILITIES = Object.freeze({
   programApi: "teamuq.program-api@1",
   capabilityControl: "teamuq.capability-control@1",
   aiChat: "teamuq.ai-chat@1",
-  secrets: "teamuq.secrets@1"
+  secrets: "teamuq.secrets@1",
+  teamUpQuickApi: "teamuq.teamupquick-api@1",
+  pluginSlots: "teamuq.plugin-slots@1",
+  taskChanges: "teamuq.task-changes@1"
+});
+var PLUGIN_HOST_DATA_API = "teamuq.host-data";
+var PLUGIN_HOST_DATA_FEATURE_VERSIONS = Object.freeze({
+  workRecordTaskId: "1.2.0",
+  workRecordChanges: "1.2.0",
+  settledChangedIdEpoch: "1.2.0",
+  taskChanges: "1.3.0",
+  workRecordSnapshotDiagnostics: "1.4.0"
 });
 var PLUGIN_STATE_RETIRED_ERROR_CODE = "plugin_state_retired";
-var PLUGIN_HOST_PASSTHROUGH_ERROR_CODES = Object.freeze([PLUGIN_STATE_RETIRED_ERROR_CODE, ...CONTROL_PLANE_ONLY_ERROR_CODES]);
+var PLUGIN_HOST_WORK_CHANGES_ERROR_CODES = Object.freeze(["invalid_cursor", "cursor_epoch_mismatch", "unavailable"]);
+var PLUGIN_HOST_TASK_CHANGES_ERROR_CODES = Object.freeze(["invalid_cursor", "unavailable"]);
+var PLUGIN_HOST_PASSTHROUGH_ERROR_CODES = Object.freeze([PLUGIN_STATE_RETIRED_ERROR_CODE, ...CONTROL_PLANE_ONLY_ERROR_CODES, ...PLUGIN_HOST_WORK_CHANGES_ERROR_CODES]);
+var VERSION_TRIPLE = /^(?:\^|>=)?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+function hostDataRangeAtLeast(range, version2) {
+  if (typeof range !== "string") return false;
+  const floor = VERSION_TRIPLE.exec(range);
+  const wanted = VERSION_TRIPLE.exec(version2);
+  if (floor === null || wanted === null) return false;
+  for (let index = 1; index <= 3; index += 1) {
+    const delta = Number(floor[index]) - Number(wanted[index]);
+    if (delta !== 0) return delta > 0;
+  }
+  return true;
+}
 var PLUGIN_HOST_DATA_DEPRECATIONS = Object.freeze({
   pluginState: Object.freeze({ capabilityId: "teamuq.plugin-state@1", deprecatedIn: "1.1.0", removedIn: "2.0.0", retiredErrorCode: PLUGIN_STATE_RETIRED_ERROR_CODE })
 });
@@ -5141,7 +5289,9 @@ var PLUGIN_HOST_DATA_PERMISSIONS = Object.freeze({
   pluginStateRead: "plugin-state:read",
   pluginStateWrite: "plugin-state:write",
   aiChat: "ai:chat",
-  secrets: "secrets:plugin"
+  secrets: "secrets:plugin",
+  teamUpQuickApi: "teamupquick:api",
+  taskChanges: "task-changes:read"
 });
 var PLUGIN_HOST_DATA_LIMITS = Object.freeze({
   pageSize: 100,
@@ -5149,21 +5299,31 @@ var PLUGIN_HOST_DATA_LIMITS = Object.freeze({
   stateValueBytes: 32 * 1024,
   stateBatchBytes: 256 * 1024
 });
+var PLUGIN_HOST_TASK_CHANGES_LIMITS = Object.freeze({
+  watchedProjects: 200,
+  pageSize: 100,
+  journalEntries: 2048,
+  wakeDelayMs: 1e3,
+  wakeMinIntervalMs: 1e4
+});
 var PLUGIN_HOST_DATA_METHODS = Object.freeze({
-  workRecords: Object.freeze({ openSnapshot: "openSettledSnapshot", readPage: "readPage" }),
+  workRecords: Object.freeze({ openSnapshot: "openSettledSnapshot", readPage: "readPage", readChanges: "readChanges", readSnapshotDiagnostics: "readSnapshotDiagnostics" }),
   agentDirectory: Object.freeze({ openSnapshot: "openSnapshot", readPage: "readPage" }),
   projectDirectory: Object.freeze({ openSnapshot: "openSnapshot", readPage: "readPage" }),
   pluginState: Object.freeze({ readPage: "readPage", writeBatch: "writeBatch", deleteBatch: "deleteBatch" }),
   programApi: Object.freeze({ call: "call" }),
   capabilityControl: Object.freeze({ list: "list", openLink: "openLink" }),
   aiChat: Object.freeze({ getOptions: "getOptions", openSession: "openSession", complete: "complete", attachSession: "attachSession", send: "send", interrupt: "interrupt", close: "close" }),
-  secrets: Object.freeze({ get: "get", set: "set", remove: "remove", list: "list", available: "available" })
+  secrets: Object.freeze({ get: "get", set: "set", remove: "remove", list: "list", available: "available" }),
+  teamUpQuickApi: Object.freeze({ request: "request", currentAccount: "currentAccount" }),
+  pluginSlots: Object.freeze({ invalidate: "invalidate" }),
+  taskChanges: Object.freeze({ watchProjects: "watchProjects", readChanges: "readChanges" })
 });
 var PluginHostDataRequestV1Schema = external_exports.object({
   protocolVersion: external_exports.literal(1),
   requestId: external_exports.string().min(1).max(64),
   kind: external_exports.literal("capability-call"),
-  pluginId: pluginId4,
+  pluginId: pluginId5,
   capabilityId: external_exports.enum([
     PLUGIN_HOST_DATA_CAPABILITIES.workRecords,
     PLUGIN_HOST_DATA_CAPABILITIES.agentDirectory,
@@ -5172,7 +5332,10 @@ var PluginHostDataRequestV1Schema = external_exports.object({
     PLUGIN_HOST_DATA_CAPABILITIES.programApi,
     PLUGIN_HOST_DATA_CAPABILITIES.capabilityControl,
     PLUGIN_HOST_DATA_CAPABILITIES.aiChat,
-    PLUGIN_HOST_DATA_CAPABILITIES.secrets
+    PLUGIN_HOST_DATA_CAPABILITIES.secrets,
+    PLUGIN_HOST_DATA_CAPABILITIES.teamUpQuickApi,
+    PLUGIN_HOST_DATA_CAPABILITIES.pluginSlots,
+    PLUGIN_HOST_DATA_CAPABILITIES.taskChanges
   ]),
   method: external_exports.string().min(1).max(64).regex(/^[A-Za-z0-9._@-]+$/),
   args: external_exports.array(external_exports.unknown()).max(8)
@@ -5193,6 +5356,7 @@ var PluginHostWorkRecordV1Schema = external_exports.object({
   id: identifier,
   agentId: identifier,
   projectId: identifier.nullable(),
+  taskId: identifier.nullable().optional(),
   sessionId: identifier.nullable(),
   providerId: identifier.nullable(),
   punchId: identifier,
@@ -5201,12 +5365,71 @@ var PluginHostWorkRecordV1Schema = external_exports.object({
   endedAtMs: external_exports.number().int().nonnegative(),
   model: external_exports.string().max(256).nullable(),
   name: external_exports.string().max(32768).nullable(),
-  description: external_exports.string().max(32768).nullable()
+  description: external_exports.string().max(32768).nullable(),
+  textTruncated: external_exports.boolean().optional()
 }).strict();
 var PluginHostWorkRecordPageV1Schema = external_exports.object({
   snapshot: PluginHostSnapshotV1Schema,
   records: external_exports.array(PluginHostWorkRecordV1Schema).max(100),
   nextCursor: cursor.nullable()
+}).strict();
+var PluginHostWorkSnapshotDiagnosticsRequestV1Schema = external_exports.object({ snapshotId: identifier }).strict();
+var PluginHostWorkSnapshotDiagnosticsV1Schema = external_exports.object({
+  snapshotId: identifier,
+  generation,
+  highWatermark: external_exports.string().max(40).nullable(),
+  processed: external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  scanned: external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  returned: external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  schemaSkipped: external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  complete: external_exports.boolean()
+}).strict();
+var PluginHostWorkChangesRequestV1Schema = external_exports.object({
+  cursor: cursor.nullable(),
+  limit: external_exports.number().int().min(1).max(100)
+}).strict();
+var workChangeAt = external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+var PluginHostWorkChangeV1Schema = external_exports.discriminatedUnion("kind", [
+  external_exports.object({ kind: external_exports.literal("upsert"), record: PluginHostWorkRecordV1Schema.extend({ taskId: identifier.nullable(), textTruncated: external_exports.boolean() }).strict(), updatedAtMs: workChangeAt }).strict(),
+  external_exports.object({ kind: external_exports.literal("retracted"), id: identifier, updatedAtMs: workChangeAt, reason: external_exports.enum(["not_done", "deleted"]) }).strict()
+]);
+var PluginHostWorkChangesPageV1Schema = external_exports.object({
+  idEpoch: external_exports.string().min(1).max(64),
+  changes: external_exports.array(PluginHostWorkChangeV1Schema).max(100),
+  nextCursor: cursor,
+  hasMore: external_exports.boolean()
+}).strict();
+var PluginHostTaskWatchRequestV1Schema = external_exports.object({
+  projectIds: external_exports.array(identifier).max(PLUGIN_HOST_TASK_CHANGES_LIMITS.watchedProjects)
+}).strict().refine((request) => new Set(request.projectIds).size === request.projectIds.length, { message: "projectIds must not contain duplicates" });
+var PluginHostTaskWatchResultV1Schema = external_exports.object({
+  watched: external_exports.number().int().nonnegative().max(PLUGIN_HOST_TASK_CHANGES_LIMITS.watchedProjects)
+}).strict();
+var PluginHostTaskChangesRequestV1Schema = external_exports.object({
+  cursor: cursor.nullable(),
+  limit: external_exports.number().int().min(1).max(PLUGIN_HOST_TASK_CHANGES_LIMITS.pageSize)
+}).strict();
+var PluginHostTaskChangeV1Schema = external_exports.object({
+  taskId: identifier,
+  projectId: identifier.nullable(),
+  authoredRevision: external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  status: external_exports.string().min(1).max(64),
+  deleted: external_exports.boolean(),
+  changedAtMs: workChangeAt
+}).strict();
+var PluginHostTaskChangesPageV1Schema = external_exports.object({
+  epoch: external_exports.string().min(1).max(64),
+  changes: external_exports.array(PluginHostTaskChangeV1Schema).max(PLUGIN_HOST_TASK_CHANGES_LIMITS.pageSize),
+  nextCursor: cursor,
+  hasMore: external_exports.boolean(),
+  gap: external_exports.boolean()
+}).strict();
+var PluginHostTaskChangedEventV1Schema = external_exports.object({
+  protocolVersion: external_exports.literal(1),
+  kind: external_exports.literal("ext-capability-event"),
+  capabilityId: external_exports.literal(PLUGIN_HOST_DATA_CAPABILITIES.taskChanges),
+  event: external_exports.literal("changed"),
+  epoch: external_exports.string().min(1).max(64)
 }).strict();
 var PluginHostAgentV1Schema = external_exports.object({
   id: identifier,
@@ -5272,13 +5495,14 @@ var PluginHostWorkChangedEventV1Schema = external_exports.object({
   capabilityId: external_exports.literal(PLUGIN_HOST_DATA_CAPABILITIES.workRecords),
   event: external_exports.literal("settled-changed"),
   generation,
-  highWatermark: external_exports.string().max(40).nullable()
+  highWatermark: external_exports.string().max(40).nullable(),
+  idEpoch: external_exports.string().min(1).max(64).optional()
 }).strict();
 var PluginLegacyDataMigrationV1Schema = external_exports.object({
   id: external_exports.string().min(1).max(96).regex(/^[a-z0-9][a-z0-9._-]*$/),
   source: external_exports.string().min(1).max(96).regex(/^[a-z0-9][a-z0-9._-]*$/),
   target: external_exports.string().min(1).max(128).regex(/^[a-z0-9][a-z0-9._/-]*$/)
-}).strict().refine((entry2) => !entry2.target.split("/").some((part) => part === "." || part === ".."));
+}).strict().refine((entry3) => !entry3.target.split("/").some((part) => part === "." || part === ".."));
 
 var PROCESS_HELPER_LIMITS = Object.freeze({ helpers: 1, frameBytes: 64 * 1024, inFlightBytes: 256 * 1024 });
 var safePath = external_exports.string().min(1).max(200).regex(/^[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+)*$/).refine((value) => value.split("/").every((part) => part !== "." && part !== ".."));
@@ -5301,11 +5525,40 @@ var PluginProcessHelperResponseV1Schema = external_exports.discriminatedUnion("s
   external_exports.object({ state: external_exports.literal("closed") }).strict()
 ]);
 
+var PLUGIN_BACKGROUND_CAPABILITY = "teamuq.plugin-background@1";
+var PLUGIN_BACKGROUND_WAKE_EVENT = "wake";
+var PLUGIN_BACKGROUND_WAKE_ON = Object.freeze(["startup", "work-records.changed", "task-changes.changed", "account.changed"]);
+var PLUGIN_BACKGROUND_UNAVAILABLE_WAKE_ON = Object.freeze([]);
+var PLUGIN_BACKGROUND_WAKE_ON_PERMISSIONS = Object.freeze({
+  "work-records.changed": "work-records:read",
+  "task-changes.changed": "task-changes:read",
+  "account.changed": "teamupquick:api"
+});
+var PLUGIN_BACKGROUND_WAKE_REASONS = Object.freeze(["startup", "tick"]);
+var PLUGIN_BACKGROUND_LIMITS = Object.freeze({
+  intervalSecMin: 300,
+  intervalSecMax: 3600,
+  startupDelayMs: 6e4
+});
+var PLUGIN_BACKGROUND_IDLE_MARGIN_SEC = 60;
+var PluginBackgroundDeclarationV1Schema = external_exports.object({
+  wakeOn: external_exports.array(external_exports.enum(PLUGIN_BACKGROUND_WAKE_ON)).min(1).max(PLUGIN_BACKGROUND_WAKE_ON.length),
+  intervalSec: external_exports.number().int().min(PLUGIN_BACKGROUND_LIMITS.intervalSecMin).max(PLUGIN_BACKGROUND_LIMITS.intervalSecMax).optional()
+}).strict();
+var PluginBackgroundWakeEventV1Schema = external_exports.object({
+  protocolVersion: external_exports.literal(1),
+  kind: external_exports.literal("ext-capability-event"),
+  capabilityId: external_exports.literal(PLUGIN_BACKGROUND_CAPABILITY),
+  event: external_exports.literal(PLUGIN_BACKGROUND_WAKE_EVENT),
+  reason: external_exports.enum(PLUGIN_BACKGROUND_WAKE_REASONS)
+}).strict();
+var PluginBackgroundWakeV1Schema = external_exports.object({ reason: external_exports.enum(PLUGIN_BACKGROUND_WAKE_REASONS) }).strict();
+
 var FULL_TRUST_REACH = "完全信任級外掛的背景程式可連線到任何網路位置，TeamUQ 無法限制";
 function categoryReview(permission2) {
-  const entry2 = CATEGORY_DIRECTORY.find((candidate) => candidate.permission === permission2);
-  if (entry2 === void 0) return { description: null };
-  const description = `這個外掛會與你電腦上的其他外掛直接連線（只限它使用的功能：${entry2.displayName}），資料不經過 TeamUQ。`;
+  const entry3 = CATEGORY_DIRECTORY.find((candidate) => candidate.permission === permission2);
+  if (entry3 === void 0) return { description: null };
+  const description = `這個外掛會與你電腦上的其他外掛直接連線（只限它使用的功能：${entry3.displayName}），資料不經過 TeamUQ。`;
   return { description, fullTrustDescription: `${description}${FULL_TRUST_REACH}` };
 }
 var LOOPBACK_REVIEW = "連到您電腦上的本機位址（127.0.0.1）：只限它使用的外掛功能與它宣告的本機服務，資料不經過 TeamUQ";
@@ -5331,6 +5584,7 @@ var PLUGIN_PERMISSIONS = [
   { id: "program:data:milestones:write", kind: "host", surface: "any", revocable: true, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛建立、修改或封存里程碑的核准欄位，您可隨時撤銷" },
   { id: "program:data:tasks:read", kind: "host", surface: "any", revocable: true, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛讀取工作項目名稱、描述、所屬專案與目前狀態等核准欄位，您可隨時撤銷" },
   { id: "program:data:tasks:write", kind: "host", surface: "any", revocable: true, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛建立、修改或移除工作項目中繼資料；此權限不包含指派、狀態或生命週期操作，您可隨時撤銷" },
+  { id: "program:data:tasks:status", kind: "host", surface: "any", revocable: true, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛修改工作項目的狀態（例如進行中、已完成）；不包含名稱、描述、指派或刪除，您可隨時撤銷" },
   { id: "native:addons", kind: "other", surface: "backend", revocable: false, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: "載入外掛自帶的 .node 原生模組（native.allowAddons），不是端點", description: "載入外掛自帶的原生程式（.node）。原生程式以您的使用者權限執行，Node 的檔案與行程限制對它形同虛設" },
   { id: "asset:pack", kind: "host", surface: "view", revocable: true, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, description: "唯讀取用外掛宣告要用的資產包" },
   { id: "secrets:plugin", kind: "host", surface: "any", revocable: false, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, description: "以作業系統加密保存外掛自己的祕密（例如 API 金鑰）" },
@@ -5339,13 +5593,15 @@ var PLUGIN_PERMISSIONS = [
   { id: "backend:invoke", kind: "other", surface: "view", revocable: false, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: "舊版 manifest 相容欄位；backend.call 不需此授權", description: "舊版 manifest 相容欄位；backend.call 不需另行授權，仍受完全信任級組合外掛與 backendMethods 白名單限制" },
   { id: "store:browse", kind: "host", surface: "view", revocable: true, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, description: "瀏覽 TeamUQ 角色商店：TeamUQ 會代你連到商店主機取得角色清單與預覽，商店主機會看到你的網路位址，不會看到你的帳號；你輸入的搜尋字只在這台電腦上比對，不會送出去。取得角色另需「讀取你加入的檔案」，而且每一次都會先由 TeamUQ 問你" },
   { id: "agent:avatar-read", kind: "host", surface: "view", revocable: true, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, description: "讀取已啟用 Agent 的現有頭像圖片；不會提供代理人名冊或檔案路徑，您可以隨時撤銷" },
-  { id: "work-records:read", kind: "host", surface: "backend", revocable: true, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛的背景程式讀取已結算的打卡紀錄（開始與結束時間、對應的 AI 代理、專案、對話與模型），並在有新的結算時收到通知；您可隨時撤銷" },
+  { id: "work-records:read", kind: "host", surface: "backend", revocable: true, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛的背景程式讀取已結算的打卡紀錄（開始與結束時間、對應的 AI 代理、專案、工作項目、對話與模型）與它們之後的變更，並在有新的結算時收到通知；您可隨時撤銷" },
   { id: "agent-directory:read", kind: "host", surface: "backend", revocable: true, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛的背景程式讀取 AI 團隊的代理名錄（名稱、職稱、所屬團隊與是否啟用）；您可隨時撤銷" },
   { id: "project-directory:read", kind: "host", surface: "backend", revocable: true, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛的背景程式讀取專案名錄（專案名稱與是否封存）；您可隨時撤銷" },
   { id: "plugin-state:read", kind: "host", surface: "backend", revocable: true, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛的背景程式讀取它自己存在 TeamUQ 資料庫裡的狀態紀錄（其他外掛看不到）；您可隨時撤銷" },
   { id: "plugin-state:write", kind: "host", surface: "backend", revocable: true, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛的背景程式在 TeamUQ 資料庫裡寫入或刪除它自己的狀態紀錄（其他外掛看不到）；您可隨時撤銷" },
+  { id: "teamupquick:api", kind: "host", surface: "backend", revocable: true, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛以您目前登入的 TeamUQ 帳號存取快組隊（TeamUpQuick）的任務、里程碑與工時：請求由 TeamUQ 代為送出，登入憑證不會交給外掛，而且只限 TeamUQ 指定的網址；只有 TeamUQ 內建的快組隊連線外掛能使用，您可隨時撤銷" },
   { id: "data:legacy-migrate", kind: "other", surface: "backend", revocable: true, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: "安裝時依 data.legacyMigrations 搬移舊資料，不是端點", description: "安裝時，把舊版 TeamUQ 替這個外掛保留的資料搬到外掛自己的資料資料夾（只搬外掛宣告、且 TeamUQ 認得的項目）" },
   { id: "background:resident", kind: "other", surface: "backend", revocable: true, fullTrustOnly: true, optIn: true, coreSupported: true, legacy: null, nonEndpoint: "Core 依此決定背景程式是否常駐（啟動時預熱、不閒置卸載），不是宿主 API 端點", description: "讓外掛的背景程式在您關閉它的畫面後仍持續執行（只要 TeamUQ 還開著），會持續使用記憶體與處理器；同時最多 2 個外掛可以這樣執行，您可隨時關閉" },
+  { id: "task-changes:read", kind: "host", surface: "backend", revocable: true, fullTrustOnly: true, coreSupported: true, legacy: null, nonEndpoint: null, description: "允許外掛的背景程式得知它登記關注的專案裡，哪些工作項目有變更（工作項目代號、所屬專案、目前狀態與版本，不含名稱與描述），並在有變更時收到通知；只有 TeamUQ 內建的外掛能使用，您可隨時撤銷" },
   { id: "cap:stt", kind: "category", surface: "any", revocable: true, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, ...categoryReview("cap:stt") },
   { id: "cap:tts", kind: "category", surface: "any", revocable: true, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, ...categoryReview("cap:tts") },
   { id: "cap:audio", kind: "category", surface: "any", revocable: true, fullTrustOnly: false, coreSupported: true, legacy: null, nonEndpoint: null, ...categoryReview("cap:audio") },
@@ -5388,6 +5644,7 @@ var PLUGIN_PERMISSION_LISTS = Object.freeze({
 var byId2 = new Map(rows.map((row) => [row.id, row]));
 var optInIds = new Set(PLUGIN_PERMISSION_LISTS.optIn);
 
+var PLUGIN_UNINSTALL_NOTICE_MAX = 200;
 var PLUGIN_MANIFEST_V2_SCHEMA_VERSION = 2;
 var KNOWN_PLUGIN_PERMISSIONS = PLUGIN_PERMISSION_LISTS.known;
 var CORE_SUPPORTED_PLUGIN_PERMISSIONS = PLUGIN_PERMISSION_LISTS.coreSupported;
@@ -5407,8 +5664,8 @@ function categoryEntryForManifestCapability(capability) {
   return categoryEntry(capability);
 }
 var UNIFORM_GPU_CATEGORY_IDS = new Set([...new Set(GROUP_DIRECTORY.map(({ category }) => category))].filter((category) => {
-  const groups = GROUP_DIRECTORY.filter((entry2) => entry2.category === category);
-  return groups.length > 0 && groups.every((entry2) => entry2.resourceClass === "gpu");
+  const groups = GROUP_DIRECTORY.filter((entry3) => entry3.category === category);
+  return groups.length > 0 && groups.every((entry3) => entry3.resourceClass === "gpu");
 }));
 var unique4 = (values) => new Set(values).size === values.length;
 function isSafeRelativePath(value) {
@@ -5433,12 +5690,24 @@ var ViewSchema = external_exports.object({
     minWidth: external_exports.number().int().min(160).max(8192).optional(),
     minHeight: external_exports.number().int().min(120).max(8192).optional(),
     resizable: external_exports.boolean().optional()
-  }).strict().optional()
+  }).strict().optional(),
+  context: external_exports.array(external_exports.enum(PLUGIN_VIEW_CONTEXT_KEYS)).min(1).max(PLUGIN_VIEW_CONTEXT_KEYS.length).optional()
 }).strict().superRefine((view, context) => {
   if (!unique4(view.presentations)) context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["presentations"], message: "presentations must not contain duplicates" });
   if (!view.presentations.includes(view.defaultPresentation)) context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["defaultPresentation"], message: "defaultPresentation must be one of presentations" });
   if (view.presentations.includes("settings") && (view.presentations.length !== 1 || view.window !== void 0)) context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["presentations"], message: "a settings view has no other presentation and no window" });
+  if (view.context !== void 0 && !unique4(view.context)) context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["context"], message: "context must not contain duplicates" });
 });
+var BACKEND_METHOD_PATTERN = /^[A-Za-z0-9._@-]+$/;
+var SlotSchema = external_exports.object({
+  slot: external_exports.enum(PLUGIN_SLOT_KINDS),
+  title: external_exports.string().min(1).max(PLUGIN_SLOT_LIMITS.cardTitle).refine(isPlainText, { message: "must be plain text" }).optional(),
+  dataMethod: external_exports.string().min(1).max(64).regex(BACKEND_METHOD_PATTERN),
+  openView: external_exports.string().regex(IDENTIFIER_PATTERN).max(32).optional(),
+  externalOrigins: external_exports.array(external_exports.string().max(200)).min(1).max(PLUGIN_SLOT_LIMITS.externalOrigins).optional(),
+  runMethod: external_exports.string().min(1).max(64).regex(BACKEND_METHOD_PATTERN).optional()
+}).strict();
+var SLOT_CONTEXT_KEY = Object.freeze({ "project.connection": "projectId", "task.badge": "taskId" });
 var ProvidesSchema = external_exports.object({
   capability: ManifestCapabilityIdSchema,
   permission: external_exports.string().regex(PERMISSION_PATTERN),
@@ -5464,6 +5733,7 @@ var ResourcesSchema = external_exports.object({
 }).strict();
 var RESIDENCY_LEVELS = ["on-demand", "warm", "resident"];
 var RESIDENCY_ORDER = Object.freeze({ "on-demand": 0, warm: 1, resident: 2 });
+var RESIDENCY_WARM_KEEP_SEC_DEFAULT = 600;
 var ResidencySchema = external_exports.object({
   default: external_exports.enum(RESIDENCY_LEVELS),
   max: external_exports.enum(RESIDENCY_LEVELS).optional(),
@@ -5475,6 +5745,11 @@ var ResidencySchema = external_exports.object({
 });
 var BACKEND_RESOURCE_DEFAULTS = Object.freeze({ memoryMB: 256, cpuThreads: 1, maxSessions: 1, idleUnloadSec: 300, bootTimeoutSec: 10 });
 var BACKEND_RESOURCE_CORE_LIMITS = Object.freeze({ memoryMB: 1024, cpuThreads: 4, maxSessions: 4, idleUnloadSecMin: 5, idleUnloadSecMax: 3600, bootTimeoutSec: 60 });
+function resolveBackendResources(declared, residency, capabilityProvider = false, effectiveResidency = "on-demand") {
+  const resources = declared ?? BACKEND_RESOURCE_DEFAULTS;
+  if (!capabilityProvider) return resources;
+  return { ...resources, idleUnloadSec: effectiveResidency === "resident" ? 0 : residency?.warmKeepSec ?? RESIDENCY_WARM_KEEP_SEC_DEFAULT };
+}
 var BACKEND_ENTRY_PATTERN = /\.(?:mjs|cjs)$/;
 var AssetPackRefSchema = external_exports.object({
   id: external_exports.string().regex(IDENTIFIER_PATTERN).min(3).max(96),
@@ -5502,6 +5777,7 @@ var PluginManifestV2Schema = external_exports.object({
   native: NativeSchema.optional(),
   resources: ResourcesSchema.optional(),
   residency: ResidencySchema.optional(),
+  background: PluginBackgroundDeclarationV1Schema.optional(),
   provides: external_exports.array(ProvidesSchema).max(16).default([]),
   requiredCapabilities: external_exports.array(ManifestCapabilityIdSchema).max(32).default([]),
   optionalCapabilities: external_exports.array(ManifestCapabilityIdSchema).max(32).default([]),
@@ -5511,8 +5787,8 @@ var PluginManifestV2Schema = external_exports.object({
   permissions: external_exports.array(external_exports.string().regex(PERMISSION_PATTERN)).max(64).default([]),
   capabilityGroups: external_exports.record(CategoryIdSchema, external_exports.array(GroupIdSchema).min(1).max(16)).refine((groups) => Object.keys(groups).length <= 16, { message: "capabilityGroups may name at most 16 categories" }).optional(),
   network: external_exports.object({ allow: external_exports.array(external_exports.string().url().max(200)).max(32), loopbackServices: external_exports.array(LoopbackServiceSchema).max(LOOPBACK_SERVICE_LIMITS.maxServices).optional() }).strict().default({ allow: [] }),
-  contributes: external_exports.object({ views: external_exports.array(ViewSchema).max(3) }).strict().default({ views: [] }),
-  data: external_exports.object({ uninstall: external_exports.enum(["keep", "delete", "ask"]), legacyMigrations: external_exports.array(PluginLegacyDataMigrationV1Schema).max(8).default([]) }).strict().default({ uninstall: "ask", legacyMigrations: [] }),
+  contributes: external_exports.object({ views: external_exports.array(ViewSchema).max(3), slots: external_exports.array(SlotSchema).max(PLUGIN_SLOT_LIMITS.slots).default([]) }).strict().default({ views: [], slots: [] }),
+  data: external_exports.object({ uninstall: external_exports.enum(["keep", "delete", "ask"]), legacyMigrations: external_exports.array(PluginLegacyDataMigrationV1Schema).max(8).default([]), uninstallNotice: external_exports.string().min(1).max(PLUGIN_UNINSTALL_NOTICE_MAX).refine(isPlainText, { message: "must be plain text" }).optional() }).strict().default({ uninstall: "ask", legacyMigrations: [] }),
   provenance: external_exports.object({ upstream: external_exports.string().max(300), upstreamSha256: external_exports.string().regex(/^[0-9a-f]{64}$/), license: external_exports.string().max(64) }).strict().optional()
 }).strict().superRefine((manifest, context) => {
   const fail3 = (path, message) => {
@@ -5520,19 +5796,19 @@ var PluginManifestV2Schema = external_exports.object({
   };
   for (const [field, values] of [
     ["requiredCapabilities", manifest.requiredCapabilities],
-    ["hostApis", manifest.hostApis.map((entry2) => entry2.id)],
+    ["hostApis", manifest.hostApis.map((entry3) => entry3.id)],
     ["optionalCapabilities", manifest.optionalCapabilities],
     ["permissions", manifest.permissions],
     ["network", manifest.network.allow],
-    ["provides", manifest.provides.map((entry2) => entry2.capability)],
-    ["platforms", manifest.platforms.map((entry2) => entry2.id)],
-    ["assetPacks", manifest.assetPacks.map((entry2) => entry2.id)],
+    ["provides", manifest.provides.map((entry3) => entry3.capability)],
+    ["platforms", manifest.platforms.map((entry3) => entry3.id)],
+    ["assetPacks", manifest.assetPacks.map((entry3) => entry3.id)],
     ["assetPackPrefixes", manifest.assetPackPrefixes],
     ["views", manifest.contributes.views.map((view) => view.id)]
   ]) {
     if (!unique4(values)) fail3(field, `${field} must not contain duplicates`);
   }
-  const capabilities = [...manifest.requiredCapabilities, ...manifest.optionalCapabilities, ...manifest.provides.map((entry2) => entry2.capability)];
+  const capabilities = [...manifest.requiredCapabilities, ...manifest.optionalCapabilities, ...manifest.provides.map((entry3) => entry3.capability)];
   if (!unique4(capabilities)) fail3("provides", "a capability may appear only once across provides, requiredCapabilities and optionalCapabilities");
   const fullTrust = manifest.trustTier === "full-trust";
   if (manifest.kind === "asset-pack") {
@@ -5543,14 +5819,30 @@ var PluginManifestV2Schema = external_exports.object({
     if (manifest.entry.ui !== void 0 || manifest.entry.backend !== void 0) fail3("entry", "asset-pack cannot declare entry");
     if (manifest.native !== void 0 || manifest.resources !== void 0) fail3("native", "asset-pack cannot declare native or resources");
     if (manifest.residency !== void 0) fail3("residency", "asset-pack cannot declare residency");
+    if (manifest.background !== void 0) fail3("background", "asset-pack cannot declare background");
     if (manifest.provides.length > 0 || manifest.permissions.length > 0 || manifest.assetPacks.length > 0) fail3("permissions", "asset-pack cannot declare provides, permissions or assetPacks");
     if (manifest.capabilityGroups !== void 0 || (manifest.network.loopbackServices?.length ?? 0) > 0) fail3("network", "asset-pack cannot declare capabilityGroups or loopbackServices");
     if (manifest.assetPackPrefixes.length > 0 || manifest.settingsSchema !== void 0) fail3("assetPackPrefixes", "asset-pack cannot declare assetPackPrefixes or settingsSchema");
     if (manifest.contributes.views.length > 0) fail3("contributes", "asset-pack cannot contribute views");
+    if (manifest.contributes.slots.length > 0) fail3("contributes", "asset-pack cannot contribute slots");
     return;
   }
   if (manifest.provenance !== void 0) fail3("provenance", "provenance is only allowed on asset-pack");
   if (manifest.residency !== void 0 && manifest.provides.length === 0) fail3("residency", "residency requires a plugin that provides a capability");
+  if (manifest.background !== void 0) {
+    if (!fullTrust || manifest.entry.backend === void 0) fail3("background", "background requires a full-trust plugin with entry.backend");
+    if (!unique4(manifest.background.wakeOn)) fail3("background", "background.wakeOn must not contain duplicates");
+    for (const wakeOn of manifest.background.wakeOn) {
+      const permission2 = PLUGIN_BACKGROUND_WAKE_ON_PERMISSIONS[wakeOn];
+      if (permission2 !== void 0 && !manifest.permissions.includes(permission2)) fail3("background", `background.wakeOn ${wakeOn} requires the ${permission2} permission`);
+    }
+    for (const hostDataEvent of ["work-records.changed", "task-changes.changed"]) {
+      if (manifest.background.wakeOn.includes(hostDataEvent) && !manifest.hostApis.some((api) => api.id === PLUGIN_HOST_DATA_API)) fail3("background", `background.wakeOn ${hostDataEvent} requires hostApis ${PLUGIN_HOST_DATA_API}`);
+    }
+    if (manifest.background.wakeOn.includes("task-changes.changed") && !hostDataRangeAtLeast(manifest.hostApis.find((api) => api.id === PLUGIN_HOST_DATA_API)?.range, PLUGIN_HOST_DATA_FEATURE_VERSIONS.taskChanges)) fail3("background", `background.wakeOn task-changes.changed requires hostApis ${PLUGIN_HOST_DATA_API} ${PLUGIN_HOST_DATA_FEATURE_VERSIONS.taskChanges} or later`);
+    const idleUnloadSec = resolveBackendResources(manifest.resources, manifest.residency, manifest.provides.length > 0).idleUnloadSec;
+    if (manifest.background.intervalSec !== void 0 && manifest.background.intervalSec < idleUnloadSec + PLUGIN_BACKGROUND_IDLE_MARGIN_SEC) fail3("background", `background.intervalSec must be at least the backend idle unload (${idleUnloadSec} s) plus ${PLUGIN_BACKGROUND_IDLE_MARGIN_SEC} s`);
+  }
   if (manifest.entry.ui === void 0 && manifest.entry.backend === void 0) fail3("entry", "plugin must declare entry.ui or entry.backend");
   if (!fullTrust && manifest.entry.backend !== void 0) fail3("entry", "entry.backend requires full-trust");
   if (fullTrust && manifest.entry.backend === void 0) fail3("entry", "full-trust plugin must declare entry.backend");
@@ -5598,7 +5890,7 @@ var PluginManifestV2Schema = external_exports.object({
   if (manifest.settingsSchema !== void 0 && !manifest.permissions.includes(SETTINGS_SCHEMA_PERMISSION)) fail3("permissions", `settingsSchema requires the ${SETTINGS_SCHEMA_PERMISSION} permission`);
   if (manifest.data.legacyMigrations.length > 0 && !manifest.permissions.includes("data:legacy-migrate")) fail3("permissions", "data.legacyMigrations requires data:legacy-migrate");
   if (manifest.data.legacyMigrations.length > 0 && !fullTrust) fail3("trustTier", "data.legacyMigrations requires full-trust");
-  if (!unique4(manifest.data.legacyMigrations.map((entry2) => entry2.id)) || !unique4(manifest.data.legacyMigrations.map((entry2) => entry2.source)) || !unique4(manifest.data.legacyMigrations.map((entry2) => entry2.target))) fail3("data", "legacy data migration ids, sources and targets must be unique");
+  if (!unique4(manifest.data.legacyMigrations.map((entry3) => entry3.id)) || !unique4(manifest.data.legacyMigrations.map((entry3) => entry3.source)) || !unique4(manifest.data.legacyMigrations.map((entry3) => entry3.target))) fail3("data", "legacy data migration ids, sources and targets must be unique");
   for (const prefix of manifest.assetPackPrefixes) {
     if (!isAssetPackPrefixOf(manifest.id, prefix)) fail3("assetPackPrefixes", `prefix ${prefix} must start with this plugin's own namespace ${assetPackNamespaceOf(manifest.id) ?? "(none: the plugin id has no publisher part)"}`);
   }
@@ -5606,13 +5898,38 @@ var PluginManifestV2Schema = external_exports.object({
   if (manifest.contributes.views.length > 0 && manifest.entry.ui === void 0) fail3("contributes", "views require entry.ui");
   if (manifest.assetPacks.length > 0 && !manifest.permissions.includes("asset:pack")) fail3("permissions", "assetPacks require the asset:pack permission");
   if (manifest.network.allow.length > 0 && !manifest.permissions.includes("network:fetch") && !manifest.permissions.includes("network:loopback")) fail3("permissions", "network.allow requires the network:fetch permission");
-  const platformIds = new Set(manifest.platforms.map((entry2) => entry2.id));
+  const platformIds = new Set(manifest.platforms.map((entry3) => entry3.id));
   for (const file of manifest.native?.files ?? []) {
     if (platformIds.size > 0 && !platformIds.has(file.platform)) fail3("native", `native file platform ${file.platform} is not listed in platforms`);
   }
   for (const view of manifest.contributes.views) {
-    for (const presentation of view.presentations) {
-      if (!manifest.permissions.includes(UI_VIEW_PERMISSION)) fail3("permissions", `presentation ${presentation} requires ${UI_VIEW_PERMISSION}`);
+    for (const presentation2 of view.presentations) {
+      if (!manifest.permissions.includes(UI_VIEW_PERMISSION)) fail3("permissions", `presentation ${presentation2} requires ${UI_VIEW_PERMISSION}`);
+    }
+  }
+  const slots = manifest.contributes.slots;
+  if (slots.length > 0 && !composed) fail3("contributes", "contributes.slots requires a full-trust plugin with entry.ui, entry.backend and backendMethods");
+  if (!unique4(slots.map((slot) => slot.slot))) fail3("contributes", "a plugin may declare each slot only once");
+  for (const slot of slots) {
+    if (slot.slot === "project.connection" && slot.title === void 0) fail3("contributes", "slot project.connection requires a title (Core shows it as the card heading)");
+    if (!(manifest.backendMethods ?? []).includes(slot.dataMethod)) fail3("contributes", `slot ${slot.slot} dataMethod ${slot.dataMethod} must be listed in backendMethods`);
+    if (slot.runMethod !== void 0) {
+      if (slot.slot !== "project.connection") fail3("contributes", `slot ${slot.slot} cannot declare runMethod`);
+      if (!(manifest.backendMethods ?? []).includes(slot.runMethod)) fail3("contributes", `slot ${slot.slot} runMethod ${slot.runMethod} must be listed in backendMethods`);
+      if (slot.runMethod === slot.dataMethod) fail3("contributes", `slot ${slot.slot} runMethod must differ from dataMethod`);
+    }
+    if (slot.openView !== void 0) {
+      const view = manifest.contributes.views.find((candidate) => candidate.id === slot.openView);
+      if (view === void 0) fail3("contributes", `slot ${slot.slot} openView ${slot.openView} must be a view of this manifest`);
+      else {
+        if (!view.presentations.includes("tab")) fail3("contributes", `slot ${slot.slot} openView ${slot.openView} must offer the tab presentation`);
+        if (!(view.context ?? []).includes(SLOT_CONTEXT_KEY[slot.slot])) fail3("contributes", `slot ${slot.slot} openView ${slot.openView} must declare context ${SLOT_CONTEXT_KEY[slot.slot]}`);
+      }
+    }
+    if (slot.externalOrigins !== void 0) {
+      if (slot.slot !== "task.badge") fail3("contributes", `slot ${slot.slot} cannot declare externalOrigins`);
+      if (!unique4(slot.externalOrigins)) fail3("contributes", "externalOrigins must not contain duplicates");
+      for (const origin2 of slot.externalOrigins) if (!isHttpsOrigin(origin2)) fail3("contributes", `externalOrigins entry ${origin2} must be a bare https origin (no path, credentials or query)`);
     }
   }
 });
@@ -5769,6 +6086,7 @@ var AiChatProviderViewSchema = external_exports.object({
 var AiChatOptionsSchema = external_exports.object({
   providers: external_exports.array(AiChatProviderViewSchema).max(8),
   defaultProviderId: providerId2.nullable(),
+  capabilities: external_exports.object({ closedSessionResume: external_exports.boolean().optional() }).strict().optional(),
   limits: external_exports.object({
     systemChars: external_exports.number().int(),
     transcriptLines: external_exports.number().int(),
@@ -6166,6 +6484,7 @@ var PluginSurfaceInstallRecordV1Schema = external_exports.object({
   integritySha256: external_exports.string().regex(/^[0-9a-f]{64}$/),
   grants: external_exports.array(external_exports.string().min(3).max(64)).max(64),
   revoked: external_exports.array(external_exports.string().min(3).max(64)).max(64),
+  aiChatGrantEpoch: external_exports.string().uuid().optional(),
   enabled: external_exports.boolean(),
   installedAt: external_exports.string().min(1).max(40),
   dataUninstall: external_exports.enum(["keep", "delete", "ask"]),
@@ -6189,7 +6508,9 @@ var PLUGIN_VIEW_CHANNELS = Object.freeze({
   PRESENTATION_CHANGED: "plugin-view:presentation-changed",
   VISIBILITY: "plugin-view:visibility",
   MEDIA_REPORT: "plugin-view:media-report",
-  MEDIA_COMMAND: "plugin-view:media-command"
+  MEDIA_COMMAND: "plugin-view:media-command",
+  CONTEXT_GET: "plugin-view:context-get",
+  CONTEXT_CHANGED: "plugin-view:context-changed"
 });
 var PRESENTATION_ERROR_CODES = Object.freeze([
   "presentation_not_declared",
@@ -6200,52 +6521,52 @@ var PRESENTATION_ERROR_CODES = Object.freeze([
   "presentation_not_visible",
   "presentation_view_unavailable"
 ]);
-var protocolVersion3 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
-var pluginId5 = external_exports.string().min(3).max(96).regex(IDENTIFIER_PATTERN);
-var viewId = external_exports.string().min(1).max(32).regex(IDENTIFIER_PATTERN);
+var protocolVersion4 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
+var pluginId6 = external_exports.string().min(3).max(96).regex(IDENTIFIER_PATTERN);
+var viewId2 = external_exports.string().min(1).max(32).regex(IDENTIFIER_PATTERN);
 var coordinate = external_exports.number().finite().min(-1e5).max(1e5);
 var extent = external_exports.number().finite().min(0).max(1e5);
 var PluginPresentationModeSchema = external_exports.enum(["tab", "fullpage"]);
 var PluginRequestedModeSchema = external_exports.enum(["tab", "window", "fullpage", "overlay"]);
 var PluginSurfaceRectV1Schema = external_exports.object({ x: coordinate, y: coordinate, width: extent, height: extent }).strict();
 var PluginSurfaceSyncRequestV1Schema = external_exports.object({
-  protocolVersion: protocolVersion3,
-  pluginId: pluginId5,
-  viewId,
+  protocolVersion: protocolVersion4,
+  pluginId: pluginId6,
+  viewId: viewId2,
   active: external_exports.boolean(),
   rect: PluginSurfaceRectV1Schema.nullable(),
   coreOverlay: external_exports.boolean(),
   keyboardExit: external_exports.boolean().optional()
 }).strict();
 var PluginPresentationSetRequestV1Schema = external_exports.object({
-  protocolVersion: protocolVersion3,
-  pluginId: pluginId5,
-  viewId,
+  protocolVersion: protocolVersion4,
+  pluginId: pluginId6,
+  viewId: viewId2,
   mode: PluginPresentationModeSchema,
   fullscreen: external_exports.boolean()
 }).strict();
-var PluginSurfaceMaskRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion3, masked: external_exports.boolean() }).strict();
-var PluginSurfaceTargetRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion3, pluginId: pluginId5, viewId }).strict();
+var PluginSurfaceMaskRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, masked: external_exports.boolean() }).strict();
+var PluginSurfaceTargetRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, pluginId: pluginId6, viewId: viewId2 }).strict();
 var PluginCaptureStateSchema = external_exports.object({ microphone: external_exports.boolean(), camera: external_exports.boolean() }).strict();
 var PluginSurfaceStateV1Schema = external_exports.object({
-  pluginId: pluginId5,
-  viewId,
+  pluginId: pluginId6,
+  viewId: viewId2,
   mode: PluginPresentationModeSchema,
   fullscreen: external_exports.boolean(),
-  status: external_exports.enum(["idle", "loading", "ready", "covered", "hidden", "crashed", "closed"]),
+  status: external_exports.enum(["idle", "loading", "ready", "covered", "hidden", "load_failed", "crashed", "closed"]),
   errorCode: external_exports.string().min(1).max(96).nullable(),
   capture: PluginCaptureStateSchema.default({ microphone: false, camera: false })
 }).strict();
-var PluginSurfaceStateEventV1Schema = external_exports.object({ protocolVersion: protocolVersion3, state: PluginSurfaceStateV1Schema }).strict();
-var errorEnvelope = external_exports.object({ code: external_exports.string().min(1).max(96).regex(/^[a-z0-9_]+$/), message: external_exports.string().min(1).max(512) }).strict();
+var PluginSurfaceStateEventV1Schema = external_exports.object({ protocolVersion: protocolVersion4, state: PluginSurfaceStateV1Schema }).strict();
+var errorEnvelope2 = external_exports.object({ code: external_exports.string().min(1).max(96).regex(/^[a-z0-9_]+$/), message: external_exports.string().min(1).max(512) }).strict();
 var PluginSurfaceResultEnvelopeV1Schema = external_exports.discriminatedUnion("ok", [
-  external_exports.object({ protocolVersion: protocolVersion3, ok: external_exports.literal(true), value: PluginSurfaceStateV1Schema }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion3, ok: external_exports.literal(false), error: errorEnvelope }).strict()
+  external_exports.object({ protocolVersion: protocolVersion4, ok: external_exports.literal(true), value: PluginSurfaceStateV1Schema }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion4, ok: external_exports.literal(false), error: errorEnvelope2 }).strict()
 ]);
 var PluginSurfaceMaskValueV1Schema = external_exports.object({ masked: external_exports.boolean(), hiddenViews: external_exports.number().int().min(0).max(1024) }).strict();
 var PluginSurfaceMaskEnvelopeV1Schema = external_exports.discriminatedUnion("ok", [
-  external_exports.object({ protocolVersion: protocolVersion3, ok: external_exports.literal(true), value: PluginSurfaceMaskValueV1Schema }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion3, ok: external_exports.literal(false), error: errorEnvelope }).strict()
+  external_exports.object({ protocolVersion: protocolVersion4, ok: external_exports.literal(true), value: PluginSurfaceMaskValueV1Schema }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion4, ok: external_exports.literal(false), error: errorEnvelope2 }).strict()
 ]);
 var PluginViewPresentationStateSchema = external_exports.object({
   mode: PluginPresentationModeSchema,
@@ -6306,21 +6627,24 @@ var PLUGIN_INSTALL_CHANNELS = Object.freeze({
   STORE_CONFIRM: "plugin-install:store-confirm",
   STORE_CONFIRM_REPLY: "plugin-install:store-confirm-reply",
   STORE_LIBRARY: "plugin-install:store-library",
-  STORE_NOTICES_CHANGED: "plugin-install:store-notices-changed"
+  STORE_NOTICES_CHANGED: "plugin-install:store-notices-changed",
+  DEV_LINK_LIST: "plugin-install:dev-link-list",
+  DEV_LINK_PICK: "plugin-install:dev-link-pick",
+  DEV_LINK_UNLINK: "plugin-install:dev-link-unlink"
 });
-var protocolVersion4 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
+var protocolVersion5 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
 var installId = external_exports.string().regex(/^[0-9a-f]{32}$/);
 var keyId = external_exports.string().regex(/^dev-[0-9a-f]{16}$/);
-var PluginInstallListRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4 }).strict();
-var PluginInstallBeginRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4 }).strict();
+var PluginInstallListRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5 }).strict();
+var PluginInstallBeginRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5 }).strict();
 var uninstallOptionFields = { removeOwnedPacks: external_exports.boolean().default(false), revokeDevKey: external_exports.boolean().default(false) };
 var PluginUninstallOptionsV1Schema = external_exports.object(uninstallOptionFields).strict();
-var PluginUninstallRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN), deleteData: external_exports.boolean(), ...uninstallOptionFields }).strict();
-var PluginUninstallPreviewRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN) }).strict();
-var PluginDevKeyImportRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, publicKey: external_exports.string().min(1).max(4096), label: external_exports.string().min(1).max(48) }).strict();
+var PluginUninstallRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN), deleteData: external_exports.boolean(), ...uninstallOptionFields }).strict();
+var PluginUninstallPreviewRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN) }).strict();
+var PluginDevKeyImportRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, publicKey: external_exports.string().min(1).max(4096), label: external_exports.string().min(1).max(48) }).strict();
 var settingValue = external_exports.union([external_exports.boolean(), external_exports.number().finite(), external_exports.string().max(1024)]);
-var PluginSettingsGetRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN).max(96) }).strict();
-var PluginSettingsSetRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN).max(96), values: external_exports.record(external_exports.string().regex(/^[A-Za-z0-9._-]{1,64}$/), settingValue).refine((values) => Object.keys(values).length <= 16) }).strict();
+var PluginSettingsGetRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN).max(96) }).strict();
+var PluginSettingsSetRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN).max(96), values: external_exports.record(external_exports.string().regex(/^[A-Za-z0-9._-]{1,64}$/), settingValue).refine((values) => Object.keys(values).length <= 16) }).strict();
 var SETTINGS_FORM_ISSUES = ["type", "range", "step", "option", "length", "chars", "unknown_key", "missing"];
 var PluginSettingsFormResultV1Schema = external_exports.object({
   pluginId: external_exports.string().regex(IDENTIFIER_PATTERN).max(96),
@@ -6328,16 +6652,31 @@ var PluginSettingsFormResultV1Schema = external_exports.object({
   values: external_exports.record(external_exports.string(), settingValue),
   errors: external_exports.record(external_exports.string().max(64), external_exports.enum(SETTINGS_FORM_ISSUES))
 }).strict();
-var PluginAssetPackBeginRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN).max(96) }).strict();
-var PluginAssetPackRemoveRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, packId: external_exports.string().regex(IDENTIFIER_PATTERN) }).strict();
-var PluginPermissionSetRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN), permission: external_exports.string().min(3).max(64), revoked: external_exports.boolean() }).strict();
-var PluginDevKeyRemoveRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, keyId }).strict();
-var PluginDevKeyPickRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4 }).strict();
+var PluginAssetPackBeginRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN).max(96) }).strict();
+var PluginAssetPackRemoveRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, packId: external_exports.string().regex(IDENTIFIER_PATTERN) }).strict();
+var PluginPermissionSetRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN), permission: external_exports.string().min(3).max(64), revoked: external_exports.boolean() }).strict();
+var PluginDevKeyRemoveRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, keyId }).strict();
+var PluginDevKeyPickRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5 }).strict();
+var PluginDevLinkPickRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5 }).strict();
+var PluginDevLinkUnlinkRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, pluginId: external_exports.string().regex(IDENTIFIER_PATTERN).max(96) }).strict();
+var PluginDevLinkViewV1Schema = external_exports.object({
+  pluginId: external_exports.string().min(3).max(96),
+  folder: external_exports.string().min(1).max(1024),
+  origin: external_exports.enum(["workspace", "manual"]),
+  linkedAt: external_exports.string().min(1).max(40),
+  version: external_exports.string().max(32).nullable(),
+  error: external_exports.string().max(64).nullable()
+}).strict();
+var PluginDevLinkListV1Schema = external_exports.object({ links: external_exports.array(PluginDevLinkViewV1Schema).max(64) }).strict();
+var PluginDevLinkPickResultV1Schema = external_exports.discriminatedUnion("status", [
+  external_exports.object({ status: external_exports.literal("linked"), link: PluginDevLinkViewV1Schema }).strict(),
+  external_exports.object({ status: external_exports.literal("cancelled") }).strict()
+]);
 var DEV_KEY_TRUST_DECISIONS = ["trust", "decline"];
-var PluginDevKeyDecideRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, trustId: installId, decision: external_exports.enum(DEV_KEY_TRUST_DECISIONS), label: external_exports.string().min(1).max(48).optional() }).strict();
+var PluginDevKeyDecideRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, trustId: installId, decision: external_exports.enum(DEV_KEY_TRUST_DECISIONS), label: external_exports.string().min(1).max(48).optional() }).strict();
 var pluginIdField = external_exports.string().regex(IDENTIFIER_PATTERN).max(96);
 var PluginNativeConfirmRequestV1Schema = external_exports.object({
-  protocolVersion: protocolVersion4,
+  protocolVersion: protocolVersion5,
   title: external_exports.string().min(1).max(80),
   message: external_exports.string().min(1).max(400),
   detail: external_exports.string().max(800).optional(),
@@ -6345,7 +6684,7 @@ var PluginNativeConfirmRequestV1Schema = external_exports.object({
   cancelLabel: external_exports.string().min(1).max(24)
 }).strict();
 var BUNDLED_LISTED_STATES = ["removed", "verification_failed"];
-var PluginBundledRestoreRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, pluginId: pluginIdField }).strict();
+var PluginBundledRestoreRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, pluginId: pluginIdField }).strict();
 var UNINSTALL_PREVIEW_MAX_PACKS = 16;
 var PluginUninstallPreviewV1Schema = external_exports.object({
   pluginId: pluginIdField,
@@ -6358,7 +6697,7 @@ var PluginUninstallPreviewV1Schema = external_exports.object({
   ownedPacksMore: external_exports.number().int().nonnegative(),
   devKeyToRevoke: external_exports.object({ keyId: external_exports.string().min(3).max(64), label: external_exports.string().max(48) }).strict().nullable()
 }).strict();
-var PluginProviderSetRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, capability: external_exports.string().regex(CAPABILITY_PATTERN).max(96), providerId: external_exports.string().regex(IDENTIFIER_PATTERN).max(96).nullable() }).strict();
+var PluginProviderSetRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, capability: external_exports.string().regex(CAPABILITY_PATTERN).max(96), providerId: external_exports.string().regex(IDENTIFIER_PATTERN).max(96).nullable() }).strict();
 var PLUGIN_RISK_NOTICES = ["full_trust", "native_code", "network_unrestricted", "dev_key_local_only", "file_sandbox_bypassable", "ai_agent_unrestricted", "process_helper"];
 var RiskNoticeSchema = external_exports.enum(PLUGIN_RISK_NOTICES);
 var BackendViewSchema = external_exports.object({
@@ -6417,7 +6756,8 @@ var InstalledPluginViewV1Schema = external_exports.object({
   capabilityConsents: external_exports.array(CapabilityConsentViewSchema).max(64).default([]),
   aiUsage: AiChatUsageSchema.nullable().default(null),
   settingsSchema: PluginSettingsSchemaSchema.nullable().default(null),
-  hasSettingsView: external_exports.boolean().default(false)
+  hasSettingsView: external_exports.boolean().default(false),
+  uninstallNotice: external_exports.string().max(200).nullable().default(null)
 }).strict();
 var InstalledAssetPackViewV1Schema = external_exports.object({
   id: external_exports.string().regex(IDENTIFIER_PATTERN),
@@ -6455,7 +6795,7 @@ var BundledPluginEntryViewV1Schema = external_exports.object({
   failureCode: external_exports.string().max(96).nullable()
 }).strict();
 var PluginInstallListV1Schema = external_exports.object({
-  protocolVersion: protocolVersion4,
+  protocolVersion: protocolVersion5,
   plugins: external_exports.array(InstalledPluginViewV1Schema),
   developerPanelEnabled: external_exports.boolean().default(false),
   developerViews: external_exports.array(PluginSurfaceStateV1Schema).max(1024).default([]),
@@ -6496,6 +6836,7 @@ var PluginAssetPackRedirectV1Schema = external_exports.object({
 var PluginInstallBeginResultV1Schema = external_exports.discriminatedUnion("status", [
   PluginAssetPackRedirectV1Schema,
   external_exports.object({ status: external_exports.literal("cancelled") }).strict(),
+  external_exports.object({ status: external_exports.literal("already_installed"), pluginId: external_exports.string().min(1), name: external_exports.string(), version: external_exports.string().min(1) }).strict(),
   external_exports.object({ status: external_exports.literal("installed"), installed: PluginInstalledSummaryV1Schema, list: PluginInstallListV1Schema }).strict()
 ]);
 var PluginDevKeyPickResultV1Schema = external_exports.discriminatedUnion("status", [
@@ -6507,7 +6848,7 @@ var PluginDevKeyDecideResultV1Schema = external_exports.discriminatedUnion("stat
   external_exports.object({ status: external_exports.literal("trusted"), keyId }).strict()
 ]);
 var PluginBundledRestoreResultV1Schema = external_exports.object({ pluginId: pluginIdField, status: external_exports.literal("consented") }).strict();
-var PluginStoreCatalogRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, refresh: external_exports.boolean() }).strict();
+var PluginStoreCatalogRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, refresh: external_exports.boolean() }).strict();
 var STORE_CATALOG_STATES = ["disabled", "fresh", "stale", "offline", "untrusted"];
 var STORE_CATALOG_SOURCES = ["production", "dev-local"];
 var STORE_CATALOG_VIEW_MAX_ENTRIES = 50;
@@ -6539,8 +6880,8 @@ var PluginStoreCatalogViewV1Schema = external_exports.object({
 var storeEntryId = external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/);
 var storeErrorCode = external_exports.string().regex(/^store_[a-z_]{3,40}$/);
 var STORE_PROGRESS_STAGES = ["downloading", "verifying", "installing"];
-var PluginStoreEntryRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, entryId: storeEntryId }).strict();
-var PluginStoreDownloadsRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4 }).strict();
+var PluginStoreEntryRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, entryId: storeEntryId }).strict();
+var PluginStoreDownloadsRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5 }).strict();
 var StoreRetrySchema = external_exports.object({ attempt: external_exports.number().int().min(1).max(10), max: external_exports.number().int().min(1).max(10) }).strict();
 var byteField = external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 var PluginStoreProgressEventV1Schema = external_exports.object({
@@ -6595,7 +6936,7 @@ var PluginStoreConfirmRequestV1Schema = external_exports.discriminatedUnion("kin
   external_exports.object({ kind: external_exports.literal("ask-rollback"), requestId: confirmRequestId, prompt: PluginStoreRollbackPromptV1Schema }).strict(),
   external_exports.object({ kind: external_exports.literal("cancel"), requestId: confirmRequestId }).strict()
 ]);
-var PluginStoreConfirmReplyRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion4, requestId: confirmRequestId, outcome: external_exports.enum(STORE_CONFIRM_OUTCOMES) }).strict();
+var PluginStoreConfirmReplyRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion5, requestId: confirmRequestId, outcome: external_exports.enum(STORE_CONFIRM_OUTCOMES) }).strict();
 var PluginStoreAcquireResultV1Schema = external_exports.discriminatedUnion("status", [
   external_exports.object({ status: external_exports.enum(["installed", "updated"]), packId: external_exports.string().max(96), version: external_exports.string().max(32), name: external_exports.string().max(200) }).strict(),
   external_exports.object({ status: external_exports.literal("cancelled") }).strict()
@@ -6609,11 +6950,11 @@ var PluginStoreDownloadsViewV1Schema = external_exports.object({
 var libraryNotice = external_exports.object({ title: external_exports.string().max(200), body: external_exports.string().max(600) }).strict();
 var noticeId = external_exports.string().regex(/^[0-9a-f]{24}-(?:disable|remove)$/);
 var PluginStoreLibraryRequestV1Schema = external_exports.discriminatedUnion("op", [
-  external_exports.object({ protocolVersion: protocolVersion4, op: external_exports.literal("characters"), ownerId: pluginIdField }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion4, op: external_exports.literal("rollback"), ownerId: pluginIdField, entryId: storeEntryId, expectedVersion: external_exports.string().max(32) }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion4, op: external_exports.literal("notices") }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion4, op: external_exports.literal("seen"), noticeId }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion4, op: external_exports.literal("dismiss"), entryId: storeEntryId }).strict()
+  external_exports.object({ protocolVersion: protocolVersion5, op: external_exports.literal("characters"), ownerId: pluginIdField }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion5, op: external_exports.literal("rollback"), ownerId: pluginIdField, entryId: storeEntryId, expectedVersion: external_exports.string().max(32) }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion5, op: external_exports.literal("notices") }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion5, op: external_exports.literal("seen"), noticeId }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion5, op: external_exports.literal("dismiss"), entryId: storeEntryId }).strict()
 ]);
 var PluginStoreCharacterViewV1Schema = external_exports.object({
   entryId: storeEntryId,
@@ -6648,23 +6989,26 @@ var PluginStoreLibraryResultV1Schema = external_exports.discriminatedUnion("kind
   external_exports.object({ kind: external_exports.literal("notices"), items: external_exports.array(PluginStoreNoticeViewV1Schema).max(50) }).strict(),
   external_exports.object({ kind: external_exports.literal("done") }).strict()
 ]);
-var envelope = (value) => external_exports.discriminatedUnion("ok", [
-  external_exports.object({ protocolVersion: protocolVersion4, ok: external_exports.literal(true), value }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion4, ok: external_exports.literal(false), error: PluginRuntimeErrorV1Schema }).strict()
+var envelope2 = (value) => external_exports.discriminatedUnion("ok", [
+  external_exports.object({ protocolVersion: protocolVersion5, ok: external_exports.literal(true), value }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion5, ok: external_exports.literal(false), error: PluginRuntimeErrorV1Schema }).strict()
 ]);
-var PluginInstallListEnvelopeV1Schema = envelope(PluginInstallListV1Schema);
-var PluginInstallBeginEnvelopeV1Schema = envelope(PluginInstallBeginResultV1Schema);
-var PluginDevKeyPickEnvelopeV1Schema = envelope(PluginDevKeyPickResultV1Schema);
-var PluginDevKeyDecideEnvelopeV1Schema = envelope(PluginDevKeyDecideResultV1Schema);
-var PluginBundledRestoreEnvelopeV1Schema = envelope(PluginBundledRestoreResultV1Schema);
-var PluginNativeConfirmEnvelopeV1Schema = envelope(external_exports.object({ confirmed: external_exports.boolean() }).strict());
-var PluginSettingsFormEnvelopeV1Schema = envelope(PluginSettingsFormResultV1Schema);
-var PluginStoreCatalogEnvelopeV1Schema = envelope(PluginStoreCatalogViewV1Schema);
-var PluginStoreAcquireEnvelopeV1Schema = envelope(PluginStoreAcquireResultV1Schema);
-var PluginStoreDownloadsEnvelopeV1Schema = envelope(PluginStoreDownloadsViewV1Schema);
-var PluginStoreLibraryEnvelopeV1Schema = envelope(PluginStoreLibraryResultV1Schema);
-var PluginUninstallPreviewEnvelopeV1Schema = envelope(PluginUninstallPreviewV1Schema);
-var PluginStoreDoneEnvelopeV1Schema = envelope(external_exports.object({ done: external_exports.literal(true) }).strict());
+var PluginInstallListEnvelopeV1Schema = envelope2(PluginInstallListV1Schema);
+var PluginInstallBeginEnvelopeV1Schema = envelope2(PluginInstallBeginResultV1Schema);
+var PluginDevKeyPickEnvelopeV1Schema = envelope2(PluginDevKeyPickResultV1Schema);
+var PluginDevLinkListEnvelopeV1Schema = envelope2(PluginDevLinkListV1Schema);
+var PluginDevLinkPickEnvelopeV1Schema = envelope2(PluginDevLinkPickResultV1Schema);
+var PluginDevLinkDoneEnvelopeV1Schema = envelope2(external_exports.object({ done: external_exports.literal(true) }).strict());
+var PluginDevKeyDecideEnvelopeV1Schema = envelope2(PluginDevKeyDecideResultV1Schema);
+var PluginBundledRestoreEnvelopeV1Schema = envelope2(PluginBundledRestoreResultV1Schema);
+var PluginNativeConfirmEnvelopeV1Schema = envelope2(external_exports.object({ confirmed: external_exports.boolean() }).strict());
+var PluginSettingsFormEnvelopeV1Schema = envelope2(PluginSettingsFormResultV1Schema);
+var PluginStoreCatalogEnvelopeV1Schema = envelope2(PluginStoreCatalogViewV1Schema);
+var PluginStoreAcquireEnvelopeV1Schema = envelope2(PluginStoreAcquireResultV1Schema);
+var PluginStoreDownloadsEnvelopeV1Schema = envelope2(PluginStoreDownloadsViewV1Schema);
+var PluginStoreLibraryEnvelopeV1Schema = envelope2(PluginStoreLibraryResultV1Schema);
+var PluginUninstallPreviewEnvelopeV1Schema = envelope2(PluginUninstallPreviewV1Schema);
+var PluginStoreDoneEnvelopeV1Schema = envelope2(external_exports.object({ done: external_exports.literal(true) }).strict());
 
 var EXT_CONTROL_PROTOCOL_VERSION = 1;
 var EXT_CONTROL_KINDS = Object.freeze(["ext-endpoint", "ext-link-up", "ext-link-down", "ext-busy", "ext-session-open", "ext-session-opened", "ext-session-close", "ext-link-listener-close"]);
@@ -6672,16 +7016,16 @@ var EXT_LINK_MODES = Object.freeze(["session", "call"]);
 var EXT_TICKET_HASH_PATTERN = /^[0-9a-f]{64}$/;
 var EXT_LINK_PATH_PATTERN = /^\/l\/[0-9a-f]{32,64}$/;
 var EXT_LINK_SECRET_PATTERN = /^[0-9a-f]{32,128}$/;
-var protocolVersion5 = external_exports.literal(EXT_CONTROL_PROTOCOL_VERSION);
+var protocolVersion6 = external_exports.literal(EXT_CONTROL_PROTOCOL_VERSION);
 var linkId = Hex32IdSchema;
 var closeReason2 = external_exports.enum(LINK_CLOSE_REASONS);
 var ExtEndpointSchema = external_exports.object({
-  protocolVersion: protocolVersion5,
+  protocolVersion: protocolVersion6,
   kind: external_exports.literal("ext-endpoint"),
   port: external_exports.number().int().min(1).max(65535).nullable()
 }).strict();
 var ExtLinkUpSchema = external_exports.object({
-  protocolVersion: protocolVersion5,
+  protocolVersion: protocolVersion6,
   kind: external_exports.literal("ext-link-up"),
   linkId,
   group: GroupIdSchema,
@@ -6689,18 +7033,18 @@ var ExtLinkUpSchema = external_exports.object({
   mode: external_exports.enum(EXT_LINK_MODES)
 }).strict();
 var ExtLinkDownSchema = external_exports.object({
-  protocolVersion: protocolVersion5,
+  protocolVersion: protocolVersion6,
   kind: external_exports.literal("ext-link-down"),
   linkId,
   reason: closeReason2
 }).strict();
 var ExtBusySchema = external_exports.object({
-  protocolVersion: protocolVersion5,
+  protocolVersion: protocolVersion6,
   kind: external_exports.literal("ext-busy"),
   busy: external_exports.boolean()
 }).strict();
 var ExtSessionOpenSchema = external_exports.object({
-  protocolVersion: protocolVersion5,
+  protocolVersion: protocolVersion6,
   kind: external_exports.literal("ext-session-open"),
   linkId,
   ticketHash: external_exports.string().regex(EXT_TICKET_HASH_PATTERN),
@@ -6708,17 +7052,17 @@ var ExtSessionOpenSchema = external_exports.object({
   who: LinkWhoSchema
 }).strict();
 var ExtSessionOpenedSchema = external_exports.discriminatedUnion("ok", [
-  external_exports.object({ protocolVersion: protocolVersion5, kind: external_exports.literal("ext-session-opened"), linkId, ok: external_exports.literal(true) }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion5, kind: external_exports.literal("ext-session-opened"), linkId, ok: external_exports.literal(false), error: external_exports.object({ code: external_exports.string().min(1).max(64) }).strict() }).strict()
+  external_exports.object({ protocolVersion: protocolVersion6, kind: external_exports.literal("ext-session-opened"), linkId, ok: external_exports.literal(true) }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion6, kind: external_exports.literal("ext-session-opened"), linkId, ok: external_exports.literal(false), error: external_exports.object({ code: external_exports.string().min(1).max(64) }).strict() }).strict()
 ]);
 var ExtSessionCloseSchema = external_exports.object({
-  protocolVersion: protocolVersion5,
+  protocolVersion: protocolVersion6,
   kind: external_exports.literal("ext-session-close"),
   linkId,
   reason: closeReason2
 }).strict();
 var ExtLinkListenerCloseSchema = external_exports.object({
-  protocolVersion: protocolVersion5,
+  protocolVersion: protocolVersion6,
   kind: external_exports.literal("ext-link-listener-close"),
   reason: external_exports.literal("permission_revoked")
 }).strict();
@@ -6729,6 +7073,123 @@ var ExternalHostLinksSchema = external_exports.object({
   challengeSecret: external_exports.string().regex(EXT_LINK_SECRET_PATTERN)
 }).strict();
 
+var PLUGIN_BACKEND_INVOKE_CHANNEL = "plugin-view:backend-invoke";
+var PLUGIN_BACKEND_INVOKE_LIMITS = Object.freeze({ methods: 32, methodLength: 64, payloadBytes: 1024 * 1024, inFlight: 8, timeoutMs: 3e4 });
+var PLUGIN_BACKEND_INVOKE_ERROR_CODES = Object.freeze([
+  "plugin_not_installed",
+  "plugin_disabled",
+  "plugin_permission_denied",
+  "backend_method_not_allowed",
+  "backend_invoke_invalid",
+  "backend_invoke_too_large",
+  "backend_invoke_timeout",
+  "plugin_backend_crashed",
+  "plugin_backend_unavailable"
+]);
+var method = external_exports.string().min(1).max(PLUGIN_BACKEND_INVOKE_LIMITS.methodLength).regex(/^[A-Za-z0-9._@-]+$/);
+var jsonValueReference = external_exports.lazy(() => external_exports.union([
+  external_exports.null(),
+  external_exports.boolean(),
+  external_exports.number().finite(),
+  external_exports.string(),
+  external_exports.array(jsonValueReference).max(4096),
+  external_exports.record(external_exports.string(), jsonValueReference)
+]));
+var NOT_LINEAR = Symbol("not-linear");
+var LINEAR_MAX_DEPTH = 128;
+var LINEAR_MAX_ARRAY = 4096;
+function linearJsonCopy(value, depth) {
+  if (value === null) return null;
+  switch (typeof value) {
+    case "boolean":
+    case "string":
+      return value;
+    case "number":
+      return Number.isFinite(value) ? value : NOT_LINEAR;
+    case "object":
+      break;
+    default:
+      return NOT_LINEAR;
+  }
+  if (depth >= LINEAR_MAX_DEPTH) return NOT_LINEAR;
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype || value.length > LINEAR_MAX_ARRAY) return NOT_LINEAR;
+    if (Object.prototype.hasOwnProperty.call(value, Symbol.iterator)) return NOT_LINEAR;
+    const items = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      const item = linearJsonCopy(value[index], depth + 1);
+      if (item === NOT_LINEAR) return NOT_LINEAR;
+      items[index] = item;
+    }
+    return items;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return NOT_LINEAR;
+  const source = value;
+  if (typeof source.then === "function") return NOT_LINEAR;
+  const entries = {};
+  for (const key4 in source) {
+    const entry3 = linearJsonCopy(source[key4], depth + 1);
+    if (entry3 === NOT_LINEAR) return NOT_LINEAR;
+    if (key4 !== "__proto__") entries[key4] = entry3;
+  }
+  return entries;
+}
+function isReadByValidator(key4, enumerable) {
+  return enumerable === true || key4 === "then" || key4 === "catch";
+}
+function hasLiveAccessor(root) {
+  const seen = /* @__PURE__ */ new Set();
+  const checkedPrototypes = /* @__PURE__ */ new Set();
+  const pending = [root];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (typeof node !== "object" || node === null || seen.has(node)) continue;
+    seen.add(node);
+    const isArray = Array.isArray(node);
+    for (const key4 of Reflect.ownKeys(node)) {
+      const descriptor = Object.getOwnPropertyDescriptor(node, key4);
+      if (descriptor === void 0) continue;
+      if (isArray && key4 === Symbol.iterator) return true;
+      if (!isReadByValidator(key4, descriptor.enumerable)) continue;
+      if (descriptor.get !== void 0 || descriptor.set !== void 0) return true;
+      if (typeof key4 === "string") pending.push(descriptor.value);
+    }
+    for (let prototype = Object.getPrototypeOf(node); prototype !== null && !checkedPrototypes.has(prototype); prototype = Object.getPrototypeOf(prototype)) {
+      checkedPrototypes.add(prototype);
+      for (const key4 of Reflect.ownKeys(prototype)) {
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, key4);
+        if (descriptor !== void 0 && isReadByValidator(key4, descriptor.enumerable) && (descriptor.get !== void 0 || descriptor.set !== void 0)) return true;
+      }
+    }
+  }
+  return false;
+}
+var JsonValueSchema = class extends external_exports.ZodType {
+  _parse(input) {
+    const copy = linearJsonCopy(input.data, 0);
+    if (copy !== NOT_LINEAR) return external_exports.OK(copy);
+    const reference = jsonValueReference._parse(input);
+    if (reference.status !== "valid" || !hasLiveAccessor(input.data)) return reference;
+    external_exports.addIssueToContext(this._getOrReturnCtx(input), { code: external_exports.ZodIssueCode.custom, message: "Expected plain JSON data without accessors" });
+    return external_exports.INVALID;
+  }
+};
+var jsonValue = new JsonValueSchema({});
+var PluginBackendInvokeRequestV1Schema = external_exports.object({ method, params: jsonValue }).strict();
+var PluginBackendInvokeResultV1Schema = external_exports.discriminatedUnion("ok", [
+  external_exports.object({ ok: external_exports.literal(true), value: jsonValue }).strict(),
+  external_exports.object({ ok: external_exports.literal(false), error: external_exports.enum(PLUGIN_BACKEND_INVOKE_ERROR_CODES) }).strict()
+]);
+function pluginBackendInvokePayloadBytes(value) {
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded === void 0 ? null : new TextEncoder().encode(encoded).byteLength;
+  } catch {
+    return null;
+  }
+}
+
 var PLUGIN_BACKEND_CHANNELS = Object.freeze({
   STATUS: "plugin-backend:status",
   PROBE: "plugin-backend:probe",
@@ -6736,10 +7197,10 @@ var PLUGIN_BACKEND_CHANNELS = Object.freeze({
 });
 var EXTERNAL_HOST_PROTOCOL_VERSION = 1;
 var EXTERNAL_HOST_VERSION = "1.0.0";
-var EXTERNAL_HOST_MAX_RESULT_BYTES = 64 * 1024;
-var protocolVersion6 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
+var EXTERNAL_HOST_MAX_RESULT_BYTES = PLUGIN_BACKEND_INVOKE_LIMITS.payloadBytes;
+var protocolVersion7 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
 var hostVersion = external_exports.literal(EXTERNAL_HOST_PROTOCOL_VERSION);
-var pluginId6 = external_exports.string().regex(IDENTIFIER_PATTERN);
+var pluginId7 = external_exports.string().regex(IDENTIFIER_PATTERN);
 var methodName = external_exports.string().min(1).max(64).regex(/^[A-Za-z0-9._@-]+$/);
 var errorCode2 = external_exports.string().min(3).max(96).regex(/^[a-z0-9_]+$/);
 var settingValues = external_exports.record(external_exports.string().regex(/^[A-Za-z0-9._-]{1,64}$/), external_exports.union([external_exports.boolean(), external_exports.number().finite(), external_exports.string().max(1024)])).refine((values) => Object.keys(values).length <= 16);
@@ -6757,7 +7218,7 @@ var ExternalPermissionRevokedMessageSchema = external_exports.object({ protocolV
 var ExternalPermissionRevokedAckMessageSchema = external_exports.object({ protocolVersion: hostVersion, kind: external_exports.literal("ext-permission-revoked-ack"), requestId: external_exports.string().regex(/^[a-f0-9]{16}$/) }).strict();
 var ExternalHostInitSchema = external_exports.object({
   version: hostVersion,
-  pluginId: pluginId6,
+  pluginId: pluginId7,
   installDir: external_exports.string().min(1).max(1024),
   dataDir: external_exports.string().min(1).max(1024),
   entry: external_exports.string().min(1).max(1024),
@@ -6801,7 +7262,7 @@ var ExternalResultMessageSchema = external_exports.discriminatedUnion("ok", [
 var BACKEND_STATES = ["idle", "starting", "running", "stopping", "failed"];
 var BACKEND_STOP_REASONS = ["idle", "memory_exceeded", "disabled", "crashed", "shutdown", "uninstalled", "hung", "recycled", "revalidated"];
 var PluginBackendStatusV1Schema = external_exports.object({
-  pluginId: pluginId6,
+  pluginId: pluginId7,
   state: external_exports.enum(BACKEND_STATES),
   pid: external_exports.number().int().nonnegative().nullable(),
   startedAt: external_exports.string().max(40).nullable(),
@@ -6822,11 +7283,11 @@ var PluginBackendStatusV1Schema = external_exports.object({
   residency: PluginBackendResidencyV1Schema
 }).strict();
 var PluginBackendStatusListV1Schema = external_exports.object({
-  protocolVersion: protocolVersion6,
+  protocolVersion: protocolVersion7,
   backends: external_exports.array(PluginBackendStatusV1Schema).max(256)
 }).strict();
 var PluginBackendProbeResultV1Schema = external_exports.object({
-  pluginId: pluginId6,
+  pluginId: pluginId7,
   coldStart: external_exports.boolean(),
   totalMs: external_exports.number().nonnegative(),
   core: external_exports.unknown(),
@@ -6839,7 +7300,7 @@ var PluginBackendProbeResultV1Schema = external_exports.object({
 var PluginBackendLinkRowV1Schema = external_exports.object({
   linkId: external_exports.string().regex(/^[0-9a-f]{32}$/),
   consumer: external_exports.string().min(1).max(128),
-  providerId: pluginId6,
+  providerId: pluginId7,
   category: external_exports.string().min(1).max(96),
   scope: external_exports.enum(["use", "describe"]),
   state: external_exports.enum(["issued", "up"]),
@@ -6850,25 +7311,25 @@ var PluginBackendLinkRowV1Schema = external_exports.object({
 }).strict();
 var PluginBackendEndpointRowV1Schema = external_exports.object({
   category: external_exports.string().min(1).max(96),
-  providerId: pluginId6,
+  providerId: pluginId7,
   status: external_exports.enum(["ready", "starting", "stopped", "blocked"]),
   dataClass: external_exports.enum(["local", "cloud"])
 }).strict();
 var PluginBackendLinksV1Schema = external_exports.object({
-  protocolVersion: protocolVersion6,
+  protocolVersion: protocolVersion7,
   links: external_exports.array(PluginBackendLinkRowV1Schema).max(512),
   endpoints: external_exports.array(PluginBackendEndpointRowV1Schema).max(512)
 }).strict();
-var PluginBackendStatusRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion6 }).strict();
-var PluginBackendLinksRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion6 }).strict();
-var PluginBackendProbeRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion6, pluginId: pluginId6 }).strict();
-var envelope2 = (value) => external_exports.discriminatedUnion("ok", [
-  external_exports.object({ protocolVersion: protocolVersion6, ok: external_exports.literal(true), value }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion6, ok: external_exports.literal(false), error: PluginRuntimeErrorV1Schema }).strict()
+var PluginBackendStatusRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion7 }).strict();
+var PluginBackendLinksRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion7 }).strict();
+var PluginBackendProbeRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion7, pluginId: pluginId7 }).strict();
+var envelope3 = (value) => external_exports.discriminatedUnion("ok", [
+  external_exports.object({ protocolVersion: protocolVersion7, ok: external_exports.literal(true), value }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion7, ok: external_exports.literal(false), error: PluginRuntimeErrorV1Schema }).strict()
 ]);
-var PluginBackendStatusEnvelopeV1Schema = envelope2(PluginBackendStatusListV1Schema);
-var PluginBackendProbeEnvelopeV1Schema = envelope2(PluginBackendProbeResultV1Schema);
-var PluginBackendLinksEnvelopeV1Schema = envelope2(PluginBackendLinksV1Schema);
+var PluginBackendStatusEnvelopeV1Schema = envelope3(PluginBackendStatusListV1Schema);
+var PluginBackendProbeEnvelopeV1Schema = envelope3(PluginBackendProbeResultV1Schema);
+var PluginBackendLinksEnvelopeV1Schema = envelope3(PluginBackendLinksV1Schema);
 
 var CORE_CALLER_ID = "core";
 var TEXT_INPUT_CHANNELS = Object.freeze({
@@ -6903,8 +7364,8 @@ var TEXT_INPUT_SUBMIT_ERRORS = Object.freeze([
   "plugin_text_input_failed"
 ]);
 var PLUGIN_INPUT_ERRORS = Object.freeze(["plugin_not_active", "not_granted", "view_not_visible", "request_invalid", "unavailable"]);
-var protocolVersion7 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
-var pluginId7 = external_exports.string().min(3).max(96).regex(IDENTIFIER_PATTERN);
+var protocolVersion8 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
+var pluginId8 = external_exports.string().min(3).max(96).regex(IDENTIFIER_PATTERN);
 var inputId = external_exports.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 var reason = external_exports.string().regex(/^[a-z0-9_]{1,32}$/);
 var utterance = external_exports.object({ startMs: external_exports.number().int().min(0), endMs: external_exports.number().int().min(0), sourceId: external_exports.string().regex(/^[a-f0-9]{32}$/).optional(), utteranceId: external_exports.string().regex(/^[a-f0-9]{32}$/).optional() }).strict().refine((value) => value.endMs >= value.startMs, { message: "endMs must not precede startMs" });
@@ -6935,26 +7396,26 @@ var PluginInputEnvelopeSchema = external_exports.discriminatedUnion("ok", [
   external_exports.object({ ok: external_exports.literal(false), error: external_exports.enum(PLUGIN_INPUT_ERRORS) }).strict()
 ]);
 var PluginInputEventSchema = external_exports.discriminatedUnion("type", [TextInputDeliveredSchema, TextInputInterruptDeliveredSchema]);
-var TextInputStateRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion7 }).strict();
-var TextInputSubmitRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion7, text: textInputText }).strict();
+var TextInputStateRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion8 }).strict();
+var TextInputSubmitRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion8, text: textInputText }).strict();
 var TextInputStateV1Schema = external_exports.object({
-  protocolVersion: protocolVersion7,
-  target: external_exports.object({ id: pluginId7, name: external_exports.string().max(96), visible: external_exports.boolean() }).strict().nullable(),
-  registered: external_exports.array(external_exports.object({ id: pluginId7, name: external_exports.string().max(96), current: external_exports.boolean() }).strict()).max(16)
+  protocolVersion: protocolVersion8,
+  target: external_exports.object({ id: pluginId8, name: external_exports.string().max(96), visible: external_exports.boolean() }).strict().nullable(),
+  registered: external_exports.array(external_exports.object({ id: pluginId8, name: external_exports.string().max(96), current: external_exports.boolean() }).strict()).max(16)
 }).strict();
 var TextInputSubmitValueV1Schema = external_exports.object({
   result: external_exports.enum(TEXT_INPUT_ACK_RESULTS),
   reason: reason.optional(),
-  target: external_exports.object({ id: pluginId7, name: external_exports.string().max(96) }).strict()
+  target: external_exports.object({ id: pluginId8, name: external_exports.string().max(96) }).strict()
 }).strict();
 var errorBody = external_exports.object({ code: external_exports.string().min(1).max(96).regex(/^[a-z0-9_]+$/), message: external_exports.string().min(1).max(512) }).strict();
 var TextInputStateEnvelopeV1Schema = external_exports.discriminatedUnion("ok", [
-  external_exports.object({ protocolVersion: protocolVersion7, ok: external_exports.literal(true), value: TextInputStateV1Schema }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion7, ok: external_exports.literal(false), error: errorBody }).strict()
+  external_exports.object({ protocolVersion: protocolVersion8, ok: external_exports.literal(true), value: TextInputStateV1Schema }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion8, ok: external_exports.literal(false), error: errorBody }).strict()
 ]);
 var TextInputSubmitEnvelopeV1Schema = external_exports.discriminatedUnion("ok", [
-  external_exports.object({ protocolVersion: protocolVersion7, ok: external_exports.literal(true), value: TextInputSubmitValueV1Schema }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion7, ok: external_exports.literal(false), error: errorBody }).strict()
+  external_exports.object({ protocolVersion: protocolVersion8, ok: external_exports.literal(true), value: TextInputSubmitValueV1Schema }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion8, ok: external_exports.literal(false), error: errorBody }).strict()
 ]);
 
 var VOICE_INPUT_CHANNELS = Object.freeze({
@@ -6986,31 +7447,31 @@ var VOICE_INPUT_REASONS = Object.freeze([
   "capture_failed"
 ]);
 var PLUGIN_VOICE_ERRORS = Object.freeze(["plugin_not_active", "request_invalid", "unavailable"]);
-var protocolVersion8 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
-var pluginId8 = external_exports.string().min(3).max(96).regex(IDENTIFIER_PATTERN);
+var protocolVersion9 = external_exports.literal(PLUGIN_RUNTIME_PROTOCOL_VERSION);
+var pluginId9 = external_exports.string().min(3).max(96).regex(IDENTIFIER_PATTERN);
 var count = external_exports.number().int().min(0);
 var VoiceCaptureFrameV1Schema = external_exports.object({
-  protocolVersion: protocolVersion8,
+  protocolVersion: protocolVersion9,
   data: external_exports.instanceof(ArrayBuffer).refine((frame2) => frame2.byteLength === VOICE_INPUT_LIMITS.captureFrameBytes)
 }).strict();
 var VoiceInputStateV1Schema = external_exports.object({
-  protocolVersion: protocolVersion8,
+  protocolVersion: protocolVersion9,
   status: external_exports.enum(VOICE_INPUT_STATUSES),
   enabled: external_exports.boolean(),
   capturing: external_exports.boolean(),
   available: external_exports.boolean(),
   reason: external_exports.enum(VOICE_INPUT_REASONS).nullable(),
-  recognizer: external_exports.object({ id: pluginId8, name: external_exports.string().max(96), version: external_exports.string().max(32), signer: external_exports.enum(PLUGIN_SIGNER_KINDS) }).strict().nullable(),
-  target: external_exports.object({ id: pluginId8, name: external_exports.string().max(96) }).strict().nullable(),
+  recognizer: external_exports.object({ id: pluginId9, name: external_exports.string().max(96), version: external_exports.string().max(32), signer: external_exports.enum(PLUGIN_SIGNER_KINDS) }).strict().nullable(),
+  target: external_exports.object({ id: pluginId9, name: external_exports.string().max(96) }).strict().nullable(),
   lastDeliveryError: external_exports.string().max(96).nullable(),
   stats: external_exports.object({ chunksSent: count, finals: count, delivered: count }).strict()
 }).strict();
-var VoiceInputStateRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion8 }).strict();
-var VoiceInputSetEnabledRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion8, enabled: external_exports.boolean(), consented: external_exports.boolean().optional() }).strict();
+var VoiceInputStateRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion9 }).strict();
+var VoiceInputSetEnabledRequestV1Schema = external_exports.object({ protocolVersion: protocolVersion9, enabled: external_exports.boolean(), consented: external_exports.boolean().optional() }).strict();
 var errorBody2 = external_exports.object({ code: external_exports.string().min(1).max(96).regex(/^[a-z0-9_]+$/), message: external_exports.string().min(1).max(512) }).strict();
 var VoiceInputStateEnvelopeV1Schema = external_exports.discriminatedUnion("ok", [
-  external_exports.object({ protocolVersion: protocolVersion8, ok: external_exports.literal(true), value: VoiceInputStateV1Schema }).strict(),
-  external_exports.object({ protocolVersion: protocolVersion8, ok: external_exports.literal(false), error: errorBody2 }).strict()
+  external_exports.object({ protocolVersion: protocolVersion9, ok: external_exports.literal(true), value: VoiceInputStateV1Schema }).strict(),
+  external_exports.object({ protocolVersion: protocolVersion9, ok: external_exports.literal(false), error: errorBody2 }).strict()
 ]);
 var PluginVoiceRequestSchema = external_exports.discriminatedUnion("op", [
   external_exports.object({ op: external_exports.literal("state") }).strict()
@@ -7023,42 +7484,6 @@ var PluginVoiceEnvelopeSchema = external_exports.discriminatedUnion("ok", [
   external_exports.object({ ok: external_exports.literal(true), value: PluginVoiceStateSchema }).strict(),
   external_exports.object({ ok: external_exports.literal(false), error: external_exports.enum(PLUGIN_VOICE_ERRORS) }).strict()
 ]);
-
-var PLUGIN_BACKEND_INVOKE_CHANNEL = "plugin-view:backend-invoke";
-var PLUGIN_BACKEND_INVOKE_LIMITS = Object.freeze({ methods: 32, methodLength: 64, payloadBytes: 64 * 1024, inFlight: 8, timeoutMs: 3e4 });
-var PLUGIN_BACKEND_INVOKE_ERROR_CODES = Object.freeze([
-  "plugin_not_installed",
-  "plugin_disabled",
-  "plugin_permission_denied",
-  "backend_method_not_allowed",
-  "backend_invoke_invalid",
-  "backend_invoke_too_large",
-  "backend_invoke_timeout",
-  "plugin_backend_crashed",
-  "plugin_backend_unavailable"
-]);
-var method = external_exports.string().min(1).max(PLUGIN_BACKEND_INVOKE_LIMITS.methodLength).regex(/^[A-Za-z0-9._@-]+$/);
-var jsonValue = external_exports.lazy(() => external_exports.union([
-  external_exports.null(),
-  external_exports.boolean(),
-  external_exports.number().finite(),
-  external_exports.string(),
-  external_exports.array(jsonValue).max(4096),
-  external_exports.record(external_exports.string(), jsonValue)
-]));
-var PluginBackendInvokeRequestV1Schema = external_exports.object({ method, params: jsonValue }).strict();
-var PluginBackendInvokeResultV1Schema = external_exports.discriminatedUnion("ok", [
-  external_exports.object({ ok: external_exports.literal(true), value: jsonValue }).strict(),
-  external_exports.object({ ok: external_exports.literal(false), error: external_exports.enum(PLUGIN_BACKEND_INVOKE_ERROR_CODES) }).strict()
-]);
-function pluginBackendInvokePayloadBytes(value) {
-  try {
-    const encoded = JSON.stringify(value);
-    return encoded === void 0 ? null : new TextEncoder().encode(encoded).byteLength;
-  } catch {
-    return null;
-  }
-}
 
 var PLUGIN_REMOTE_SURFACE_PROTOCOL_VERSION = PLUGIN_RUNTIME_PROTOCOL_VERSION;
 var PLUGIN_REMOTE_SURFACE_PATH = "/web/v1/plugin-surfaces";
@@ -7097,13 +7522,13 @@ var surfaceId = external_exports.string().regex(/^[A-Za-z0-9_-]{32,96}$/);
 var requestId2 = external_exports.string().regex(/^[A-Za-z0-9_-]{8,96}$/);
 var opaquePayload = external_exports.unknown();
 var PluginRemoteSurfaceRequestV1Schema = external_exports.discriminatedUnion("op", [
-  external_exports.object({ protocolVersion: external_exports.literal(PLUGIN_REMOTE_SURFACE_PROTOCOL_VERSION), op: external_exports.literal("list") }).strict(),
+  external_exports.object({ protocolVersion: external_exports.literal(PLUGIN_REMOTE_SURFACE_PROTOCOL_VERSION), op: external_exports.literal("list"), includePresentationMetadata: external_exports.literal(true).optional(), includeIconDataUrl: external_exports.literal(true).optional() }).strict(),
   external_exports.object({ protocolVersion: external_exports.literal(PLUGIN_REMOTE_SURFACE_PROTOCOL_VERSION), op: external_exports.literal("open"), pluginId: identifier2, viewId: identifier2 }).strict(),
   external_exports.object({ protocolVersion: external_exports.literal(PLUGIN_REMOTE_SURFACE_PROTOCOL_VERSION), op: external_exports.literal("close"), surfaceId }).strict(),
   external_exports.object({ protocolVersion: external_exports.literal(PLUGIN_REMOTE_SURFACE_PROTOCOL_VERSION), op: external_exports.literal("poll"), surfaceId, after: external_exports.number().int().nonnegative() }).strict(),
   external_exports.object({ protocolVersion: external_exports.literal(PLUGIN_REMOTE_SURFACE_PROTOCOL_VERSION), op: external_exports.literal("upload"), surfaceId, uploadId: requestId2, purpose: external_exports.enum(["storage-write", "ai-image"]), target: PluginRemoteSurfaceUploadTargetV1Schema, chunkIndex: external_exports.number().int().nonnegative().max(256), bytes: PluginRemoteSurfaceByteArrayV1Schema, complete: external_exports.boolean() }).strict(),
   external_exports.object({ protocolVersion: external_exports.literal(PLUGIN_REMOTE_SURFACE_PROTOCOL_VERSION), op: external_exports.literal("call"), surfaceId, requestId: requestId2, api: external_exports.enum(PLUGIN_REMOTE_SURFACE_API_FAMILIES), payload: opaquePayload }).strict()
-]).refine((value) => value.op !== "upload" || value.purpose === "storage-write" && value.target.api === "storage" || value.purpose === "ai-image" && value.target.api === "ai");
+]).refine((value) => value.op !== "upload" || value.purpose === "storage-write" && value.target.api === "storage" || value.purpose === "ai-image" && value.target.api === "ai").refine((value) => value.op !== "list" || value.includeIconDataUrl !== true || value.includePresentationMetadata === true);
 var PluginRemoteSurfaceDescriptorV1Schema = external_exports.object({
   surfaceId,
   pluginId: identifier2,
@@ -7114,7 +7539,21 @@ var PluginRemoteSurfaceDescriptorV1Schema = external_exports.object({
   src: external_exports.string().min(1).max(2048).startsWith(`${PLUGIN_REMOTE_SURFACE_PATH}/assets/`),
   handshakeNonce: external_exports.string().regex(/^[A-Za-z0-9_-]{32,96}$/)
 }).strict();
-var PluginRemoteSurfaceViewV1Schema = external_exports.object({ pluginId: identifier2, viewId: identifier2, title: external_exports.string().min(1).max(48) }).strict();
+var presentation = external_exports.enum(["tab", "window", "fullpage", "overlay", "settings"]);
+var PluginRemoteSurfaceViewV1Schema = external_exports.object({
+  pluginId: identifier2,
+  viewId: identifier2,
+  title: external_exports.string().min(1).max(48),
+  presentations: external_exports.array(presentation).min(1).max(5).optional(),
+  defaultPresentation: presentation.optional(),
+  iconDataUrl: external_exports.string().max(PLUGIN_ICON_DATA_URL_MAX_CHARS).regex(PLUGIN_ICON_DATA_URL_PATTERN).nullable().optional()
+}).strict().superRefine((view, context) => {
+  if (view.presentations === void 0 !== (view.defaultPresentation === void 0)) context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["presentations"], message: "presentation metadata must be provided as a pair" });
+  if (view.presentations !== void 0 && view.defaultPresentation !== void 0) {
+    if (new Set(view.presentations).size !== view.presentations.length) context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["presentations"], message: "presentations must not contain duplicates" });
+    if (!view.presentations.includes(view.defaultPresentation)) context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["defaultPresentation"], message: "defaultPresentation must be one of presentations" });
+  }
+});
 var success = external_exports.discriminatedUnion("op", [
   external_exports.object({ protocolVersion: external_exports.literal(PLUGIN_REMOTE_SURFACE_PROTOCOL_VERSION), ok: external_exports.literal(true), op: external_exports.literal("list"), surfaces: external_exports.array(PluginRemoteSurfaceViewV1Schema).max(96) }).strict(),
   external_exports.object({ protocolVersion: external_exports.literal(PLUGIN_REMOTE_SURFACE_PROTOCOL_VERSION), ok: external_exports.literal(true), op: external_exports.literal("open"), surface: PluginRemoteSurfaceDescriptorV1Schema }).strict(),
@@ -7175,7 +7614,8 @@ var PLUGIN_PROGRAM_PERMISSION_SCOPES_V1 = Object.freeze({
   "program:data:milestones:read": "data:milestones:read",
   "program:data:milestones:write": "data:milestones:write",
   "program:data:tasks:read": "data:tasks:read",
-  "program:data:tasks:write": "data:tasks:write"
+  "program:data:tasks:write": "data:tasks:write",
+  "program:data:tasks:status": "data:tasks:status"
 });
 var PLUGIN_PROGRAM_PERMISSION_OPERATIONS_V1 = Object.freeze({
   "program:conversation:dispatch": ["conversation.dispatch"],
@@ -7186,7 +7626,8 @@ var PLUGIN_PROGRAM_PERMISSION_OPERATIONS_V1 = Object.freeze({
   "program:data:milestones:read": ["data.milestones.list", "data.milestones.get"],
   "program:data:milestones:write": ["data.milestones.create", "data.milestones.update", "data.milestones.delete"],
   "program:data:tasks:read": ["data.tasks.list", "data.tasks.get"],
-  "program:data:tasks:write": ["data.tasks.create", "data.tasks.update", "data.tasks.delete"]
+  "program:data:tasks:write": ["data.tasks.create", "data.tasks.update", "data.tasks.delete"],
+  "program:data:tasks:status": ["data.tasks.update"]
 });
 var PLUGIN_PROGRAM_API_CHANNELS_V1 = Object.freeze({ REQUEST: "plugin-view:program-api" });
 var PLUGIN_PROGRAM_OPERATION_NAMES_V1 = [
@@ -7375,6 +7816,811 @@ var ROWS2 = [
 ];
 var GROUP_SPEC_DIRECTORY = Object.freeze(ROWS2.map((row) => Object.freeze({ ...row, modes: Object.freeze([...row.modes]), agentCallable: Object.freeze({ ...row.agentCallable }) })));
 
+var TEAMUPQUICK_API_CAPABILITY = "teamuq.teamupquick-api@1";
+var TEAMUPQUICK_API_PERMISSION = "teamupquick:api";
+var TEAMUPQUICK_API_METHODS = Object.freeze({ request: "request", currentAccount: "currentAccount" });
+var TEAMUPQUICK_ACCOUNT_CHANGED_EVENT = "account-changed";
+var TEAMUPQUICK_API_LIMITS = Object.freeze({
+  pathChars: 256,
+  queryKeys: 8,
+  queryValueChars: 256,
+  bodyBytes: 64 * 1024,
+  responseBytes: 200 * 1024,
+  defaultTimeoutMs: 15e3,
+  minTimeoutMs: 1e3,
+  maxTimeoutMs: 3e4,
+  requestsPerMinute: 120,
+  burst: 30,
+  maxInFlight: 8
+});
+var TEAMUPQUICK_API_HTTP_METHODS = ["GET", "POST", "PUT", "DELETE"];
+var TEAMUPQUICK_API_ERROR_CODES = [
+  "plugin_not_allowed",
+  "permission_denied",
+  "request_invalid",
+  "method_not_allowed",
+  "path_not_allowed",
+  "query_not_allowed",
+  "payload_too_large",
+  "rate_limited",
+  "account_unavailable",
+  "needs_relogin",
+  "unauthorized",
+  "forbidden",
+  "upstream_rate_limited",
+  "server_error",
+  "http_error",
+  "timeout",
+  "network_error",
+  "response_invalid",
+  "response_too_large",
+  "unavailable"
+];
+var TEAMUPQUICK_API_RETRYABLE_CODES = Object.freeze(["rate_limited", "upstream_rate_limited", "server_error", "timeout", "network_error", "unavailable"]);
+var TEAMUPQUICK_API_NON_IDEMPOTENT_METHODS = Object.freeze(["POST", "PUT", "DELETE"]);
+var TEAMUPQUICK_ACCOUNT_STATES = ["signed_in", "signed_out", "needs_relogin", "unavailable", "not_allowed"];
+var accountKey = external_exports.string().regex(/^[0-9a-f]{32}$/);
+var queryKey = /^[A-Za-z][A-Za-z0-9_]{0,31}$/;
+var TeamUpQuickApiRequestV1Schema = external_exports.object({
+  method: external_exports.enum(TEAMUPQUICK_API_HTTP_METHODS),
+  path: external_exports.string().min(1).max(TEAMUPQUICK_API_LIMITS.pathChars),
+  query: external_exports.record(external_exports.string().regex(queryKey), external_exports.string().max(TEAMUPQUICK_API_LIMITS.queryValueChars)).refine((query) => Object.keys(query).length <= TEAMUPQUICK_API_LIMITS.queryKeys).optional(),
+  body: external_exports.unknown().optional(),
+  timeoutMs: external_exports.number().int().min(TEAMUPQUICK_API_LIMITS.minTimeoutMs).max(TEAMUPQUICK_API_LIMITS.maxTimeoutMs).optional()
+}).strict();
+var TeamUpQuickApiSuccessV1Schema = external_exports.object({
+  ok: external_exports.literal(true),
+  status: external_exports.number().int().min(200).max(299),
+  headers: external_exports.record(external_exports.string(), external_exports.string().max(256)),
+  body: external_exports.unknown(),
+  accountKey
+}).strict();
+var TeamUpQuickApiFailureV1Schema = external_exports.object({
+  ok: external_exports.literal(false),
+  code: external_exports.enum(TEAMUPQUICK_API_ERROR_CODES),
+  retryable: external_exports.boolean(),
+  status: external_exports.number().int().min(100).max(599).nullable(),
+  body: external_exports.unknown().optional(),
+  retryAfterMs: external_exports.number().int().positive().max(36e5).optional(),
+  outcomeUnknown: external_exports.literal(true).optional(),
+  accountKey: accountKey.nullable()
+}).strict();
+var TeamUpQuickApiResultV1Schema = external_exports.union([TeamUpQuickApiSuccessV1Schema, TeamUpQuickApiFailureV1Schema]);
+var TeamUpQuickAccountV1Schema = external_exports.object({
+  state: external_exports.enum(TEAMUPQUICK_ACCOUNT_STATES),
+  accountKey: accountKey.nullable()
+}).strict();
+var TeamUpQuickAccountChangedEventV1Schema = external_exports.object({
+  protocolVersion: external_exports.literal(1),
+  kind: external_exports.literal("ext-capability-event"),
+  capabilityId: external_exports.literal(TEAMUPQUICK_API_CAPABILITY),
+  event: external_exports.literal(TEAMUPQUICK_ACCOUNT_CHANGED_EVENT),
+  state: external_exports.enum(TEAMUPQUICK_ACCOUNT_STATES),
+  accountKey: accountKey.nullable()
+}).strict();
+var teamUpQuickFailure = (code2, accountKey2, extra = {}) => ({
+  ok: false,
+  code: code2,
+  retryable: extra.outcomeUnknown !== true && TEAMUPQUICK_API_RETRYABLE_CODES.includes(code2),
+  status: extra.status ?? null,
+  ...extra.body === void 0 ? {} : { body: extra.body },
+  ...extra.retryAfterMs === void 0 ? {} : { retryAfterMs: extra.retryAfterMs },
+  ...extra.outcomeUnknown === true ? { outcomeUnknown: true } : {},
+  accountKey: accountKey2
+});
+
+var TestHostNotModeled = class extends Error {
+  surface;
+  id;
+  reason;
+  constructor(surface, id7, reason3 = null) {
+    super(`TestHostNotModeled: ${surface} ${id7} is not modeled by this devkit test host version${reason3 === null ? "" : `: ${reason3}`}`);
+    this.name = "TestHostNotModeled";
+    this.surface = surface;
+    this.id = id7;
+    this.reason = reason3;
+  }
+};
+var TestHostRefused = class extends Error {
+  constructor(message) {
+    super(`TestHostRefused: ${message}`);
+    this.name = "TestHostRefused";
+  }
+};
+var TestHostInvalid = class extends Error {
+  issues;
+  constructor(subject, issues) {
+    super(`TestHostInvalid: ${subject}: ${issues.join("; ")}`);
+    this.name = "TestHostInvalid";
+    this.issues = issues;
+  }
+};
+
+function createManualClock(start = Date.UTC(2026, 9, 26, 0, 0, 0)) {
+  let current = start;
+  let sequence = 0;
+  const timers = /* @__PURE__ */ new Map();
+  const nextDue = (limit) => {
+    let found;
+    for (const entry3 of timers) {
+      if (entry3[1].due > limit) continue;
+      if (found === void 0 || entry3[1].due < found[1].due || entry3[1].due === found[1].due && entry3[0] < found[0]) found = entry3;
+    }
+    return found;
+  };
+  return {
+    now: () => current,
+    later: (run, ms) => {
+      if (!Number.isInteger(ms) || ms < 0) throw new TestHostInvalid("clock.later", ["delay must be a non-negative integer number of milliseconds"]);
+      const id7 = ++sequence;
+      timers.set(id7, { due: current + ms, run });
+      return { cancel: () => {
+        timers.delete(id7);
+      } };
+    },
+    advance: (ms) => {
+      if (!Number.isInteger(ms) || ms < 0) throw new TestHostInvalid("clock.advance", ["step must be a non-negative integer number of milliseconds"]);
+      const target = current + ms;
+      let due = nextDue(target);
+      while (due !== void 0) {
+        const [id7, timer] = due;
+        timers.delete(id7);
+        current = timer.due;
+        timer.run();
+        due = nextDue(target);
+      }
+      current = target;
+    }
+  };
+}
+
+function createTaskDirectory(initial = []) {
+  const tasks = new Set(initial);
+  return {
+    exists: (taskId) => tasks.has(taskId),
+    add: (taskId) => {
+      tasks.add(taskId);
+    },
+    remove: (taskId) => tasks.delete(taskId)
+  };
+}
+
+var TERMINAL = ["completed", "interrupted", "failed"];
+function compileEntry(entry3) {
+  if (entry3 === "completed") return { kind: "completed" };
+  if (entry3 === "interrupted") return { kind: "interrupted" };
+  if (typeof entry3 === "object" && entry3 !== null) {
+    if ("textDelta" in entry3) return { kind: "textDelta", text: entry3.textDelta };
+    if ("contentSaved" in entry3) return { kind: "contentSaved", sequenceNo: entry3.contentSaved };
+    if ("failed" in entry3) {
+      const failed = entry3.failed;
+      return {
+        kind: "failed",
+        code: failed.code,
+        retryable: failed.retryable ?? failed.code !== "access_revoked",
+        fallbackUsed: failed.fallbackUsed ?? false,
+        partialDelivered: failed.partialDelivered ?? false
+      };
+    }
+  }
+  throw new TestHostInvalid("ai script", [`unsupported script entry ${JSON.stringify(entry3)}`]);
+}
+function compileAiScript(input) {
+  const entries = Array.isArray(input) ? input : input.events;
+  if (!Array.isArray(entries)) throw new TestHostInvalid("ai script", ["events must be an array"]);
+  const compiled = entries.map((entry3) => {
+    const event = compileEntry(entry3);
+    const parsed = AiChatTurnEventSchema.safeParse(event);
+    if (!parsed.success) throw new TestHostInvalid("ai script", parsed.error.issues.map((issue) => `${issue.path.join(".") || "(event)"}: ${issue.message}`));
+    return parsed.data;
+  });
+  compiled.forEach((event, index) => {
+    if (TERMINAL.includes(event.kind) && index !== compiled.length - 1) {
+      throw new TestHostInvalid("ai script", ["a terminal event must be the last entry of the script"]);
+    }
+  });
+  return compiled;
+}
+
+var DEFAULT_AI_PROVIDER = {
+  id: "scripted",
+  label: "Scripted provider",
+  state: "ready",
+  models: [
+    { id: "scripted-text", label: "Scripted text", efforts: ["low", "medium"], defaultEffort: "medium", supportsImages: false, isDefault: true },
+    { id: "scripted-vision", label: "Scripted vision", efforts: ["medium"], defaultEffort: "medium", supportsImages: true, isDefault: false }
+  ]
+};
+var ok = (value) => ({ ok: true, value });
+var fail = (error) => ({ ok: false, error });
+var OPERATION = {
+  "ai.getOptions": "getOptions",
+  "ai.openSession": "openSession",
+  "ai.complete": "complete",
+  "session.send": "send",
+  "session.interrupt": "interrupt",
+  "session.close": "close"
+};
+var knownError = (code2) => {
+  if (code2 === "deadline_exceeded") return "turn_timeout";
+  if (code2 === "cancelled") return "interrupted";
+  if (code2 === "response_unavailable") return "provider_error";
+  return AI_CHAT_ERROR_CODES.includes(code2) ? code2 : "unavailable";
+};
+function createAiRules(deps) {
+  const { clock, limits, tasks } = deps;
+  let providerState = deps.provider.state;
+  const sessions = /* @__PURE__ */ new Map();
+  const queue = [];
+  const turnTimes = [];
+  const counters = { sessionsOpened: 0, turns: 0, imageTurns: 0, failedTurns: 0, rateLimited: 0, inputChars: 0, outputChars: 0, lastTurnAt: null };
+  let sessionSequence = 0;
+  let turnSequence = 0;
+  let activeTurns = 0;
+  let quotaUntil = 0;
+  let hiddenCredit = null;
+  if (deps.provider.models.length === 0) throw new TestHostInvalid("ai provider", ["a provider needs at least one model"]);
+  const modelOf = (id7) => deps.provider.models.find((model) => model.id === id7);
+  const defaultModel = () => deps.provider.models.find((model) => model.isDefault) ?? deps.provider.models[0];
+  const attachedOf = (surface, id7) => {
+    const session = sessions.get(id7);
+    return session !== void 0 && session.attached && session.surface === surface ? session : void 0;
+  };
+  const emit = (turn, event) => {
+    if (!turn.session.attached) return;
+    deps.deliver(turn.session.surface, turn.session.id, turn.id, event);
+  };
+  const finish = (turn, event, countFailure = true) => {
+    if (turn.terminal !== null) return;
+    turn.terminal = event;
+    turn.timer?.cancel();
+    turn.timer = null;
+    const session = turn.session;
+    if (session.running && session.current === turn) {
+      session.running = false;
+      activeTurns -= 1;
+    }
+    if (event.kind === "failed") {
+      if (countFailure) counters.failedTurns += 1;
+      if (event.code === "quota_exhausted") quotaUntil = clock.now() + limits.quotaCooldownMs;
+    }
+    emit(turn, event);
+    for (const waiter of turn.waiters.splice(0)) waiter(event);
+  };
+  const closeSession = (session) => {
+    if (sessions.get(session.id) !== session) return;
+    sessions.delete(session.id);
+    if (session.current !== null) {
+      session.current.timer?.cancel();
+      session.current.timer = null;
+    }
+    if (session.running) {
+      session.running = false;
+      activeTurns -= 1;
+    }
+  };
+  const denyAndClose = () => {
+    for (const session of [...sessions.values()]) {
+      const turn = session.current;
+      if (session.running && turn !== null && turn.terminal === null) {
+        finish(turn, { kind: "failed", code: "access_revoked", retryable: false, fallbackUsed: false, partialDelivered: turn.text !== "" }, false);
+      }
+      closeSession(session);
+    }
+  };
+  const recheck = () => {
+    if (sessions.size > 0 && deps.authorize() !== null) denyAndClose();
+  };
+  const createSession = (surface, model, effort2, attached) => {
+    sessionSequence += 1;
+    const session = {
+      id: String(sessionSequence),
+      surface,
+      attached,
+      effective: { providerId: deps.provider.id, modelId: model.id, effort: effort2 },
+      supportsImages: model.supportsImages,
+      current: null,
+      running: false
+    };
+    sessions.set(session.id, session);
+    return session;
+  };
+  const admit = () => {
+    if (sessions.size >= limits.sessionsPerPlugin) return "session_limit";
+    if (sessions.size >= limits.sessionsTotal) return "busy";
+    return null;
+  };
+  const quotaRefusal = () => quotaUntil > clock.now() ? "quota_exhausted" : null;
+  const rateRefusal = () => {
+    const at = clock.now();
+    while (turnTimes.length > 0 && at - turnTimes[0] > 36e5) turnTimes.shift();
+    const perMinute = turnTimes.filter((time) => at - time <= 6e4).length;
+    if (turnTimes.length >= limits.turnsPerHour || perMinute >= limits.turnsPerMinute) {
+      counters.rateLimited += 1;
+      return "rate_limited";
+    }
+    return null;
+  };
+  const hiddenRefusal = (kind) => {
+    const input = deps.lastInput();
+    if (input === null || clock.now() - input.at > limits.hiddenWindowMs) return "view_not_visible";
+    if (hiddenCredit === null || hiddenCredit.seq !== input.seq) {
+      hiddenCredit = { seq: input.seq, opens: limits.hiddenOpensPerInput, turns: limits.hiddenTurnsPerInput };
+    }
+    if (hiddenCredit[kind] <= 0) {
+      counters.rateLimited += 1;
+      return "rate_limited";
+    }
+    return null;
+  };
+  const spendHidden = (kind) => {
+    if (hiddenCredit !== null) hiddenCredit[kind] -= 1;
+  };
+  const accept = (text6, hasImage) => {
+    const at = clock.now();
+    turnTimes.push(at);
+    counters.turns += 1;
+    counters.inputChars += text6.length;
+    if (hasImage) counters.imageTurns += 1;
+    counters.lastTurnAt = new Date(at).toISOString();
+  };
+  const startTurn = (session) => {
+    turnSequence += 1;
+    const turn = { id: turnSequence.toString(16).padStart(16, "0"), session, text: "", terminal: null, timer: null, waiters: [] };
+    session.current = turn;
+    session.running = true;
+    activeTurns += 1;
+    turn.timer = clock.later(() => {
+      finish(turn, { kind: "failed", code: "turn_timeout", retryable: true, fallbackUsed: false, partialDelivered: turn.text !== "" });
+    }, limits.turnTimeoutMs);
+    emit(turn, { kind: "started" });
+    return turn;
+  };
+  const runEvents = (turn, events) => {
+    for (const event of events) {
+      if (turn.terminal !== null) return;
+      if (event.kind === "textDelta") {
+        turn.text += event.text;
+        counters.outputChars += event.text.length;
+        emit(turn, event);
+        if (turn.text.length > limits.replyChars) {
+          finish(turn, { kind: "failed", code: "reply_too_long", retryable: true, fallbackUsed: false, partialDelivered: true });
+        }
+        continue;
+      }
+      if (event.kind === "contentSaved") {
+        emit(turn, event);
+        continue;
+      }
+      finish(turn, event);
+    }
+  };
+  const nextScript = () => queue.shift() ?? [{ kind: "completed" }];
+  const optionsView = () => {
+    const at = clock.now();
+    const exhausted = quotaUntil > at;
+    return {
+      providers: [{
+        id: deps.provider.id,
+        label: deps.provider.label,
+        state: providerState,
+        models: deps.provider.models.map((model) => ({ id: model.id, label: model.label, efforts: [...model.efforts], defaultEffort: model.defaultEffort, supportsImages: model.supportsImages, isDefault: model.isDefault }))
+      }],
+      defaultProviderId: deps.provider.id,
+      limits: {
+        systemChars: limits.systemChars,
+        transcriptLines: limits.transcriptLines,
+        transcriptChars: limits.transcriptChars,
+        inputChars: limits.inputChars,
+        imageBytes: limits.imageBytes,
+        turnsPerMinute: limits.turnsPerMinute
+      },
+      quota: { state: exhausted ? "exhausted" : "ok", retryAfterMs: exhausted ? quotaUntil - at : null }
+    };
+  };
+  const openSession = (surface, request) => {
+    const providerId3 = request.providerId ?? deps.provider.id;
+    if (providerId3 !== deps.provider.id) return fail("provider_not_found");
+    if (request.transcript !== void 0 && request.transcript.reduce((sum, line2) => sum + line2.text.length, 0) > limits.transcriptChars) return fail("input_too_large");
+    if (providerState !== "ready") return fail("provider_not_ready");
+    if (request.modelId !== void 0 && modelOf(request.modelId) === void 0) return fail("model_unavailable");
+    const model = request.modelId === void 0 ? defaultModel() : modelOf(request.modelId) ?? defaultModel();
+    if (request.effort !== void 0 && !model.efforts.includes(request.effort)) return fail("model_unavailable");
+    const hidden = surface === "view" && !deps.visible();
+    if (hidden) {
+      const refusal = hiddenRefusal("opens");
+      if (refusal !== null) return fail(refusal);
+    }
+    const full = admit();
+    if (full !== null) return fail(full);
+    if (request.taskId !== void 0 && !tasks.exists(request.taskId)) return fail("task_not_found");
+    if (hidden) spendHidden("opens");
+    const session = createSession(surface, model, request.effort ?? model.defaultEffort, true);
+    counters.sessionsOpened += 1;
+    return ok({ sessionId: session.id, effective: session.effective });
+  };
+  const complete = async (surface, request) => {
+    const existing = request.sessionId === void 0 ? void 0 : sessions.get(request.sessionId);
+    if (request.sessionId !== void 0 && existing === void 0) return fail("session_not_found");
+    const hidden = surface === "view" && !deps.visible();
+    const hiddenOpen = hidden && existing === void 0;
+    if (hiddenOpen) {
+      const refusal = hiddenRefusal("opens");
+      if (refusal !== null) return fail(refusal);
+    }
+    if (hidden) {
+      const refusal = hiddenRefusal("turns");
+      if (refusal !== null) return fail(refusal);
+    }
+    const providerId3 = existing?.effective.providerId ?? request.providerId ?? deps.provider.id;
+    if (providerId3 !== deps.provider.id) return fail("provider_not_found");
+    if (providerState !== "ready") return fail("provider_not_ready");
+    const modelId3 = request.modelId ?? existing?.effective.modelId;
+    const found = modelId3 === void 0 ? void 0 : modelOf(modelId3);
+    if (request.modelId !== void 0 && found === void 0) return fail("model_unavailable");
+    const selected = found ?? defaultModel();
+    if (request.effort !== void 0 && !selected.efforts.includes(request.effort)) return fail("model_unavailable");
+    const supportsImages = request.modelId === void 0 && existing !== void 0 ? existing.supportsImages : selected.supportsImages;
+    if (request.image !== void 0 && !supportsImages) return fail("unsupported_image");
+    if (existing === void 0) {
+      const full = admit();
+      if (full !== null) return fail(full);
+    }
+    const quota = quotaRefusal();
+    if (quota !== null) return fail(quota);
+    const rate = rateRefusal();
+    if (rate !== null) return fail(rate);
+    if (existing?.running) return fail("turn_in_progress");
+    if (activeTurns >= limits.concurrentTurnsTotal) return fail("busy");
+    if (existing === void 0 && request.taskId !== void 0 && !tasks.exists(request.taskId)) return fail("task_not_found");
+    const session = existing ?? createSession(surface, selected, request.effort ?? selected.defaultEffort, false);
+    if (existing === void 0) counters.sessionsOpened += 1;
+    if (hiddenOpen) spendHidden("opens");
+    accept(request.text, request.image !== void 0);
+    if (hidden) spendHidden("turns");
+    const turn = startTurn(session);
+    runEvents(turn, nextScript());
+    const outcome2 = turn.terminal ?? await new Promise((resolve) => {
+      turn.waiters.push(resolve);
+    });
+    if (existing === void 0) closeSession(session);
+    if (outcome2.kind === "completed") {
+      return ok({ sessionId: session.id, requestId: `plugin:${session.id}:${turn.id}`, text: turn.text, providerTurnId: null, historySaved: "saved" });
+    }
+    if (outcome2.kind === "failed") return fail(outcome2.code === "access_revoked" ? "interrupted" : knownError(outcome2.code));
+    return fail(outcome2.kind === "interrupted" ? "interrupted" : "unavailable");
+  };
+  const send = (surface, request) => {
+    const session = attachedOf(surface, request.sessionId);
+    if (session === void 0) return fail("session_not_found");
+    const hidden = surface === "view" && !deps.visible();
+    if (hidden) {
+      const refusal = hiddenRefusal("turns");
+      if (refusal !== null) return fail(refusal);
+    }
+    if (session.running) return fail("turn_in_progress");
+    const quota = quotaRefusal();
+    if (quota !== null) return fail(quota);
+    if (request.image !== void 0 && !session.supportsImages) return fail("unsupported_image");
+    const rate = rateRefusal();
+    if (rate !== null) return fail(rate);
+    if (activeTurns >= limits.concurrentTurnsTotal) return fail("busy");
+    accept(request.text, request.image !== void 0);
+    if (hidden) spendHidden("turns");
+    const turn = startTurn(session);
+    runEvents(turn, nextScript());
+    return ok({ turnId: turn.id });
+  };
+  const interrupt = (surface, request) => {
+    const session = attachedOf(surface, request.sessionId);
+    if (session === void 0) return fail("session_not_found");
+    const turn = session.current;
+    if (!session.running || turn === null) return ok(true);
+    finish(turn, { kind: "interrupted" });
+    return ok(true);
+  };
+  const close = (surface, request) => {
+    const session = attachedOf(surface, request.sessionId);
+    if (session === void 0) return fail("session_not_found");
+    closeSession(session);
+    return ok(true);
+  };
+  const guarded = (id7, run) => ({
+    id: id7,
+    errorCodes: AI_CHAT_ERROR_CODES,
+    handle: async (surface, args) => {
+      const parsed = AiChatRequestSchema.safeParse(args);
+      if (!parsed.success || parsed.data.op !== OPERATION[id7]) return fail("request_invalid");
+      const denied = deps.authorize();
+      if (denied !== null) {
+        denyAndClose();
+        return fail(denied);
+      }
+      return run(surface, parsed.data);
+    }
+  });
+  const onEvent = {
+    id: "session.onEvent",
+    errorCodes: [],
+    handle: async (surface, args) => {
+      const sessionId5 = typeof args === "object" && args !== null && "sessionId" in args ? args.sessionId : void 0;
+      const parsed = AiChatSessionIdSchema.safeParse(sessionId5);
+      if (!parsed.success) return fail("request_invalid");
+      const denied = deps.authorize();
+      if (denied !== null) {
+        denyAndClose();
+        return fail(denied);
+      }
+      return attachedOf(surface, parsed.data) === void 0 ? fail("session_not_found") : ok(true);
+    }
+  };
+  const endpoints = [
+    guarded("ai.getOptions", () => ok(optionsView())),
+    guarded("ai.openSession", (surface, request) => openSession(surface, request)),
+    guarded("ai.complete", (surface, request) => complete(surface, request)),
+    guarded("session.send", (surface, request) => send(surface, request)),
+    guarded("session.interrupt", (surface, request) => interrupt(surface, request)),
+    guarded("session.close", (surface, request) => close(surface, request)),
+    onEvent
+  ];
+  const usage = () => ({
+    activeSessions: sessions.size,
+    sessionsOpened: counters.sessionsOpened,
+    turns: counters.turns,
+    imageTurns: counters.imageTurns,
+    failedTurns: counters.failedTurns,
+    rateLimited: counters.rateLimited,
+    inputChars: counters.inputChars,
+    outputChars: counters.outputChars,
+    lastTurnAt: counters.lastTurnAt
+  });
+  return {
+    endpoints,
+    recheck,
+    controls: {
+      next: (script) => {
+        queue.push(compileAiScript(script));
+      },
+      setProviderState: (state2) => {
+        providerState = state2;
+      },
+      usage,
+      openSessions: () => [...sessions.keys()]
+    }
+  };
+}
+
+function loadTestManifest(raw) {
+  const parsed = PluginManifestV2Schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new TestHostInvalid("manifest", parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`));
+  }
+  return parsed.data;
+}
+function isRevocablePermission(permission2) {
+  return REVOCABLE_PLUGIN_EXACT_PERMISSIONS.includes(permission2) || REVOCABLE_PLUGIN_PERMISSION_PREFIXES.some((prefix) => permission2.startsWith(prefix));
+}
+
+var CoreFailure = class extends Error {
+  code;
+  constructor(code2) {
+    super(code2);
+    this.name = "CoreFailure";
+    this.code = code2;
+  }
+};
+var ok2 = (value) => ({ ok: true, value });
+var fail2 = (error) => ({ ok: false, error });
+function accessDenialOf(enabled, grants, permission2) {
+  if (!enabled) return "plugin_not_active";
+  return grants.has(permission2) ? null : "plugin_permission_denied";
+}
+function byteLengthOf(value) {
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded === void 0 ? null : new TextEncoder().encode(encoded).byteLength;
+  } catch {
+    return null;
+  }
+}
+
+var SUMMARIES = Object.freeze({
+  "program.describe": "列出此呼叫者可用的 Program API v1 操作。",
+  "data.projects.list": "分頁讀取專案中繼資料。",
+  "data.projects.get": "讀取一筆專案中繼資料。",
+  "data.projects.create": "建立專案中繼資料。",
+  "data.projects.delete": "封存專案中繼資料。",
+  "data.tasks.list": "分頁讀取任務中繼資料。",
+  "data.tasks.get": "讀取一筆任務中繼資料。",
+  "data.tasks.create": "建立任務中繼資料。",
+  "data.tasks.delete": "依產品既有語義 tombstone 任務。",
+  "conversation.dispatch": "在指定專案或任務啟動對話並投遞首句。",
+  "conversation.read": "讀取此呼叫者擁有的對話訊息。",
+  "conversation.followUp": "向此呼叫者擁有的即時對話送出追問。",
+  "data.projects.update": "以 authored revision 更新專案中繼資料。",
+  "data.milestones.list": "分頁讀取里程碑中繼資料。",
+  "data.milestones.get": "讀取一筆里程碑中繼資料。",
+  "data.milestones.create": "建立里程碑中繼資料。",
+  "data.milestones.update": "以 authored revision 更新里程碑中繼資料。",
+  "data.milestones.delete": "封存里程碑中繼資料。",
+  "data.tasks.update": "以 authored revision 更新任務中繼資料；帶 status 改狀態需要 data:tasks:status，只持有 data:tasks:status 時只能改狀態。"
+});
+var TASK_STATUS_ON_CREATE = "WAITING";
+var TASK_STATUS_ON_TOMBSTONE = "archived";
+var DEFAULT_PAGE_LIMIT = 50;
+var CURSOR_PATTERN = /^(0|[1-9][0-9]*)$/;
+var DATA_OPERATIONS = ["data.projects.list", "data.projects.get", "data.projects.create", "data.projects.delete", "data.tasks.list", "data.tasks.get", "data.tasks.create", "data.tasks.delete"];
+var MODELED_OPERATIONS = ["program.describe", ...DATA_OPERATIONS];
+var BACKEND_ERROR_CODES = ["plugin_host_request_invalid", "plugin_host_request_too_large"];
+var PROGRAM_INVALID_REPLY = { apiVersion: 1, requestId: null, operation: null, ok: false, error: { code: "invalid_request", message: "The Program request is invalid." } };
+function programOperationsOf(grants) {
+  const operations = /* @__PURE__ */ new Set(["program.describe"]);
+  for (const permission2 of Object.keys(PLUGIN_PROGRAM_PERMISSION_SCOPES_V1)) {
+    if (!grants.has(permission2)) continue;
+    for (const operation of PLUGIN_PROGRAM_PERMISSION_OPERATIONS_V1[permission2]) operations.add(operation);
+  }
+  return [...operations];
+}
+function requiredScopeOf(operation) {
+  for (const permission2 of Object.keys(PLUGIN_PROGRAM_PERMISSION_SCOPES_V1)) {
+    if (PLUGIN_PROGRAM_PERMISSION_OPERATIONS_V1[permission2].includes(operation)) return PLUGIN_PROGRAM_PERMISSION_SCOPES_V1[permission2];
+  }
+  return "none";
+}
+var issuesOf = (issues) => issues.map((issue) => `${issue.path.map(String).join(".") || "(reply)"}: ${issue.message}`);
+function createProgramRules(deps) {
+  const projects = /* @__PURE__ */ new Map();
+  const tasks = /* @__PURE__ */ new Map();
+  let sequence = 0;
+  let generation3 = 0;
+  const nextId = () => {
+    sequence += 1;
+    return String(sequence);
+  };
+  const projectDto = (row) => ({ id: row.id, name: row.name, description: row.description, authoredRevision: row.authoredRevision, archived: row.archived, readOnly: row.readOnly });
+  const taskDto = (row) => ({ id: row.id, name: row.name, description: row.description, projectId: row.projectId, milestoneId: row.milestoneId, status: row.status, authoredRevision: row.authoredRevision, deletedAt: row.deletedAt, readOnly: row.readOnly });
+  const gap = (surface, operation, reason3) => new TestHostNotModeled(surface, `program.call:${operation}`, reason3);
+  const liveProject = (surface, operation, projectId) => {
+    const row = projects.get(projectId);
+    if (row === void 0 || row.archived) throw gap(surface, operation, "a missing or archived project: the Core not_found code is not verified (design D7)");
+    return row;
+  };
+  const liveTask = (surface, operation, taskId) => {
+    const row = tasks.get(taskId);
+    if (row === void 0 || row.deletedAt !== null) throw gap(surface, operation, "a missing or tombstoned task: the Core not_found code is not verified (design D7)");
+    return row;
+  };
+  const checkRevision = (row, expected) => {
+    if (expected !== row.authoredRevision) throw new TestHostRefused(`expectedAuthoredRevision ${expected} does not match ${row.authoredRevision}: the Core conflict code is not verified (design D7)`);
+  };
+  const pageOf = (surface, operation, rows2, input, map) => {
+    if (input.search !== void 0 && input.search !== null) throw gap(surface, operation, "search matching is not verified");
+    if (input.snapshotGeneration !== void 0) throw gap(surface, operation, "snapshotGeneration is not verified: the Core stale-snapshot result is not modeled");
+    const cursor4 = input.cursor ?? null;
+    if (cursor4 !== null && !CURSOR_PATTERN.test(cursor4)) throw gap(surface, operation, "the cursor was not issued by this test host and the Core cursor format is opaque");
+    const offset = cursor4 === null ? 0 : Number(cursor4);
+    const limit = input.limit ?? DEFAULT_PAGE_LIMIT;
+    const items = rows2.slice(offset, offset + limit).map(map);
+    return { items, nextCursor: offset + limit < rows2.length ? String(offset + limit) : null, snapshotGeneration: generation3 };
+  };
+  const describeRows = (allowed, catalog) => catalog.map((operation) => ({
+    operation,
+    requiredScope: requiredScopeOf(operation),
+    available: allowed.includes(operation),
+    summary: SUMMARIES[operation]
+  }));
+  const execute = (surface, operation, raw, allowed) => {
+    switch (operation) {
+      case "program.describe":
+        return { apiVersion: 1, operations: describeRows(allowed, PLUGIN_PROGRAM_OPERATION_NAMES_V1) };
+      case "data.projects.list": {
+        if ([...projects.values()].some((row) => row.archived)) throw gap(surface, operation, "archived projects in list results are not verified");
+        return pageOf(surface, operation, [...projects.values()], raw, projectDto);
+      }
+      case "data.projects.get":
+        return projectDto(liveProject(surface, operation, raw.projectId));
+      case "data.projects.create": {
+        const body = raw;
+        const row = { id: nextId(), name: body.name, description: body.description ?? null, authoredRevision: 0, archived: false, readOnly: null };
+        projects.set(row.id, row);
+        generation3 += 1;
+        return projectDto(row);
+      }
+      case "data.projects.delete": {
+        const body = raw;
+        const row = liveProject(surface, operation, body.projectId);
+        checkRevision(row, body.expectedAuthoredRevision);
+        if ([...tasks.values()].some((task2) => task2.projectId === row.id && task2.deletedAt === null)) throw gap(surface, operation, "archiving a project that still has tasks: the cascade is not verified");
+        row.archived = true;
+        row.authoredRevision += 1;
+        generation3 += 1;
+        return projectDto(row);
+      }
+      case "data.tasks.list": {
+        const input = raw;
+        if ([...tasks.values()].some((row) => row.deletedAt !== null)) throw gap(surface, operation, "tombstoned tasks in list results are not verified");
+        if (input.projectId === null) throw gap(surface, operation, "a null projectId filter is not verified");
+        const filter = input.projectId;
+        const rows2 = [...tasks.values()].filter((row) => filter === void 0 || row.projectId === filter);
+        return pageOf(surface, operation, rows2, input, taskDto);
+      }
+      case "data.tasks.get":
+        return taskDto(liveTask(surface, operation, raw.taskId));
+      case "data.tasks.create": {
+        const body = raw;
+        if (body.projectId === null) throw gap(surface, operation, "a task without a project: the Core behavior is not verified (design D7)");
+        if (body.milestoneId !== void 0 && body.milestoneId !== null) throw gap(surface, operation, "milestones are outside the v1 scope");
+        liveProject(surface, operation, body.projectId);
+        const row = { id: nextId(), name: body.name, description: body.description ?? null, projectId: body.projectId, milestoneId: null, status: TASK_STATUS_ON_CREATE, authoredRevision: 0, deletedAt: null, readOnly: null };
+        tasks.set(row.id, row);
+        deps.tasks.add(row.id);
+        generation3 += 1;
+        return taskDto(row);
+      }
+      case "data.tasks.delete": {
+        const body = raw;
+        const row = liveTask(surface, operation, body.taskId);
+        checkRevision(row, body.expectedAuthoredRevision);
+        row.deletedAt = deps.now();
+        row.status = TASK_STATUS_ON_TOMBSTONE;
+        row.authoredRevision += 1;
+        deps.tasks.remove(row.id);
+        generation3 += 1;
+        return taskDto(row);
+      }
+    }
+  };
+  const replyError = (request, code2, message) => ({
+    apiVersion: 1,
+    requestId: request.requestId,
+    operation: request.operation,
+    ok: false,
+    error: { code: code2, message }
+  });
+  const checkedEnvelope = (validator, reply, operation) => {
+    const checked = validator.reply.safeParse(reply);
+    if (!checked.success) throw new TestHostInvalid("program reply", issuesOf(checked.error.issues));
+    const body = reply;
+    if (body.ok) {
+      const resultSchema = validator.resultByOperation[operation];
+      if (resultSchema === void 0) throw new TestHostRefused(`the injected programReplyValidator has no result schema for ${operation}`);
+      const checkedResult = resultSchema.safeParse(body.result);
+      if (!checkedResult.success) throw new TestHostInvalid(`program result ${operation}`, issuesOf(checkedResult.error.issues));
+    }
+    return ok2(reply);
+  };
+  const endpoint2 = (surface, operation) => ({
+    surface,
+    id: `program.call:${operation}`,
+    errorCodes: surface === "backend" ? BACKEND_ERROR_CODES : [],
+    handle: async (args) => {
+      const validator = deps.validator;
+      if (validator === void 0) throw new TestHostRefused(`program.call:${operation} needs the shared Program API schemas: pass programReplyValidator to createTestHostCore. The call is refused, not answered without reply validation.`);
+      const bytes4 = byteLengthOf(args);
+      if (surface === "backend" && bytes4 !== null && bytes4 > PLUGIN_HOST_DATA_LIMITS.payloadBytes) return fail2("plugin_host_request_too_large");
+      const parsed = validator.call.safeParse(args);
+      const oversized = bytes4 === null || bytes4 > validator.requestMaxBytes;
+      if (!parsed.success || oversized) {
+        if (surface === "backend") return fail2("plugin_host_request_invalid");
+        return checkedEnvelope(validator, PROGRAM_INVALID_REPLY, "program.call");
+      }
+      const request = parsed.data;
+      if (request.operation !== operation) throw new TestHostInvalid("program.call", [`request operation ${request.operation} does not match program.call:${operation}`]);
+      if (!deps.enabled()) return checkedEnvelope(validator, replyError(request, "unauthenticated", "The Plugin is not active."), operation);
+      const allowed = programOperationsOf(deps.grants);
+      if (!allowed.includes(operation)) return checkedEnvelope(validator, replyError(request, "forbidden", "The Program operation is not granted."), operation);
+      const result = execute(surface, operation, request.input, allowed);
+      return checkedEnvelope(validator, { apiVersion: 1, requestId: request.requestId, operation, ok: true, result }, operation);
+    }
+  });
+  const endpoints = [];
+  for (const operation of MODELED_OPERATIONS) {
+    endpoints.push(endpoint2("view", operation));
+    endpoints.push(endpoint2("backend", operation));
+  }
+  return endpoints;
+}
+
 var BACKLOG_LIMIT = 512;
 var EARLY_LIMIT = 64;
 function toBytes(data) {
@@ -7387,9 +8633,9 @@ function createAiChatApi(ipc) {
   const early = /* @__PURE__ */ new Map();
   let subscribed = false;
   const call = async (request) => {
-    const envelope3 = AiChatEnvelopeSchema.parse(await ipc.invoke(PLUGIN_AI_CHANNELS.REQUEST, request));
-    if (!envelope3.ok) throw new Error(envelope3.error);
-    return envelope3.value;
+    const envelope4 = AiChatEnvelopeSchema.parse(await ipc.invoke(PLUGIN_AI_CHANNELS.REQUEST, request));
+    if (!envelope4.ok) throw new Error(envelope4.error);
+    return envelope4.value;
   };
   const flush = (state2) => {
     const pending = state2.backlog;
@@ -7473,9 +8719,9 @@ function createCapabilityApi(ipc) {
   const changeListeners = /* @__PURE__ */ new Set();
   let subscribed = false;
   const call = async (channel, request) => {
-    const envelope3 = CapabilityEnvelopeSchema.parse(await ipc.invoke(channel, request));
-    if (!envelope3.ok) throw Object.assign(new Error(envelope3.error), { code: envelope3.error, ...envelope3.message === void 0 ? {} : { detail: envelope3.message } });
-    return envelope3.value;
+    const envelope4 = CapabilityEnvelopeSchema.parse(await ipc.invoke(channel, request));
+    if (!envelope4.ok) throw Object.assign(new Error(envelope4.error), { code: envelope4.error, ...envelope4.message === void 0 ? {} : { detail: envelope4.message } });
+    return envelope4.value;
   };
   const flush = (state2) => {
     if (state2.messageListeners.size > 0) {
@@ -7583,9 +8829,9 @@ function createInputApi(ipc) {
   let handler = null;
   let subscribed = false;
   const call = async (request) => {
-    const envelope3 = PluginInputEnvelopeSchema.parse(await ipc.invoke(PLUGIN_INPUT_CHANNELS.REQUEST, request));
-    if (!envelope3.ok) throw new Error(envelope3.error);
-    return envelope3.value;
+    const envelope4 = PluginInputEnvelopeSchema.parse(await ipc.invoke(PLUGIN_INPUT_CHANNELS.REQUEST, request));
+    if (!envelope4.ok) throw new Error(envelope4.error);
+    return envelope4.value;
   };
   const answer = async (inputId2, run, message) => {
     let result = "dropped";
@@ -7766,7 +9012,8 @@ var PROGRAM_SCOPE_NAMES_V1 = [
   "data:milestones:read",
   "data:milestones:write",
   "data:tasks:read",
-  "data:tasks:write"
+  "data:tasks:write",
+  "data:tasks:status"
 ];
 var ProgramOperationNameV1Schema = external_exports.enum(PROGRAM_OPERATION_NAMES_V1);
 var ProgramScopeV1Schema = external_exports.enum(PROGRAM_SCOPE_NAMES_V1);
@@ -7809,7 +9056,8 @@ var milestoneDelete = external_exports.object({ milestoneId: identifier3, expect
 var taskList = external_exports.object({ limit: pageLimit, cursor: cursor2, snapshotGeneration: generation2, search: external_exports.string().max(PROGRAM_API_MAX_REQUEST_BYTES_V1).nullable().optional(), projectId: identifier3.nullable().optional() }).strict();
 var taskGet = external_exports.object({ taskId: identifier3 }).strict();
 var taskCreate = external_exports.object({ name: entityName, description: descriptionInput, projectId: identifier3.nullable(), milestoneId: identifier3.nullable().optional() }).strict();
-var taskUpdate = external_exports.object({ taskId: identifier3, expectedAuthoredRevision: external_exports.number().int().nonnegative(), name: entityName.optional(), description: descriptionInput }).strict().refine((value) => value.name !== void 0 || value.description !== void 0);
+var programWritableTaskStatus = external_exports.enum(["PREPARATION", "WAITING", "IN_PROGRESS", "PENDING_CONFIRMATION", "PENDING", "COMPLETED"]);
+var taskUpdate = external_exports.object({ taskId: identifier3, expectedAuthoredRevision: external_exports.number().int().nonnegative(), name: entityName.optional(), description: descriptionInput, status: programWritableTaskStatus.optional() }).strict().refine((value) => value.name !== void 0 || value.description !== void 0 || value.status !== void 0);
 var taskDelete = external_exports.object({ taskId: identifier3, expectedAuthoredRevision: external_exports.number().int().nonnegative() }).strict();
 var ProgramInputByOperationV1Schema = {
   "program.describe": ProgramDescribeInputV1Schema,
@@ -7888,7 +9136,7 @@ var ProgramResultByOperationV1Schema = {
   "data.tasks.delete": TaskDtoSchema
 };
 var PROGRAM_ERROR_CODES_V1 = ["invalid_request", "unsupported_version", "operation_not_supported", "unauthenticated", "forbidden", "not_found", "conflict", "rate_limited", "unavailable", "internal_error"];
-var fieldIssue = external_exports.object({ field: external_exports.enum(["apiVersion", "requestId", "operation", "input", "target", "provider", "name", "description", "projectId", "milestoneId", "taskId", "expectedAuthoredRevision", "conversationId", "text", "limit", "cursor", "snapshotGeneration", "startSequence"]), issue: external_exports.enum(["required", "invalid_type", "unknown_key", "invalid_value", "too_small", "too_large", "invalid_format", "empty", "unsupported"]) }).strict();
+var fieldIssue = external_exports.object({ field: external_exports.enum(["apiVersion", "requestId", "operation", "input", "target", "provider", "name", "description", "projectId", "milestoneId", "taskId", "expectedAuthoredRevision", "conversationId", "text", "limit", "cursor", "snapshotGeneration", "startSequence", "status"]), issue: external_exports.enum(["required", "invalid_type", "unknown_key", "invalid_value", "too_small", "too_large", "invalid_format", "empty", "unsupported"]) }).strict();
 var ProgramErrorV1Schema = external_exports.object({ code: external_exports.enum(PROGRAM_ERROR_CODES_V1), message: external_exports.string().min(1).max(240), details: external_exports.array(fieldIssue).max(8).optional() }).strict();
 var successReply = (operation) => external_exports.object({
   apiVersion: external_exports.literal(1),
@@ -7939,8 +9187,69 @@ var API_READ_SCOPES = PORTAL_MODULES.map(
 );
 var API_GRANTABLE_SCOPES = [...API_READ_SCOPES, API_STATUS_SCOPE];
 var API_PROGRAM_DATA_SCOPES = PROGRAM_SCOPE_NAMES_V1.filter(
-  (scope2) => scope2.startsWith("data:")
+  (scope2) => scope2.startsWith("data:") && scope2 !== "data:tasks:status"
 );
+
+var APP_SETTINGS_KEYS = {
+  MONITOR_AUTO_RECOVER: "monitor_auto_recover",
+  KANBAN_POLL_SECONDS: "kanban_poll_seconds",
+  CLI_ONBOARDING: "cli_onboarding",
+  CLI_AUTO_UPDATE: "cli_auto_update",
+  CLI_HEALTH: "cli_health",
+  SESSION_MAX_PERMISSIONS: "session_max_permissions",
+  SESSION_PERMISSION_MEMORY: "session_permission_memory",
+  SESSION_CLOSE_CHOICE: "session_close_choice",
+  SIDEBAR_TASK_ORDER: "sidebar_task_order",
+  SIDEBAR_NAVIGATION_PREFERENCE: "sidebar_navigation_preference_v1",
+  AGENT_TEAM_FOLDER_MODE: "agent_team_folder_mode",
+  EXPERIMENTAL_ROUTE_CREATE_TO_ACADEMY: "experimental_route_create_to_academy",
+  SCHEDULE_LAST_ALIVE_MS: "schedule_last_alive_ms",
+  SCHEDULE_ENGINE_ENABLED: "schedule_engine_enabled",
+  SCHEDULE_WATCH_ENABLED: "schedule_watch_enabled",
+  NOTIFICATION_PREFS: "notification_prefs",
+  LOCALSERVER_ENABLED: "localserver_enabled",
+  CHATOPS_ENABLED: "chatops_enabled",
+  CHATOPS_AI_PROVIDER: "chatops_ai_provider",
+  CHATOPS_CONVERSATION_READ: "chatops_conversation_read",
+  CHATOPS_DISPATCH_REPLY_PUSH: "chatops_dispatch_reply_push",
+  CHATOPS_DISPATCH_DAILY_LIMIT: "chatops_dispatch_daily_limit",
+  CHATOPS_ANSWER_DAILY_LIMIT: "chatops_answer_daily_limit",
+  CHATOPS_ANSWER_DAILY_COUNTS: "chatops_answer_daily_counts",
+  CHATOPS_DISPATCH_TEAM: "chatops_dispatch_team",
+  PORTAL_PUBLIC: "portal_public",
+  PORTAL_PUBLIC_PENDING_RESTORE: "portal_public_pending_restore",
+  API_ENABLED: "api_enabled",
+  API_DISPATCH_ENABLED: "api_dispatch_enabled",
+  AI_DISPATCH_TIER_POLICY: "ai_dispatch_tier_policy",
+  PORTAL_EDITOR_PROVIDER: "portal_editor_provider",
+  PORTAL_EDITOR_MODEL: "portal_editor_model",
+  PORTAL_EDITOR_EFFORT: "portal_editor_effort",
+  TUNNEL_MODE: "tunnel_mode",
+  NAMED_TUNNEL_CONFIG: "named_tunnel_config",
+  NAMED_TUNNEL_PROVISIONING: "named_tunnel_provisioning",
+  LOCALSERVER_INSTALL_ID: "localserver_install_id",
+  PORTAL_BINDING: "portal_binding",
+  PORTAL_ORIGIN_EPOCH: "portal_origin_epoch",
+  USAGE_TELEMETRY: "usage_telemetry",
+  SERVER_TOGGLE_MIGRATION_NOTICE: "server_toggle_migration_notice",
+  CHROME_COPILOT_ENABLED: "chrome_copilot_enabled",
+  CHROME_COPILOT_NOTICE_ACKNOWLEDGED: "chrome_copilot_notice_acknowledged",
+  WEB_ENABLED: "web_enabled",
+  WEB_WRITE_ENABLED: "web_write_enabled",
+  WEB_EXEC_ENABLED: "web_exec_enabled",
+  WEB_SHELL_CONFIG: "web_shell_config",
+  WEB_CWD_CONFIRMED: "web_cwd_confirmed",
+  WEB_GATES_MIGRATION_NOTICE: "web_gates_migration_notice",
+  AI_SESSION_DEFAULTS: "ai_session_defaults",
+  AI_MODEL_CATALOG_OVERRIDES: "ai_model_catalog_overrides",
+  AI_MODEL_PRICING_OVERRIDES: "ai_model_pricing_overrides",
+  AI_MODEL_PRICING_CATALOG_PREFERENCES: "ai_model_pricing_catalog_preferences",
+  OFFICIAL_AI_MODEL_CATALOG_LKG: "official_ai_model_catalog_lkg",
+  TASK_STATUS_SUMMARY_MODEL: "task_status_summary_model",
+  AI_FOLDER_SESSION_DEFAULTS: "ai-folder-session-defaults:v1",
+  SUBAGENT_PROMPT_POLICY: "subagent-prompt-policy:v1",
+  CHATOPS_CREDENTIAL_STATE: "chatops_credential_state"
+};
 
 var TEAM_SOURCE_READ_WIRE_VERSION = 1;
 var TEAM_SOURCE_READ_LIMITS = {
@@ -8355,6 +9664,10 @@ var ClipboardWriteTextSchema = external_exports.object({
   text: external_exports.string()
 });
 
+var AI_PROVIDER_IDS = ["antigravity", "claude", "codex", "pi"];
+var AI_CONVERSATION_PROVIDER_IDS = ["claude", "codex", "pi"];
+var AI_SCHEDULE_PROVIDER_IDS = ["claude", "codex", "pi"];
+
 var CONVERSATION_LEDGER_SCAN_PART_SIZE = 64;
 var ConversationLedgerScanSourceClaimSchema = external_exports.object({
   scope: external_exports.enum(["source", "maintenance"]),
@@ -8516,7 +9829,7 @@ var ConversationLedgerScanDownstreamPushSchema = external_exports.object({
   workReceiptKey: external_exports.string().min(1).max(256).optional(),
   sessionId: external_exports.string().min(1).max(512),
   taskId: external_exports.string().min(1).max(512),
-  provider: external_exports.enum(["claude", "codex"]),
+  provider: external_exports.enum(AI_CONVERSATION_PROVIDER_IDS),
   punchRowsChanged: external_exports.boolean(),
   workflows: external_exports.array(ConversationLedgerScanWorkflowRunSummarySchema).max(32).optional(),
   subagents: external_exports.array(ConversationLedgerScanSubagentLiveStatSchema).max(CONVERSATION_LEDGER_SCAN_PART_SIZE).optional()
@@ -8728,7 +10041,8 @@ var ProjectCreateSchema = external_exports.object({
   platformLocalId: external_exports.string().nullish(),
   syncEnabled: external_exports.boolean().optional(),
   description: EntityDescriptionSchema.nullish(),
-  id: external_exports.string().nullish()
+  id: external_exports.string().nullish(),
+  autoProjectPm: external_exports.boolean().optional()
 });
 var ProjectUpdateSchema = external_exports.object({
   localId: external_exports.string().min(1),
@@ -9019,11 +10333,16 @@ var SessionPermissionModeSchema = external_exports.enum(["default", "acceptEdits
 var SafeGroupingLabelSchema = external_exports.string().min(1).max(64).refine((value) => !/[\u0000-\u001f\u007f]/.test(value));
 var SafeQuotaPublicScopeSchema = external_exports.string().min(1).max(128).refine((value) => !/[\u0000-\u001f\u007f]/.test(value));
 var SessionAiGroupingSchema = external_exports.object({
-  providerId: external_exports.enum(["antigravity", "claude", "codex"]).nullable(),
+  providerId: external_exports.enum(AI_PROVIDER_IDS).nullable(),
   quotaPublicScopeId: SafeQuotaPublicScopeSchema.nullable(),
   modelId: SafeGroupingLabelSchema.nullable(),
   modelLabel: SafeGroupingLabelSchema.nullable()
 });
+var SessionBackgroundOwnerSchema = external_exports.object({
+  kind: external_exports.literal("plugin"),
+  pluginId: external_exports.string().min(1).max(256),
+  pluginName: external_exports.string().max(256).nullable()
+}).strict();
 var SessionInfoSchema = external_exports.object({
   sessionId: external_exports.string().min(1).max(512),
   taskId: external_exports.string().min(1).max(512),
@@ -9039,14 +10358,22 @@ var SessionInfoSchema = external_exports.object({
   model: external_exports.string().max(512).nullable().optional(),
   effort: external_exports.string().max(512).nullable().optional(),
   aiGrouping: SessionAiGroupingSchema,
-  conversationRef: external_exports.object({ providerId: external_exports.enum(["antigravity", "claude", "codex"]), externalId: external_exports.string().max(512).nullable(), openedAtMs: external_exports.number().nonnegative() }).strict().nullable().optional(),
+  conversationRef: external_exports.object({ providerId: external_exports.enum(AI_PROVIDER_IDS), externalId: external_exports.string().max(512).nullable(), openedAtMs: external_exports.number().nonnegative() }).strict().nullable().optional(),
   pathAutofixed: external_exports.boolean().optional(),
   adoptedFolderLatest: external_exports.boolean().optional(),
   teamKey: external_exports.string().max(512).optional(),
   skillName: external_exports.string().max(512).optional(),
   taskOrigin: external_exports.string().max(128).optional(),
-  taskTitleLocked: external_exports.boolean().optional()
+  taskTitleLocked: external_exports.boolean().optional(),
+  background: external_exports.boolean().optional(),
+  backgroundOwner: SessionBackgroundOwnerSchema.optional(),
+  modelSubstitution: external_exports.object({ from: external_exports.string().max(512), to: external_exports.string().max(512), contextWindowReduced: external_exports.boolean() }).strict().optional()
 }).strict();
+var SessionAutoCloseStateSchema = external_exports.object({
+  sessionId: external_exports.string().min(1).max(512),
+  state: external_exports.enum(["deferred", "closed"]).nullable()
+}).strict();
+var SessionAutoCloseKeepSchema = external_exports.object({ sessionId: external_exports.string().min(1).max(512) }).strict();
 var ConversationStartUserTaskSchema = external_exports.discriminatedUnion("kind", [
   external_exports.object({ kind: external_exports.literal("existing"), taskId: external_exports.string().min(1).max(512) }).strict(),
   external_exports.object({
@@ -9103,6 +10430,7 @@ var SessionStartConversationSchema = external_exports.object({
         model: external_exports.string().max(512).nullable(),
         effort: external_exports.string().max(512).nullable(),
         permissionMode: SessionPermissionModeSchema,
+        modelFallback: external_exports.literal("selectable_default").optional(),
         launchOrigin: external_exports.literal("portal-editor").optional(),
         dispatchContext: external_exports.object({ projectId: external_exports.string().trim().min(1).max(160), folderPath: external_exports.string().trim().min(1).max(4096), userSelected: external_exports.literal(true) }).strict().optional()
       }).strict()
@@ -9138,7 +10466,7 @@ var WindowScanReportSchema = external_exports.object({
   sessionIds: external_exports.array(external_exports.string().min(1).max(512)).max(2e3)
 }).strict();
 var ConversationRefSchema = external_exports.object({
-  cliId: external_exports.enum(["claude", "codex"]),
+  cliId: external_exports.enum(AI_CONVERSATION_PROVIDER_IDS),
   conversationId: external_exports.string().uuid()
 });
 var SessionTurnModeSchema = external_exports.enum(["pty-text", "structured"]);
@@ -9160,6 +10488,7 @@ var SessionOpenSchema = external_exports.object({
   forceNewSession: external_exports.boolean().optional(),
   resumeExternalId: external_exports.string().optional(),
   historyResume: external_exports.boolean().optional(),
+  acceptResumeModel: external_exports.string().min(1).max(512).optional(),
   allowDuplicateForTask: external_exports.boolean().optional(),
   launchOrigin: external_exports.literal("portal-editor").optional(),
   teamMeta: SessionTeamMetaSchema.optional(),
@@ -9167,6 +10496,9 @@ var SessionOpenSchema = external_exports.object({
   teamAutoSend: external_exports.boolean().optional(),
   model: external_exports.string().min(1).nullable(),
   effort: external_exports.string().min(1).nullable(),
+  modelSource: external_exports.literal("default").optional(),
+  effortSource: external_exports.literal("default").optional(),
+  modelFallback: external_exports.literal("selectable_default").optional(),
   verifiedProjectPaths: external_exports.array(external_exports.string().min(1)).optional(),
   dispatchContext: external_exports.object({ projectId: external_exports.string().trim().min(1).max(160), folderPath: external_exports.string().trim().min(1).max(4096), userSelected: external_exports.literal(true) }).strict().optional()
 });
@@ -9177,7 +10509,10 @@ var SessionListSchema = external_exports.object({
   sessionId: external_exports.string().min(1)
 });
 var SessionReopenPersistedSchema = external_exports.object({
-  sessionId: external_exports.string().min(1).max(512)
+  sessionId: external_exports.string().min(1).max(512),
+  acceptResumeModel: external_exports.string().min(1).max(512).optional(),
+  substituteRetiredModel: external_exports.literal(true).optional(),
+  workspaceRestore: external_exports.literal(true).optional()
 }).strict();
 var SessionPersistedInventoryItemSchema = external_exports.object({
   sessionId: external_exports.string().min(1).max(512),
@@ -9196,7 +10531,7 @@ var SessionPersistedInventoryItemSchema = external_exports.object({
 var SessionPersistedInventoryResponseSchema = external_exports.array(SessionPersistedInventoryItemSchema);
 var SessionListFolderSchema = external_exports.object({
   folderPath: external_exports.string(),
-  cliId: external_exports.enum(["antigravity", "claude", "codex"]).optional().default("claude")
+  cliId: external_exports.enum(AI_PROVIDER_IDS).optional().default("claude")
 });
 var SessionRenameSchema = external_exports.object({
   sessionId: external_exports.string().min(1),
@@ -9205,6 +10540,9 @@ var SessionRenameSchema = external_exports.object({
 var SessionGetConversationSchema = external_exports.object({
   sessionId: external_exports.string().min(1)
 });
+var SessionGetPluginBackgroundOwnerSchema = external_exports.object({
+  sessionId: external_exports.string().min(1)
+}).strict();
 var SessionSetProjectSchema = external_exports.object({
   sessionId: external_exports.string().min(1),
   projectPath: external_exports.string(),
@@ -9360,10 +10698,48 @@ var TasksAssignTeamSchema = external_exports.object({
   version: external_exports.number().int().nonnegative().nullish()
 });
 var TasksListAssignableTeamsSchema = external_exports.object({}).strict();
+var TasksInspectLaunchFolderSchema = external_exports.object({
+  folderPath: external_exports.string().max(4096).nullable()
+}).strict();
 var TasksDeleteSchema = external_exports.object({
   taskId: external_exports.string().min(1),
   expectedAuthoredRevision: external_exports.number().int().nonnegative().nullish()
 });
+var TASK_STATUS_SUMMARY_ERROR_CODES = [
+  "authored_revision_conflict",
+  "summary_block_malformed",
+  "description_too_long",
+  "provider_not_ready",
+  "provider_unsupported",
+  "model_unavailable",
+  "in_progress",
+  "cooldown",
+  "response_too_large",
+  "session_closed",
+  "deadline_exceeded",
+  "summary_model_output_invalid",
+  "generation_failed"
+];
+var TasksGenerateStatusSummarySchema = external_exports.object({
+  taskId: external_exports.string().min(1).refine((value) => value.trim().length > 0),
+  provider: external_exports.string().min(1).max(64).nullish(),
+  modelId: external_exports.string().min(1).max(128).nullish(),
+  effort: external_exports.string().min(1).max(64).nullish()
+}).strict();
+var TasksGenerateStatusSummaryResultSchema = external_exports.discriminatedUnion("ok", [
+  external_exports.object({
+    ok: external_exports.literal(true),
+    generatedAt: external_exports.number().int().nonnegative(),
+    summaryText: external_exports.string().min(1),
+    punchTotal: external_exports.number().int().nonnegative(),
+    punchIncomplete: external_exports.number().int().nonnegative(),
+    sessionId: external_exports.string().min(1)
+  }).strict(),
+  external_exports.object({
+    ok: external_exports.literal(false),
+    code: external_exports.enum(TASK_STATUS_SUMMARY_ERROR_CODES)
+  }).strict()
+]);
 var TasksCreateSchema = external_exports.object({
   name: EntityNameSchema,
   milestoneLocalId: external_exports.string().nullish(),
@@ -9519,13 +10895,6 @@ var PunchesGetLatestResponsesSchema = external_exports.object({
   taskId: external_exports.string().min(1).max(512),
   punchIds: external_exports.array(CorePunchIdSchema).min(1).max(20)
 }).strict();
-var PunchesGetChatTimelineSchema = external_exports.union([external_exports.object({
-  taskId: external_exports.string().min(1).max(512),
-  punchIds: external_exports.array(CorePunchIdSchema).min(1).max(2e3)
-}).strict(), external_exports.object({
-  taskId: external_exports.string().min(1).max(512),
-  punchUids: external_exports.array(external_exports.string().min(1).max(512)).min(1).max(2e3)
-}).strict()]);
 
 var MonitorStartSchema = external_exports.object({
   sessionId: external_exports.string().min(1),
@@ -9539,7 +10908,8 @@ var MonitorStopSchema = external_exports.object({
 });
 var MonitorRebindSchema = external_exports.object({
   sessionId: external_exports.string().min(1),
-  externalId: external_exports.string().nullable()
+  externalId: external_exports.string().nullable(),
+  acceptResumeModel: external_exports.string().min(1).max(512).optional()
 });
 
 var WEB_STRIPPED_PATH_SOURCE_FIELDS = Object.freeze({
@@ -9638,7 +11008,7 @@ var ScheduleRuleSchema = ScheduleRuleObjectSchema.superRefine((rule, ctx) => {
   }
 });
 
-var SCHEDULE_TOOL_IDS = ["claude", "codex"];
+var SCHEDULE_TOOL_IDS = AI_SCHEDULE_PROVIDER_IDS;
 var DEFAULT_SCHEDULE_TOOL = SCHEDULE_TOOL_IDS[0];
 var ScheduleSourceSchema = external_exports.object({
   originKind: external_exports.literal("fork_segments"),
@@ -9777,8 +11147,39 @@ var SessionConnectionRepairResultSchema = external_exports.object({
   message: external_exports.string().min(1).max(500)
 }).strict();
 var SessionQueueMutationIdentitySchema = external_exports.object({ sessionId: SessionInputSessionIdSchema, requestId: SessionInputRequestIdSchema }).strict();
+var SESSION_QUEUE_PRIORITIZE_ORIGINS = ["pending-card-send-now", "async-question-reply", "unspecified"];
+var SessionQueuePrioritizeCommandSchema = SessionQueueMutationIdentitySchema.extend({ origin: external_exports.enum(SESSION_QUEUE_PRIORITIZE_ORIGINS).optional() }).strict();
 var SessionQueueEditCommandSchema = SessionQueueMutationIdentitySchema.extend({ text: SessionInputTextSchema }).strict();
 var SessionQueueMutationResultSchema = external_exports.object({ requestId: SessionInputRequestIdSchema, ok: external_exports.boolean(), reason: external_exports.string().min(1).max(200).optional() }).strict();
+var PENDING_PROBE_ROW_STATES = ["queued", "dispatching", "original_written", "enter_pending", "submitted", "delivered", "failed", "cancelled", "unknown", "not_found", "read_failed"];
+var RECOVERY_INPUT_BOX_STATES = ["empty", "ours", "ours-placeholder", "other", "unreadable", "unsupported", "not-applicable"];
+var INPUT_BOX_UNREADABLE_REASONS = ["not-on-screen", "mid-repaint", "ambiguous-wrap", "no-reader", "screen-error", "screen-empty"];
+var PENDING_PROBE_PROMPT_MAX = 32;
+var PENDING_PROBE_PROMPT_TEXT_MAX = 8192;
+var SessionPendingProbeQuerySchema = external_exports.object({ sessionId: SessionInputSessionIdSchema, requestId: SessionInputRequestIdSchema, trigger: external_exports.enum(["auto", "user", "confirm"]) }).strict();
+var SessionPendingProbeResultSchema = external_exports.object({
+  requestId: SessionInputRequestIdSchema,
+  row: external_exports.object({ state: external_exports.enum(PENDING_PROBE_ROW_STATES), writeCertainty: external_exports.enum(["not_attempted", "not_written", "written", "unknown"]).nullable(), revision: external_exports.number().int().nonnegative().nullable() }).strict(),
+  memory: external_exports.object({ state: SessionInputDeliveryStateSchema.nullable(), textWritten: external_exports.boolean().nullable(), lastOriginalWrite: external_exports.boolean(), bindingCurrent: external_exports.boolean() }).strict(),
+  gate: external_exports.object({ idle: external_exports.boolean(), blockedBy: external_exports.array(external_exports.string().max(64)).max(16) }).strict(),
+  hook: external_exports.object({ live: external_exports.boolean().nullable(), promptSinceWrite: external_exports.boolean().nullable() }).strict(),
+  transcript: external_exports.discriminatedUnion("status", [
+    external_exports.object({
+      status: external_exports.literal("checked"),
+      coverage: external_exports.enum(["complete", "partial"]),
+      prompts: external_exports.array(external_exports.object({ text: external_exports.string().max(PENDING_PROBE_PROMPT_TEXT_MAX), atMs: external_exports.number().nullable(), kind: external_exports.enum(["prompt", "enqueued"]) }).strict()).max(PENDING_PROBE_PROMPT_MAX)
+    }).strict(),
+    external_exports.object({ status: external_exports.literal("unavailable"), reason: external_exports.enum(["unsupported", "unbound", "read_error", "too_large", "absent"]) }).strict()
+  ]),
+  inputBox: external_exports.enum(RECOVERY_INPUT_BOX_STATES),
+  inputBoxReason: external_exports.enum(INPUT_BOX_UNREADABLE_REASONS).nullable(),
+  evidenceCapable: external_exports.boolean()
+}).strict();
+var SUPPLEMENT_ENTER_REFUSALS = ["not-idle", "record-missing", "not-written-by-app", "binding-changed", "box-empty", "box-other", "box-unreadable", "not-last-write", "enter-limit", "unsupported"];
+var SessionSupplementEnterResultSchema = external_exports.object({ requestId: SessionInputRequestIdSchema, outcome: external_exports.enum(["written", "refused"]), reason: external_exports.enum(SUPPLEMENT_ENTER_REFUSALS).optional() }).strict();
+var SessionResendPendingCommandSchema = SessionQueueMutationIdentitySchema.extend({ newRequestId: SessionInputRequestIdSchema, expectedRevision: external_exports.number().int().nonnegative() }).strict();
+var RESEND_PENDING_REFUSALS = ["row-missing", "row-changed", "row-in-flight", "not-idle", "box-not-empty", "cli-took", "same-request", "send-failed", "unsupported", "already-resent", "transcript-has-prompt", "transcript-uncertain"];
+var SessionResendPendingResultSchema = external_exports.object({ requestId: SessionInputRequestIdSchema, newRequestId: SessionInputRequestIdSchema, outcome: external_exports.enum(["accepted", "refused"]), reason: external_exports.enum(RESEND_PENDING_REFUSALS).optional(), code: external_exports.string().max(64).optional() }).strict();
 var SESSION_PROGRESS_PHASES = [
   "idle",
   "queued-cli-starting",
@@ -9794,6 +11195,27 @@ var SESSION_PROGRESS_PHASES = [
 ];
 var SessionProgressPhaseSchema = external_exports.enum(SESSION_PROGRESS_PHASES);
 var SessionQueueGetSnapshotQuerySchema = external_exports.object({ sessionId: SessionInputSessionIdSchema }).strict();
+var CoreSessionNumericIdSchema = external_exports.string().refine((value) => /^[1-9][0-9]{0,18}$/u.test(value) && BigInt(value) <= 9223372036854775807n);
+var SessionQueueInputHistoryCursorSchema = external_exports.object({ sessionId: CoreSessionNumericIdSchema, createdAtMs: external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), id: CoreSessionNumericIdSchema }).strict();
+var SessionQueueListInputHistoryQuerySchema = external_exports.object({
+  sessionId: CoreSessionNumericIdSchema,
+  limit: external_exports.number().int().min(1).max(20).default(20),
+  cursor: SessionQueueInputHistoryCursorSchema.nullable().optional()
+}).strict().refine((value) => value.cursor == null || value.cursor.sessionId === value.sessionId, { path: ["cursor"], message: "input history cursor session mismatch" });
+var SessionQueueInputHistoryRecordSchema = external_exports.object({
+  id: CoreSessionNumericIdSchema,
+  requestId: SessionInputRequestIdSchema,
+  sessionId: CoreSessionNumericIdSchema,
+  createdAtMs: external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  displayText: external_exports.string().max(SESSION_INPUT_TEXT_MAX_LENGTH).nullable(),
+  displayAttachments: external_exports.array(SessionRuntimeDisplayAttachmentSchema).max(64).nullable(),
+  state: external_exports.enum(["queued", "dispatching", "original_written", "enter_pending", "submitted", "delivered", "failed", "cancelled", "unknown"]),
+  writeCertainty: external_exports.enum(["not_attempted", "not_written", "written", "unknown"])
+}).strict();
+var SessionQueueInputHistoryPageSchema = external_exports.object({
+  items: external_exports.array(SessionQueueInputHistoryRecordSchema).max(20),
+  nextCursor: SessionQueueInputHistoryCursorSchema.nullable()
+}).strict();
 var SessionQueueFailureSchema = external_exports.object({ code: external_exports.string().min(1), writeRetryable: external_exports.boolean(), textWritten: external_exports.boolean() }).strict();
 var SessionQueueRecordFlagsSchema = external_exports.object({ stalled: external_exports.boolean(), stalledSinceMs: external_exports.number().nullable(), abandoned: external_exports.boolean(), abandonedAtMs: external_exports.number().nullable() }).strict();
 var SessionQueueSnapshotSchema = external_exports.object({ revision: external_exports.number().int().nonnegative(), queuedRequestIds: external_exports.array(SessionInputRequestIdSchema), activeRequestId: SessionInputRequestIdSchema.nullable(), states: external_exports.record(external_exports.string(), SessionInputDeliveryStateSchema), failures: external_exports.record(external_exports.string(), SessionQueueFailureSchema), flags: external_exports.record(external_exports.string(), SessionQueueRecordFlagsSchema), haltedRequestId: SessionInputRequestIdSchema.nullable(), frozen: external_exports.boolean(), phase: SessionProgressPhaseSchema.optional(), phaseSinceMs: external_exports.number().optional(), activeRequestSinceMs: external_exports.number().int().nonnegative().optional() }).strict();
@@ -9809,18 +11231,32 @@ var AI_MODEL_ID_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
 var ModelId = external_exports.string().regex(AI_MODEL_ID_PATTERN);
 var AI_EFFORT_VALUE_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
 var EffortValue = external_exports.string().regex(AI_EFFORT_VALUE_PATTERN);
+var AI_PI_MODEL_REF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/:@[\]-]{0,127}$/u;
+var SessionModel = external_exports.string().max(128);
+function sessionModelPatternFor(providerId3) {
+  return providerId3 === "pi" ? AI_PI_MODEL_REF_PATTERN : AI_MODEL_ID_PATTERN;
+}
+function refineSessionModels(record, context, skip) {
+  for (const [providerId3, entry3] of Object.entries(record)) {
+    if (providerId3 === skip || entry3 === null || typeof entry3 !== "object") continue;
+    const model = entry3.model;
+    if (typeof model === "string" && !sessionModelPatternFor(providerId3).test(model)) {
+      context.addIssue({ code: external_exports.ZodIssueCode.custom, path: [providerId3, "model"], message: "model 格式無效。" });
+    }
+  }
+}
 var AiSessionDefaultsSchema = external_exports.record(
   ProviderId,
-  external_exports.object({ model: ModelId.nullable(), effort: EffortValue.nullable() }).strict()
-);
+  external_exports.object({ model: SessionModel.nullable(), effort: EffortValue.nullable() }).strict()
+).superRefine((record, context) => refineSessionModels(record, context));
 var AI_FOLDER_PERMISSION_VALUE_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 var FolderPermissionValue = external_exports.string().regex(AI_FOLDER_PERMISSION_VALUE_PATTERN);
 var FolderSessionDefaultsProviderValuesSchema = external_exports.object({
-  model: ModelId.nullable(),
+  model: SessionModel.nullable(),
   effort: EffortValue.nullable(),
   permission: FolderPermissionValue.nullable()
 }).strict();
-var FolderSessionDefaultsDocumentSchema = external_exports.object({ folderPath: external_exports.string().min(1).max(4096) }).catchall(FolderSessionDefaultsProviderValuesSchema);
+var FolderSessionDefaultsDocumentSchema = external_exports.object({ folderPath: external_exports.string().min(1).max(4096) }).catchall(FolderSessionDefaultsProviderValuesSchema).superRefine((document, context) => refineSessionModels(document, context, "folderPath"));
 var AI_MODEL_CATALOG_MAX_ENTRIES = 50;
 var AI_MODEL_EFFORT_VALUES_MAX = 16;
 var AiModelCatalogEntrySchema = external_exports.object({
@@ -9860,6 +11296,7 @@ var NATIVE_OWNED_WORKSPACE_SETTING_KEYS_LIST = [
   "session_permission_memory",
   "session_close_choice",
   "sidebar_task_order",
+  "sidebar_navigation_preference_v1",
   "notification_prefs",
   "usage_telemetry",
   "ai_dispatch_tier_policy",
@@ -9882,11 +11319,14 @@ var NATIVE_OWNED_WORKSPACE_SETTING_KEYS_LIST = [
   "ai_model_pricing_overrides",
   "ai_model_pricing_catalog_preferences",
   "official_ai_model_catalog_lkg",
-  "web_cwd_confirmed"
+  "web_cwd_confirmed",
+  "task_status_summary_model"
 ];
 var NATIVE_OWNED_WORKSPACE_SETTING_KEYS = new Set(
   NATIVE_OWNED_WORKSPACE_SETTING_KEYS_LIST
 );
+var HISTORY_CURSOR_PROVIDER_IDS = [...AI_CONVERSATION_PROVIDER_IDS];
+var HISTORY_CURSOR_KEY = new RegExp(`^conversation_scanner\\.history_cursor\\.(?:${HISTORY_CURSOR_PROVIDER_IDS.join("|")})$`);
 
 var FiniteNumberSchema = external_exports.number().finite();
 var NonNegativeNumberSchema = FiniteNumberSchema.nonnegative();
@@ -9926,6 +11366,27 @@ var ACTIVE_COLUMNS = [
 ];
 var ACTIVE_STATUSES = ACTIVE_COLUMNS.map((c) => c.status);
 var KANBAN_VISIBLE_COLUMNS = ACTIVE_COLUMNS.filter((c) => c.status !== "PREPARATION");
+
+var TASK_STATUS_SUMMARY_BLOCK_START = "--- 任務狀態摘要（自動產生，重新生成會整段取代）---";
+var TASK_STATUS_SUMMARY_BLOCK_END = "--- 任務狀態摘要結束 ---";
+function escapeForRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\/]/gu, "\\$&");
+}
+var START_LINE_RE = new RegExp(`^${escapeForRegExp(TASK_STATUS_SUMMARY_BLOCK_START)}\\r?$`, "gmu");
+var END_LINE_RE = new RegExp(`^${escapeForRegExp(TASK_STATUS_SUMMARY_BLOCK_END)}\\r?$`, "gmu");
+
+var PROMPT_HEAD = [
+  "你是任務進度整理員。只根據下方資料整理，不呼叫任何工具，不讀寫檔案，不加入資料以外的內容。",
+  "只輸出一個 JSON 物件，不要 Markdown 與其他文字，欄位如下：",
+  '{"goal":"初始需求，最多 3 句","done":["已完成事項，每條一句，最多 6 條"],"todo":["待辦事項，每條一句，最多 5 條"],"conclusion":"目前結論或下一步，一句"}',
+  "資料不足或未完整時照實寫，不要猜測。"
+].join("\n");
+
+var TaskStatusSummaryModelSettingSchema = external_exports.object({
+  provider: external_exports.string().min(1).max(64),
+  model: external_exports.string().min(1).max(128),
+  effort: external_exports.string().regex(AI_EFFORT_VALUE_PATTERN).nullable()
+}).strict();
 
 var ConfigEditorTargetSchema = external_exports.object({
   provider: external_exports.enum(["codex", "claude"]),
@@ -10367,6 +11828,7 @@ var CorePluginHostSettledWorkRecordSchema = external_exports.object({
   rawId: identifier4,
   agentId: external_exports.string().min(1),
   projectId: identifier4.nullable(),
+  taskId: identifier4.nullable(),
   sessionId: identifier4.nullable(),
   providerId: external_exports.string().nullable(),
   punchType: external_exports.enum(["main", "subagent"]),
@@ -10374,10 +11836,25 @@ var CorePluginHostSettledWorkRecordSchema = external_exports.object({
   endedAtMs: integer2,
   model: external_exports.string().nullable(),
   name: external_exports.string().max(32768).nullable(),
-  description: external_exports.string().max(32768).nullable()
+  description: external_exports.string().max(32768).nullable(),
+  textTruncated: external_exports.boolean()
 }).strict();
 var CorePluginHostSettledWorkChunkSchema = external_exports.object({
   records: external_exports.array(CorePluginHostSettledWorkRecordSchema).max(16),
+  exhausted: external_exports.boolean()
+}).strict();
+var CorePluginHostWorkChangesChunkInputSchema = external_exports.object({
+  sinceMs: integer2.nullable(),
+  afterChangedAtMs: integer2.nullable(),
+  afterId: identifier4.nullable(),
+  limit: external_exports.number().int().min(1).max(100)
+}).strict().refine((input) => input.afterChangedAtMs === null === (input.afterId === null));
+var CorePluginHostWorkChangeSchema = external_exports.discriminatedUnion("kind", [
+  external_exports.object({ kind: external_exports.literal("upsert"), changedAtMs: integer2, record: CorePluginHostSettledWorkRecordSchema }).strict(),
+  external_exports.object({ kind: external_exports.literal("retracted"), changedAtMs: integer2, rawId: identifier4, reason: external_exports.literal("not_done") }).strict()
+]);
+var CorePluginHostWorkChangesChunkSchema = external_exports.object({
+  changes: external_exports.array(CorePluginHostWorkChangeSchema).max(100),
   exhausted: external_exports.boolean()
 }).strict();
 var CorePluginHostSubagentExportActivationInputSchema = external_exports.object({}).strict();
@@ -10406,7 +11883,7 @@ var command = (operation, input) => external_exports.object({ operation: externa
 var sessionId4 = identifier5;
 var sessionRevision = counter2;
 var snapshotRef = external_exports.string().regex(/^[0-9a-f]{64}$/u);
-var taskSessionProvider = external_exports.enum(["claude", "codex"]);
+var taskSessionProvider = external_exports.enum(AI_CONVERSATION_PROVIDER_IDS);
 var taskSessionNativeId = external_exports.string().min(1).max(512).refine((value) => value.trim() === value && value !== "codex-pending" && value !== "claude-pending" && !value.startsWith("codex:thread:") && !value.startsWith("claude:session:"));
 var CoreWorkTaskSessionBindingHistoryEntrySchema = external_exports.object({
   session_id: external_exports.string().min(1).max(512),
@@ -10583,7 +12060,15 @@ var nativeTask = task.extend({ currentSessionId: identifier5.nullable(), current
 var nativeProject = project.extend({ lastUsedAt: integer3.nullable() }).strict();
 var CoreWorkNativePageSchema = (row) => external_exports.object({ items: external_exports.array(row).max(100), hasMore: external_exports.boolean() }).strict();
 var pageReply = CoreWorkNativePageSchema;
+var conversationBoardInvalidationInput = external_exports.object({
+  source: external_exports.enum(["core-task", "core-session", "scanner-session", "unknown"]),
+  sequence: integer3,
+  taskIds: external_exports.array(identifier5).max(256),
+  sessionIds: external_exports.array(sessionId4).max(256)
+}).strict();
+var conversationBoardInvalidationReply = external_exports.object({ acknowledged: external_exports.literal(true), mode: external_exports.enum(["delta", "reset"]) }).strict();
 var CoreWorkCommandSchema = external_exports.discriminatedUnion("operation", [
+  command("invalidateConversationBoard", conversationBoardInvalidationInput),
   command("countConversationBoard", ConversationBoardCountInputSchema),
   command("pageConversationBoard", ConversationBoardPageInputSchema),
   command("pageConversationBoardInventory", ConversationBoardInventoryPageInputSchema),
@@ -10647,7 +12132,7 @@ var CoreWorkCommandSchema = external_exports.discriminatedUnion("operation", [
   command("listClaimedProviderSessionIds", external_exports.object({ provider: external_exports.string().min(1), excludeSessionId: sessionId4 }).strict()),
   command("listProjectSessions", external_exports.object({ sessionId: sessionId4, limit: external_exports.number().int().positive().max(500).optional() }).strict()),
   command("reconfigure", sessionCas.extend({ provider: external_exports.string().min(1), providerSessionId: external_exports.string().min(1).nullable(), launchProjectPath: text2.optional(), launchModel: text2.optional(), launchEffort: text2.optional(), permissionMode: text2.optional() }).strict()),
-  command("reopenForResume", sessionCas.extend({ provider: external_exports.string().min(1).optional(), providerSessionId: external_exports.string().min(1).optional() }).strict()),
+  command("reopenForResume", sessionCas.extend({ provider: external_exports.string().min(1).optional(), providerSessionId: external_exports.string().min(1).optional(), launchModel: external_exports.string().min(1).optional(), launchEffort: text2.optional() }).strict()),
   command("bindPty", sessionCas.extend({ provider: external_exports.string().min(1).optional(), providerSessionId: external_exports.string().min(1).optional() }).strict()),
   command("markClosed", sessionCas.strict()),
   command("markFailed", sessionCas.extend({ errorCode: external_exports.string().min(1) }).strict()),
@@ -10682,12 +12167,13 @@ var CoreWorkCommandSchema = external_exports.discriminatedUnion("operation", [
   command("visitRecoverableBindings", external_exports.object({}).strict()),
   command("readPunchSinceMs", external_exports.object({ sessionId: sessionId4, providerSessionId: external_exports.string().min(1) }).strict()),
   command("readPunchWindow", external_exports.object({ taskId: identifier5, punchId: identifier5 }).strict()),
-  command("listOpenPunchesForSettlement", external_exports.object({ sessionId: identifier5.optional(), afterStartedAtMs: integer3.optional(), afterId: identifier5.optional(), limit: external_exports.number().int().positive().max(200) }).strict()),
+  command("listOpenPunchesForSettlement", external_exports.object({ sessionId: identifier5.optional(), afterStartedAtMs: integer3.optional(), afterId: identifier5.optional(), limit: external_exports.number().int().positive().max(200), rootOnly: external_exports.boolean().optional() }).strict()),
   command("commitConversationWork", commitConversationWorkInput),
   command("recordFreshTeamSession", external_exports.object({ sessionId: sessionId4, usedAtMs: integer3 }).strict()),
   command("listRecentTeamUsage", external_exports.object({ windowDays: external_exports.number().int().positive().max(Math.floor(Number.MAX_SAFE_INTEGER / 864e5)), nowMs: integer3 }).strict()),
   command("pluginDirectoryProjects", CorePluginHostDirectoryProjectsInputSchema),
   command("pluginSettledWorkChunk", CorePluginHostSettledWorkChunkInputSchema),
+  command("pluginWorkChangesChunk", CorePluginHostWorkChangesChunkInputSchema),
   command("ensurePluginSubagentExportActivation", CorePluginHostSubagentExportActivationInputSchema),
   command("getTaskSessionBinding", external_exports.object({ taskId: identifier5 }).strict()),
   command("listActiveTaskSessionBindings", external_exports.object({ provider: taskSessionProvider.nullable() }).strict()),
@@ -10716,6 +12202,7 @@ var folderResult = external_exports.union([
 var CoreWorkNativeDeletionReplySchema = external_exports.union([external_exports.object({ status: external_exports.literal("ok"), value: external_exports.object({ id: identifier5 }).strict() }).strict(), external_exports.object({ status: external_exports.enum(["missing", "collision"]), error: external_exports.enum(["missing", "collision"]) }).strict()]).refine((value) => value.status === "ok" || value.status === value.error);
 var deletionReply = CoreWorkNativeDeletionReplySchema;
 var CoreWorkValueSchemas = {
+  invalidateConversationBoard: conversationBoardInvalidationReply,
   countConversationBoard: ConversationBoardCountsSchema,
   pageConversationBoard: ConversationBoardPageSchema,
   pageConversationBoardInventory: ConversationBoardInventoryPageSchema,
@@ -10741,6 +12228,7 @@ var CoreWorkValueSchemas = {
   listRecentTeamUsage: external_exports.array(external_exports.object({ teamKey: external_exports.string(), recentCount: integer3 }).strict()),
   pluginDirectoryProjects: CorePluginHostDirectoryProjectsSchema,
   pluginSettledWorkChunk: CorePluginHostSettledWorkChunkSchema,
+  pluginWorkChangesChunk: CorePluginHostWorkChangesChunkSchema,
   ensurePluginSubagentExportActivation: CorePluginHostSubagentExportActivationSchema,
   getTaskSessionBinding: taskSessionBinding.nullable(),
   listActiveTaskSessionBindings: external_exports.array(taskSessionActiveBinding),
@@ -10806,7 +12294,7 @@ var CoreWorkValueSchemas = {
   settleLocalSubtask: punchWriteOutcome,
   settleOrphanPunch: punchWriteOutcome,
   reconcilePunchIdentity: external_exports.boolean(),
-  resolveConversationWorkSessions: external_exports.array(external_exports.object({ sessionId: sessionId4, taskId: sessionId4, provider: external_exports.enum(["claude", "codex"]) }).strict()),
+  resolveConversationWorkSessions: external_exports.array(external_exports.object({ sessionId: sessionId4, taskId: sessionId4, provider: external_exports.enum(AI_CONVERSATION_PROVIDER_IDS) }).strict()),
   queryPunchesForTask: external_exports.object({ rows: external_exports.array(CoreNativePunchRowSchema), snapshot: external_exports.unknown().nullable(), tokenPrice: external_exports.unknown().nullable(), nextCursor: CorePunchListCursorSchema.nullable() }).strict(),
   listPunchesForTasks: external_exports.object({ rows: external_exports.array(CoreNativePunchRowSchema), nextCursor: CorePunchListCursorSchema.nullable() }).strict(),
   listAllPunches: external_exports.object({ rows: external_exports.array(CoreNativePunchRowSchema), nextCursor: CorePunchListCursorSchema.nullable() }).strict(),
@@ -11008,8 +12496,8 @@ var nativeSecretKeys_default = {
 
 var NATIVE_SECRET_LEGACY_PREFIX = nativeSecretKeys_default.legacyPrefix;
 var NATIVE_SECRET_KEY_ENTRIES = nativeSecretKeys_default.entries;
-var byLegacy = new Map(NATIVE_SECRET_KEY_ENTRIES.map((entry2) => [`${NATIVE_SECRET_LEGACY_PREFIX}${entry2.legacySourceKey}`, entry2]));
-var byCurrent = new Map(NATIVE_SECRET_KEY_ENTRIES.filter((entry2) => entry2.current !== null).map((entry2) => [entry2.current, entry2]));
+var byLegacy = new Map(NATIVE_SECRET_KEY_ENTRIES.map((entry3) => [`${NATIVE_SECRET_LEGACY_PREFIX}${entry3.legacySourceKey}`, entry3]));
+var byCurrent = new Map(NATIVE_SECRET_KEY_ENTRIES.filter((entry3) => entry3.current !== null).map((entry3) => [entry3.current, entry3]));
 
 var revision2 = external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 var hash = external_exports.string().regex(/^[a-f0-9]{64}$/u);
@@ -11018,12 +12506,12 @@ var metadata = external_exports.object({ runId: id3, sourceSnapshotHash: hash, s
 var backup = external_exports.object({ backupId: id3, digest: hash, sourceIdentityDigest: hash }).strict();
 var privacyRow = external_exports.object({ subjectKind: external_exports.literal("session"), subjectKey: external_exports.string().min(1).max(512).regex(/^[A-Za-z0-9][A-Za-z0-9_.~:%-]*$/u), reason: external_exports.enum(["chatops-cred-write", "binding-create-code", "static-console"]), markedAt: revision2 }).strict();
 var command2 = (operation, input) => external_exports.object({ operation: external_exports.literal(operation), input }).strict();
-function settingsImportCommands(entry2) {
+function settingsImportCommands(entry3) {
   return [
     command2("importBeginApply", external_exports.object({ metadata, expectedRevision: revision2, at: revision2 }).strict()),
     command2("importMarkBackupReady", external_exports.object({ metadata, backup, at: revision2 }).strict()),
     command2("importMarkBlocked", external_exports.object({ runId: id3, reason: external_exports.string().min(1).max(128), at: revision2 }).strict()),
-    command2("importApplyAtomically", external_exports.object({ import: metadata.extend({ settings: external_exports.array(entry2).max(4096), privacyRows: external_exports.array(privacyRow).max(4096), privacySourceRevision: id3, backup, secretParity: external_exports.enum(["verified", "not_verified", "failed"]), pendingHandoffs: revision2, expectedActivationRevision: revision2 }).strict(), at: revision2 }).strict())
+    command2("importApplyAtomically", external_exports.object({ import: metadata.extend({ settings: external_exports.array(entry3).max(4096), privacyRows: external_exports.array(privacyRow).max(4096), privacySourceRevision: id3, backup, secretParity: external_exports.enum(["verified", "not_verified", "failed"]), pendingHandoffs: revision2, expectedActivationRevision: revision2 }).strict(), at: revision2 }).strict())
   ];
 }
 
@@ -11141,19 +12629,32 @@ var casOrSourceConflict = external_exports.union([
   external_exports.object({ status: external_exports.literal("source_seed_conflict") }).strict()
 ]);
 var command4 = (operation, input) => external_exports.object({ operation: external_exports.literal(operation), input }).strict();
+var sessionIdentityRead = external_exports.object({ session: CoreWorkSessionSchema.nullable(), providerSourceRef: sourceRef.nullable() }).strict();
 var requestId4 = external_exports.string().min(1).max(512);
 var requestHash = external_exports.string().regex(/^[a-f0-9]{64}$/u);
+var inputRequestState = external_exports.enum(["queued", "dispatching", "original_written", "enter_pending", "submitted", "delivered", "failed", "cancelled", "unknown"]);
+var displayText = external_exports.string().max(SESSION_RUNTIME_BODY_MAX_BYTES);
+var displayAttachments = external_exports.array(SessionRuntimeDisplayAttachmentSchema).max(64);
+var coreStoredTransportAttachment = SessionRuntimeAttachmentSchema.extend({
+  displayMetadata: SessionRuntimeDisplayAttachmentSchema.optional()
+}).strict().superRefine((attachment, context) => {
+  if (attachment.displayMetadata !== void 0 && attachment.displayMetadata.kind !== attachment.kind) {
+    context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["displayMetadata", "kind"], message: "stored attachment kind mismatch" });
+  }
+});
 var requestCursor = external_exports.object({ queueRank: integer4, createdAtMs: integer4, id: identifier6 }).strict();
+var inputHistoryCursor = external_exports.object({ sessionId: identifier6, createdAtMs: integer4, id: identifier6 }).strict();
 var requestRecord = external_exports.object({
   id: identifier6,
   createdAt: integer4,
+  updatedAt: integer4,
   sessionId: identifier6,
   requestId: requestId4,
   body: external_exports.string().max(2 * 1024 * 1024),
   bodySha256: requestHash,
   firstInputIdentity: external_exports.null(),
   firstInputIdentityJson: external_exports.null(),
-  attachments: external_exports.array(SessionRuntimeAttachmentSchema).max(32),
+  attachments: external_exports.array(coreStoredTransportAttachment).max(32),
   autoEnter: external_exports.boolean(),
   state: external_exports.enum(["queued", "dispatching", "original_written", "enter_pending", "submitted", "delivered", "failed", "cancelled", "unknown"]),
   writeCertainty: external_exports.enum(["not_attempted", "not_written", "written", "unknown"]),
@@ -11168,6 +12669,20 @@ var requestRecord = external_exports.object({
   claimOwner: external_exports.string().nullable(),
   claimRevision: integer4,
   errorCode: external_exports.string().nullable()
+}).strict();
+var inputHistoryRecord = external_exports.object({
+  id: identifier6,
+  requestId: requestId4,
+  sessionId: identifier6,
+  createdAtMs: integer4,
+  displayText: displayText.nullable(),
+  displayAttachments: displayAttachments.nullable(),
+  state: inputRequestState,
+  writeCertainty: external_exports.enum(["not_attempted", "not_written", "written", "unknown"])
+}).strict();
+var inputHistoryPage = external_exports.object({
+  items: external_exports.array(inputHistoryRecord).max(20),
+  nextCursor: inputHistoryCursor.nullable()
 }).strict();
 var requestMutation = external_exports.object({
   id: identifier6,
@@ -11210,6 +12725,7 @@ var recoveryProofFence = external_exports.object({
 var CoreSessionCommandSchema = external_exports.discriminatedUnion("operation", [
   command4("scoreInputCandidates", CoreSessionInputSimilarityQuerySchema),
   command4("readSessionIdentity", external_exports.object({ sessionId: identifier6 }).strict()),
+  command4("readSessionIdentities", external_exports.object({ sessionIds: external_exports.array(identifier6).min(1).max(32) }).strict()),
   command4(
     "createPendingSession",
     external_exports.object({
@@ -11269,13 +12785,20 @@ var CoreSessionCommandSchema = external_exports.discriminatedUnion("operation", 
     requestId: requestId4,
     body: external_exports.string().min(1).max(2 * 1024 * 1024),
     bodySha256: requestHash,
-    attachments: external_exports.array(SessionRuntimeAttachmentSchema).max(32),
+    attachments: external_exports.array(coreStoredTransportAttachment).max(32),
     autoEnter: external_exports.boolean(),
+    displayText: displayText.optional(),
     now: integer4
   }).strict()),
   command4("getInputRequest", external_exports.object({ sessionId: identifier6, requestId: requestId4 }).strict()),
   command4("getInputRequestById", external_exports.object({ id: identifier6 }).strict()),
   command4("listInputRequests", external_exports.object({ sessionId: identifier6, limit: external_exports.number().int().min(1).max(128), cursor: requestCursor.nullable().optional() }).strict()),
+  command4("listActiveInputRequests", external_exports.object({ sessionId: identifier6 }).strict()),
+  command4("listInputHistory", external_exports.object({
+    sessionId: identifier6,
+    limit: external_exports.number().int().min(1).max(20).default(20),
+    cursor: inputHistoryCursor.nullable().optional()
+  }).strict().refine((value) => value.cursor == null || value.cursor.sessionId === value.sessionId, { path: ["cursor"], message: "input history cursor session mismatch" })),
   command4("claimInputRequest", requestClaim),
   command4("claimConversationInputRequest", requestMutation.extend({ now: integer4 }).strict()),
   command4("recordInputRequestOriginalResult", requestReceipt.extend({ accepted: external_exports.boolean() }).strict()),
@@ -11292,6 +12815,18 @@ var CoreSessionCommandSchema = external_exports.discriminatedUnion("operation", 
   command4("editInputRequest", sessionRequestMutation.extend({ body: external_exports.string().min(1).max(2 * 1024 * 1024), bodySha256: requestHash }).strict()),
   command4("prioritizeInputRequest", sessionRequestMutation),
   command4("cancelInputRequest", sessionRequestMutation),
+  command4("settleInputRequest", external_exports.object({
+    sessionId: identifier6,
+    requestId: requestId4,
+    state: external_exports.enum(["failed", "cancelled", "unknown"]),
+    errorCode: external_exports.string().max(256).nullable(),
+    now: integer4
+  }).strict()),
+  command4("confirmInputRequestFromMessage", external_exports.object({
+    sessionId: identifier6,
+    itemKey: external_exports.string().min(1).max(512),
+    now: integer4
+  }).strict()),
   command4("closeInputRequestsForSession", external_exports.object({ sessionId: identifier6, now: integer4 }).strict()),
   command4("recoverInputRequests", external_exports.object({ now: integer4 }).strict()),
   command4("listQueuedInputSessionIds", external_exports.object({ limit: integer4, afterSessionId: identifier6.optional() }).strict())
@@ -11299,7 +12834,8 @@ var CoreSessionCommandSchema = external_exports.discriminatedUnion("operation", 
 var CORE_SESSION_OPERATIONS = Object.freeze(CoreSessionCommandSchema.options.map((option) => option.shape.operation.value));
 var CoreSessionValueSchemas = {
   scoreInputCandidates: CoreSessionInputSimilarityResultSchema,
-  readSessionIdentity: external_exports.object({ session: CoreWorkSessionSchema.nullable(), providerSourceRef: sourceRef.nullable() }).strict(),
+  readSessionIdentity: sessionIdentityRead,
+  readSessionIdentities: external_exports.array(sessionIdentityRead).min(1).max(32),
   createPendingSession: external_exports.union([
     external_exports.object({ session: CoreWorkSessionSchema, providerSourceRef: sourceRef.nullable() }).strict(),
     external_exports.object({ status: external_exports.literal("source_seed_conflict") }).strict()
@@ -11316,6 +12852,8 @@ var CoreSessionValueSchemas = {
   getInputRequest: requestRecord.nullable(),
   getInputRequestById: requestRecord.nullable(),
   listInputRequests: external_exports.object({ items: external_exports.array(requestRecord), nextCursor: requestCursor.nullable() }).strict(),
+  listActiveInputRequests: external_exports.object({ items: external_exports.array(requestRecord).max(256) }).strict(),
+  listInputHistory: inputHistoryPage,
   claimInputRequest: requestRecord.nullable(),
   claimConversationInputRequest: requestRecord.nullable(),
   recordInputRequestOriginalResult: requestRecord.nullable(),
@@ -11324,6 +12862,8 @@ var CoreSessionValueSchemas = {
   editInputRequest: requestRecord.nullable(),
   prioritizeInputRequest: requestRecord.nullable(),
   cancelInputRequest: requestRecord.nullable(),
+  settleInputRequest: requestRecord.nullable(),
+  confirmInputRequestFromMessage: requestRecord.nullable(),
   closeInputRequestsForSession: external_exports.null(),
   recoverInputRequests: external_exports.null(),
   listQueuedInputSessionIds: external_exports.array(identifier6)
@@ -11513,6 +13053,7 @@ var CORE_CONVERSATION_READ_DIAGNOSTIC_REASONS = Object.freeze([
   "punch_prompt_item_block_bytes",
   "punch_latest_assistant_block_bytes",
   "punch_latest_activity_block_bytes",
+  "punch_latest_record_block_bytes",
   "punch_dispatch_rows",
   "punch_child_fact_rows"
 ]);
@@ -11545,7 +13086,7 @@ var punchPageRequest = external_exports.object({
   endedAtMs: integer7.nullable(),
   status: external_exports.enum(["open", "done", "stale", "cancelled"]),
   continuation: external_exports.object({ snapshot: punchSnapshot, afterSequence: integer7 }).strict().nullable(),
-  projection: external_exports.enum(["page", "latest-assistant", "timeline", "event-detail"]).optional(),
+  projection: external_exports.enum(["page", "timeline", "event-detail"]).optional(),
   detailRange: external_exports.object({ firstSequence: integer7, lastSequence: integer7 }).strict().optional()
 }).strict().superRefine((value, context) => {
   if (value.endedAtMs !== null && value.endedAtMs < value.startedAtMs) context.addIssue({ code: external_exports.ZodIssueCode.custom, message: "punch page time range is invalid" });
@@ -11553,7 +13094,7 @@ var punchPageRequest = external_exports.object({
   if (value.projection === "event-detail" && value.continuation === null) context.addIssue({ code: external_exports.ZodIssueCode.custom, message: "event detail requires a scope cursor" });
   if (value.detailRange !== void 0 && value.detailRange.lastSequence < value.detailRange.firstSequence) context.addIssue({ code: external_exports.ZodIssueCode.custom, message: "event detail range is invalid" });
 });
-var anchorCursor = external_exports.object({ streamKey: external_exports.string(), sourceSessionId: counter4 }).strict().nullable();
+var anchorCursor = external_exports.object({ streamKey: external_exports.string(), sourceSessionId: counter4, sessionId: id6 }).strict().nullable();
 var factsCursor = external_exports.object({ byteStart: counter4, id: id6 }).strict().nullable();
 var selectedCursor = external_exports.object({ value: integer7, id: id6 }).strict().nullable();
 var subagentCursor = external_exports.object({ childKey: external_exports.string().min(1).max(4096), ordinal: counter4 }).strict().nullable();
@@ -11566,7 +13107,7 @@ var CoreConversationReadCommandSchema = external_exports.discriminatedUnion("ope
   command6("beginRead", external_exports.object({ scope }).strict()),
   command6("endRead", external_exports.object({ token }).strict()),
   command6("anchorsPage", external_exports.object({ token, after: anchorCursor, limit: integer7.min(1).max(256) }).strict()),
-  command6("factsPage", external_exports.object({ token, sourceSessionId: id6, generation: counter4, after: factsCursor, limit: integer7.min(1).max(512) }).strict()),
+  command6("factsPage", external_exports.object({ token, ownerSessionId: id6, streamKey: external_exports.string(), sourceSessionId: id6, generation: counter4, after: factsCursor, limit: integer7.min(1).max(512) }).strict()),
   command6("sessionSnapshot", external_exports.object({ token, streamKey: external_exports.string() }).strict()),
   command6("countItems", external_exports.object({ token, streamKey: external_exports.string(), generation: counter4 }).strict()),
   command6("readStats", external_exports.object({ token, streamKey: external_exports.string(), generation: counter4, byteStart: counter4.nullable(), byteEnd: counter4.nullable() }).strict()),
@@ -11577,6 +13118,7 @@ var CoreConversationReadCommandSchema = external_exports.discriminatedUnion("ope
   command6("segmentPage", external_exports.object({ token, streamKey: external_exports.string(), generation: counter4, afterSequence: counter4.nullable(), limit: integer7.min(1).max(256) }).strict()),
   command6("fieldChunk", external_exports.object({ token, messageId: id6, field: external_exports.enum(["facts", "blocks", "segmentText"]), offset: integer7.max(104857600), maxBytes: integer7.min(1).max(131072) }).strict()),
   command6("punchPage", external_exports.object({ request: punchPageRequest }).strict()),
+  command6("punchLatestBatch", external_exports.object({ taskId: id6, screenSessionId: id6, punchIds: external_exports.array(id6).min(1).max(20) }).strict()),
   command6("listSelectedSessions", external_exports.object({
     provider: external_exports.string().min(1).max(128).nullable(),
     projectId: id6.nullable(),
@@ -11637,6 +13179,54 @@ var CoreConversationSubagentRoundSchema = external_exports.object({
   cacheRead: counter4,
   assignee: external_exports.object({ teamKey: external_exports.string(), agentKey: external_exports.string(), displayName: external_exports.string().nullable() }).strict().nullable()
 }).strict();
+var punchPageItem = external_exports.object({
+  sequenceNo: integer7,
+  role: external_exports.enum(["user", "assistant", "system", "tool", "unknown"]),
+  itemType: external_exports.enum(["message", "thinking_summary", "tool_summary", "status", "unknown"]),
+  displayText: external_exports.string().max(1048576),
+  createdAt: integer7.nullable(),
+  deferred: external_exports.boolean().optional(),
+  tokenUsageKey: external_exports.string().max(520).nullable().optional(),
+  toolCalls: external_exports.array(external_exports.object({ key: external_exports.string().min(1).max(560), name: external_exports.string().min(1).max(200) }).strict()).max(256).optional(),
+  tokenUsage: external_exports.object({ input: integer7.nullable(), output: integer7.nullable(), cacheRead: integer7.nullable(), cacheWrite: integer7.nullable() }).strict().nullable().optional()
+}).strict();
+var punchPageValue = external_exports.object({
+  state: external_exports.enum(["pending", "indexing", "ready", "partial", "missing", "stale", "error"]),
+  screenSessionId: id6,
+  sourceGeneration: integer7.nullable(),
+  scopeFingerprint: external_exports.string().regex(/^[0-9a-f]{64}$/u).nullable(),
+  snapshot: punchSnapshot.nullable(),
+  items: external_exports.array(punchPageItem).max(100),
+  latestRecord: punchPageItem.nullable().optional(),
+  activity: external_exports.object({
+    sequenceNo: integer7,
+    role: external_exports.enum(["user", "assistant", "system", "tool", "unknown"]),
+    itemType: external_exports.enum(["message", "thinking_summary", "tool_summary", "status", "unknown"]),
+    displayText: external_exports.string().max(1048576),
+    createdAt: integer7.nullable()
+  }).strict().nullable().optional(),
+  totalCount: integer7,
+  nextSequence: integer7.nullable(),
+  errorCode: external_exports.enum([
+    "identity_missing",
+    "legacy_import_unlinked",
+    "identity_pending",
+    "stream_missing",
+    "round_missing",
+    "scope_ambiguous",
+    "scope_empty_turn",
+    "scope_unsupported",
+    "index_pending",
+    "source_index_missing",
+    "source_index_error",
+    "source_index_stale",
+    "source_timestamp_missing",
+    "cursor_stale",
+    "cursor_invalid",
+    "transcript_capability_unavailable"
+  ]).nullable(),
+  retryable: external_exports.boolean()
+}).strict();
 var CoreConversationReadValueSchemas = {
   writeNormalizedMonitor: external_exports.object({ committed: external_exports.literal(true) }).strict(),
   readNormalizedMonitor: CoreNormalizedMonitorRecordSchema.nullable(),
@@ -11669,51 +13259,13 @@ var CoreConversationReadValueSchemas = {
     revision: integer7,
     createdAt: integer7
   }).strict().nullable(),
-  punchPage: external_exports.object({
-    state: external_exports.enum(["pending", "indexing", "ready", "partial", "missing", "stale", "error"]),
-    screenSessionId: id6,
-    sourceGeneration: integer7.nullable(),
-    scopeFingerprint: external_exports.string().regex(/^[0-9a-f]{64}$/u).nullable(),
-    snapshot: punchSnapshot.nullable(),
+  punchPage: punchPageValue,
+  punchLatestBatch: external_exports.object({
     items: external_exports.array(external_exports.object({
-      sequenceNo: integer7,
-      role: external_exports.enum(["user", "assistant", "system", "tool", "unknown"]),
-      itemType: external_exports.enum(["message", "thinking_summary", "tool_summary", "status", "unknown"]),
-      displayText: external_exports.string().max(1048576),
-      createdAt: integer7.nullable(),
-      deferred: external_exports.boolean().optional(),
-      tokenUsageKey: external_exports.string().max(520).nullable().optional(),
-      toolCalls: external_exports.array(external_exports.object({ key: external_exports.string().min(1).max(560), name: external_exports.string().min(1).max(200) }).strict()).max(256).optional(),
-      tokenUsage: external_exports.object({ input: integer7.nullable(), output: integer7.nullable(), cacheRead: integer7.nullable(), cacheWrite: integer7.nullable() }).strict().nullable().optional()
-    }).strict()).max(100),
-    activity: external_exports.object({
-      sequenceNo: integer7,
-      role: external_exports.enum(["user", "assistant", "system", "tool", "unknown"]),
-      itemType: external_exports.enum(["message", "thinking_summary", "tool_summary", "status", "unknown"]),
-      displayText: external_exports.string().max(1048576),
-      createdAt: integer7.nullable()
-    }).strict().nullable().optional(),
-    totalCount: integer7,
-    nextSequence: integer7.nullable(),
-    errorCode: external_exports.enum([
-      "identity_missing",
-      "legacy_import_unlinked",
-      "identity_pending",
-      "stream_missing",
-      "round_missing",
-      "scope_ambiguous",
-      "scope_empty_turn",
-      "scope_unsupported",
-      "index_pending",
-      "source_index_missing",
-      "source_index_error",
-      "source_index_stale",
-      "source_timestamp_missing",
-      "cursor_stale",
-      "cursor_invalid",
-      "transcript_capability_unavailable"
-    ]).nullable(),
-    retryable: external_exports.boolean()
+      punchId: id6,
+      page: punchPageValue.nullable(),
+      errorCode: external_exports.enum(["response_too_large", "transcript_capability_unavailable"]).nullable()
+    }).strict()).max(20)
   }).strict(),
   sessionSnapshot: CoreConversationSessionSnapshotSchema.nullable(),
   countItems: external_exports.object({ count: counter4, lastSequence: counter4.nullable() }).strict(),
@@ -11771,7 +13323,7 @@ var CoreScanMonitorProgressIntentSchema = external_exports.object({
   kind: external_exports.literal("monitor-progress"),
   intentId: external_exports.string().regex(/^[0-9a-f]{64}$/u),
   sessionId: decimal,
-  provider: external_exports.enum(["claude", "codex"]),
+  provider: external_exports.enum(AI_CONVERSATION_PROVIDER_IDS),
   nativeSessionId: text5(512),
   ownerEpoch: text5(128),
   snapshotId: external_exports.string().regex(/^[0-9a-f]{64}$/u),
@@ -11785,7 +13337,7 @@ var CoreScanMonitorProgressIntentSchema = external_exports.object({
 var CoreScanTaskTitleIntentSchema = external_exports.object({
   kind: external_exports.literal("task-title"),
   intentId: external_exports.string().regex(/^[0-9a-f]{64}$/u),
-  provider: external_exports.enum(["claude", "codex"]),
+  provider: external_exports.enum(AI_CONVERSATION_PROVIDER_IDS),
   nativeSessionId: text5(512),
   text: text5(512),
   titleKind: external_exports.enum(["ai", "custom"]),
@@ -11804,7 +13356,7 @@ var batchShape = external_exports.object({
   sourceInstanceId: decimal,
   sourceRevision: decimal,
   generation: decimal,
-  provider: external_exports.enum(["claude", "codex"]),
+  provider: external_exports.enum(AI_CONVERSATION_PROVIDER_IDS),
   nativeSessionId: text5(512),
   intents: external_exports.array(CoreScanDownstreamIntentSchema).min(1).max(CORE_SCAN_DOWNSTREAM_MAX_INTENTS)
 }).strict();
@@ -11846,7 +13398,7 @@ var CoreScanDownstreamReceiptSchema = external_exports.object({
 var decimalId = external_exports.string().regex(/^[1-9][0-9]{0,18}$/u).refine((value) => BigInt(value) <= 9223372036854775807n);
 var sourceTarget = external_exports.object({
   sessionId: decimalId,
-  provider: external_exports.enum(["claude", "codex"]),
+  provider: external_exports.enum(AI_CONVERSATION_PROVIDER_IDS),
   providerSessionId: external_exports.string().min(1).max(512),
   sourceRef: external_exports.string().min(1).max(4096).refine((value) => value.trim() === value)
 }).strict();
@@ -11873,7 +13425,7 @@ var ConversationScannerScopeChangedSessionsSchema = external_exports.array(decim
 });
 var ConversationScannerContentSavedReceiptSchema = external_exports.object({
   sessionId: decimalId,
-  provider: external_exports.enum(["claude", "codex"]),
+  provider: external_exports.enum(AI_CONVERSATION_PROVIDER_IDS),
   providerSessionId: external_exports.string().min(1).max(512),
   providerTurnId: external_exports.string().min(1).max(512),
   sourceGeneration: external_exports.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -12002,7 +13554,7 @@ var CONVERSATION_SCANNER_OVERVIEW_ERROR_CODES = [
 var SafeNonNegativeIntegerSchema = external_exports.number().finite().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 var SafeCodeSchema = external_exports.string().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/u);
 var CountSchema = external_exports.string().regex(/^(0|[1-9][0-9]*)$/u).nullable();
-var ProviderSchema = external_exports.enum(["claude", "codex"]);
+var ProviderSchema = external_exports.enum(AI_CONVERSATION_PROVIDER_IDS);
 var ConversationScannerOverviewGetSnapshotRequestSchema = external_exports.object({
   refreshDatabase: external_exports.boolean()
 }).strict();
@@ -12067,6 +13619,16 @@ var NativeIdTailSchema = external_exports.string().regex(/^[A-Za-z0-9_.:-]{1,8}$
 var CONVERSATION_SCANNER_LANE_SESSIONS_ROSTER_LIMIT = 50;
 var CONVERSATION_SCANNER_LANE_SESSIONS_SUBSESSION_LIMIT = 50;
 var CONVERSATION_SCANNER_LANE_SESSIONS_HISTORY_QUEUE_LIMIT = 20;
+var ScanStateSchema = external_exports.enum(["scanning", "parked", "unknown"]);
+var scanFields = {
+  sourceMtimeMs: SafeNonNegativeIntegerSchema.nullable(),
+  lastScannedMs: SafeNonNegativeIntegerSchema.nullable(),
+  scanState: ScanStateSchema,
+  parkedSinceMs: SafeNonNegativeIntegerSchema.nullable()
+};
+var requireParkedSince = (value, context) => {
+  if (value.scanState === "parked" && value.parkedSinceMs === null) context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["parkedSinceMs"], message: "a parked source requires parkedSinceMs" });
+};
 var ConversationScannerOverviewLaneSubsessionV1Schema = external_exports.object({
   sessionId: DecimalIdSchema,
   parentSessionId: DecimalIdSchema,
@@ -12075,8 +13637,9 @@ var ConversationScannerOverviewLaneSubsessionV1Schema = external_exports.object(
   monitorStatus: external_exports.enum(["realtime", "new", "active"]),
   title: TitleSchema,
   projectPath: ProjectPathSchema,
-  nativeIdTail: NativeIdTailSchema
-}).strict();
+  nativeIdTail: NativeIdTailSchema,
+  ...scanFields
+}).strict().superRefine(requireParkedSince);
 var ConversationScannerOverviewLaneSessionEntryV1Schema = external_exports.object({
   sessionId: DecimalIdSchema,
   provider: ProviderSchema.nullable(),
@@ -12084,9 +13647,10 @@ var ConversationScannerOverviewLaneSessionEntryV1Schema = external_exports.objec
   title: TitleSchema,
   projectPath: ProjectPathSchema,
   nativeIdTail: NativeIdTailSchema,
+  ...scanFields,
   subsessionTotal: SafeNonNegativeIntegerSchema,
   subsessions: external_exports.array(ConversationScannerOverviewLaneSubsessionV1Schema).max(CONVERSATION_SCANNER_LANE_SESSIONS_SUBSESSION_LIMIT).readonly()
-}).strict();
+}).strict().superRefine(requireParkedSince);
 var ConversationScannerOverviewLaneRosterV1Schema = external_exports.object({
   total: SafeNonNegativeIntegerSchema,
   rootTotal: SafeNonNegativeIntegerSchema,
@@ -12127,8 +13691,8 @@ var ConversationScannerOverviewHistoryLaneV1Schema = external_exports.object({
     entries: external_exports.array(ConversationScannerOverviewHistoryQueueEntryV1Schema).max(CONVERSATION_SCANNER_LANE_SESSIONS_HISTORY_QUEUE_LIMIT).readonly()
   }).strict().nullable()
 }).strict().superRefine((history, context) => {
-  history.queue?.entries.forEach((entry2, index) => {
-    if (entry2.position !== index + 1) context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["queue", "entries", index, "position"], message: "positions must be consecutive from 1" });
+  history.queue?.entries.forEach((entry3, index) => {
+    if (entry3.position !== index + 1) context.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["queue", "entries", index, "position"], message: "positions must be consecutive from 1" });
   });
 });
 var ConversationScannerOverviewLaneSessionsV1Schema = external_exports.object({
@@ -12149,8 +13713,8 @@ var ConversationScannerOverviewLaneSessionsV1Schema = external_exports.object({
   if (lanes.sampledAtMs === null) issue("sampledAtMs", "sampled lane sessions require a sample time");
   if (lanes.realtime === null || lanes.active === null || lanes.history === null) issue("realtime", "sampled lane sessions require every lane");
   if (lanes.status === "stale" && lanes.errorCode === null) issue("errorCode", "stale lane sessions require a safe error code");
-  if (lanes.realtime?.sessions.some((entry2) => entry2.monitorStatus === "active")) issue("realtime", "the realtime lane cannot list active sessions");
-  if (lanes.active?.sessions.some((entry2) => entry2.monitorStatus !== "active")) issue("active", "the active lane can only list active sessions");
+  if (lanes.realtime?.sessions.some((entry3) => entry3.monitorStatus === "active")) issue("realtime", "the realtime lane cannot list active sessions");
+  if (lanes.active?.sessions.some((entry3) => entry3.monitorStatus !== "active")) issue("active", "the active lane can only list active sessions");
 });
 var ConversationScannerOverviewSnapshotV1Schema = external_exports.object({
   schemaVersion: external_exports.literal(1),
@@ -12159,6 +13723,393 @@ var ConversationScannerOverviewSnapshotV1Schema = external_exports.object({
   database: ConversationScannerOverviewDatabaseV1Schema,
   laneSessions: ConversationScannerOverviewLaneSessionsV1Schema
 }).strict();
+
+var FiniteNumberSchema2 = external_exports.number().finite();
+var NonNegativeNumberSchema2 = FiniteNumberSchema2.nonnegative();
+var NonNegativeIntegerSchema3 = NonNegativeNumberSchema2.int();
+var NullableCostSchema = NonNegativeNumberSchema2.nullable();
+var TkSummaryPeriodSchema = external_exports.enum(["7d", "30d", "all"]);
+var TkSummaryKpisSchema = external_exports.object({
+  lifeToDateCostUsd: NonNegativeNumberSchema2,
+  last7dCostUsd: NonNegativeNumberSchema2,
+  prev7dCostUsd: NonNegativeNumberSchema2,
+  cacheEfficiencyPct: NonNegativeNumberSchema2,
+  cacheSavingsUsd: NonNegativeNumberSchema2,
+  daysCovered: NonNegativeIntegerSchema3.nullable(),
+  lifeToDateTok: NonNegativeNumberSchema2,
+  last7dTok: NonNegativeNumberSchema2,
+  coverage: external_exports.object({
+    totalTok: NonNegativeNumberSchema2,
+    pricedTok: NonNegativeNumberSchema2,
+    unpricedModelCount: NonNegativeIntegerSchema3,
+    unpricedTok: NonNegativeNumberSchema2,
+    unattributedTok: NonNegativeNumberSchema2,
+    unknownProviderTokens: NonNegativeNumberSchema2.default(0),
+    coverageState: external_exports.enum(["complete", "partial", "unknown"]).default("complete"),
+    hasLowerBound: external_exports.boolean(),
+    lowerBoundCost: NonNegativeNumberSchema2
+  }).strict()
+}).strict();
+var TkSummaryDailySeriesItemSchema = external_exports.object({
+  day: external_exports.string(),
+  costUsd: NullableCostSchema
+}).strict();
+var TkSummaryModelSplitItemSchema = external_exports.object({
+  model: external_exports.string(),
+  provider: external_exports.string().nullable(),
+  costUsd: NullableCostSchema,
+  tokens: NonNegativeNumberSchema2,
+  costIsLowerBound: external_exports.boolean()
+}).strict();
+var TkSummaryCacheSplitSchema = external_exports.object({
+  inputUsd: NonNegativeNumberSchema2,
+  outputUsd: NonNegativeNumberSchema2,
+  cacheReadUsd: NonNegativeNumberSchema2,
+  cacheCreateUsd: NonNegativeNumberSchema2
+}).strict();
+var TkSummaryCostByConfigItemSchema = external_exports.object({
+  configId: external_exports.string().min(1).nullable(),
+  label: external_exports.string(),
+  costUsd: NonNegativeNumberSchema2,
+  sessions: NonNegativeIntegerSchema3
+}).strict();
+var TkSummaryCostByFolderProjectSchema = external_exports.object({
+  projectId: external_exports.string(),
+  name: external_exports.string()
+}).strict();
+var TkSummaryCostByFolderItemSchema = external_exports.object({
+  folder: external_exports.string(),
+  costUsd: NonNegativeNumberSchema2,
+  sessions: NonNegativeIntegerSchema3,
+  projects: external_exports.array(TkSummaryCostByFolderProjectSchema)
+}).strict();
+var TkSummaryHeatmapItemSchema = external_exports.object({
+  bucket: FiniteNumberSchema2.int(),
+  tokens: NonNegativeNumberSchema2
+}).strict();
+var TkSummarySchema = external_exports.object({
+  kpis: TkSummaryKpisSchema,
+  selectedPeriod: external_exports.object({
+    range: TkSummaryPeriodSchema,
+    costUsd: NonNegativeNumberSchema2,
+    tokens: NonNegativeNumberSchema2,
+    previousCostUsd: NullableCostSchema,
+    cacheEfficiencyPct: NonNegativeNumberSchema2
+  }).strict().optional(),
+  dailySeries: external_exports.array(TkSummaryDailySeriesItemSchema),
+  modelSplit: external_exports.array(TkSummaryModelSplitItemSchema),
+  cacheSplit: TkSummaryCacheSplitSchema,
+  costByConfig: external_exports.array(TkSummaryCostByConfigItemSchema),
+  costByFolder: external_exports.array(TkSummaryCostByFolderItemSchema),
+  heatmap: external_exports.array(TkSummaryHeatmapItemSchema)
+}).strict();
+
+var FOLDER_SESSION_DEFAULTS_KEY_PREFIX = `${APP_SETTINGS_KEYS.AI_FOLDER_SESSION_DEFAULTS}:`;
+
+var PROJECT_PM_CHILD_NOTICE_HEAD = "【TeamUQ 子對話狀態】";
+var PROJECT_PM_CHILD_NOTICE_STATUS = {
+  first_turn: "第一輪已經結束（它如果把工作派給子代理，結果可能還沒出來；能確認全部結束時會再通知一次「全部完成」）",
+  all_done: "全部完成（子代理和背景工作都已經結束）",
+  all_done_update: "全部完成（更新：上一則「全部完成」之後它又做了一輪，以這則為準）",
+  failed: "執行失敗或被中斷",
+  stopped_unconfirmed: "看起來停下來了，但沒有讀到這一輪結束的訊號，可能還沒做完（之後讀到結束會再通知）",
+  watch_cap: "監看超過 6 小時仍沒讀到結束，已停止追蹤、不會再通知",
+  needs_input: "停在等待超過 1 分鐘，可能需要有人回覆（會繼續監看）",
+  closed_externally: "這條對話已經被關閉"
+};
+var PROJECT_PM_REPORT_NOTICE_HEAD = "【TeamUQ 專案 PM 回報】";
+var PROJECT_PM_REPORT_MAX = 32e3;
+var PROJECT_PM_AUTO_END_NOTICE_HEAD = "【TeamUQ 交辦自動結束】";
+var PROJECT_PM_AUTO_END_IDLE_MS = 30 * 6e4;
+var SESSION_ID = "[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}";
+var PROJECT_ID = "[A-Za-z0-9][A-Za-z0-9_-]{0,127}";
+var LABEL = "[^「」【】（）\\n]{1,200}";
+var SHORT_ID = "[0-9a-f]{8}";
+var CHILD_ID_NOTE = "（只給你下指令用，回覆使用者時不要提這個編號）";
+var CHILD_HEAD_RE = new RegExp(`^${PROJECT_PM_CHILD_NOTICE_HEAD}(?:任務「(${LABEL})」|你開的子對話)(?:（(${LABEL})）)?：(.+)$`, "u");
+var CHILD_ID_RE = new RegExp(`^子對話編號 (${SESSION_ID})(?:${CHILD_ID_NOTE})?：要看它的回覆請自己執行 child-result --session (${SESSION_ID})。$`, "u");
+var REPORT_HEAD_RE = new RegExp(`^${PROJECT_PM_REPORT_NOTICE_HEAD}專案「(${LABEL})」交辦(?: (${SHORT_ID}))?：(.+)$`, "u");
+var AUTO_END_HEAD_RE = new RegExp(`^${PROJECT_PM_AUTO_END_NOTICE_HEAD}專案「(${LABEL})」交辦(?: (${SHORT_ID}))?：(.+)$`, "u");
+var AUTO_END_LINE2_RE = new RegExp(`^之後 PM 建任務、派團隊都會重新跳卡；PM 最後一次回報可以用 delegation-result --project-id (${PROJECT_ID}) 讀。$`, "u");
+var STATUS_BY_TEXT = new Map(
+  Object.entries(PROJECT_PM_CHILD_NOTICE_STATUS).map(([status, text6]) => [text6, status])
+);
+var NOTICE_PARSE_MAX = 64 * 1024;
+
+var PROJECT_PM_LOCAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+var ProjectPmLocalIdSchema = external_exports.string().regex(PROJECT_PM_LOCAL_ID_PATTERN);
+var PROJECT_PM_PROVIDERS = ["claude", "codex"];
+var ProjectPmProviderSchema = external_exports.enum(PROJECT_PM_PROVIDERS);
+var PROJECT_PM_BRIEF_STATES = ["template", "ai_pending", "ai_ready", "ai_failed", "user_edited"];
+var PROJECT_PM_BRIEF_MAX_BYTES = 64 * 1024;
+function projectPmBriefBytes(text6) {
+  return new TextEncoder().encode(text6).length;
+}
+var ProjectPmBindingSchema = external_exports.object({
+  v: external_exports.literal(1),
+  projectLocalId: ProjectPmLocalIdSchema,
+  pmTaskId: external_exports.string().min(1).max(200),
+  preferredProvider: ProjectPmProviderSchema,
+  state: external_exports.enum(["active", "closed"]),
+  source: external_exports.enum(["auto", "manual"]),
+  createdAtMs: external_exports.number().int().nonnegative(),
+  closedAtMs: external_exports.number().int().nonnegative().nullable(),
+  closedReason: external_exports.enum(["project_archived", "user_unassigned", "pm_task_changed"]).nullable(),
+  brief: external_exports.object({
+    state: external_exports.enum(PROJECT_PM_BRIEF_STATES),
+    sha256: external_exports.string().regex(/^[0-9a-f]{64}$/)
+  }).strict()
+}).strict();
+var ProjectPmGetSchema = external_exports.object({ projectLocalId: ProjectPmLocalIdSchema }).strict();
+var ProjectPmWriteBriefSchema = external_exports.object({
+  projectLocalId: ProjectPmLocalIdSchema,
+  text: external_exports.string().refine((value) => projectPmBriefBytes(value) <= PROJECT_PM_BRIEF_MAX_BYTES, { message: "brief_too_large" }).refine((value) => !value.includes("\0"), { message: "brief_nul_char" }),
+  baseSha256: external_exports.string().regex(/^[0-9a-f]{64}$/)
+}).strict();
+var ProjectPmAssignSchema = external_exports.object({
+  projectLocalId: ProjectPmLocalIdSchema,
+  provider: ProjectPmProviderSchema.optional()
+}).strict();
+var ProjectPmRegenerateSchema = external_exports.object({
+  projectLocalId: ProjectPmLocalIdSchema,
+  provider: ProjectPmProviderSchema.optional()
+}).strict();
+var ProjectPmOpenSchema = external_exports.object({
+  projectLocalId: ProjectPmLocalIdSchema,
+  provider: ProjectPmProviderSchema.optional()
+}).strict();
+var ProjectPmCancelGrantSchema = external_exports.object({ projectLocalId: ProjectPmLocalIdSchema }).strict();
+var PROJECT_PM_CHANNELS = {
+  GET: "projectPm:get",
+  WRITE_BRIEF: "projectPm:writeBrief",
+  ASSIGN: "projectPm:assign",
+  REGENERATE_DRAFT: "projectPm:regenerateDraft",
+  OPEN: "projectPm:open",
+  CANCEL_GRANT: "projectPm:cancelGrant",
+  LIST_ROSTER: "projectPm:listRoster",
+  LIST_RELATIONS: "projectPm:listRelations",
+  CHANGED: "projectPm:changed"
+};
+var PROJECT_PM_INVOKE_CHANNELS = [
+  PROJECT_PM_CHANNELS.GET,
+  PROJECT_PM_CHANNELS.WRITE_BRIEF,
+  PROJECT_PM_CHANNELS.ASSIGN,
+  PROJECT_PM_CHANNELS.REGENERATE_DRAFT,
+  PROJECT_PM_CHANNELS.OPEN,
+  PROJECT_PM_CHANNELS.CANCEL_GRANT,
+  PROJECT_PM_CHANNELS.LIST_ROSTER,
+  PROJECT_PM_CHANNELS.LIST_RELATIONS
+];
+var PROJECT_PM_DELEGATION_TTL_MS = 24 * 60 * 60 * 1e3;
+var PROJECT_PM_DELEGATION_REQUEST_MAX = 4e3;
+var PROJECT_PM_DELEGATION_LEDGER_MAX_CHILDREN = 200;
+var PROJECT_PM_REPORT_DELIVERIES = ["pending", "commander", "inbox", "uncertain", "failed"];
+var PROJECT_PM_REPORT_HISTORY_MAX = 5;
+var PROJECT_PM_REPORT_HISTORY_TEXT_MAX = 8e3;
+var ProjectPmReportEntrySchema = external_exports.object({
+  text: external_exports.string().max(PROJECT_PM_REPORT_HISTORY_TEXT_MAX),
+  truncated: external_exports.boolean(),
+  final: external_exports.boolean(),
+  atMs: external_exports.number().int().nonnegative(),
+  delivery: external_exports.enum(PROJECT_PM_REPORT_DELIVERIES).optional()
+}).strict();
+var PROJECT_PM_DELEGATION_STATES = ["active", "completed", "cancelled", "expired"];
+var PROJECT_PM_DELEGATION_END_REASONS = [
+  "pm_final_report",
+  "auto_idle_complete",
+  "user_cancel",
+  "commander_cancel",
+  "ttl",
+  "project_archived",
+  "app_restart",
+  "superseded",
+  "superseded_unconfirmed",
+  "delivery_failed"
+];
+var PROJECT_PM_DELEGATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+var DelegationIdSchema = external_exports.string().regex(PROJECT_PM_DELEGATION_ID_PATTERN);
+var LedgerTextSchema = external_exports.string().max(512);
+var ProjectPmDelegationChildSchema = external_exports.object({
+  sessionId: external_exports.string().min(1).max(512),
+  taskId: external_exports.string().min(1).max(200),
+  taskName: LedgerTextSchema.nullable(),
+  teamKey: external_exports.string().max(128).nullable(),
+  provider: external_exports.string().max(64),
+  openedAtMs: external_exports.number().int().nonnegative(),
+  approvedByCard: external_exports.boolean()
+}).strict();
+var ProjectPmDelegationTaskSchema = external_exports.object({
+  taskId: external_exports.string().min(1).max(200),
+  name: LedgerTextSchema,
+  teamKey: external_exports.string().max(128).nullable(),
+  createdAtMs: external_exports.number().int().nonnegative()
+}).strict();
+var ProjectPmDelegationLedgerSchema = external_exports.object({
+  v: external_exports.literal(1),
+  grantId: DelegationIdSchema,
+  projectLocalId: ProjectPmLocalIdSchema,
+  pmTaskId: external_exports.string().min(1).max(200),
+  commanderSessionId: external_exports.string().min(1).max(512),
+  requestText: external_exports.string().max(PROJECT_PM_DELEGATION_REQUEST_MAX),
+  approvedAtMs: external_exports.number().int().nonnegative(),
+  expiresAtMs: external_exports.number().int().nonnegative(),
+  conversationLimit: external_exports.number().int().nonnegative(),
+  openedCount: external_exports.number().int().nonnegative(),
+  folders: external_exports.array(external_exports.string().min(1).max(4096)).max(64).default([]),
+  state: external_exports.enum(PROJECT_PM_DELEGATION_STATES),
+  endReason: external_exports.enum(PROJECT_PM_DELEGATION_END_REASONS).nullable(),
+  endedAtMs: external_exports.number().int().nonnegative().nullable(),
+  children: external_exports.array(ProjectPmDelegationChildSchema).max(PROJECT_PM_DELEGATION_LEDGER_MAX_CHILDREN),
+  tasks: external_exports.array(ProjectPmDelegationTaskSchema).max(PROJECT_PM_DELEGATION_LEDGER_MAX_CHILDREN),
+  lastReport: external_exports.object({
+    text: external_exports.string().max(PROJECT_PM_REPORT_MAX),
+    final: external_exports.boolean(),
+    atMs: external_exports.number().int().nonnegative(),
+    delivery: external_exports.enum(PROJECT_PM_REPORT_DELIVERIES).optional()
+  }).strict().nullable(),
+  reports: external_exports.array(ProjectPmReportEntrySchema).max(PROJECT_PM_REPORT_HISTORY_MAX + 1).default([])
+}).strict();
+var ProjectPmDirectChildrenSchema = external_exports.object({
+  v: external_exports.literal(1),
+  projectLocalId: ProjectPmLocalIdSchema,
+  children: external_exports.array(ProjectPmDelegationChildSchema).max(PROJECT_PM_DELEGATION_LEDGER_MAX_CHILDREN),
+  tasks: external_exports.array(ProjectPmDelegationTaskSchema).max(PROJECT_PM_DELEGATION_LEDGER_MAX_CHILDREN).default([])
+}).strict();
+
+var AI_API_CONNECTION_PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
+var AI_API_CONNECTION_MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/:@[\]-]{0,127}$/u;
+var AI_API_CONNECTION_MAX_MODELS = 50;
+var Provider = external_exports.literal("pi");
+var ProviderId2 = external_exports.string().regex(AI_API_CONNECTION_PROVIDER_ID_PATTERN);
+var ApiKey = external_exports.string().min(1).max(4096).refine((value) => !/[\s\u0000-\u001f\u007f]/u.test(value));
+var ModelName = external_exports.string().regex(AI_API_CONNECTION_MODEL_NAME_PATTERN);
+var AiApiConnectionReadSchema = external_exports.object({ provider: Provider }).strict();
+var AiApiConnectionSaveProviderKeySchema = external_exports.object({
+  provider: Provider,
+  providerId: ProviderId2,
+  apiKey: ApiKey,
+  replaceOAuth: external_exports.boolean()
+}).strict();
+var AiApiConnectionSaveCustomEndpointSchema = external_exports.object({
+  provider: Provider,
+  providerId: ProviderId2,
+  baseUrl: external_exports.string().min(1).max(2048),
+  apiKey: ApiKey.optional(),
+  models: external_exports.array(ModelName).min(1).max(AI_API_CONNECTION_MAX_MODELS)
+}).strict();
+var AiApiConnectionRemoveSchema = external_exports.object({
+  provider: Provider,
+  providerId: ProviderId2,
+  kind: external_exports.enum(["provider-key", "custom-endpoint"])
+}).strict();
+var AI_API_CONNECTION_TEMPLATE_MAX_PROVIDERS = 20;
+var AiApiConnectionPreviewTemplateSchema = external_exports.object({ provider: Provider }).strict();
+var AiApiConnectionImportTemplateSchema = external_exports.object({
+  provider: Provider,
+  templateToken: external_exports.string().min(16).max(128),
+  keys: external_exports.record(ProviderId2, ApiKey).refine((keys) => Object.keys(keys).length <= AI_API_CONNECTION_TEMPLATE_MAX_PROVIDERS)
+}).strict();
+var AiApiConnectionExportTemplateSchema = external_exports.object({ provider: Provider }).strict();
+var AiApiConnectionFileStateSchema = external_exports.enum(["missing", "ok", "invalid", "unreadable", "has-comments"]);
+var AiApiConnectionProviderKeySchema = external_exports.object({
+  providerId: external_exports.string().max(128),
+  label: external_exports.string().max(80).nullable(),
+  kind: external_exports.enum(["api_key", "oauth"]),
+  editable: external_exports.boolean()
+}).strict();
+var AiApiConnectionCustomEndpointSchema = external_exports.object({
+  providerId: external_exports.string().max(128),
+  baseUrlDisplay: external_exports.string().max(2048),
+  api: external_exports.string().max(64).nullable(),
+  models: external_exports.array(external_exports.string().max(256)).max(200),
+  hasStoredKey: external_exports.boolean(),
+  editable: external_exports.boolean()
+}).strict();
+var AiApiConnectionStatusSchema = external_exports.object({
+  provider: Provider,
+  agentDir: external_exports.string().max(4096),
+  files: external_exports.object({ auth: AiApiConnectionFileStateSchema, models: AiApiConnectionFileStateSchema }).strict(),
+  providerKeys: external_exports.array(AiApiConnectionProviderKeySchema).max(200),
+  customEndpoints: external_exports.array(AiApiConnectionCustomEndpointSchema).max(200)
+}).strict();
+var AiApiConnectionVerificationSchema = external_exports.object({
+  ran: external_exports.boolean(),
+  providerListed: external_exports.boolean().nullable(),
+  modelCount: external_exports.number().int().nonnegative().nullable(),
+  modelsJsonError: external_exports.boolean()
+}).strict();
+var AiApiConnectionSaveResultSchema = external_exports.object({
+  status: AiApiConnectionStatusSchema,
+  verification: AiApiConnectionVerificationSchema
+}).strict();
+var AiApiConnectionTemplateSkipSchema = external_exports.object({
+  path: external_exports.string().max(200),
+  reason: external_exports.string().max(200)
+}).strict();
+var AiApiConnectionTemplateProviderPreviewSchema = external_exports.object({
+  providerId: external_exports.string().max(128),
+  nameDisplay: external_exports.string().max(512),
+  baseUrlDisplay: external_exports.string().max(2048),
+  modelCount: external_exports.number().int().nonnegative(),
+  needsKey: external_exports.boolean(),
+  hasStoredKey: external_exports.boolean(),
+  keyReuseAllowed: external_exports.boolean(),
+  importable: external_exports.boolean()
+}).strict();
+var AiApiConnectionTemplatePreviewSchema = external_exports.object({
+  templateToken: external_exports.string().max(128),
+  templateName: external_exports.string().max(80).nullable(),
+  providers: external_exports.array(AiApiConnectionTemplateProviderPreviewSchema).max(AI_API_CONNECTION_TEMPLATE_MAX_PROVIDERS),
+  settingsSummary: external_exports.object({ defaultRef: external_exports.string().max(128).nullable(), enabledCount: external_exports.number().int().nonnegative() }).strict(),
+  skipped: external_exports.array(AiApiConnectionTemplateSkipSchema).max(100),
+  oauthRequired: external_exports.array(external_exports.string().max(128)).max(AI_API_CONNECTION_TEMPLATE_MAX_PROVIDERS)
+}).strict();
+var AiApiConnectionImportResultSchema = AiApiConnectionSaveResultSchema.extend({
+  skipped: external_exports.array(AiApiConnectionTemplateSkipSchema).max(100)
+}).strict();
+var AiApiConnectionExportResultSchema = external_exports.object({
+  fileName: external_exports.string().max(128),
+  saved: external_exports.boolean()
+}).strict();
+var AiApiConnectionErrorCodeSchema = external_exports.enum(["invalid-input", "invalid-config", "unreadable", "locked", "conflict", "oauth-present", "io", "unavailable", "template-invalid"]);
+
+function entry2(webChannel, tier, visibility, shimKey, shape = "passthrough", desktopChannel = webChannel) {
+  return Object.freeze({ webChannel, desktopChannel, tier, shape, shimKey, visibility });
+}
+var WEB_EVENT_CONTRACT = Object.freeze([
+  entry2("coreBackend:health:changed", "auth", "global", "coreBackendHealth.onChanged"),
+  entry2("plugin-runtime:changed", "auth", "global", "onPluginRuntimeChanged"),
+  entry2("session:changed", "auth", "session", "session.onChanged"),
+  entry2("session:events", "auth", "session", "session.onEvents"),
+  entry2("monitor:changed", "anon", "session", null, "condensed", "monitor:render"),
+  entry2("card:workflowChanged", "anon", "session", null, "condensed", "card:workflowProgress"),
+  entry2("monitor:status", "anon", "session", "onMonitorStatus"),
+  entry2("card:runState", "auth", "session", "onCardRunState"),
+  entry2("monitoring:liveStateChanged:v1", "auth", "session", "monitoring.onLiveStateChanged"),
+  entry2("card:subagentProgress", "anon", "session", "onCardSubagentProgress"),
+  entry2("alert:promptState", "auth", "session", "onPromptAlert"),
+  entry2("hook:ask", "auth", "session", "onHookAsk"),
+  entry2("hook:askExpired", "auth", "global", "onHookAskExpired"),
+  entry2("hook:waitingChanged", "auth", "session", "onHookWaitingChanged"),
+  entry2("hook:event", "auth", "session", "onHookEvent", "projected"),
+  entry2("board:changedExternal", "anon", "global", "onBoardChangedExternal"),
+  entry2("board:webChanged", "anon", "global", null, "passthrough", null),
+  entry2("schedule:runUpdated", "anon", "session", "onScheduleRunUpdated", "projected"),
+  entry2("schedule:scheduleUpdated", "auth", "global", "onScheduleUpdated"),
+  entry2("schedule:createdExternal", "auth", "global", "onScheduleCreatedExternal"),
+  entry2("schedule:deletedExternal", "auth", "global", "onScheduleDeletedExternal"),
+  entry2("chatops:changedExternal", "auth", "global", "onChatOpsChangedExternal"),
+  entry2("projectManagement:changedExternal", "auth", "global", "onProjectManagementChangedExternal", "projected"),
+  entry2("projectManagement:syncStateChanged", "auth", "global", "onProjectManagementSyncStateChanged", "projected"),
+  entry2("projectManagement:pushFailed", "auth", "global", "onProjectManagementPushFailed", "projected"),
+  entry2("session:conversationChanged", "anon", "session", null, "passthrough", null),
+  entry2("sessionQueue:snapshot", "auth", "session", "sessionQueue.onSnapshot"),
+  entry2("sessionQueue:event", "auth", "session", "sessionQueue.onEvent"),
+  entry2("agentOrgAvatar:overridesBackfilled", "auth", "global", "agentOrg.onAvatarOverridesBackfilled"),
+  entry2("agentOrgAvatar:overridesChanged", "auth", "global", "agentOrg.onAvatarOverridesChanged"),
+  entry2("agentOrg:sourceHealthChanged", "auth", "global", "agentOrg.onSourceHealthChanged"),
+  entry2("cli:statusChanged", "auth", "global", "cliBackend.onStatusChanged")
+]);
 
 function isCorrelatedProgramReplyV1(reply, requestId5, operation) {
   return reply.requestId === requestId5 && reply.operation === operation;
@@ -12256,15 +14207,15 @@ function toBytes2(data) {
 var urlPath = (relative) => String(relative).split("/").map(encodeURIComponent).join("/");
 function createPluginViewApi(ipc, origin2 = () => globalThis.location.origin) {
   const call = async (channel, request) => {
-    const envelope3 = PluginCoreEnvelopeSchema.parse(await ipc.invoke(channel, request));
-    if (!envelope3.ok) throw new Error(envelope3.error);
-    return envelope3.value;
+    const envelope4 = PluginCoreEnvelopeSchema.parse(await ipc.invoke(channel, request));
+    if (!envelope4.ok) throw new Error(envelope4.error);
+    return envelope4.value;
   };
   const manage = (request) => call(PLUGIN_CORE_CHANNELS.ASSET_PACK_MANAGE, request);
   const modelCall = async (request) => {
-    const envelope3 = PluginModelsEnvelopeV1Schema.parse(await ipc.invoke(PLUGIN_MODELS_CHANNELS.ACT, request));
-    if (!envelope3.ok) throw Object.assign(new Error(envelope3.error), { code: envelope3.error });
-    return envelope3.value;
+    const envelope4 = PluginModelsEnvelopeV1Schema.parse(await ipc.invoke(PLUGIN_MODELS_CHANNELS.ACT, request));
+    if (!envelope4.ok) throw Object.assign(new Error(envelope4.error), { code: envelope4.error });
+    return envelope4.value;
   };
   const storage = Object.freeze({
     read: async (path, range) => await call(PLUGIN_CORE_CHANNELS.STORAGE, { op: "read", path: String(path), ...range?.offset === void 0 ? {} : { offset: range.offset }, ...range?.length === void 0 ? {} : { length: range.length } }),
@@ -12352,7 +14303,7 @@ function createPluginViewApi(ipc, origin2 = () => globalThis.location.origin) {
       return result.value;
     }
   });
-  const presentation = Object.freeze({
+  const presentation2 = Object.freeze({
     get: async () => PluginViewPresentationStateSchema.parse(await ipc.invoke(PLUGIN_VIEW_CHANNELS.PRESENTATION_GET)),
     request: async (mode, options) => {
       const fullscreen = options?.fullscreen;
@@ -12371,6 +14322,21 @@ function createPluginViewApi(ipc, origin2 = () => globalThis.location.origin) {
       return () => ipc.removeListener(PLUGIN_VIEW_CHANNELS.PRESENTATION_CHANGED, wrapped);
     }
   });
+  const view = Object.freeze({
+    getContext: async () => {
+      const parsed = PluginViewContextV1Schema.safeParse(await ipc.invoke(PLUGIN_VIEW_CHANNELS.CONTEXT_GET));
+      return parsed.success ? parsed.data : EMPTY_PLUGIN_VIEW_CONTEXT;
+    },
+    onContextChanged: (listener) => {
+      if (typeof listener !== "function") throw new TypeError("view.onContextChanged requires a function");
+      const wrapped = (_event, payload) => {
+        const parsed = PluginViewContextV1Schema.safeParse(payload);
+        if (parsed.success) listener(parsed.data);
+      };
+      ipc.on(PLUGIN_VIEW_CHANNELS.CONTEXT_CHANGED, wrapped);
+      return () => ipc.removeListener(PLUGIN_VIEW_CHANNELS.CONTEXT_CHANGED, wrapped);
+    }
+  });
   const capabilityApi = createCapabilityApi(ipc);
   const capability = Object.freeze({ list: capabilityApi.list, openLink: capabilityApi.openLink, onChange: capabilityApi.onChange });
   const ai = Object.freeze({
@@ -12381,13 +14347,13 @@ function createPluginViewApi(ipc, origin2 = () => globalThis.location.origin) {
   const program = createProgramApi(ipc);
   const agentAvatar = Object.freeze({
     read: async (agentId) => {
-      const envelope3 = PluginCoreEnvelopeSchema.parse(await ipc.invoke(PLUGIN_CORE_CHANNELS.AGENT_AVATAR, { protocolVersion: 1, agentId: String(agentId) }));
-      if (!envelope3.ok) throw new Error(envelope3.error);
-      const result = PluginAgentAvatarResultV1Schema.parse(envelope3.value);
+      const envelope4 = PluginCoreEnvelopeSchema.parse(await ipc.invoke(PLUGIN_CORE_CHANNELS.AGENT_AVATAR, { protocolVersion: 1, agentId: String(agentId) }));
+      if (!envelope4.ok) throw new Error(envelope4.error);
+      const result = PluginAgentAvatarResultV1Schema.parse(envelope4.value);
       return result.image === null ? null : { ...result.image, bytes: new Uint8Array(result.image.bytes) };
     }
   });
-  return Object.freeze({ presentation, storage, settings, secrets, assetPacks, store, assets, capability, ai, input, backend, agentAvatar, program });
+  return Object.freeze({ presentation: presentation2, view, storage, settings, secrets, assetPacks, store, assets, capability, ai, input, backend, agentAvatar, program });
 }
 
 function createExternalSettings(initial, enabled = initial !== void 0) {
@@ -12502,27 +14468,27 @@ var invalid = () => Object.assign(new Error("host response invalid"), { code: "p
 function createHostServices(call) {
   const feeds = /* @__PURE__ */ new Map();
   const aiCall = async (method2, request, parse, timeoutMs) => {
-    const envelope3 = await call(AI, method2, [request], (value) => AiChatEnvelopeSchema.parse(value), false, timeoutMs);
-    if (!envelope3.ok) throw failure3(envelope3.error);
+    const envelope4 = await call(AI, method2, [request], (value) => AiChatEnvelopeSchema.parse(value), false, timeoutMs);
+    if (!envelope4.ok) throw failure3(envelope4.error);
     try {
-      return parse(envelope3.value);
+      return parse(envelope4.value);
     } catch {
       throw invalid();
     }
   };
   const aiOpen = async (method2, request, build) => {
     const result = await call(AI, method2, [request], (value) => {
-      const envelope3 = AiChatEnvelopeSchema.parse(value);
-      return envelope3.ok ? { ok: true, session: build(envelope3.value) } : { ok: false, error: envelope3.error };
+      const envelope4 = AiChatEnvelopeSchema.parse(value);
+      return envelope4.ok ? { ok: true, session: build(envelope4.value) } : { ok: false, error: envelope4.error };
     });
     if (!result.ok) throw failure3(result.error);
     return result.session;
   };
   const secretCall = async (method2, args, parse) => {
-    const envelope3 = await call(SECRETS, method2, args, (value) => PluginCoreEnvelopeSchema.parse(value));
-    if (!envelope3.ok) throw failure3(envelope3.error);
+    const envelope4 = await call(SECRETS, method2, args, (value) => PluginCoreEnvelopeSchema.parse(value));
+    if (!envelope4.ok) throw failure3(envelope4.error);
     try {
-      return parse(envelope3.value);
+      return parse(envelope4.value);
     } catch {
       throw invalid();
     }
@@ -12632,10 +14598,91 @@ function createHostServices(call) {
   };
 }
 
+var WIRE_MARGIN_MS = 25e3;
+var UNAVAILABLE = Object.freeze({ state: "unavailable", accountKey: null });
+var STOPPED_BEFORE_PROXY = /* @__PURE__ */ new Set(["plugin_host_request_failed", "plugin_host_request_invalid", "plugin_host_request_too_large"]);
+var wireFailure = (error, write2) => {
+  const code2 = typeof error === "object" && error !== null ? error.code : void 0;
+  const notSent = typeof error === "object" && error !== null && error.notSent === true || typeof code2 === "string" && STOPPED_BEFORE_PROXY.has(code2);
+  const extra = { outcomeUnknown: write2 && !notSent };
+  if (code2 === "plugin_host_timeout") return teamUpQuickFailure("timeout", null, extra);
+  if (code2 === "plugin_host_response_invalid") return teamUpQuickFailure("response_invalid", null, extra);
+  return teamUpQuickFailure("unavailable", null, extra);
+};
+function createTeamUpQuickClient(call) {
+  const listeners = /* @__PURE__ */ new Set();
+  const api = Object.freeze({
+    request: async (input) => {
+      const parsed = TeamUpQuickApiRequestV1Schema.safeParse(input);
+      if (!parsed.success) return teamUpQuickFailure("request_invalid", null);
+      if (parsed.data.body !== void 0) {
+        let encoded;
+        try {
+          encoded = JSON.stringify(parsed.data.body);
+        } catch {
+          encoded = void 0;
+        }
+        if (encoded === void 0) return teamUpQuickFailure("request_invalid", null);
+        if (new TextEncoder().encode(encoded).byteLength > TEAMUPQUICK_API_LIMITS.bodyBytes) return teamUpQuickFailure("payload_too_large", null);
+      }
+      const waitMs = (parsed.data.timeoutMs ?? TEAMUPQUICK_API_LIMITS.defaultTimeoutMs) + WIRE_MARGIN_MS;
+      try {
+        return await call(TEAMUPQUICK_API_CAPABILITY, TEAMUPQUICK_API_METHODS.request, [parsed.data], (value) => TeamUpQuickApiResultV1Schema.parse(value), false, waitMs);
+      } catch (error) {
+        return wireFailure(error, TEAMUPQUICK_API_NON_IDEMPOTENT_METHODS.includes(parsed.data.method));
+      }
+    },
+    currentAccount: async () => {
+      try {
+        return await call(TEAMUPQUICK_API_CAPABILITY, TEAMUPQUICK_API_METHODS.currentAccount, [], (value) => TeamUpQuickAccountV1Schema.parse(value));
+      } catch {
+        return UNAVAILABLE;
+      }
+    },
+    onAccountChanged: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    }
+  });
+  return {
+    api,
+    receive(value) {
+      const parsed = TeamUpQuickAccountChangedEventV1Schema.safeParse(value);
+      if (!parsed.success) return false;
+      const event = { state: parsed.data.state, accountKey: parsed.data.accountKey };
+      for (const listener of [...listeners]) {
+        try {
+          listener(event);
+        } catch {
+        }
+      }
+      return true;
+    },
+    revokePermission(permission2) {
+      if (permission2 !== TEAMUPQUICK_API_PERMISSION) return;
+      const dropped = [...listeners];
+      listeners.clear();
+      for (const listener of dropped) {
+        try {
+          listener({ state: "not_allowed", accountKey: null });
+        } catch {
+        }
+      }
+    },
+    dispose() {
+      listeners.clear();
+    }
+  };
+}
+
 function createPluginHostApiClient(transport) {
   const pending = /* @__PURE__ */ new Map();
   const listeners = /* @__PURE__ */ new Set();
   const capabilityListeners = /* @__PURE__ */ new Set();
+  const wakeListeners = /* @__PURE__ */ new Set();
+  const taskListeners = /* @__PURE__ */ new Set();
   const snapshots = /* @__PURE__ */ new Map();
   const timeoutMs = transport.timeoutMs ?? 3e4;
   const helperCall2 = (helperId, raw) => new Promise((resolve, reject) => {
@@ -12699,7 +14746,7 @@ function createPluginHostApiClient(transport) {
     } catch {
       clearTimeout(timer);
       pending.delete(requestId5);
-      reject(Object.assign(new Error("host unavailable"), { code: "plugin_host_unavailable" }));
+      reject(Object.assign(new Error("host unavailable"), { code: "plugin_host_unavailable", notSent: true }));
     }
   });
   const page3 = async (capabilityId2, method2, request, schema) => {
@@ -12713,6 +14760,7 @@ function createPluginHostApiClient(transport) {
     return result;
   };
   const services = createHostServices(call);
+  const teamUpQuick = createTeamUpQuickClient(call);
   const capabilityHost = Object.freeze({
     list: () => call(PLUGIN_HOST_DATA_CAPABILITIES.capabilityControl, PLUGIN_HOST_DATA_METHODS.capabilityControl.list, [], (value) => LinkCapabilityEntryListSchema.parse(value)),
     openLink: (category, request = {}) => {
@@ -12727,9 +14775,31 @@ function createPluginHostApiClient(transport) {
     }
   });
   const capabilities = capabilityHost;
+  const slots = Object.freeze({
+    invalidate: async (request) => {
+      const parsed = PluginSlotInvalidateRequestV1Schema.safeParse(request);
+      if (!parsed.success) return { ok: false, code: "request_invalid" };
+      try {
+        return await call(PLUGIN_HOST_DATA_CAPABILITIES.pluginSlots, PLUGIN_HOST_DATA_METHODS.pluginSlots.invalidate, [parsed.data], (value) => PluginSlotInvalidateResultV1Schema.parse(value));
+      } catch {
+        return { ok: false, code: "unavailable" };
+      }
+    }
+  });
+  const background = Object.freeze({
+    onWake: (listener) => {
+      wakeListeners.add(listener);
+      return () => {
+        wakeListeners.delete(listener);
+      };
+    }
+  });
   const api = Object.freeze({
     ai: services.ai,
     secrets: services.secrets,
+    teamUpQuick: teamUpQuick.api,
+    slots,
+    background,
     program: Object.freeze({
       call: (operation, input, options) => {
         const request = { apiVersion: 1, requestId: options?.requestId ?? randomUUID(), operation, input };
@@ -12743,10 +14813,48 @@ function createPluginHostApiClient(transport) {
     }),
     workRecords: Object.freeze({
       readPage: (request) => page3(PLUGIN_HOST_DATA_CAPABILITIES.workRecords, PLUGIN_HOST_DATA_METHODS.workRecords.readPage, request, PluginHostWorkRecordPageV1Schema),
+      readChanges: async (request) => {
+        const parsed = PluginHostWorkChangesRequestV1Schema.safeParse(request);
+        if (!parsed.success) throw Object.assign(new Error("work changes request invalid"), { code: "plugin_host_request_invalid" });
+        return call(PLUGIN_HOST_DATA_CAPABILITIES.workRecords, PLUGIN_HOST_DATA_METHODS.workRecords.readChanges, [parsed.data], (value) => PluginHostWorkChangesPageV1Schema.parse(value));
+      },
+      readSnapshotDiagnostics: async (raw) => {
+        const request = PluginHostWorkSnapshotDiagnosticsRequestV1Schema.parse(raw);
+        const expected = snapshots.get(request.snapshotId);
+        if (expected === void 0) throw Object.assign(new Error("snapshot not opened by this plugin host client"), { code: "plugin_host_snapshot_invalid" });
+        const result = await call(
+          PLUGIN_HOST_DATA_CAPABILITIES.workRecords,
+          PLUGIN_HOST_DATA_METHODS.workRecords.readSnapshotDiagnostics,
+          [request],
+          (value) => PluginHostWorkSnapshotDiagnosticsV1Schema.parse(value)
+        );
+        if (result.snapshotId !== expected.snapshotId || result.generation !== expected.generation || result.highWatermark !== expected.highWatermark) {
+          throw Object.assign(new Error("snapshot diagnostics identity mismatch"), { code: "plugin_host_snapshot_mismatch" });
+        }
+        return result;
+      },
       subscribeSettledChanges: (listener) => {
         listeners.add(listener);
         return () => {
           listeners.delete(listener);
+        };
+      }
+    }),
+    taskChanges: Object.freeze({
+      watchProjects: async (request) => {
+        const parsed = PluginHostTaskWatchRequestV1Schema.safeParse(request);
+        if (!parsed.success) throw Object.assign(new Error("task watch request invalid"), { code: "plugin_host_request_invalid" });
+        return call(PLUGIN_HOST_DATA_CAPABILITIES.taskChanges, PLUGIN_HOST_DATA_METHODS.taskChanges.watchProjects, [parsed.data], (value) => PluginHostTaskWatchResultV1Schema.parse(value));
+      },
+      readChanges: async (request) => {
+        const parsed = PluginHostTaskChangesRequestV1Schema.safeParse(request);
+        if (!parsed.success) throw Object.assign(new Error("task changes request invalid"), { code: "plugin_host_request_invalid" });
+        return call(PLUGIN_HOST_DATA_CAPABILITIES.taskChanges, PLUGIN_HOST_DATA_METHODS.taskChanges.readChanges, [parsed.data], (value) => PluginHostTaskChangesPageV1Schema.parse(value));
+      },
+      onChanged: (listener) => {
+        taskListeners.add(listener);
+        return () => {
+          taskListeners.delete(listener);
         };
       }
     }),
@@ -12772,11 +14880,33 @@ function createPluginHostApiClient(transport) {
     processHelpers,
     receive(value) {
       if (services.receiveAiEvent(value)) return true;
+      if (teamUpQuick.receive(value)) return true;
       const capabilityEvent = LinkCapabilityEventSchema.safeParse(value);
       if (capabilityEvent.success) {
         for (const listener of [...capabilityListeners]) {
           try {
             listener(capabilityEvent.data);
+          } catch {
+          }
+        }
+        return true;
+      }
+      const wake = PluginBackgroundWakeEventV1Schema.safeParse(value);
+      if (wake.success) {
+        const event = { reason: wake.data.reason };
+        for (const listener of [...wakeListeners]) {
+          try {
+            listener(event);
+          } catch {
+          }
+        }
+        return true;
+      }
+      const taskChanged = PluginHostTaskChangedEventV1Schema.safeParse(value);
+      if (taskChanged.success) {
+        for (const listener of [...taskListeners]) {
+          try {
+            listener(taskChanged.data);
           } catch {
           }
         }
@@ -12804,6 +14934,8 @@ function createPluginHostApiClient(transport) {
     },
     revokePermission(permission2) {
       if (permission2 === "work-records:read") listeners.clear();
+      if (permission2 === "task-changes:read") taskListeners.clear();
+      teamUpQuick.revokePermission(permission2);
     },
     dispose() {
       for (const [requestId5, waiter] of pending) {
@@ -12813,96 +14945,12 @@ function createPluginHostApiClient(transport) {
       }
       listeners.clear();
       capabilityListeners.clear();
+      wakeListeners.clear();
+      taskListeners.clear();
       snapshots.clear();
       services.dispose();
+      teamUpQuick.dispose();
     }
-  };
-}
-
-var TestHostNotModeled = class extends Error {
-  surface;
-  id;
-  reason;
-  constructor(surface, id7, reason3 = null) {
-    super(`TestHostNotModeled: ${surface} ${id7} is not modeled by this devkit test host version${reason3 === null ? "" : `: ${reason3}`}`);
-    this.name = "TestHostNotModeled";
-    this.surface = surface;
-    this.id = id7;
-    this.reason = reason3;
-  }
-};
-var TestHostRefused = class extends Error {
-  constructor(message) {
-    super(`TestHostRefused: ${message}`);
-    this.name = "TestHostRefused";
-  }
-};
-var TestHostInvalid = class extends Error {
-  issues;
-  constructor(subject, issues) {
-    super(`TestHostInvalid: ${subject}: ${issues.join("; ")}`);
-    this.name = "TestHostInvalid";
-    this.issues = issues;
-  }
-};
-
-function createManualClock(start = Date.UTC(2026, 9, 26, 0, 0, 0)) {
-  let current = start;
-  let sequence = 0;
-  const timers = /* @__PURE__ */ new Map();
-  const nextDue = (limit) => {
-    let found;
-    for (const entry2 of timers) {
-      if (entry2[1].due > limit) continue;
-      if (found === void 0 || entry2[1].due < found[1].due || entry2[1].due === found[1].due && entry2[0] < found[0]) found = entry2;
-    }
-    return found;
-  };
-  return {
-    now: () => current,
-    later: (run, ms) => {
-      if (!Number.isInteger(ms) || ms < 0) throw new TestHostInvalid("clock.later", ["delay must be a non-negative integer number of milliseconds"]);
-      const id7 = ++sequence;
-      timers.set(id7, { due: current + ms, run });
-      return { cancel: () => {
-        timers.delete(id7);
-      } };
-    },
-    advance: (ms) => {
-      if (!Number.isInteger(ms) || ms < 0) throw new TestHostInvalid("clock.advance", ["step must be a non-negative integer number of milliseconds"]);
-      const target = current + ms;
-      let due = nextDue(target);
-      while (due !== void 0) {
-        const [id7, timer] = due;
-        timers.delete(id7);
-        current = timer.due;
-        timer.run();
-        due = nextDue(target);
-      }
-      current = target;
-    }
-  };
-}
-
-function loadTestManifest(raw) {
-  const parsed = PluginManifestV2Schema.safeParse(raw);
-  if (!parsed.success) {
-    throw new TestHostInvalid("manifest", parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`));
-  }
-  return parsed.data;
-}
-function isRevocablePermission(permission2) {
-  return REVOCABLE_PLUGIN_EXACT_PERMISSIONS.includes(permission2) || REVOCABLE_PLUGIN_PERMISSION_PREFIXES.some((prefix) => permission2.startsWith(prefix));
-}
-
-function createTaskDirectory(initial = []) {
-  const tasks = new Set(initial);
-  return {
-    exists: (taskId) => tasks.has(taskId),
-    add: (taskId) => {
-      tasks.add(taskId);
-    },
-    remove: (taskId) => tasks.delete(taskId)
   };
 }
 
@@ -12922,411 +14970,6 @@ function createGrantTable(declared, initial) {
       return granted.delete(permission2);
     },
     list: () => [...granted]
-  };
-}
-
-var TERMINAL = ["completed", "interrupted", "failed"];
-function compileEntry(entry2) {
-  if (entry2 === "completed") return { kind: "completed" };
-  if (entry2 === "interrupted") return { kind: "interrupted" };
-  if (typeof entry2 === "object" && entry2 !== null) {
-    if ("textDelta" in entry2) return { kind: "textDelta", text: entry2.textDelta };
-    if ("contentSaved" in entry2) return { kind: "contentSaved", sequenceNo: entry2.contentSaved };
-    if ("failed" in entry2) {
-      const failed = entry2.failed;
-      return {
-        kind: "failed",
-        code: failed.code,
-        retryable: failed.retryable ?? failed.code !== "access_revoked",
-        fallbackUsed: failed.fallbackUsed ?? false,
-        partialDelivered: failed.partialDelivered ?? false
-      };
-    }
-  }
-  throw new TestHostInvalid("ai script", [`unsupported script entry ${JSON.stringify(entry2)}`]);
-}
-function compileAiScript(input) {
-  const entries = Array.isArray(input) ? input : input.events;
-  if (!Array.isArray(entries)) throw new TestHostInvalid("ai script", ["events must be an array"]);
-  const compiled = entries.map((entry2) => {
-    const event = compileEntry(entry2);
-    const parsed = AiChatTurnEventSchema.safeParse(event);
-    if (!parsed.success) throw new TestHostInvalid("ai script", parsed.error.issues.map((issue) => `${issue.path.join(".") || "(event)"}: ${issue.message}`));
-    return parsed.data;
-  });
-  compiled.forEach((event, index) => {
-    if (TERMINAL.includes(event.kind) && index !== compiled.length - 1) {
-      throw new TestHostInvalid("ai script", ["a terminal event must be the last entry of the script"]);
-    }
-  });
-  return compiled;
-}
-
-var DEFAULT_AI_PROVIDER = {
-  id: "scripted",
-  label: "Scripted provider",
-  state: "ready",
-  models: [
-    { id: "scripted-text", label: "Scripted text", efforts: ["low", "medium"], defaultEffort: "medium", supportsImages: false, isDefault: true },
-    { id: "scripted-vision", label: "Scripted vision", efforts: ["medium"], defaultEffort: "medium", supportsImages: true, isDefault: false }
-  ]
-};
-var ok2 = (value) => ({ ok: true, value });
-var fail = (error) => ({ ok: false, error });
-var OPERATION = {
-  "ai.getOptions": "getOptions",
-  "ai.openSession": "openSession",
-  "ai.complete": "complete",
-  "session.send": "send",
-  "session.interrupt": "interrupt",
-  "session.close": "close"
-};
-var knownError = (code2) => {
-  if (code2 === "deadline_exceeded") return "turn_timeout";
-  if (code2 === "cancelled") return "interrupted";
-  if (code2 === "response_unavailable") return "provider_error";
-  return AI_CHAT_ERROR_CODES.includes(code2) ? code2 : "unavailable";
-};
-function createAiRules(deps) {
-  const { clock, limits, tasks } = deps;
-  let providerState = deps.provider.state;
-  const sessions = /* @__PURE__ */ new Map();
-  const queue = [];
-  const turnTimes = [];
-  const counters = { sessionsOpened: 0, turns: 0, imageTurns: 0, failedTurns: 0, rateLimited: 0, inputChars: 0, outputChars: 0, lastTurnAt: null };
-  let sessionSequence = 0;
-  let turnSequence = 0;
-  let activeTurns = 0;
-  let quotaUntil = 0;
-  let hiddenCredit = null;
-  if (deps.provider.models.length === 0) throw new TestHostInvalid("ai provider", ["a provider needs at least one model"]);
-  const modelOf = (id7) => deps.provider.models.find((model) => model.id === id7);
-  const defaultModel = () => deps.provider.models.find((model) => model.isDefault) ?? deps.provider.models[0];
-  const attachedOf = (surface, id7) => {
-    const session = sessions.get(id7);
-    return session !== void 0 && session.attached && session.surface === surface ? session : void 0;
-  };
-  const emit = (turn, event) => {
-    if (!turn.session.attached) return;
-    deps.deliver(turn.session.surface, turn.session.id, turn.id, event);
-  };
-  const finish = (turn, event, countFailure = true) => {
-    if (turn.terminal !== null) return;
-    turn.terminal = event;
-    turn.timer?.cancel();
-    turn.timer = null;
-    const session = turn.session;
-    if (session.running && session.current === turn) {
-      session.running = false;
-      activeTurns -= 1;
-    }
-    if (event.kind === "failed") {
-      if (countFailure) counters.failedTurns += 1;
-      if (event.code === "quota_exhausted") quotaUntil = clock.now() + limits.quotaCooldownMs;
-    }
-    emit(turn, event);
-    for (const waiter of turn.waiters.splice(0)) waiter(event);
-  };
-  const closeSession = (session) => {
-    if (sessions.get(session.id) !== session) return;
-    sessions.delete(session.id);
-    if (session.current !== null) {
-      session.current.timer?.cancel();
-      session.current.timer = null;
-    }
-    if (session.running) {
-      session.running = false;
-      activeTurns -= 1;
-    }
-  };
-  const denyAndClose = () => {
-    for (const session of [...sessions.values()]) {
-      const turn = session.current;
-      if (session.running && turn !== null && turn.terminal === null) {
-        finish(turn, { kind: "failed", code: "access_revoked", retryable: false, fallbackUsed: false, partialDelivered: turn.text !== "" }, false);
-      }
-      closeSession(session);
-    }
-  };
-  const recheck = () => {
-    if (sessions.size > 0 && deps.authorize() !== null) denyAndClose();
-  };
-  const createSession = (surface, model, effort2, attached) => {
-    sessionSequence += 1;
-    const session = {
-      id: String(sessionSequence),
-      surface,
-      attached,
-      effective: { providerId: deps.provider.id, modelId: model.id, effort: effort2 },
-      supportsImages: model.supportsImages,
-      current: null,
-      running: false
-    };
-    sessions.set(session.id, session);
-    return session;
-  };
-  const admit = () => {
-    if (sessions.size >= limits.sessionsPerPlugin) return "session_limit";
-    if (sessions.size >= limits.sessionsTotal) return "busy";
-    return null;
-  };
-  const quotaRefusal = () => quotaUntil > clock.now() ? "quota_exhausted" : null;
-  const rateRefusal = () => {
-    const at = clock.now();
-    while (turnTimes.length > 0 && at - turnTimes[0] > 36e5) turnTimes.shift();
-    const perMinute = turnTimes.filter((time) => at - time <= 6e4).length;
-    if (turnTimes.length >= limits.turnsPerHour || perMinute >= limits.turnsPerMinute) {
-      counters.rateLimited += 1;
-      return "rate_limited";
-    }
-    return null;
-  };
-  const hiddenRefusal = (kind) => {
-    const input = deps.lastInput();
-    if (input === null || clock.now() - input.at > limits.hiddenWindowMs) return "view_not_visible";
-    if (hiddenCredit === null || hiddenCredit.seq !== input.seq) {
-      hiddenCredit = { seq: input.seq, opens: limits.hiddenOpensPerInput, turns: limits.hiddenTurnsPerInput };
-    }
-    if (hiddenCredit[kind] <= 0) {
-      counters.rateLimited += 1;
-      return "rate_limited";
-    }
-    return null;
-  };
-  const spendHidden = (kind) => {
-    if (hiddenCredit !== null) hiddenCredit[kind] -= 1;
-  };
-  const accept = (text6, hasImage) => {
-    const at = clock.now();
-    turnTimes.push(at);
-    counters.turns += 1;
-    counters.inputChars += text6.length;
-    if (hasImage) counters.imageTurns += 1;
-    counters.lastTurnAt = new Date(at).toISOString();
-  };
-  const startTurn = (session) => {
-    turnSequence += 1;
-    const turn = { id: turnSequence.toString(16).padStart(16, "0"), session, text: "", terminal: null, timer: null, waiters: [] };
-    session.current = turn;
-    session.running = true;
-    activeTurns += 1;
-    turn.timer = clock.later(() => {
-      finish(turn, { kind: "failed", code: "turn_timeout", retryable: true, fallbackUsed: false, partialDelivered: turn.text !== "" });
-    }, limits.turnTimeoutMs);
-    emit(turn, { kind: "started" });
-    return turn;
-  };
-  const runEvents = (turn, events) => {
-    for (const event of events) {
-      if (turn.terminal !== null) return;
-      if (event.kind === "textDelta") {
-        turn.text += event.text;
-        counters.outputChars += event.text.length;
-        emit(turn, event);
-        if (turn.text.length > limits.replyChars) {
-          finish(turn, { kind: "failed", code: "reply_too_long", retryable: true, fallbackUsed: false, partialDelivered: true });
-        }
-        continue;
-      }
-      if (event.kind === "contentSaved") {
-        emit(turn, event);
-        continue;
-      }
-      finish(turn, event);
-    }
-  };
-  const nextScript = () => queue.shift() ?? [{ kind: "completed" }];
-  const optionsView = () => {
-    const at = clock.now();
-    const exhausted = quotaUntil > at;
-    return {
-      providers: [{
-        id: deps.provider.id,
-        label: deps.provider.label,
-        state: providerState,
-        models: deps.provider.models.map((model) => ({ id: model.id, label: model.label, efforts: [...model.efforts], defaultEffort: model.defaultEffort, supportsImages: model.supportsImages, isDefault: model.isDefault }))
-      }],
-      defaultProviderId: deps.provider.id,
-      limits: {
-        systemChars: limits.systemChars,
-        transcriptLines: limits.transcriptLines,
-        transcriptChars: limits.transcriptChars,
-        inputChars: limits.inputChars,
-        imageBytes: limits.imageBytes,
-        turnsPerMinute: limits.turnsPerMinute
-      },
-      quota: { state: exhausted ? "exhausted" : "ok", retryAfterMs: exhausted ? quotaUntil - at : null }
-    };
-  };
-  const openSession = (surface, request) => {
-    const providerId3 = request.providerId ?? deps.provider.id;
-    if (providerId3 !== deps.provider.id) return fail("provider_not_found");
-    if (request.transcript !== void 0 && request.transcript.reduce((sum, line2) => sum + line2.text.length, 0) > limits.transcriptChars) return fail("input_too_large");
-    if (providerState !== "ready") return fail("provider_not_ready");
-    if (request.modelId !== void 0 && modelOf(request.modelId) === void 0) return fail("model_unavailable");
-    const model = request.modelId === void 0 ? defaultModel() : modelOf(request.modelId) ?? defaultModel();
-    if (request.effort !== void 0 && !model.efforts.includes(request.effort)) return fail("model_unavailable");
-    const hidden = surface === "view" && !deps.visible();
-    if (hidden) {
-      const refusal = hiddenRefusal("opens");
-      if (refusal !== null) return fail(refusal);
-    }
-    const full = admit();
-    if (full !== null) return fail(full);
-    if (request.taskId !== void 0 && !tasks.exists(request.taskId)) return fail("task_not_found");
-    if (hidden) spendHidden("opens");
-    const session = createSession(surface, model, request.effort ?? model.defaultEffort, true);
-    counters.sessionsOpened += 1;
-    return ok2({ sessionId: session.id, effective: session.effective });
-  };
-  const complete = async (surface, request) => {
-    const existing = request.sessionId === void 0 ? void 0 : sessions.get(request.sessionId);
-    if (request.sessionId !== void 0 && existing === void 0) return fail("session_not_found");
-    const hidden = surface === "view" && !deps.visible();
-    const hiddenOpen = hidden && existing === void 0;
-    if (hiddenOpen) {
-      const refusal = hiddenRefusal("opens");
-      if (refusal !== null) return fail(refusal);
-    }
-    if (hidden) {
-      const refusal = hiddenRefusal("turns");
-      if (refusal !== null) return fail(refusal);
-    }
-    const providerId3 = existing?.effective.providerId ?? request.providerId ?? deps.provider.id;
-    if (providerId3 !== deps.provider.id) return fail("provider_not_found");
-    if (providerState !== "ready") return fail("provider_not_ready");
-    const modelId3 = request.modelId ?? existing?.effective.modelId;
-    const found = modelId3 === void 0 ? void 0 : modelOf(modelId3);
-    if (request.modelId !== void 0 && found === void 0) return fail("model_unavailable");
-    const selected = found ?? defaultModel();
-    if (request.effort !== void 0 && !selected.efforts.includes(request.effort)) return fail("model_unavailable");
-    const supportsImages = request.modelId === void 0 && existing !== void 0 ? existing.supportsImages : selected.supportsImages;
-    if (request.image !== void 0 && !supportsImages) return fail("unsupported_image");
-    if (existing === void 0) {
-      const full = admit();
-      if (full !== null) return fail(full);
-    }
-    const quota = quotaRefusal();
-    if (quota !== null) return fail(quota);
-    const rate = rateRefusal();
-    if (rate !== null) return fail(rate);
-    if (existing?.running) return fail("turn_in_progress");
-    if (activeTurns >= limits.concurrentTurnsTotal) return fail("busy");
-    if (existing === void 0 && request.taskId !== void 0 && !tasks.exists(request.taskId)) return fail("task_not_found");
-    const session = existing ?? createSession(surface, selected, request.effort ?? selected.defaultEffort, false);
-    if (existing === void 0) counters.sessionsOpened += 1;
-    if (hiddenOpen) spendHidden("opens");
-    accept(request.text, request.image !== void 0);
-    if (hidden) spendHidden("turns");
-    const turn = startTurn(session);
-    runEvents(turn, nextScript());
-    const outcome2 = turn.terminal ?? await new Promise((resolve) => {
-      turn.waiters.push(resolve);
-    });
-    if (existing === void 0) closeSession(session);
-    if (outcome2.kind === "completed") {
-      return ok2({ sessionId: session.id, requestId: `plugin:${session.id}:${turn.id}`, text: turn.text, providerTurnId: null, historySaved: "saved" });
-    }
-    if (outcome2.kind === "failed") return fail(outcome2.code === "access_revoked" ? "interrupted" : knownError(outcome2.code));
-    return fail(outcome2.kind === "interrupted" ? "interrupted" : "unavailable");
-  };
-  const send = (surface, request) => {
-    const session = attachedOf(surface, request.sessionId);
-    if (session === void 0) return fail("session_not_found");
-    const hidden = surface === "view" && !deps.visible();
-    if (hidden) {
-      const refusal = hiddenRefusal("turns");
-      if (refusal !== null) return fail(refusal);
-    }
-    if (session.running) return fail("turn_in_progress");
-    const quota = quotaRefusal();
-    if (quota !== null) return fail(quota);
-    if (request.image !== void 0 && !session.supportsImages) return fail("unsupported_image");
-    const rate = rateRefusal();
-    if (rate !== null) return fail(rate);
-    if (activeTurns >= limits.concurrentTurnsTotal) return fail("busy");
-    accept(request.text, request.image !== void 0);
-    if (hidden) spendHidden("turns");
-    const turn = startTurn(session);
-    runEvents(turn, nextScript());
-    return ok2({ turnId: turn.id });
-  };
-  const interrupt = (surface, request) => {
-    const session = attachedOf(surface, request.sessionId);
-    if (session === void 0) return fail("session_not_found");
-    const turn = session.current;
-    if (!session.running || turn === null) return ok2(true);
-    finish(turn, { kind: "interrupted" });
-    return ok2(true);
-  };
-  const close = (surface, request) => {
-    const session = attachedOf(surface, request.sessionId);
-    if (session === void 0) return fail("session_not_found");
-    closeSession(session);
-    return ok2(true);
-  };
-  const guarded = (id7, run) => ({
-    id: id7,
-    errorCodes: AI_CHAT_ERROR_CODES,
-    handle: async (surface, args) => {
-      const parsed = AiChatRequestSchema.safeParse(args);
-      if (!parsed.success || parsed.data.op !== OPERATION[id7]) return fail("request_invalid");
-      const denied = deps.authorize();
-      if (denied !== null) {
-        denyAndClose();
-        return fail(denied);
-      }
-      return run(surface, parsed.data);
-    }
-  });
-  const onEvent = {
-    id: "session.onEvent",
-    errorCodes: [],
-    handle: async (surface, args) => {
-      const sessionId5 = typeof args === "object" && args !== null && "sessionId" in args ? args.sessionId : void 0;
-      const parsed = AiChatSessionIdSchema.safeParse(sessionId5);
-      if (!parsed.success) return fail("request_invalid");
-      const denied = deps.authorize();
-      if (denied !== null) {
-        denyAndClose();
-        return fail(denied);
-      }
-      return attachedOf(surface, parsed.data) === void 0 ? fail("session_not_found") : ok2(true);
-    }
-  };
-  const endpoints = [
-    guarded("ai.getOptions", () => ok2(optionsView())),
-    guarded("ai.openSession", (surface, request) => openSession(surface, request)),
-    guarded("ai.complete", (surface, request) => complete(surface, request)),
-    guarded("session.send", (surface, request) => send(surface, request)),
-    guarded("session.interrupt", (surface, request) => interrupt(surface, request)),
-    guarded("session.close", (surface, request) => close(surface, request)),
-    onEvent
-  ];
-  const usage = () => ({
-    activeSessions: sessions.size,
-    sessionsOpened: counters.sessionsOpened,
-    turns: counters.turns,
-    imageTurns: counters.imageTurns,
-    failedTurns: counters.failedTurns,
-    rateLimited: counters.rateLimited,
-    inputChars: counters.inputChars,
-    outputChars: counters.outputChars,
-    lastTurnAt: counters.lastTurnAt
-  });
-  return {
-    endpoints,
-    recheck,
-    controls: {
-      next: (script) => {
-        queue.push(compileAiScript(script));
-      },
-      setProviderState: (state2) => {
-        providerState = state2;
-      },
-      usage,
-      openSessions: () => [...sessions.keys()]
-    }
   };
 }
 
@@ -13382,6 +15025,15 @@ var InputStateOutputSchema = PluginInputOwnStateSchema;
 var WorkRecordsPageRequestSchema = PluginDataPageRequestV1Schema;
 var WorkRecordsPageSchema = PluginHostWorkRecordPageV1Schema;
 var WorkRecordsSettledChangeSchema = PluginHostWorkChangedEventV1Schema;
+var WorkRecordsChangesRequestSchema = PluginHostWorkChangesRequestV1Schema;
+var WorkRecordsChangesPageSchema = PluginHostWorkChangesPageV1Schema;
+var WorkRecordSnapshotDiagnosticsRequestSchema = PluginHostWorkSnapshotDiagnosticsRequestV1Schema;
+var WorkRecordSnapshotDiagnosticsSchema = PluginHostWorkSnapshotDiagnosticsV1Schema;
+var TaskChangesWatchRequestSchema = PluginHostTaskWatchRequestV1Schema;
+var TaskChangesWatchResultSchema = PluginHostTaskWatchResultV1Schema;
+var TaskChangesRequestSchema = PluginHostTaskChangesRequestV1Schema;
+var TaskChangesPageSchema = PluginHostTaskChangesPageV1Schema;
+var TaskChangedEventSchema = PluginHostTaskChangedEventV1Schema;
 var DirectoryPageRequestSchema = PluginDataPageRequestV1Schema;
 var AgentDirectoryPageSchema = PluginHostAgentPageV1Schema;
 var ProjectDirectoryPageSchema = PluginHostProjectPageV1Schema;
@@ -13433,7 +15085,12 @@ var SETTINGS_IPC = { host: "ext-settings" };
 var RESIDENCY_IPC = { host: "ext-residency" };
 var BACKEND_HOST_ENDPOINTS = Object.freeze([
   { id: "workRecords.readPage", surface: "backend", kind: "call", status: "open", permissions: ["work-records:read"], conditions: ["fullTrust"], input: WorkRecordsPageRequestSchema, output: WorkRecordsPageSchema, ipc: capabilityCall("workRecords", "readPage"), summary: "分頁讀「已結算的打卡紀錄」" },
+  { id: "workRecords.readSnapshotDiagnostics", surface: "backend", kind: "call", status: "open", permissions: ["work-records:read"], conditions: ["fullTrust"], input: WorkRecordSnapshotDiagnosticsRequestSchema, output: WorkRecordSnapshotDiagnosticsSchema, ipc: capabilityCall("workRecords", "readSnapshotDiagnostics"), summary: "host-data 1.4.0 optional；讀取由同一外掛開啟之工作快照的去識別掃描與略過計數；舊 host 或過期快照為 unknown/unavailable" },
+  { id: "workRecords.readChanges", surface: "backend", kind: "call", status: "open", permissions: ["work-records:read"], conditions: ["fullTrust", { note: "manifest hostApis 宣告 teamuq.host-data 下限 ≥1.2.0" }], input: WorkRecordsChangesRequestSchema, output: WorkRecordsChangesPageSchema, ipc: capabilityCall("workRecords", "readChanges"), summary: "host-data 1.2.0；用不透明游標增量讀打卡變更（upsert／retracted），游標跨快照、跨重啟有效" },
   { id: "workRecords.subscribeSettledChanges", surface: "backend", kind: "event", status: "open", permissions: ["work-records:read"], conditions: ["fullTrust"], input: null, output: WorkRecordsSettledChangeSchema, ipc: { host: "ext-capability-event", method: `${PLUGIN_HOST_DATA_CAPABILITIES.workRecords}/settled-changed` }, onRevoke: "drop-subscription", summary: "有新結算時收通知（至少間隔 60 秒）" },
+  { id: "taskChanges.watchProjects", surface: "backend", kind: "call", status: "open", permissions: ["task-changes:read"], conditions: ["fullTrust", { note: "整組取代，最多 200 個專案；Core 只記在記憶體，App 重開後請在 backend 啟動時重新登記" }], input: TaskChangesWatchRequestSchema, output: TaskChangesWatchResultSchema, ipc: capabilityCall("taskChanges", "watchProjects"), summary: "host-data 1.3.0；登記要關注的專案，只有這些專案的任務變更會被讀到、會送出 changed 事件（宣告 background.wakeOn task-changes.changed 時也只為這些專案叫醒 backend）；傳空陣列等於取消" },
+  { id: "taskChanges.readChanges", surface: "backend", kind: "call", status: "open", permissions: ["task-changes:read"], conditions: ["fullTrust", { note: "只回登記過的專案；游標只在這次 App 執行期間有效，App 重開或變更太多被淘汰時回 gap:true" }], input: TaskChangesRequestSchema, output: TaskChangesPageSchema, ipc: capabilityCall("taskChanges", "readChanges"), summary: "host-data 1.3.0；用不透明游標增量讀任務變更（任務代號、專案、狀態、authoredRevision、是否刪除）；gap 為 true 代表之前可能漏了變更，請自行全量比對一次" },
+  { id: "taskChanges.onChanged", surface: "backend", kind: "event", status: "open", permissions: ["task-changes:read"], conditions: ["fullTrust"], input: null, output: TaskChangedEventSchema, ipc: { host: "ext-capability-event", method: `${PLUGIN_HOST_DATA_CAPABILITIES.taskChanges}/changed` }, onRevoke: "drop-subscription", summary: "登記的專案有任務變更時收通知（合併送出，同一外掛至少間隔 10 秒）；manifest background.wakeOn 宣告了 task-changes.changed 時，backend 沒在執行會先被叫起再送，閒置卸載規則不變" },
   { id: "agentDirectory.readPage", surface: "backend", kind: "call", status: "open", permissions: ["agent-directory:read"], conditions: ["fullTrust"], input: DirectoryPageRequestSchema, output: AgentDirectoryPageSchema, ipc: capabilityCall("agentDirectory", "readPage"), summary: "分頁讀代理名錄" },
   { id: "projectDirectory.readPage", surface: "backend", kind: "call", status: "open", permissions: ["project-directory:read"], conditions: ["fullTrust"], input: DirectoryPageRequestSchema, output: ProjectDirectoryPageSchema, ipc: capabilityCall("projectDirectory", "readPage"), summary: "分頁讀專案名錄" },
   { id: "pluginState.readPage", surface: "backend", kind: "call", status: "open", permissions: ["plugin-state:read"], conditions: ["fullTrust"], input: PluginStateReadPageInputSchema, output: PluginStatePageSchema, ipc: capabilityCall("pluginState", "readPage"), summary: "讀外掛存在 Core 資料庫的狀態紀錄" },
@@ -13448,7 +15105,7 @@ var BACKEND_HOST_ENDPOINTS = Object.freeze([
   { id: "processHelper.close", surface: "backend", kind: "call", status: "open", permissions: ["process:spawn"], conditions: ["fullTrust"], input: ProcessHelperIdSchema, output: null, ipc: helperCall("close"), summary: "完全信任級；關閉輔助程式" },
   { id: "ai.getOptions", surface: "backend", kind: "call", status: "open", permissions: ["ai:chat"], conditions: [], input: null, output: AiOptionsSchema, ipc: capabilityCall("aiChat", "getOptions"), summary: "後端沒有「畫面須看得到」的條件；不設後端專用次數上限" },
   { id: "ai.openSession", surface: "backend", kind: "call", status: "open", permissions: ["ai:chat"], conditions: [], input: BackendAiOpenSessionInputSchema, output: BackendAiOpenSessionOutputSchema, ipc: capabilityCall("aiChat", "openSession"), onRevoke: "close-session", summary: "可指定既有 Task；帶 `resume` 可重新接上既有對話" },
-  { id: "ai.complete", surface: "backend", kind: "call", status: "open", permissions: ["ai:chat"], conditions: [], input: BackendAiCompleteInputSchema, output: BackendAiCompleteOutputSchema, ipc: capabilityCall("aiChat", "complete"), summary: "可指定既有 Task；等待本次 Session 回合完整結束後回傳，沿用同一 AI Chat 配額" },
+  { id: "ai.complete", surface: "backend", kind: "call", status: "open", permissions: ["ai:chat"], conditions: [], input: BackendAiCompleteInputSchema, output: BackendAiCompleteOutputSchema, ipc: capabilityCall("aiChat", "complete"), summary: "可指定既有 Task；等待本次 Session 回合完整結束後回傳，新 Session 會在所有結果路徑關閉，沿用同一 AI Chat 配額" },
   { id: "session.send", surface: "backend", kind: "session", status: "open", permissions: ["ai:chat"], conditions: [], input: BackendSessionSendInputSchema, output: SessionSendOutputSchema, ipc: capabilityCall("aiChat", "send"), summary: "送一回合文字，可附 JPEG／PNG 圖片" },
   { id: "session.onEvent", surface: "backend", kind: "session", status: "open", permissions: ["ai:chat"], conditions: [], input: null, output: SessionEventSchema, ipc: { host: "ext-capability-event", method: `${PLUGIN_HOST_DATA_CAPABILITIES.aiChat}/${PLUGIN_HOST_AI_CHAT_TURN_EVENT}` }, summary: "串流收事件" },
   { id: "session.interrupt", surface: "backend", kind: "session", status: "open", permissions: ["ai:chat"], conditions: [], input: null, output: null, ipc: capabilityCall("aiChat", "interrupt"), summary: "中斷目前回合" },
@@ -13460,12 +15117,17 @@ var BACKEND_HOST_ENDPOINTS = Object.freeze([
   { id: "secrets.available", surface: "backend", kind: "call", status: "open", permissions: ["secrets:plugin"], conditions: [], input: null, output: SecretsAvailableSchema, ipc: capabilityCall("secrets", "available"), summary: "查系統能不能加密保存" },
   { id: "capabilities.list", surface: "backend", kind: "call", status: "open", permissions: [], conditions: ["fullTrust"], input: null, output: LinkCapabilityEntryListSchema, ipc: capabilityCall("capabilityControl", "list"), summary: "只列自己 manifest 宣告過的類別（R-REG-5）" },
   { id: "capabilities.openLink", surface: "backend", kind: "call", status: "open", permissions: ["cap:*", "network:loopback"], conditions: ["fullTrust", { note: "scope:'use' 須使用者同意；後端沒有「畫面須看得到」的條件（R-TKT-7），可背景使用（R-CON-31）；申請高風險群組一律 not_granted（R-TKT-10）" }], input: OpenLinkCallSchema, output: LinkTicketSchema, ipc: capabilityCall("capabilityControl", "openLink"), summary: "`scope:'use'` 須使用者同意；後端沒有「畫面須看得到」的條件（R-TKT-7），可背景使用（R-CON-31）；申請高風險群組一律 `not_granted`（R-TKT-10）" },
+  { id: "teamUpQuick.request", surface: "backend", kind: "call", status: "open", permissions: ["teamupquick:api"], conditions: ["fullTrust", { note: "只限 TeamUQ 內建的快組隊外掛（Core root key 簽章）；路徑與方法限白名單" }], input: TeamUpQuickApiRequestV1Schema, output: TeamUpQuickApiResultV1Schema, ipc: capabilityCall("teamUpQuickApi", "request"), summary: "由 Core 帶上 App 帳號的 token 代送快組隊 API 請求，token 不交給外掛；回 status、受限 header、JSON body 與帳號指紋" },
+  { id: "teamUpQuick.currentAccount", surface: "backend", kind: "call", status: "open", permissions: ["teamupquick:api"], conditions: ["fullTrust"], input: null, output: TeamUpQuickAccountV1Schema, ipc: capabilityCall("teamUpQuickApi", "currentAccount"), summary: "目前登入狀態與這個外掛專屬的帳號指紋（accountKey）" },
+  { id: "teamUpQuick.onAccountChanged", surface: "backend", kind: "event", status: "open", permissions: ["teamupquick:api"], conditions: ["fullTrust"], input: null, output: TeamUpQuickAccountV1Schema, ipc: { host: "ext-capability-event", method: `${PLUGIN_HOST_DATA_CAPABILITIES.teamUpQuickApi}/${TEAMUPQUICK_ACCOUNT_CHANGED_EVENT}` }, onRevoke: "drop-subscription", summary: "登入、登出、換帳號或登入過期時收通知；manifest background.wakeOn 宣告了 account.changed 時，backend 沒在執行會先被叫起再送（連續變更只送最新一筆），沒宣告就不補送；啟動時仍請先讀 currentAccount" },
+  { id: "slots.invalidate", surface: "backend", kind: "call", status: "open", permissions: [], conditions: ["fullTrust", { note: "只限 manifest 在 contributes.slots 宣告過的 slot；不需要額外權限" }], input: PluginSlotInvalidateRequestV1Schema, output: PluginSlotInvalidateResultV1Schema, ipc: capabilityCall("pluginSlots", "invalidate"), summary: "外掛宣告的 slot（專案設定摘要卡、任務卡徽章）資料變了，請 Core 重新取資料；可只指定幾張任務卡" },
+  { id: "background.onWake", surface: "backend", kind: "event", status: "open", permissions: [], conditions: ["fullTrust", "manifest:background", { note: "只限 TeamUQ 內建外掛（root key 簽章、teamuq. 開頭）；其他外掛宣告 background 時安裝就被拒絕" }], input: null, output: PluginBackgroundWakeV1Schema, ipc: { host: "ext-capability-event", method: `${PLUGIN_BACKGROUND_CAPABILITY}/${PLUGIN_BACKGROUND_WAKE_EVENT}` }, summary: "開機完成 60 秒後（startup）與每 intervalSec 秒（tick）收通知；backend 沒在跑時 Core 先把它叫起來，閒置卸載規則不變" },
   { id: "capabilities.onChange", surface: "backend", kind: "event", status: "open", permissions: [], conditions: ["fullTrust"], input: null, output: LinkCapabilityEventSchema, ipc: { host: "ext-capability-event", method: `${PLUGIN_HOST_DATA_CAPABILITIES.capabilityControl}/changed` }, summary: "只收自己宣告過的類別（R-REG-8）；含連線被關閉的通知" },
   { id: "residency.current", surface: "backend", kind: "call", status: "open", permissions: [], conditions: ["fullTrust"], input: null, output: PluginBackendResidencyV1Schema, ipc: RESIDENCY_IPC, summary: "讀自己目前的背景常駐等級與原因；撤銷 background:resident 後仍可讀" },
   { id: "residency.onChange", surface: "backend", kind: "event", status: "open", permissions: [], conditions: ["fullTrust"], input: null, output: PluginBackendResidencyV1Schema, ipc: RESIDENCY_IPC, summary: "常駐等級或原因改變時收通知" }
 ]);
 
-var SUMMARIES = Object.freeze({
+var SUMMARIES2 = Object.freeze({
   "program.describe": "永遠可用；列出目前可用的 Program 操作",
   "conversation.dispatch": "使用者同意；在專案或任務上開對話並送第一句",
   "conversation.read": "只讀自己開的對話訊息",
@@ -13483,7 +15145,7 @@ var SUMMARIES = Object.freeze({
   "data.tasks.list": "分頁列出任務（可搜尋）",
   "data.tasks.get": "取單一任務",
   "data.tasks.create": "建立任務",
-  "data.tasks.update": "修改任務；須帶 `expectedAuthoredRevision` 防覆蓋",
+  "data.tasks.update": "修改任務；須帶 `expectedAuthoredRevision` 防覆蓋；名稱／描述需 `program:data:tasks:write`，狀態（`status`）需 `program:data:tasks:status`",
   "data.tasks.delete": "刪除任務；須帶 `expectedAuthoredRevision`"
 });
 var CONDITIONS = Object.freeze({
@@ -13500,7 +15162,7 @@ var SHARED_PROGRAM_ENDPOINTS = Object.freeze(PLUGIN_PROGRAM_OPERATION_NAMES_V1.m
   permissions: permissionsOf(operation),
   conditions: CONDITIONS[operation] ?? [],
   ipc: { channel: PLUGIN_PROGRAM_API_CHANNELS_V1.REQUEST, op: operation, host: "capability-call", method: BACKEND_PROGRAM_METHOD },
-  summary: SUMMARIES[operation]
+  summary: SUMMARIES2[operation]
 })));
 
 var { ASSET_PACKS, ASSET_PACK_MANAGE, STORE, STORE_ACQUIRE, AGENT_AVATAR, MODELS_ACT, MODELS_PROGRESS } = PLUGIN_CORE_CHANNELS;
@@ -13548,6 +15210,8 @@ var VIEW_SHELL_ENDPOINTS = Object.freeze([
   { id: "presentation.get", surface: "view", kind: "call", status: "open", permissions: ["ui:view"], conditions: [], summary: "讀目前是分頁、全頁或設定頁、是否全螢幕、是否看得到", ipc: { channel: PLUGIN_VIEW_CHANNELS.PRESENTATION_GET }, probe: [], input: null, output: PluginViewPresentationStateSchema, onRevoke: "none" },
   { id: "presentation.request", surface: "view", kind: "call", status: "open", permissions: ["ui:view"], conditions: [], summary: "要求切換呈現方式，可要求全螢幕", ipc: { channel: PLUGIN_VIEW_CHANNELS.PRESENTATION_REQUEST }, probe: ["tab"], input: PluginViewPresentationRequestSchema, output: PluginViewPresentationResultSchema, onRevoke: "none" },
   { id: "presentation.onChange", surface: "view", kind: "event", status: "open", permissions: ["ui:view"], conditions: [], summary: "訂閱呈現方式的變動", ipc: { channel: PLUGIN_VIEW_CHANNELS.PRESENTATION_CHANGED }, probe: [NOOP2], input: null, output: PluginViewPresentationChangeSchema, onRevoke: "drop-subscription" },
+  { id: "view.getContext", surface: "view", kind: "call", status: "open", permissions: ["ui:view"], conditions: [], summary: "讀 Core 開啟這個畫面時帶來的專案或任務 id（只限 manifest 在 view.context 宣告過的鍵；沒有就是 null）", ipc: { channel: PLUGIN_VIEW_CHANNELS.CONTEXT_GET }, probe: [], input: null, output: PluginViewContextV1Schema, onRevoke: "none" },
+  { id: "view.onContextChanged", surface: "view", kind: "event", status: "open", permissions: ["ui:view"], conditions: [], summary: "畫面已開著時，使用者從專案設定或任務卡再次開啟它，收到新的 context", ipc: { channel: PLUGIN_VIEW_CHANNELS.CONTEXT_CHANGED }, probe: [NOOP2], input: null, output: PluginViewContextV1Schema, onRevoke: "drop-subscription" },
   { id: "storage.read", surface: "view", kind: "call", status: "open", permissions: ["storage:plugin-data"], conditions: [], summary: "只限外掛自己的資料夾；讀位元組，可指定範圍", ipc: { channel: STORAGE, op: "read" }, probe: ["probe.bin"], input: StorageReadInputSchema, output: StorageReadOutputSchema, onRevoke: "none" },
   { id: "storage.readText", surface: "view", kind: "call", status: "open", permissions: ["storage:plugin-data"], conditions: [], summary: "讀檔並轉成文字", ipc: { channel: STORAGE, op: "read" }, probe: ["probe.txt"], input: StorageReadTextInputSchema, output: StorageReadTextOutputSchema, onRevoke: "none" },
   { id: "storage.write", surface: "view", kind: "call", status: "open", permissions: ["storage:plugin-data"], conditions: [], summary: "寫入或附加", ipc: { channel: STORAGE, op: "write" }, probe: ["probe.bin", ""], input: StorageWriteInputSchema, output: StorageWriteOutputSchema, onRevoke: "none" },
@@ -13569,7 +15233,7 @@ var VIEW_SHELL_ENDPOINTS = Object.freeze([
   { id: "input.state", surface: "view", kind: "call", status: "open", permissions: ["input:text"], conditions: [], summary: "只回自己的狀態（是否已登記、是否為目前輸入目標），不回其他外掛或語音輸入的狀態（R-HST-2）", ipc: { channel: PLUGIN_INPUT_CHANNELS.REQUEST, op: "state" }, probe: [], input: InputStateInputSchema, output: InputStateOutputSchema, onRevoke: "none" }
 ]);
 
-var PLUGIN_ENDPOINT_COUNTS = Object.freeze({ view: 50, backend: 31, both: 19, total: 100 });
+var PLUGIN_ENDPOINT_COUNTS = Object.freeze({ view: 52, backend: 41, both: 19, total: 112 });
 var PLUGIN_ENDPOINTS = Object.freeze([...VIEW_SHELL_ENDPOINTS, ...VIEW_SERVICE_ENDPOINTS, ...BACKEND_HOST_ENDPOINTS, ...SHARED_PROGRAM_ENDPOINTS]);
 
 var keyOf = (surface, id7) => `${surface} ${id7}`;
@@ -13577,9 +15241,9 @@ function createRouter(now2) {
   const entries = /* @__PURE__ */ new Map();
   const log = [];
   const entryOf2 = (surface, id7) => {
-    const entry2 = entries.get(keyOf(surface, id7));
-    if (entry2 === void 0) throw new TestHostNotModeled(surface, id7);
-    return entry2;
+    const entry3 = entries.get(keyOf(surface, id7));
+    if (entry3 === void 0) throw new TestHostNotModeled(surface, id7);
+    return entry3;
   };
   const record = (surface, id7, args, reply, injected) => {
     log.push({ seq: log.length + 1, at: now2(), surface, id: id7, args, reply, injected });
@@ -13592,49 +15256,26 @@ function createRouter(now2) {
       if (entries.has(keyOf(surface, id7))) throw new TestHostInvalid("register", [`${surface} ${id7} is already registered`]);
       entries.set(keyOf(surface, id7), { surface, id: id7, errorCodes: [...errorCodes], handle, injections: [] });
     },
-    modeled: () => [...entries.values()].map((entry2) => ({ surface: entry2.surface, id: entry2.id })),
+    modeled: () => [...entries.values()].map((entry3) => ({ surface: entry3.surface, id: entry3.id })),
     inject: (surface, id7, code2, times = 1) => {
-      const entry2 = entryOf2(surface, id7);
-      if (!entry2.errorCodes.includes(code2)) throw new TestHostInvalid("inject", [`${code2} is not in the error list of ${surface} ${id7}`]);
+      const entry3 = entryOf2(surface, id7);
+      if (!entry3.errorCodes.includes(code2)) throw new TestHostInvalid("inject", [`${code2} is not in the error list of ${surface} ${id7}`]);
       if (!Number.isInteger(times) || times < 1) throw new TestHostInvalid("inject", ["times must be a positive integer"]);
-      entry2.injections.push({ code: code2, remaining: times });
+      entry3.injections.push({ code: code2, remaining: times });
     },
     dispatch: async (surface, id7, args) => {
-      const entry2 = entryOf2(surface, id7);
-      const injection = entry2.injections.find((item) => item.remaining > 0);
+      const entry3 = entryOf2(surface, id7);
+      const injection = entry3.injections.find((item) => item.remaining > 0);
       if (injection !== void 0) {
         injection.remaining -= 1;
         return record(surface, id7, args, { ok: false, error: injection.code }, true);
       }
-      const reply = await entry2.handle(args);
+      const reply = await entry3.handle(args);
       return record(surface, id7, args, reply, false);
     },
     reject: (surface, id7, args, reply) => record(surface, id7, args, reply, false),
     calls: (filter) => log.filter((call) => filter === void 0 || call.id === filter || `${call.surface}:${call.id}` === filter)
   };
-}
-
-var CoreFailure = class extends Error {
-  code;
-  constructor(code2) {
-    super(code2);
-    this.name = "CoreFailure";
-    this.code = code2;
-  }
-};
-var ok3 = (value) => ({ ok: true, value });
-var fail2 = (error) => ({ ok: false, error });
-function accessDenialOf(enabled, grants, permission2) {
-  if (!enabled) return "plugin_not_active";
-  return grants.has(permission2) ? null : "plugin_permission_denied";
-}
-function byteLengthOf(value) {
-  try {
-    const encoded = JSON.stringify(value);
-    return encoded === void 0 ? null : new TextEncoder().encode(encoded).byteLength;
-  } catch {
-    return null;
-  }
 }
 
 var PLUGIN_STATE_ERRORS = ["plugin_permission_denied", "plugin_host_request_too_large", PLUGIN_STATE_RETIRED_ERROR_CODE];
@@ -13649,12 +15290,12 @@ function createBackendRules(deps) {
   const settle = (params, handler) => new Promise((resolve) => {
     let settled = false;
     let timer = null;
-    const finish = (envelope3) => {
+    const finish = (envelope4) => {
       if (settled) return;
       settled = true;
       timer?.cancel();
       inFlight.delete(cancel);
-      resolve(envelope3);
+      resolve(envelope4);
     };
     const cancel = (code2) => finish(fail2(code2));
     inFlight.add(cancel);
@@ -13663,7 +15304,7 @@ function createBackendRules(deps) {
       const bytes4 = pluginBackendInvokePayloadBytes({ ok: true, value });
       if (bytes4 === null) return finish(fail2("backend_invoke_invalid"));
       if (bytes4 > PLUGIN_BACKEND_INVOKE_LIMITS.payloadBytes) return finish(fail2("backend_invoke_too_large"));
-      finish(ok3(value));
+      finish(ok2(value));
     }, () => finish(fail2("plugin_backend_unavailable")));
   });
   const invoke = {
@@ -13768,7 +15409,7 @@ function createSettingsRules(deps) {
       const parsed = PluginSettingsRequestSchema.safeParse(args);
       if (!parsed.success || parsed.data.op !== op) return fail2("plugin_request_invalid");
       try {
-        return ok3(run(parsed.data));
+        return ok2(run(parsed.data));
       } catch (error) {
         if (error instanceof CoreFailure) return fail2(error.code);
         throw error;
@@ -13782,7 +15423,7 @@ function createSettingsRules(deps) {
     handle: async (args) => {
       if (!declaredAndGranted()) return fail2("plugin_permission_denied");
       if (!deps.enabled()) throw new TestHostRefused(`${id7} is not dispatched while the plugin is disabled`);
-      return ok3(run(args));
+      return ok2(run(args));
     }
   });
   const endpoints = [
@@ -13907,12 +15548,12 @@ function createStorageRules(deps) {
   const entries = /* @__PURE__ */ new Map();
   const lookup = (segments) => {
     for (let index = 0; index < segments.length; index += 1) {
-      const entry2 = entries.get(keyOf2(segments.slice(0, index + 1)));
-      if (entry2 === void 0) return null;
+      const entry3 = entries.get(keyOf2(segments.slice(0, index + 1)));
+      if (entry3 === void 0) return null;
       if (index < segments.length - 1) {
-        if (entry2.kind !== "directory") throw invalidPath();
+        if (entry3.kind !== "directory") throw invalidPath();
       } else {
-        return entry2;
+        return entry3;
       }
     }
     return null;
@@ -13920,32 +15561,32 @@ function createStorageRules(deps) {
   const ensureParents = (segments) => {
     for (let index = 0; index < segments.length - 1; index += 1) {
       const key4 = keyOf2(segments.slice(0, index + 1));
-      const entry2 = entries.get(key4);
-      if (entry2 === void 0) entries.set(key4, { kind: "directory", modifiedMs: deps.now() });
-      else if (entry2.kind !== "directory") throw invalidPath();
+      const entry3 = entries.get(key4);
+      if (entry3 === void 0) entries.set(key4, { kind: "directory", modifiedMs: deps.now() });
+      else if (entry3.kind !== "directory") throw invalidPath();
     }
   };
   const childrenOf = (segments) => {
     const prefix = segments.length === 0 ? "" : `${keyOf2(segments)}/`;
     const children = [];
-    for (const [key4, entry2] of entries) {
+    for (const [key4, entry3] of entries) {
       if (!key4.startsWith(prefix) || key4.length === prefix.length) continue;
       const rest = key4.slice(prefix.length);
-      if (!rest.includes("/")) children.push({ name: rest, entry: entry2 });
+      if (!rest.includes("/")) children.push({ name: rest, entry: entry3 });
     }
     return children.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
   };
-  const sizeOf = (entry2) => entry2.kind === "file" ? entry2.bytes.byteLength : 0;
+  const sizeOf = (entry3) => entry3.kind === "file" ? entry3.bytes.byteLength : 0;
   const readOp = (request) => {
-    const entry2 = lookup(segmentsOf(request.path, false));
-    if (entry2 === null) throw new CoreFailure("storage_not_found");
-    if (entry2.kind !== "file") throw new CoreFailure("storage_not_a_file");
-    const size2 = entry2.bytes.byteLength;
+    const entry3 = lookup(segmentsOf(request.path, false));
+    if (entry3 === null) throw new CoreFailure("storage_not_found");
+    if (entry3.kind !== "file") throw new CoreFailure("storage_not_a_file");
+    const size2 = entry3.bytes.byteLength;
     const offset = request.offset ?? 0;
     const length = request.length ?? Math.max(0, size2 - offset);
     if (length > PLUGIN_CORE_LIMITS.chunkBytes) throw new CoreFailure("storage_too_large");
     const take = Math.max(0, Math.min(length, size2 - offset));
-    return entry2.bytes.slice(offset, offset + take);
+    return entry3.bytes.slice(offset, offset + take);
   };
   const writeOp = (request) => {
     const segments = segmentsOf(request.path, false);
@@ -13964,24 +15605,24 @@ function createStorageRules(deps) {
   const listOp = (request) => {
     const segments = segmentsOf(request.path ?? "", true);
     if (segments.length > 0) {
-      const entry2 = lookup(segments);
-      if (entry2 === null) return [];
-      if (entry2.kind !== "directory") throw new CoreFailure("storage_not_a_file");
+      const entry3 = lookup(segments);
+      if (entry3 === null) return [];
+      if (entry3.kind !== "directory") throw new CoreFailure("storage_not_a_file");
     }
     const children = childrenOf(segments);
     if (children.length > PLUGIN_CORE_LIMITS.listEntries) throw new CoreFailure("storage_too_large");
-    return children.map(({ name, entry: entry2 }) => ({ name, kind: entry2.kind === "file" ? "file" : "directory", size: sizeOf(entry2) }));
+    return children.map(({ name, entry: entry3 }) => ({ name, kind: entry3.kind === "file" ? "file" : "directory", size: sizeOf(entry3) }));
   };
   const statOp = (request) => {
-    const entry2 = lookup(segmentsOf(request.path, false));
-    if (entry2 === null) return null;
-    return { kind: entry2.kind, size: sizeOf(entry2), modifiedMs: entry2.modifiedMs };
+    const entry3 = lookup(segmentsOf(request.path, false));
+    if (entry3 === null) return null;
+    return { kind: entry3.kind, size: sizeOf(entry3), modifiedMs: entry3.modifiedMs };
   };
   const removeOp = (request) => {
     const segments = segmentsOf(request.path, false);
-    const entry2 = lookup(segments);
-    if (entry2 === null) return { removed: false };
-    if (entry2.kind === "directory" && request.recursive !== true) throw new CoreFailure("storage_not_a_file");
+    const entry3 = lookup(segments);
+    if (entry3 === null) return { removed: false };
+    if (entry3.kind === "directory" && request.recursive !== true) throw new CoreFailure("storage_not_a_file");
     const key4 = keyOf2(segments);
     for (const candidate of [...entries.keys()]) {
       if (candidate === key4 || candidate.startsWith(`${key4}/`)) entries.delete(candidate);
@@ -14009,7 +15650,7 @@ function createStorageRules(deps) {
       const parsed = PluginStorageRequestSchema.safeParse(args);
       if (!parsed.success || parsed.data.op !== op) return fail2("plugin_request_invalid");
       try {
-        return ok3(run(parsed.data));
+        return ok2(run(parsed.data));
       } catch (error) {
         if (error instanceof CoreFailure) return fail2(error.code);
         throw error;
@@ -14024,203 +15665,6 @@ function createStorageRules(deps) {
     endpoint2("storage.stat", "stat", statOp),
     endpoint2("storage.remove", "remove", removeOp)
   ];
-}
-
-var SUMMARIES2 = Object.freeze({
-  "program.describe": "列出此呼叫者可用的 Program API v1 操作。",
-  "data.projects.list": "分頁讀取專案中繼資料。",
-  "data.projects.get": "讀取一筆專案中繼資料。",
-  "data.projects.create": "建立專案中繼資料。",
-  "data.projects.delete": "封存專案中繼資料。",
-  "data.tasks.list": "分頁讀取任務中繼資料。",
-  "data.tasks.get": "讀取一筆任務中繼資料。",
-  "data.tasks.create": "建立任務中繼資料。",
-  "data.tasks.delete": "依產品既有語義 tombstone 任務。",
-  "conversation.dispatch": "在指定專案或任務啟動對話並投遞首句。",
-  "conversation.read": "讀取此呼叫者擁有的對話訊息。",
-  "conversation.followUp": "向此呼叫者擁有的即時對話送出追問。",
-  "data.projects.update": "以 authored revision 更新專案中繼資料。",
-  "data.milestones.list": "分頁讀取里程碑中繼資料。",
-  "data.milestones.get": "讀取一筆里程碑中繼資料。",
-  "data.milestones.create": "建立里程碑中繼資料。",
-  "data.milestones.update": "以 authored revision 更新里程碑中繼資料。",
-  "data.milestones.delete": "封存里程碑中繼資料。",
-  "data.tasks.update": "以 authored revision 更新任務中繼資料。"
-});
-var TASK_STATUS_ON_CREATE = "WAITING";
-var TASK_STATUS_ON_TOMBSTONE = "archived";
-var DEFAULT_PAGE_LIMIT = 50;
-var CURSOR_PATTERN = /^(0|[1-9][0-9]*)$/;
-var DATA_OPERATIONS = ["data.projects.list", "data.projects.get", "data.projects.create", "data.projects.delete", "data.tasks.list", "data.tasks.get", "data.tasks.create", "data.tasks.delete"];
-var MODELED_OPERATIONS = ["program.describe", ...DATA_OPERATIONS];
-var BACKEND_ERROR_CODES = ["plugin_host_request_invalid", "plugin_host_request_too_large"];
-var PROGRAM_INVALID_REPLY = { apiVersion: 1, requestId: null, operation: null, ok: false, error: { code: "invalid_request", message: "The Program request is invalid." } };
-function programOperationsOf(grants) {
-  const operations = /* @__PURE__ */ new Set(["program.describe"]);
-  for (const permission2 of Object.keys(PLUGIN_PROGRAM_PERMISSION_SCOPES_V1)) {
-    if (!grants.has(permission2)) continue;
-    for (const operation of PLUGIN_PROGRAM_PERMISSION_OPERATIONS_V1[permission2]) operations.add(operation);
-  }
-  return [...operations];
-}
-function requiredScopeOf(operation) {
-  for (const permission2 of Object.keys(PLUGIN_PROGRAM_PERMISSION_SCOPES_V1)) {
-    if (PLUGIN_PROGRAM_PERMISSION_OPERATIONS_V1[permission2].includes(operation)) return PLUGIN_PROGRAM_PERMISSION_SCOPES_V1[permission2];
-  }
-  return "none";
-}
-var issuesOf = (issues) => issues.map((issue) => `${issue.path.map(String).join(".") || "(reply)"}: ${issue.message}`);
-function createProgramRules(deps) {
-  const projects = /* @__PURE__ */ new Map();
-  const tasks = /* @__PURE__ */ new Map();
-  let sequence = 0;
-  let generation3 = 0;
-  const nextId = () => {
-    sequence += 1;
-    return String(sequence);
-  };
-  const projectDto = (row) => ({ id: row.id, name: row.name, description: row.description, authoredRevision: row.authoredRevision, archived: row.archived, readOnly: row.readOnly });
-  const taskDto = (row) => ({ id: row.id, name: row.name, description: row.description, projectId: row.projectId, milestoneId: row.milestoneId, status: row.status, authoredRevision: row.authoredRevision, deletedAt: row.deletedAt, readOnly: row.readOnly });
-  const gap = (surface, operation, reason3) => new TestHostNotModeled(surface, `program.call:${operation}`, reason3);
-  const liveProject = (surface, operation, projectId) => {
-    const row = projects.get(projectId);
-    if (row === void 0 || row.archived) throw gap(surface, operation, "a missing or archived project: the Core not_found code is not verified (design D7)");
-    return row;
-  };
-  const liveTask = (surface, operation, taskId) => {
-    const row = tasks.get(taskId);
-    if (row === void 0 || row.deletedAt !== null) throw gap(surface, operation, "a missing or tombstoned task: the Core not_found code is not verified (design D7)");
-    return row;
-  };
-  const checkRevision = (row, expected) => {
-    if (expected !== row.authoredRevision) throw new TestHostRefused(`expectedAuthoredRevision ${expected} does not match ${row.authoredRevision}: the Core conflict code is not verified (design D7)`);
-  };
-  const pageOf = (surface, operation, rows2, input, map) => {
-    if (input.search !== void 0 && input.search !== null) throw gap(surface, operation, "search matching is not verified");
-    if (input.snapshotGeneration !== void 0) throw gap(surface, operation, "snapshotGeneration is not verified: the Core stale-snapshot result is not modeled");
-    const cursor4 = input.cursor ?? null;
-    if (cursor4 !== null && !CURSOR_PATTERN.test(cursor4)) throw gap(surface, operation, "the cursor was not issued by this test host and the Core cursor format is opaque");
-    const offset = cursor4 === null ? 0 : Number(cursor4);
-    const limit = input.limit ?? DEFAULT_PAGE_LIMIT;
-    const items = rows2.slice(offset, offset + limit).map(map);
-    return { items, nextCursor: offset + limit < rows2.length ? String(offset + limit) : null, snapshotGeneration: generation3 };
-  };
-  const describeRows = (allowed, catalog) => catalog.map((operation) => ({
-    operation,
-    requiredScope: requiredScopeOf(operation),
-    available: allowed.includes(operation),
-    summary: SUMMARIES2[operation]
-  }));
-  const execute = (surface, operation, raw, allowed) => {
-    switch (operation) {
-      case "program.describe":
-        return { apiVersion: 1, operations: describeRows(allowed, PLUGIN_PROGRAM_OPERATION_NAMES_V1) };
-      case "data.projects.list": {
-        if ([...projects.values()].some((row) => row.archived)) throw gap(surface, operation, "archived projects in list results are not verified");
-        return pageOf(surface, operation, [...projects.values()], raw, projectDto);
-      }
-      case "data.projects.get":
-        return projectDto(liveProject(surface, operation, raw.projectId));
-      case "data.projects.create": {
-        const body = raw;
-        const row = { id: nextId(), name: body.name, description: body.description ?? null, authoredRevision: 0, archived: false, readOnly: null };
-        projects.set(row.id, row);
-        generation3 += 1;
-        return projectDto(row);
-      }
-      case "data.projects.delete": {
-        const body = raw;
-        const row = liveProject(surface, operation, body.projectId);
-        checkRevision(row, body.expectedAuthoredRevision);
-        if ([...tasks.values()].some((task2) => task2.projectId === row.id && task2.deletedAt === null)) throw gap(surface, operation, "archiving a project that still has tasks: the cascade is not verified");
-        row.archived = true;
-        row.authoredRevision += 1;
-        generation3 += 1;
-        return projectDto(row);
-      }
-      case "data.tasks.list": {
-        const input = raw;
-        if ([...tasks.values()].some((row) => row.deletedAt !== null)) throw gap(surface, operation, "tombstoned tasks in list results are not verified");
-        if (input.projectId === null) throw gap(surface, operation, "a null projectId filter is not verified");
-        const filter = input.projectId;
-        const rows2 = [...tasks.values()].filter((row) => filter === void 0 || row.projectId === filter);
-        return pageOf(surface, operation, rows2, input, taskDto);
-      }
-      case "data.tasks.get":
-        return taskDto(liveTask(surface, operation, raw.taskId));
-      case "data.tasks.create": {
-        const body = raw;
-        if (body.projectId === null) throw gap(surface, operation, "a task without a project: the Core behavior is not verified (design D7)");
-        if (body.milestoneId !== void 0 && body.milestoneId !== null) throw gap(surface, operation, "milestones are outside the v1 scope");
-        liveProject(surface, operation, body.projectId);
-        const row = { id: nextId(), name: body.name, description: body.description ?? null, projectId: body.projectId, milestoneId: null, status: TASK_STATUS_ON_CREATE, authoredRevision: 0, deletedAt: null, readOnly: null };
-        tasks.set(row.id, row);
-        deps.tasks.add(row.id);
-        generation3 += 1;
-        return taskDto(row);
-      }
-      case "data.tasks.delete": {
-        const body = raw;
-        const row = liveTask(surface, operation, body.taskId);
-        checkRevision(row, body.expectedAuthoredRevision);
-        row.deletedAt = deps.now();
-        row.status = TASK_STATUS_ON_TOMBSTONE;
-        row.authoredRevision += 1;
-        deps.tasks.remove(row.id);
-        generation3 += 1;
-        return taskDto(row);
-      }
-    }
-  };
-  const replyError = (request, code2, message) => ({
-    apiVersion: 1,
-    requestId: request.requestId,
-    operation: request.operation,
-    ok: false,
-    error: { code: code2, message }
-  });
-  const checkedEnvelope = (validator, reply, operation) => {
-    const checked = validator.reply.safeParse(reply);
-    if (!checked.success) throw new TestHostInvalid("program reply", issuesOf(checked.error.issues));
-    const body = reply;
-    if (body.ok) {
-      const resultSchema = validator.resultByOperation[operation];
-      if (resultSchema === void 0) throw new TestHostRefused(`the injected programReplyValidator has no result schema for ${operation}`);
-      const checkedResult = resultSchema.safeParse(body.result);
-      if (!checkedResult.success) throw new TestHostInvalid(`program result ${operation}`, issuesOf(checkedResult.error.issues));
-    }
-    return ok3(reply);
-  };
-  const endpoint2 = (surface, operation) => ({
-    surface,
-    id: `program.call:${operation}`,
-    errorCodes: surface === "backend" ? BACKEND_ERROR_CODES : [],
-    handle: async (args) => {
-      const validator = deps.validator;
-      if (validator === void 0) throw new TestHostRefused(`program.call:${operation} needs the shared Program API schemas: pass programReplyValidator to createTestHostCore. The call is refused, not answered without reply validation.`);
-      const bytes4 = byteLengthOf(args);
-      if (surface === "backend" && bytes4 !== null && bytes4 > PLUGIN_HOST_DATA_LIMITS.payloadBytes) return fail2("plugin_host_request_too_large");
-      const parsed = validator.call.safeParse(args);
-      const oversized = bytes4 === null || bytes4 > validator.requestMaxBytes;
-      if (!parsed.success || oversized) {
-        if (surface === "backend") return fail2("plugin_host_request_invalid");
-        return checkedEnvelope(validator, PROGRAM_INVALID_REPLY, "program.call");
-      }
-      const request = parsed.data;
-      if (request.operation !== operation) throw new TestHostInvalid("program.call", [`request operation ${request.operation} does not match program.call:${operation}`]);
-      if (!deps.enabled()) return checkedEnvelope(validator, replyError(request, "unauthenticated", "The Plugin is not active."), operation);
-      const allowed = programOperationsOf(deps.grants);
-      if (!allowed.includes(operation)) return checkedEnvelope(validator, replyError(request, "forbidden", "The Program operation is not granted."), operation);
-      const result = execute(surface, operation, request.input, allowed);
-      return checkedEnvelope(validator, { apiVersion: 1, requestId: request.requestId, operation, ok: true, result }, operation);
-    }
-  });
-  const endpoints = [];
-  for (const operation of MODELED_OPERATIONS) {
-    endpoints.push(endpoint2("view", operation));
-    endpoints.push(endpoint2("backend", operation));
-  }
-  return endpoints;
 }
 
 var SURFACES = ["view", "backend"];
@@ -14430,15 +15874,15 @@ function createTestHost(options) {
     }
   };
   const dispatchInternal = async (id7, args) => {
-    const envelope3 = await core.dispatch("backend", id7, args);
+    const envelope4 = await core.dispatch("backend", id7, args);
     const record = core.calls().find((call) => call.args === args);
     if (record !== void 0) internalSeq.add(record.seq);
-    return envelope3;
+    return envelope4;
   };
   const settings = createExternalSettings(void 0, false);
   const refreshSettings = async () => {
-    const envelope3 = await dispatchInternal("settings.all", {});
-    settings.apply({ protocolVersion: EXTERNAL_HOST_PROTOCOL_VERSION, kind: "ext-settings", enabled: envelope3.ok, values: envelope3.ok ? envelope3.value : {} });
+    const envelope4 = await dispatchInternal("settings.all", {});
+    settings.apply({ protocolVersion: EXTERNAL_HOST_PROTOCOL_VERSION, kind: "ext-settings", enabled: envelope4.ok, values: envelope4.ok ? envelope4.value : {} });
   };
   const settle = async () => {
     pushViewEvents();
@@ -14447,12 +15891,12 @@ function createTestHost(options) {
   };
   const answerHost = async (request) => {
     const route = hostRoute(request);
-    const envelope3 = await core.dispatch("backend", route.id, route.args);
+    const envelope4 = await core.dispatch("backend", route.id, route.args);
     pushBackendEvents();
     const requestId5 = request.requestId;
-    if (request.capabilityId === PLUGIN_HOST_DATA_CAPABILITIES.aiChat) return { protocolVersion: EXTERNAL_HOST_PROTOCOL_VERSION, requestId: requestId5, ok: true, value: envelope3 };
-    if (envelope3.ok) return { protocolVersion: EXTERNAL_HOST_PROTOCOL_VERSION, requestId: requestId5, ok: true, value: envelope3.value };
-    return { protocolVersion: EXTERNAL_HOST_PROTOCOL_VERSION, requestId: requestId5, ok: false, error: { code: envelope3.error, message: envelope3.error } };
+    if (request.capabilityId === PLUGIN_HOST_DATA_CAPABILITIES.aiChat) return { protocolVersion: EXTERNAL_HOST_PROTOCOL_VERSION, requestId: requestId5, ok: true, value: envelope4 };
+    if (envelope4.ok) return { protocolVersion: EXTERNAL_HOST_PROTOCOL_VERSION, requestId: requestId5, ok: true, value: envelope4.value };
+    return { protocolVersion: EXTERNAL_HOST_PROTOCOL_VERSION, requestId: requestId5, ok: false, error: { code: envelope4.error, message: envelope4.error } };
   };
   const serveHost = (value) => {
     const parsed = PluginHostDataRequestV1Schema.safeParse(value);
@@ -14473,7 +15917,7 @@ function createTestHost(options) {
   });
   const guardedProgram = Object.freeze({
     call: (operation, input, callOptions) => {
-      if (!core.modeled().some((entry2) => entry2.surface === "backend" && entry2.id === `program.call:${operation}`)) throw new TestHostNotModeled("backend", `program.call:${operation}`);
+      if (!core.modeled().some((entry3) => entry3.surface === "backend" && entry3.id === `program.call:${operation}`)) throw new TestHostNotModeled("backend", `program.call:${operation}`);
       return rawClient.api.program.call(operation, input, callOptions);
     }
   });
@@ -14509,12 +15953,12 @@ function createTestHost(options) {
         return PROGRAM_INVALID_REPLY;
       }
       const route = viewRoute(channel, raw);
-      const envelope3 = await core.dispatch("view", route.id, route.args);
+      const envelope4 = await core.dispatch("view", route.id, route.args);
       pushViewEvents();
       pushBackendEvents();
       if (route.id.startsWith("settings.")) await refreshSettings();
-      if (channel === PLUGIN_PROGRAM_API_CHANNELS_V1.REQUEST && envelope3.ok) return envelope3.value;
-      return envelope3;
+      if (channel === PLUGIN_PROGRAM_API_CHANNELS_V1.REQUEST && envelope4.ok) return envelope4.value;
+      return envelope4;
     },
     on: (channel, listener) => {
       const set = viewListeners.get(channel) ?? /* @__PURE__ */ new Set();

@@ -17,7 +17,7 @@ export const PERMISSIONS_SECTION_TITLE = '它可以做的事'
 export const AI_CHAT_TOGGLE_TITLE = '用你的 AI 對話額度回答你'
 /**
  * `background:resident` 權限開關在 TeamUQ 上的標題（teamuq-electron `pluginText.ts` PERMISSION_TEXT[BACKGROUND_RESIDENT_PERMISSION].title，Core 設計 D:324-326）。
- * 這句話出現在畫面文字裡，所以逐字鎖定（scripts/plugin/lib/fenced-text.mjs）；`check:core-gate-conformance` 尚未核對它（等含此開關的 Core 發版後擴充）。
+ * 這句話出現在畫面文字裡，所以逐字鎖定（scripts/plugin/lib/fenced-text.mjs）；`check:core-gate-conformance` 也核對 Core 的開關名稱與授權定義。
  */
 export const RESIDENT_TOGGLE_TITLE = '關閉畫面後繼續在背景執行'
 /** 打開外掛後顯示本外掛設定 view 的分頁名稱。 */

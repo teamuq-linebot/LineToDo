@@ -4,6 +4,8 @@
 
 資料夾位置：`C:\teamuq\teamuq-plugins\line-todo\dist\dev-link\`
 
+0.2.14 起使用 TeamUQ 1.8.10 SDK，最低宿主版本為 1.8.10。開發連結與正式套件都宣告背景常駐能力；是否常駐仍由 TeamUQ 的「關閉畫面後繼續在背景執行」授權決定，詳見 [TeamUQ 相容性](teamuq-compatibility.md)。
+
 ## 連結與解除連結
 
 - 連結後，TeamUQ 會用這個資料夾裡的看板，取代原本安裝的 LINE 待辦看板。

@@ -6,12 +6,12 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const PLUGIN_ID = 'tuqdev.line-todo'
-export const TASK_ID = 'line-todo-release-0.2.7-20261101'
-export const TARGET_CORE = '1.8.4'
+export const TASK_ID = 'line-todo-release-0.2.14-20261105'
+export const TARGET_CORE = '1.8.10'
 export const TARGET_PLATFORM = 'win32-x64'
-export const AUTHORING_TOOL_CORE = '1.8.4'
-export const AUTHORING_TOOL_SHA256 = '9fa0c66f642977c54edb5b7b046398fbd7a82da696f12a990b7786bcc480d692'
-export const AUTHORING_TOOL_VERSION_TEXT = 'tuq-plugin-tool core 1.8.4'
+export const AUTHORING_TOOL_CORE = '1.8.10'
+export const AUTHORING_TOOL_SHA256 = 'd61a389059e7b1fd6b3c2dc3027342759308d0214492216fc31da3200293cf83'
+export const AUTHORING_TOOL_VERSION_TEXT = 'tuq-plugin-tool core 1.8.10'
 export const EXPECTED_SIGNER = 'teamuq-root-2026a'
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SCRIPT_FILE = fileURLToPath(import.meta.url)
@@ -133,10 +133,10 @@ export function readInstalledMetadata(manifestPath, explicit = false) {
 }
 
 function checkTool(toolPath) {
-  if (!toolPath || !path.isAbsolute(toolPath)) throw new Error('請以 --tool 指定已驗證 Core 1.8.4 author CLI 的絕對路徑')
-  if (!fs.existsSync(toolPath)) throw new Error('找不到 Core 1.8.4 author CLI：' + toolPath)
+  if (!toolPath || !path.isAbsolute(toolPath)) throw new Error('請以 --tool 指定已驗證 Core 1.8.10 author CLI 的絕對路徑')
+  if (!fs.existsSync(toolPath)) throw new Error('找不到 Core 1.8.10 author CLI：' + toolPath)
   const actualSha = fileHash(toolPath)
-  if (actualSha !== AUTHORING_TOOL_SHA256) throw new Error('Core 1.8.4 author CLI SHA-256 不符：' + actualSha)
+  if (actualSha !== AUTHORING_TOOL_SHA256) throw new Error('Core 1.8.10 author CLI SHA-256 不符：' + actualSha)
   const version = spawn(process.execPath, [toolPath, '--version'], REPO)
   const versionText = (version.stdout || '').trim()
   if (version.status !== 0 || versionText !== AUTHORING_TOOL_VERSION_TEXT) throw new Error('author CLI 版號不符：' + versionText)
@@ -155,7 +155,7 @@ function loadMetadata(options) {
   const explicitInstalled = Boolean(options.installedManifest || process.env.LINE_TODO_INSTALLED_MANIFEST)
   const installedManifest = path.resolve(options.installedManifest || process.env.LINE_TODO_INSTALLED_MANIFEST || path.join(DEFAULT_INSTALLED_ROOT, 'manifest.json'))
   const toolInput = options.tool || process.env.TUQ_PLUGIN_TOOL_184
-  if (!toolInput) throw new Error('請以 --tool 指定 Core 1.8.4 author CLI 路徑')
+  if (!toolInput) throw new Error('請以 --tool 指定 Core 1.8.10 author CLI 路徑')
   const toolPath = path.resolve(toolInput)
   const core = readCoreMetadata(coreExe)
   if (core.normalizedVersion !== TARGET_CORE) throw new Error('目前 Core 為 ' + core.normalizedVersion + '；此 helper 僅支援已核對的 Core ' + TARGET_CORE)
@@ -250,7 +250,7 @@ function writeBuildEvidence(outDir, data) {
 export async function runBuild(argv = process.argv.slice(2)) {
   const options = parseArgs(argv)
   if (options.help) {
-    process.stdout.write('用法：npm run import:local -- --tool <Core1.8.4 CLI> [--installed-manifest <目前安裝 manifest>] --out <新輸出目錄> [--dry-run|--validate-only] [--core-exe <TeamUQ.exe>]\n')
+    process.stdout.write('用法：npm run import:local -- --tool <Core1.8.10 CLI> [--installed-manifest <目前安裝 manifest>] --out <新輸出目錄> [--dry-run|--validate-only] [--core-exe <TeamUQ.exe>]\n')
     return { status: 'help' }
   }
   const metadata = loadMetadata(options)
@@ -278,7 +278,7 @@ export async function runBuild(argv = process.argv.slice(2)) {
   const manifestLib = await import(pathToFileURL(path.join(REPO, 'scripts', 'plugin', 'lib', 'manifest.mjs')).href)
   const { files, backendAnalysis, uiAnalysis, backendMetafile, uiMetafiles } = await builder.collectPackageFiles({ workDir })
   if (!backendAnalysis.ok || !uiAnalysis.ok) throw new Error('LineTodo UI/backend bundle analysis rejected')
-  const manifest = manifestLib.buildManifest({ version: metadata.packageVersion, resident: { enabled: false } })
+  const manifest = manifestLib.buildManifest({ version: metadata.packageVersion })
   if (manifest.id !== PLUGIN_ID || manifest.version !== metadata.packageVersion) throw new Error('manifest identity/version 與 package metadata 不一致')
   if (manifest.trustTier !== 'full-trust' || manifest.permissions.length !== 7 || JSON.stringify(manifest.permissions) !== JSON.stringify(['ui:view', 'backend:invoke', 'native:addons', 'ai:chat', 'assets:plugin-data', 'program:data:projects:write', 'program:data:tasks:write'])) {
     throw new Error('candidate trustTier 或 7 個 permissions 與已核准的 full-trust baseline 不完全相同')
@@ -339,7 +339,7 @@ export async function runBuild(argv = process.argv.slice(2)) {
     stageIndex: { path: stageIndexPath, sha256: fileHash(stageIndexPath) },
     sourceIdentity: { path: sourcePath, sha256: sourceIdentitySha256 },
     commands: [validate, pack, verify],
-    import: { state: 'not-imported', nextStep: '待 Reviewer 審核並取得相符簽章收據；簽章驗證完成後才由 Core 1.8.4 UI 選檔安裝' },
+    import: { state: 'not-imported', nextStep: '待 Reviewer 審核並取得相符簽章收據；簽章驗證完成後才由 Core 1.8.10 UI 選檔安裝' },
   }
   const preflightPath = path.join(outDir, 'pre-sign-preflight.json')
   writeJson(preflightPath, preflight)

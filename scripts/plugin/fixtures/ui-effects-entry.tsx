@@ -20,6 +20,7 @@ import { DraftReplyDialog } from '../../../src/renderer/components/DraftReplyDia
 import { IdentityInboxPanel } from '../../../src/renderer/features/identity/IdentityInboxPanel'
 import { ResidencyNotice, ResidencyStatusBar } from '../../../src/plugin/ui/ResidencyStatus'
 import type { ResidencyViewSource } from '../../../src/plugin/ui/ResidencyStatus'
+import { PluginRootLayout } from '../../../src/plugin/ui/PluginRootLayout'
 import { UiStateProvider, createLocalUiState } from '../../../src/renderer/lib/uiState'
 import { createOverviewRefresher } from '../../../src/renderer/features/groupTopics/groupTopicsOverview'
 import { GroupTopicsPanel } from '../../../src/renderer/features/groupTopics/GroupTopicsPanel'
@@ -54,6 +55,14 @@ export function mediaImageScene(api: Api, msgId: string): ReactElement {
 }
 export function messageStreamScene(api: Api): ReactElement {
   return <Host api={api}><MessageStream /></Host>
+}
+/** Actual plugin flow layout with an active residency status row and a synthetic chat stream. */
+export function messageWithResidencyScene(api: Api, source: ResidencyViewSource): ReactElement {
+  return (
+    <PluginRootLayout footer={<ResidencyStatusBar source={source} />}>
+      <Host api={api}><MessageStream /></Host>
+    </PluginRootLayout>
+  )
 }
 export function settingsDraftScene(api: Api, storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>): ReactElement {
   return <Host api={api}><UiStateProvider value={createLocalUiState(storage)}><SettingsPanel /></UiStateProvider></Host>

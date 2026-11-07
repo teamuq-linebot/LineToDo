@@ -1,5 +1,5 @@
 // 0.2.0 — the backend AI port (src/plugin/backend/hostAi.ts) and the background ExtractWorker (src/plugin/backend/extractWorker.ts) against a mock
-// `context.host.ai` that reproduces TeamUQ Core 1.7.15 (scripts/lib/mock-tuq-ai.mjs: strict request schema, session_limit, 20/min + 400/h sliding window, quota cooldown,
+// `context.host.ai` that reproduces TeamUQ Core 1.8.10 (scripts/lib/mock-tuq-ai.mjs: strict request schema, session_limit, 20/min + 400/h sliding window, quota cooldown,
 // access revocation, `complete` = one Session opened and closed per call, events dropped when nobody listens). There is no view, no visibility and no window.tuqPlugin
 // anywhere in this file. Time is a manual clock shared by the port, the worker and the mock host, so minute-long behaviour runs in milliseconds.
 //
@@ -7,7 +7,7 @@
 //   (b) quota: never more than 20 turns in any 60 s window, 2 turns reserved for user actions, 400/h; a quota error backs off and keeps every pending item
 //   (c) retries: busy / session_limit retried; rate_limited / quota_exhausted / provider errors back off and re-queue (lease released, no failure); access_revoked is probed
 //   (d) JSON: ```json fenced replies parse and pass zod; bad JSON gets one repair turn (transcript replay), then the item fails; zod-invalid replies fail
-//   (e) contentSaved (new in 1.7.15): the events of a turn can carry it; nothing in line-todo subscribes to turn events, and a turn with those events completes normally
+//   (e) contentSaved (new in 1.8.10): the events of a turn can carry it; nothing in line-todo subscribes to turn events, and a turn with those events completes normally
 //   limits: system <= 16,000, one turn's input <= 8,000 (checked before the host is called)
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -84,9 +84,9 @@ function maxPerMinute(times, window = 60_000) {
 
 // ───────────── the contract the port and the mock follow ─────────────
 
-test('contract: the mock host and the port constants match the Core 1.7.15 ai:chat contract fixture (aiChatContracts.ts @ bf4801ecc, tag v1.7.15)', () => {
+test('contract: the mock host and the port constants match the Core 1.8.10 ai:chat contract fixture (aiChatContracts.ts @ 992a8fcec2f4bb3c65db01b6c75f3ac0797baaa5, tag v1.8.10)', () => {
   const L = CONTRACT.limits
-  assert.equal(CONTRACT.source.commit, 'bf4801ecc')
+  assert.equal(CONTRACT.source.commit, '992a8fcec2f4bb3c65db01b6c75f3ac0797baaa5')
   for (const key of ['systemChars', 'inputChars', 'transcriptLines', 'transcriptLineChars', 'transcriptChars', 'turnsPerMinute', 'turnsPerHour', 'replyChars', 'turnTimeoutMs']) {
     assert.equal(AI_CHAT_REFERENCE[key], L[key], `AI_CHAT_REFERENCE.${key} vs contract`)
   }
@@ -98,8 +98,8 @@ test('contract: the mock host and the port constants match the Core 1.7.15 ai:ch
   // every error code the port classifies is a code the host can produce (error envelope or turn failure)
   const known = new Set([...CONTRACT.errorCodes, ...CONTRACT.failureCodes])
   for (const code of [...ACCESS_CODES, ...PROVIDER_CODES, ...BUSY_CODES, 'rate_limited', 'quota_exhausted', 'interrupted', 'empty_reply', 'turn_timeout', 'provider_error']) assert.ok(known.has(code), `${code} is a host code`)
-  // 1.7.15 additions the port relies on
-  assert.ok(CONTRACT.eventKinds.includes('contentSaved'), 'contentSaved is a turn event kind in 1.7.15')
+  // Events and error codes the port relies on
+  assert.ok(CONTRACT.eventKinds.includes('contentSaved'), 'contentSaved is a supported turn event kind')
   assert.ok(CONTRACT.errorCodes.includes('one_shot_failed') && CONTRACT.errorCodes.includes('execution_unavailable'))
   const sdk = readFileSync(join(ROOT, 'src', 'plugin', 'sdk', 'tuq-plugin-sdk.d.ts'), 'utf8')
   assert.match(sdk, /complete\(input: PluginBackendAiCompleteInputV1\): Promise<PluginBackendAiCompleteResultV1>/, 'the vendored SDK declares context.host.ai.complete')
@@ -109,7 +109,7 @@ test('contract: the mock host and the port constants match the Core 1.7.15 ai:ch
   for (const code of ['empty_reply', 'invalid_json', 'invalid_result', 'provider_error', 'turn_timeout', 'input_too_large', 'reply_too_long', 'one_shot_failed']) assert.equal(isTransientAiCode(code), false, code)
 })
 
-test('mock host: refuses what Core 1.7.15 refuses (strict complete schema, input/system limits, session_limit, grant) with the real error codes — and never view_not_visible', async () => {
+test('mock host: refuses what Core 1.8.10 refuses (strict complete schema, input/system limits, session_limit, grant) with the real error codes — and never view_not_visible', async () => {
   const { mock } = portSetup()
   const code = async (promise) => (await rejection(promise)).code
   const base = { system: 'S', text: 'hello' }
@@ -451,7 +451,7 @@ test('sessions: every call is a fresh Session (no context leaks between chats), 
 
 // ───────────── (e) contentSaved ─────────────
 
-test('(e) contentSaved (new turn event in 1.7.15): a turn whose event stream carries it completes normally — nothing in line-todo reacts to turn events', async () => {
+test('(e) contentSaved (supported turn event): a turn whose event stream carries it completes normally — nothing in line-todo reacts to turn events', async () => {
   const ctx = portSetup({ reply: () => ({ text: goodText, events: ['contentSaved', 'contentSaved'] }) })
   const result = await ctx.port.complete(background())
   assert.equal(result.value.importance, 'action')

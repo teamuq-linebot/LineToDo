@@ -15,10 +15,10 @@ export type PluginBackendContext = Pick<PluginBackendContextV1, 'pluginId' | 'da
    */
   host: { ai: PluginBackendContextV1['host']['ai']; program?: PluginBackendContextV1['host']['program'] }
   /**
-   * 背景執行（`background:resident`）：Core 的 `context.residency`（`current()`／`onChange()`）。vendored 的 SDK（1.7.15）還沒有這個欄位，而且舊 Core 不會帶它，
+   * 背景執行（`background:resident`）：使用 1.8.10 SDK 的 `context.residency` 型別（`current()`／`onChange()`）；測試與舊宿主可能不帶它，
    * 所以是選用的、值當成不可信（backend/residency.ts 自己驗證）；沒有它時行為與之前完全相同。
    */
-  residency?: unknown
+  residency?: PluginBackendContextV1['residency']
 }
 
 export interface SessionInfo {

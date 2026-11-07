@@ -39,11 +39,11 @@ test('the vendor pathname patch preserves relative, absolute, Unicode, percent-e
   }
 })
 
-test('the copied SDK declarations match their pinned Core 1.7.15 metadata, and declare what the backend AI port uses (host.ai.complete, contentSaved)', async () => {
+test('the copied SDK declarations match their pinned Core 1.8.10 metadata, and declare what the backend AI port uses (host.ai.complete, contentSaved)', async () => {
   const { createHash } = await import('node:crypto')
   const metadata = JSON.parse(readFileSync(new URL('../../src/plugin/sdk/tuq-plugin-sdk.version.json', import.meta.url), 'utf8'))
   const bytes = readFileSync(new URL('../../src/plugin/sdk/tuq-plugin-sdk.d.ts', import.meta.url))
-  assert.equal(metadata.coreVersion, '1.7.15')
+  assert.equal(metadata.coreVersion, '1.8.10')
   assert.equal(createHash('sha256').update(bytes).digest('hex'), metadata.sha256)
   const text = bytes.toString('utf8')
   assert.match(text, /complete\(input: PluginBackendAiCompleteInputV1\): Promise<PluginBackendAiCompleteResultV1>/)
@@ -54,7 +54,7 @@ test('the copied SDK declarations match their pinned Core 1.7.15 metadata, and d
 // ───────────── 0.2.1: every AI turn is filed under the plugin's own TeamUQ Task (src/plugin/backend/teamuqTask.ts) ─────────────
 // Program and host.ai rules come from the vendored devkit test host (scripts/plugin/vendor/testing), pinned by sha256 below.
 
-const TEST_HOST_SHA256 = '01ba78a1a51b98a9248d8d67e1784f7a8a24ebb4b3b1595896ed6a22f1aed850'
+const TEST_HOST_SHA256 = 'ba24f3410e0c6bfb90c1304338341253fdb5236066082f58a536ba22f5fcce72'
 const PLUGIN_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version
 
 const newHost = () => createTestHost({ manifest: buildManifest({ version: PLUGIN_VERSION }) })
@@ -68,6 +68,10 @@ const deleteTask = async (host, taskId) => {
 test('the vendored devkit test host is the pinned artifact and matches the kit version.json', () => {
   const bytes = readFileSync(new URL('./vendor/testing/tuq-plugin-test-host.mjs', import.meta.url))
   const meta = JSON.parse(readFileSync(new URL('./vendor/testing/tuq-plugin-test-host.version.json', import.meta.url), 'utf8'))
+  const kit = JSON.parse(readFileSync(new URL('./vendor/kit.version.json', import.meta.url), 'utf8'))
+  assert.equal(kit.coreVersion, '1.8.10')
+  assert.equal(meta.coreVersion, kit.coreVersion)
+  assert.equal(kit.files.find((entry) => entry.path === 'testing/tuq-plugin-test-host.mjs').sha256, meta.sha256)
   assert.equal(meta.file, 'tuq-plugin-test-host.mjs')
   assert.equal(createHash('sha256').update(bytes).digest('hex'), TEST_HOST_SHA256)
   assert.equal(meta.sha256, TEST_HOST_SHA256)
