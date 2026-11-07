@@ -1026,11 +1026,12 @@ export function MessageStream(): JSX.Element {
               </header>
               {paneView === 'topicsTodos' ? (
                 <div className="chat-topics-todos-content" data-testid="chat-topics-todos-content" aria-label={`${activeConversation.name}的議題與待辦`}>
-                  <GroupTopicsPanel key={`topics-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} embedded />
+                  <GroupTopicsPanel key={`topics-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} ignored={activeConversation.blocked} embedded />
                   <ChatTodosPanel
                     key={`todos-${activeConversation.chatId}`}
                     chatId={activeConversation.chatId}
                     chatName={activeConversation.name}
+                    ignored={activeConversation.blocked}
                   />
                 </div>
               ) : paneView === 'aiSettings' && chatPrompts ? (

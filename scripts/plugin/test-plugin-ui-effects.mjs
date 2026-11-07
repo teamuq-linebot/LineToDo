@@ -2627,3 +2627,98 @@ test('U8 the stylesheet defines the shared switch wrapper', () => {
   assert.match(css, /\.chat-switch-wrap\s*\{/)
   assert.equal(css.includes('.group-topic-cross-chat'), false)
 })
+
+function ignoreScene(chats, stored) {
+  const find = (chatId) => chats.find((chat) => chat.chatId === chatId)
+  return toggleScene(chats, {
+    'db.chats.setBlocked': (chatId, blocked) => { find(chatId).blocked = blocked; return { ...find(chatId) } },
+    'db.chats.todoExtractEnabled': (chatId) => stored[chatId].todo,
+    'db.chats.setTodoExtractEnabled': (chatId, value) => { stored[chatId].todo = value; return { ok: true, enabled: value, skippedOlder: 0 } },
+    'groupTopics.list': (chatId) => ({ ok: stored[chatId].topics && !find(chatId).blocked, topics: [] }),
+    'groupTopics.setEnabled': (chatId, value) => { stored[chatId].topics = value; return { ok: true } }
+  })
+}
+
+const ignoreFilterButton = (s) => walk(s.view.container).find((element) => element.localName === 'button' && element.hasAttribute('aria-pressed') && element.textContent.trim().startsWith('已忽略'))
+const activeFilterButton = (s) => walk(s.view.container).find((element) => element.localName === 'button' && element.hasAttribute('aria-pressed') && element.textContent.trim().startsWith('聊天'))
+const menuItem = (s, text) => walk(s.view.container).find((element) => element.localName === 'button' && element.getAttribute('role') === 'menuitem' && element.textContent.trim() === text)
+const paneFor = (s, name) => walk(s.view.container).find((element) => element.localName === 'section' && hasClassName(element, 'chat-pane') && element.getAttribute('aria-label') === name)
+const openChatMenu = (s, name) => {
+  const more = walk(s.view.container).find((element) => element.localName === 'button' && element.getAttribute('aria-label') === '更多操作：' + name)
+  reactProps(more).onClick({ stopPropagation() {}, currentTarget: more })
+}
+
+test('I1 an ignored chat shows both switches off and disabled, and clicking never calls a set API', async () => {
+  const chat = toggleChat('ignore-i1', '合成群組I1', true)
+  chat.blocked = true
+  const other = toggleChat('ignore-i1b', '合成其他I1', true)
+  const stored = { [chat.chatId]: { todo: true, topics: true }, [other.chatId]: { todo: true, topics: true } }
+  const s = ignoreScene([chat, other], stored)
+  try {
+    await until(() => paneFor(s, other.name), { message: 'default selection settled' })
+    await until(() => ignoreFilterButton(s), { message: 'filter buttons' })
+    s.click(ignoreFilterButton(s))
+    await until(() => ignoreFilterButton(s).getAttribute('aria-pressed') === 'true' && s.chatButton(chat.name), { message: 'ignored chat listed' })
+    s.click(s.chatButton(chat.name))
+    await until(() => paneFor(s, chat.name), { message: 'ignored chat selected' })
+    await openCombinedPane(s)
+    await until(() => s.todoSwitch() && s.topicSwitch('此群組的議題開關'), { message: 'both switches render' })
+    for (const input of [s.todoSwitch(), s.topicSwitch('此群組的議題開關')]) {
+      assert.equal(reactProps(input).checked, false)
+      assert.equal(reactProps(input).disabled, true)
+    }
+    s.change(s.todoSwitch(), true)
+    s.change(s.topicSwitch('此群組的議題開關'), true)
+    await sleep(50)
+    assert.equal(s.callsTo('db.chats.setTodoExtractEnabled').length, 0)
+    assert.equal(s.callsTo('groupTopics.setEnabled').length, 0)
+    assert.equal(reactProps(s.todoSwitch()).checked, false)
+    assert.equal(reactProps(s.topicSwitch('此群組的議題開關')).checked, false)
+    assert.equal(s.view.container.textContent.includes('切換失敗'), false)
+    assert.deepEqual(stored[chat.chatId], { todo: true, topics: true }, 'stored values untouched')
+  } finally { s.dispose() }
+})
+
+test('I2 ignoring on screen turns both switches off at once and restoring brings back each stored state', async () => {
+  const chat = toggleChat('ignore-i2', '合成群組I2', true)
+  const other = toggleChat('ignore-i2b', '合成其他I2', true)
+  const stored = { [chat.chatId]: { todo: false, topics: true }, [other.chatId]: { todo: true, topics: false } }
+  const s = ignoreScene([chat, other], stored)
+  try {
+    await until(() => paneFor(s, chat.name) || paneFor(s, other.name), { message: 'default selection settled' })
+    await openCombinedPane(s)
+    await until(() => s.todoSwitch() && s.topicSwitch('此群組的議題開關'), { message: 'both switches render' })
+    const topicsOn = () => { const input = s.topicSwitch('此群組的議題開關'); return input ? reactProps(input) : {} }
+    const todoOn = () => { const input = s.todoSwitch(); return input ? reactProps(input) : {} }
+    s.click(s.chatButton(chat.name))
+    await until(() => paneFor(s, chat.name), { message: 'chat selected' })
+    await until(() => todoOn().checked === false && topicsOn().checked === true, { message: 'unignored chat shows stored states (todo off, topics on)' })
+    assert.equal(reactProps(s.todoSwitch()).disabled, false)
+    assert.equal(topicsOn().disabled, false)
+
+    openChatMenu(s, chat.name)
+    await until(() => menuItem(s, '忽略對話'), { message: 'menu opens' })
+    reactProps(menuItem(s, '忽略對話')).onClick({})
+    await until(() => chat.blocked === true && ignoreFilterButton(s), { message: 'ignored' })
+    s.click(ignoreFilterButton(s))
+    await until(() => ignoreFilterButton(s).getAttribute('aria-pressed') === 'true' && s.chatButton(chat.name), { message: 'listed under ignored' })
+    s.click(s.chatButton(chat.name))
+    await until(() => paneFor(s, chat.name), { message: 'ignored chat selected' })
+    await openCombinedPane(s)
+    await until(() => s.todoSwitch() && s.topicSwitch('此群組的議題開關'), { message: 'switches on ignored chat' })
+    await until(() => todoOn().disabled === true && topicsOn().disabled === true && topicsOn().checked === false, { message: 'both off and disabled' })
+    assert.equal(reactProps(s.todoSwitch()).checked, false)
+
+    openChatMenu(s, chat.name)
+    await until(() => menuItem(s, '恢復對話'), { message: 'menu opens' })
+    reactProps(menuItem(s, '恢復對話')).onClick({})
+    await until(() => chat.blocked === false, { message: 'restored' })
+    await openCombinedPane(s)
+    await until(() => s.todoSwitch() && s.topicSwitch('此群組的議題開關') && todoOn().disabled === false && topicsOn().checked === true, { message: 'stored states return' })
+    assert.equal(reactProps(s.todoSwitch()).checked, false, 'todo stays at its stored off state')
+    assert.equal(topicsOn().disabled, false)
+    assert.equal(s.callsTo('db.chats.setTodoExtractEnabled').length, 0)
+    assert.equal(s.callsTo('groupTopics.setEnabled').length, 0)
+    assert.deepEqual(stored[chat.chatId], { todo: false, topics: true })
+  } finally { s.dispose() }
+})

@@ -8,6 +8,8 @@ import { fmtDue, isOverdue, isSuggestedDone, priorityLabel } from '../../compone
 interface Props {
   chatId: string
   chatName: string
+  /** 聊天室被忽略時，開關一律顯示關閉且不可切換；儲存值不變。 */
+  ignored?: boolean
 }
 
 function statusLabel(status: TodoDTO['status']): string {
@@ -22,7 +24,7 @@ function statusLabel(status: TodoDTO['status']): string {
 }
 
 /** 只讀顯示目前聊天室的未完成待辦；不在聊天室面板增加寫入動作。 */
-export function ChatTodosPanel({ chatId, chatName }: Props): JSX.Element {
+export function ChatTodosPanel({ chatId, chatName, ignored = false }: Props): JSX.Element {
   const api = useLineTodoApi()
   const requestVersion = useRef(0)
   const [todos, setTodos] = useState<TodoDTO[]>([])
@@ -56,7 +58,7 @@ export function ChatTodosPanel({ chatId, chatName }: Props): JSX.Element {
   }, [loadSwitch])
 
   async function toggleTodo(value: boolean): Promise<void> {
-    if (todoEnabled === null || switching) return
+    if (todoEnabled === null || switching || ignored) return
     const target = chatId
     const version = switchVersion.current
     const previous = todoEnabled
@@ -112,7 +114,7 @@ export function ChatTodosPanel({ chatId, chatName }: Props): JSX.Element {
     <section className="chat-todos-content" aria-label={`${chatName}的待辦`}>
       <header className="chat-todos-heading">
         <h3>此聊天室待辦</h3>
-        {todoEnabled !== null && <ChatSwitch label="此聊天室待辦開關" checked={todoEnabled} busy={switching} onChange={(value) => void toggleTodo(value)} testId="todos-switch" />}
+        {todoEnabled !== null && <ChatSwitch label="此聊天室待辦開關" checked={todoEnabled && !ignored} disabled={ignored} busy={switching} onChange={(value) => void toggleTodo(value)} testId="todos-switch" />}
       </header>
       {switchError && <p className="chat-todos-error" role="alert">{switchError}</p>}
       {loading && <p className="muted" role="status">正在載入「{chatName}」的待辦…</p>}
