@@ -4,6 +4,7 @@ import '../../renderer/styles/index.css'
 import { RendererRoot } from '../../renderer/RendererRoot'
 import { BackendStatusBar } from './BackendStatusBar'
 import { ResidencyStatusBar } from './ResidencyStatus'
+import { PluginRootLayout } from './PluginRootLayout'
 import { browserUiState } from '../../renderer/lib/uiState'
 import { bootBoard } from './board'
 import { PLUGIN_CAPABILITIES, renderNotInHost } from './host'
@@ -20,9 +21,12 @@ if (!boot) {
 } else {
   createRoot(container).render(
     <StrictMode>
-      <BackendStatusBar source={boot.api.plugin} />
-      <RendererRoot api={boot.api} capabilities={PLUGIN_CAPABILITIES} uiState={browserUiState()} />
-      <ResidencyStatusBar source={boot.api.plugin} />
+      <PluginRootLayout
+        header={<BackendStatusBar source={boot.api.plugin} />}
+        footer={<ResidencyStatusBar source={boot.api.plugin} />}
+      >
+        <RendererRoot api={boot.api} capabilities={PLUGIN_CAPABILITIES} uiState={browserUiState()} />
+      </PluginRootLayout>
     </StrictMode>
   )
 }

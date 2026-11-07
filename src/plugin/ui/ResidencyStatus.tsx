@@ -51,20 +51,17 @@ function useResidency(source: ResidencyViewSource, options: UseResidencyOptions)
 /** backend 連不上時不知道實際狀態（連線問題由 BackendStatusBar 說明），所以不顯示背景執行。 */
 const reachable = (link: BackendLink): boolean => link.state !== 'revoked' && link.state !== 'unavailable'
 
-/** 看板左下角、AI 狀態列上面的一行。沒有要求背景執行（沒宣告權限）或舊 Core 時不顯示。 */
+/** 看板底部的一行狀態。沒有要求背景執行（沒宣告權限）或舊 Core 時不顯示。 */
 export function ResidencyStatusBar({ source }: { source: ResidencyViewSource }): JSX.Element | null {
   const { snapshot, link } = useResidency(source, { refreshOnFocus: true })
   const text = reachable(link) ? describeResidency(snapshot) : null
   if (!text || text.bar === '') return null
   return (
     <div
+      className={`residency-status-bar${text.tone === 'warn' ? ' warn' : ''}`}
       role="status"
       data-residency-level={snapshot.level}
       data-residency-reason={snapshot.reason ?? ''}
-      style={{
-        position: 'fixed', left: 12, bottom: 34, maxWidth: 'calc(100vw - 24px)', padding: '3px 10px', borderRadius: 999, fontSize: 12, lineHeight: '18px',
-        background: 'var(--chip-bg, #232c38)', color: text.tone === 'warn' ? 'var(--warn, #d29922)' : 'var(--muted, #8b97a3)', border: '1px solid var(--border, #2a323d)', pointerEvents: 'none', zIndex: 50
-      }}
     >
       {text.bar}
     </div>

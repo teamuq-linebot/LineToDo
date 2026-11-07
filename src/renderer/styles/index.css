@@ -154,6 +154,36 @@ body {
   height: 100%;
 }
 
+.plugin-root-layout {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.plugin-root-layout > .set-notice { flex: 0 0 auto; }
+.plugin-renderer-slot {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.plugin-renderer-slot > .app-shell { height: 100%; }
+.residency-status-bar {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.residency-status-bar.warn { color: var(--warn, #d29922); }
+
 .app-header {
   display: flex;
   align-items: center;
@@ -725,13 +755,79 @@ code {
   vertical-align: middle;
 }
 
+.chat-message-view {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
 .chat-message-log {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   scroll-behavior: smooth;
+}
+.chat-message-composer {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.chat-composer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+.chat-composer-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 17px;
+}
+.chat-composer-control:hover { filter: none; }
+.chat-composer-control:disabled { cursor: not-allowed; opacity: .58; }
+.chat-composer-input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  margin: 0;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  outline: none;
+  background: var(--input-bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+}
+.chat-composer-input:disabled { cursor: not-allowed; opacity: 1; }
+.chat-composer-status {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: nowrap;
 }
 .chat-message-list {
   display: flex;
@@ -881,11 +977,28 @@ code {
   color: var(--text);
   font-size: 11px;
 }
-.chat-topics-content {
+.chat-topics-todos-content {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
+  padding: 16px clamp(14px, 3vw, 34px) 24px;
   background: var(--bg);
+}
+.chat-topics-todos-content > .group-topics-panel.embedded,
+.chat-topics-todos-content > .chat-todos-content {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: visible;
+  padding: 0;
+}
+.chat-topics-todos-content > .group-topics-panel.embedded {
+  min-height: auto;
+}
+.chat-topics-todos-content > .chat-todos-content {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
 }
 .chat-todos-content {
   flex: 1;
@@ -922,7 +1035,6 @@ code {
   margin-bottom: 14px;
 }
 .group-topics-head h3 { margin: 0; font-size: 15px; }
-.group-topics-head > span { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .group-topics-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
 .group-topics-controls label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .group-topics-controls button { padding: 7px 11px; }
@@ -937,6 +1049,8 @@ code {
 }
 .group-topic-card > p { margin: 8px 0; font-size: 12px; line-height: 1.55; }
 .group-topic-card > small { display: block; margin: 7px 0; color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.group-topics-load-error { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.group-topics-load-error > span { min-width: 0; overflow-wrap: anywhere; }
 .group-topic-card > button { margin: 6px 6px 0 0; padding: 6px 9px; font-size: 11px; }
 .group-topic-cross-chat { padding: 12px; border: 1px dashed var(--border); border-radius: 9px; background: var(--hover-subtle); }
 .group-topic-cross-chat h3 { margin: 0 0 8px; font-size: 12px; }
@@ -1023,12 +1137,11 @@ code {
 }
 
 @media (max-width: 420px) {
-  .app-header { gap: 7px; padding: 8px 10px; }
+  .app-header { flex-wrap: wrap; gap: 7px; padding: 8px 10px; }
   .app-header h1 { flex: 0 0 auto; font-size: 14px; }
-  .app-tabs { flex: 1; min-width: 0; gap: 2px; overflow-x: auto; margin-left: auto; scrollbar-width: none; }
-  .app-tabs::-webkit-scrollbar { display: none; }
-  .app-tabs .tab { flex: 0 0 auto; padding: 6px 9px; font-size: 11px; }
-  .theme-toggle { flex: 0 0 auto; padding: 6px 7px; }
+  .app-tabs { order: 2; flex: 0 0 100%; min-width: 0; gap: 2px; overflow: visible; margin-left: 0; justify-content: space-between; }
+  .app-tabs .tab { flex: 1 1 0; min-width: 0; padding: 7px 3px; font-size: 11px; text-align: center; white-space: nowrap; }
+  .theme-toggle { order: 1; flex: 0 0 auto; margin-left: auto; padding: 6px 7px; }
   .stream-bar {
     gap: 6px;
     padding: 8px 10px;
@@ -1044,10 +1157,9 @@ code {
   .chat-pane-header { gap: 7px; }
   .chat-pane-title h2 { font-size: 13px; }
   .chat-pane-view-toggle { gap: 1px; padding: 2px; }
-  .chat-pane-view-toggle button { padding: 5px 7px; font-size: 10px; }
+  .chat-pane-view-toggle button { padding: 5px 7px; font-size: 10px; white-space: nowrap; }
   .chat-back-button { font-size: 12px; }
-  .group-topics-panel.embedded { padding: 12px; }
-  .chat-todos-content { padding: 12px; }
+  .chat-topics-todos-content { padding: 12px; }
   .group-topics-controls { align-items: flex-start; flex-direction: column; gap: 10px; }
 }
 
@@ -1140,35 +1252,16 @@ button:disabled {
   height: 100%;
 }
 
-/* 總覽頁：上方看板、下方可摺疊的群組議題區；整頁捲動，看板欄內的捲動維持原樣 */
+/* 總覽頁：保留待辦看板與欄內捲動 */
 .overview-page {
   display: flex;
   flex-direction: column;
-  gap: 20px;
   min-height: 100%;
 }
 .overview-page > .board-wrap {
   flex: 0 0 auto;
   height: max(480px, calc(100vh - 150px));
 }
-.overview-topics {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
-}
-.overview-topics-toggle {
-  background: transparent;
-  border: none;
-  padding: 4px 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: inherit;
-  cursor: pointer;
-}
-.overview-topics .group-topics-panel {
-  margin-top: 8px;
-}
-
 /* 看板頂部工具列（回顧最近 2 天） */
 .board-toolbar {
   display: flex;

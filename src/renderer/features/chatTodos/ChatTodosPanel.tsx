@@ -57,7 +57,6 @@ export function ChatTodosPanel({ chatId, chatName }: Props): JSX.Element {
     <section className="chat-todos-content" aria-label={`${chatName}的待辦`}>
       <header className="chat-todos-heading">
         <h3>此聊天室待辦</h3>
-        <span>{chatName}</span>
       </header>
       {loading && <p className="muted" role="status">正在載入「{chatName}」的待辦…</p>}
       {error && (

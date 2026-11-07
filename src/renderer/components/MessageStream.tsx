@@ -24,7 +24,7 @@ interface ConversationEntry {
 }
 
 type ListFilter = 'active' | 'ignored'
-type PaneView = 'messages' | 'topics' | 'todos' | 'aiSettings'
+type PaneView = 'messages' | 'topicsTodos' | 'aiSettings'
 
 const HISTORY_PAGE_SIZE = 100
 
@@ -1015,8 +1015,7 @@ export function MessageStream(): JSX.Element {
                 </div>
                 <div className="chat-pane-view-toggle" role="group" aria-label="聊天室檢視">
                   <button type="button" className={paneView === 'messages' ? 'selected' : ''} aria-pressed={paneView === 'messages'} onClick={() => setPaneView('messages')}>訊息</button>
-                  <button type="button" className={paneView === 'topics' ? 'selected' : ''} aria-pressed={paneView === 'topics'} onClick={() => setPaneView('topics')}>議題</button>
-                  <button type="button" className={paneView === 'todos' ? 'selected' : ''} aria-pressed={paneView === 'todos'} onClick={() => setPaneView('todos')}>待辦</button>
+                  <button type="button" className={paneView === 'topicsTodos' ? 'selected' : ''} aria-pressed={paneView === 'topicsTodos'} onClick={() => setPaneView('topicsTodos')}>議題與待辦</button>
                   {chatPrompts && (
                     <button type="button" className={paneView === 'aiSettings' ? 'selected' : ''} aria-pressed={paneView === 'aiSettings'} onClick={() => setPaneView('aiSettings')}>
                       AI 設定
@@ -1025,16 +1024,15 @@ export function MessageStream(): JSX.Element {
                   )}
                 </div>
               </header>
-              {paneView === 'topics' ? (
-                <div className="chat-topics-content">
-                  <GroupTopicsPanel key={activeConversation.chatId} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} embedded />
+              {paneView === 'topicsTodos' ? (
+                <div className="chat-topics-todos-content" data-testid="chat-topics-todos-content" aria-label={`${activeConversation.name}的議題與待辦`}>
+                  <GroupTopicsPanel key={`topics-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} embedded />
+                  <ChatTodosPanel
+                    key={`todos-${activeConversation.chatId}`}
+                    chatId={activeConversation.chatId}
+                    chatName={activeConversation.name}
+                  />
                 </div>
-              ) : paneView === 'todos' ? (
-                <ChatTodosPanel
-                  key={activeConversation.chatId}
-                  chatId={activeConversation.chatId}
-                  chatName={activeConversation.name}
-                />
               ) : paneView === 'aiSettings' && chatPrompts ? (
                 <ChatPromptPanel
                   key={activeConversation.chatId}
@@ -1049,46 +1047,49 @@ export function MessageStream(): JSX.Element {
                   })}
                 />
               ) : (
-                <div
-                  className="chat-message-log"
-                  ref={messageLogRef}
-                  role="log"
-                  aria-label="選定聊天室訊息"
-                  aria-live="polite"
-                  onScroll={(event) => {
-                    const log = event.currentTarget
-                    pinnedToBottomRef.current = log.scrollHeight - log.scrollTop - log.clientHeight < 96
-                  }}
-                >
-                  {historyLoadingChatId === activeChatId && activeMessages.length === 0 && <p className="chat-history-status" role="status">正在載入訊息…</p>}
-                  {hasOlderByChat[activeConversation.chatId] && (
-                    <div className="chat-load-older-wrap">
-                      <button type="button" className="chat-load-older" disabled={olderLoadingChatId === activeChatId} onClick={() => void loadOlderMessages()}>
-                        {olderLoadingChatId === activeChatId ? '載入中…' : '載入較早訊息'}
-                      </button>
-                    </div>
-                  )}
-                  {historyErrorByChat[activeConversation.chatId] && (
-                    <div className="chat-history-error" role="alert">
-                      {historyErrorByChat[activeConversation.chatId]}
-                      <button type="button" className="link-btn" onClick={() => void loadChatHistory(activeConversation.chatId, true)}>重試</button>
-                    </div>
-                  )}
-                  {activeMessages.length === 0 && historyLoadingChatId !== activeChatId && !historyErrorByChat[activeConversation.chatId] && (
-                    <p className="chat-history-status muted">這個聊天室目前沒有已載入的訊息。</p>
-                  )}
-                  <ol className="chat-message-list">
-                    {activeMessages.map((message, index) => {
-                      const day = localDayKey(message.ts)
-                      const previousDay = index > 0 ? localDayKey(activeMessages[index - 1].ts) : ''
-                      return (
-                        <Fragment key={messageKey(message)}>
-                          {day && day !== previousDay && <li className="chat-date-divider"><span>{dayDividerLabel(day)}</span></li>}
-                          <MessageRow m={message} onOpenLightbox={setLightboxSrc} avatarUrl={message.msgId ? messageAvatarUrls[message.msgId] : undefined} senderOverride={message.msgId ? messageDisplayNames[message.msgId] : undefined} />
-                        </Fragment>
-                      )
-                    })}
-                  </ol>
+                <div className="chat-message-view">
+                  <div
+                    className="chat-message-log"
+                    ref={messageLogRef}
+                    role="log"
+                    aria-label="選定聊天室訊息"
+                    aria-live="polite"
+                    onScroll={(event) => {
+                      const log = event.currentTarget
+                      pinnedToBottomRef.current = log.scrollHeight - log.scrollTop - log.clientHeight < 96
+                    }}
+                  >
+                    {historyLoadingChatId === activeChatId && activeMessages.length === 0 && <p className="chat-history-status" role="status">正在載入訊息…</p>}
+                    {hasOlderByChat[activeConversation.chatId] && (
+                      <div className="chat-load-older-wrap">
+                        <button type="button" className="chat-load-older" disabled={olderLoadingChatId === activeChatId} onClick={() => void loadOlderMessages()}>
+                          {olderLoadingChatId === activeChatId ? '載入中…' : '載入較早訊息'}
+                        </button>
+                      </div>
+                    )}
+                    {historyErrorByChat[activeConversation.chatId] && (
+                      <div className="chat-history-error" role="alert">
+                        {historyErrorByChat[activeConversation.chatId]}
+                        <button type="button" className="link-btn" onClick={() => void loadChatHistory(activeConversation.chatId, true)}>重試</button>
+                      </div>
+                    )}
+                    {activeMessages.length === 0 && historyLoadingChatId !== activeChatId && !historyErrorByChat[activeConversation.chatId] && (
+                      <p className="chat-history-status muted">這個聊天室目前沒有已載入的訊息。</p>
+                    )}
+                    <ol className="chat-message-list">
+                      {activeMessages.map((message, index) => {
+                        const day = localDayKey(message.ts)
+                        const previousDay = index > 0 ? localDayKey(activeMessages[index - 1].ts) : ''
+                        return (
+                          <Fragment key={messageKey(message)}>
+                            {day && day !== previousDay && <li className="chat-date-divider"><span>{dayDividerLabel(day)}</span></li>}
+                            <MessageRow m={message} onOpenLightbox={setLightboxSrc} avatarUrl={message.msgId ? messageAvatarUrls[message.msgId] : undefined} senderOverride={message.msgId ? messageDisplayNames[message.msgId] : undefined} />
+                          </Fragment>
+                        )
+                      })}
+                    </ol>
+                  </div>
+                  <DisabledMessageComposer />
                 </div>
               )}
             </>
@@ -1108,5 +1109,31 @@ export function MessageStream(): JSX.Element {
         </div>
       )}
     </section>
+  )
+}
+
+function DisabledMessageComposer(): JSX.Element {
+  return (
+    <div className="chat-message-composer" role="group" aria-label="訊息輸入區；功能尚未開啟">
+      <div className="chat-composer-actions">
+        <button type="button" className="chat-composer-control" disabled aria-label="附加檔案功能尚未開啟" title="功能尚未開啟">
+          <span aria-hidden="true">＋</span>
+        </button>
+        <button type="button" className="chat-composer-control" disabled aria-label="表情符號功能尚未開啟" title="功能尚未開啟">
+          <span aria-hidden="true">☺</span>
+        </button>
+      </div>
+      <input
+        type="text"
+        className="chat-composer-input"
+        disabled
+        aria-label="訊息輸入功能尚未開啟"
+        placeholder="訊息功能尚未開啟"
+      />
+      <button type="button" className="chat-composer-control chat-composer-send" disabled aria-label="傳送功能尚未開啟" title="功能尚未開啟">
+        <span aria-hidden="true">➤</span>
+      </button>
+      <span className="chat-composer-status">功能尚未開啟</span>
+    </div>
   )
 }

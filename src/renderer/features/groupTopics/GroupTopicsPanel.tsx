@@ -77,6 +77,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   const [combined, setCombined] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
   const requestVersion = useRef(0)
   const currentChatId = useRef(chatId)
   currentChatId.current = chatId
@@ -156,6 +157,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     setCombined(false)
     setNotice('')
     setError('')
+    setLoadError('')
     setBusy(false)
 
     if (!api || !chatId) {
@@ -164,21 +166,8 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     }
 
     setLoading(true)
-    void Promise.all([
-      api.list(chatId),
-      selectedChatIsGroup ? api.crossChatEnabled(chatId) : Promise.resolve(false),
-      selectedChatIsGroup ? api.linkCandidates(chatId) : Promise.resolve([]),
-      api.pendingCount(chatId)
-    ]).then(([result, cross, candidates, pendingCount]) => {
-      if (requestVersion.current !== version) return
-      setEnabled(result.ok)
-      setCombined(result.combined === true)
-      setTopics(result.topics)
-      setCrossEnabled(cross)
-      setLinks(candidates)
-      setPending(pendingCount)
-    }).catch((loadError: unknown) => {
-      if (requestVersion.current === version) setError(errorMessage(loadError, '議題資料載入失敗；可重新選取聊天室後重試'))
+    void loadChatTopics(chatId, version).catch((loadError: unknown) => {
+      if (requestVersion.current === version) setLoadError(errorMessage(loadError, '議題資料載入失敗'))
     }).finally(() => {
       if (requestVersion.current === version) setLoading(false)
     })
@@ -188,6 +177,39 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
 
   function stillShowing(chatIdAtStart: string, versionAtStart: number): boolean {
     return requestVersion.current === versionAtStart && currentChatId.current === chatIdAtStart
+  }
+
+  async function loadChatTopics(chatIdAtStart: string, versionAtStart: number): Promise<void> {
+    if (!api || !chatIdAtStart) return
+    const [result, cross, candidates, pendingCount] = await Promise.all([
+      api.list(chatIdAtStart),
+      selectedChatIsGroup ? api.crossChatEnabled(chatIdAtStart) : Promise.resolve(false),
+      selectedChatIsGroup ? api.linkCandidates(chatIdAtStart) : Promise.resolve([]),
+      api.pendingCount(chatIdAtStart)
+    ])
+    if (!stillShowing(chatIdAtStart, versionAtStart)) return
+    setEnabled(result.ok)
+    setCombined(result.combined === true)
+    setTopics(result.topics)
+    setCrossEnabled(cross)
+    setLinks(candidates)
+    setPending(pendingCount)
+    setLoadError('')
+  }
+
+  async function retryTopics(): Promise<void> {
+    if (!api || !chatId || loading) return
+    const target = chatId
+    const version = requestVersion.current
+    setLoadError('')
+    setLoading(true)
+    try {
+      await loadChatTopics(target, version)
+    } catch (loadError: unknown) {
+      if (stillShowing(target, version)) setLoadError(errorMessage(loadError, '議題資料載入失敗'))
+    } finally {
+      if (stillShowing(target, version)) setLoading(false)
+    }
   }
 
   async function refresh(chatIdAtStart: string, versionAtStart: number): Promise<void> {
@@ -201,6 +223,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     setTopics(result.topics)
     setLinks(candidates)
     setPending(pendingCount)
+    setLoadError('')
   }
 
   async function toggleEnabled(value: boolean): Promise<void> {
@@ -329,7 +352,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
         <summary>議題分析說明與群組設定</summary>
         <p>議題分析需逐群啟用。已開啟「議題與待辦合併整理」時，新訊息的議題會在「立即整理」與背景整理時一併產生，舊訊息可用「補分析舊訊息」手動補上；否則需手動執行分析。所有群組總覽只讀取各群既有結果，不會自動啟用或分析群組。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>
       </details>}
-      {embedded && <div className="group-topics-head"><h3>{heading}</h3><span>{currentChatName}</span></div>}
+      {embedded && <div className="group-topics-head"><h3>{heading}</h3></div>}
       {!api && <p className="muted">此版本未提供議題分析功能。</p>}
       {!embedded && chats.length === 0 && !overviewLoading && !overviewError && <p className="muted">目前沒有可用群組。</p>}
       {embedded && !chatId && <p className="muted">目前沒有選取中的聊天室。</p>}
@@ -379,6 +402,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
       {chatId && (
         <>
           {loading && <p className="muted" role="status">正在載入「{currentChatName}」的議題…</p>}
+          {loadError && <div className="group-topics-error group-topics-load-error" role="alert"><span>{loadError}</span><button type="button" className="link-btn" onClick={() => void retryTopics()} disabled={loading}>重試議題</button></div>}
           {error && <p className="group-topics-error" role="alert">{error}</p>}
           {notice && <p className="group-topics-notice" role="status">{notice}</p>}
           {!loading && api && (
@@ -399,8 +423,12 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
                     <article key={topic.topicId} className="group-topic-card">
                       <strong>{topic.title}</strong>
                       <p>{topic.summary}</p>
-                      <small>本人參與：{topic.userParticipation === 'i_participated' ? '來源含本人送出的訊息' : '不確定'}。模型相關性描述（未驗證）：{topic.relevanceEvidence.length ? topic.relevanceEvidence.map((item) => `${relevanceText[item.relevance]}（參照 ${item.evidenceMsgIds.length} 則）`).join('、') : relevanceText[topic.relevance]}。已連結訊息 {topic.evidenceCount} 則（可能含重貼）；已知參與者下界 {topic.participantLowerBound ?? '不明'}。熱度：未校準；趨勢：不確定。</small>
-                      {topic.evidenceMsgIds.length > 0 && <details><summary>來源訊息參照（{topic.evidenceMsgIds.length}）</summary><ul>{topic.evidenceMsgIds.map((id) => <li key={id}><code>{id}</code></li>)}</ul></details>}
+                      <small data-testid="group-topic-status">參與{topic.userParticipation === 'i_participated' ? '已確認' : '不確定'} · 關聯未驗證 · 熱度未校準 · 趨勢不確定</small>
+                      <details data-testid="group-topic-details">
+                        <summary>品質與來源細節（來源 {topic.evidenceCount} 則）</summary>
+                        <small>本人參與：{topic.userParticipation === 'i_participated' ? '來源含本人送出的訊息' : '不確定'}。模型相關性描述（未驗證）：{topic.relevanceEvidence.length ? topic.relevanceEvidence.map((item) => `${relevanceText[item.relevance]}（參照 ${item.evidenceMsgIds.length} 則）`).join('、') : relevanceText[topic.relevance]}。已連結訊息 {topic.evidenceCount} 則（可能含重貼）；已知參與者下界 {topic.participantLowerBound ?? '不明'}。觀測完整性未校準；熱度未校準；趨勢不確定。</small>
+                        {topic.evidenceMsgIds.length > 0 ? <ul>{topic.evidenceMsgIds.map((id) => <li key={id}><code>{id}</code></li>)}</ul> : <p className="muted">目前沒有可列出的來源訊息參照。</p>}
+                      </details>
                       {caps.openOriginalChat && <button type="button" className="ghost" onClick={() => void openSourceChat()}>開啟來源聊天室</button>}
                       <button type="button" className="ghost" onClick={() => void showTodoRefs(topic)}>檢查既有待辦關聯</button>
                     </article>
