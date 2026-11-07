@@ -11,6 +11,7 @@ import {
   markProcessed
 } from '../db/messages.repo'
 import { getChat, setBlocked } from '../db/chats.repo'
+import { isTodoExtractEnabled } from '../db/chatTodoPrefs.repo'
 import {
   getOpenTodosByChat
 } from '../db/todos.repo'
@@ -213,7 +214,7 @@ export async function reviewLastDays(
   const byChat = new Map<string, MessageDTO[]>()
   for (const chatId of ins.chatIds) {
     const chat = getChat(chatId, db)
-    if (chat?.blocked) continue
+    if (chat?.blocked || !isTodoExtractEnabled(db, chatId)) continue
     // B2：直接 WHERE ts>=sinceMs 撈整個窗口（無 1000 筆上限），確保 7 天內超過 1000
     // 則的大群也完整送進 LLM；不再用 getRecentByChat（會被夾成最近 1000 筆）。
     const windowMsgs = getByChatSince(chatId, sinceMs, db)

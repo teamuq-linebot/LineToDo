@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { GroupTopicDTO, GroupTopicLinkCandidateDTO } from '../../../shared/api'
+import type { GroupTopicDTO } from '../../../shared/api'
+import { ChatSwitch } from '../../components/ChatSwitch'
 import { useHostCapabilities, useLineTodoApi } from '../../platform/LineTodoApi'
 import { createOverviewRefresher, loadGroupTopicsOverview, overviewToEntries, type GroupTopicsOverviewChat, type GroupTopicsOverviewEntry } from './groupTopicsOverview'
 
@@ -64,13 +65,11 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   const selectedChatIsGroup = scopedChatId ? chatIsGroup : true
   const chatLabel = selectedChatIsGroup ? '群組' : '聊天室'
   const [enabled, setEnabled] = useState(false)
-  const [crossEnabled, setCrossEnabled] = useState(false)
   const [topics, setTopics] = useState<GroupTopicDTO[]>([])
   const [overviewGroups, setOverviewGroups] = useState<GroupTopicsOverviewEntry[]>([])
   const [legacyOverviewLoading, setOverviewLoading] = useState(false)
   const [overviewLoaded, setOverviewLoaded] = useState(false)
   const [overviewError, setOverviewError] = useState('')
-  const [links, setLinks] = useState<GroupTopicLinkCandidateDTO[]>([])
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [pending, setPending] = useState(0)
@@ -78,6 +77,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [loadError, setLoadError] = useState('')
+  const [settling, setSettling] = useState(false)
   const requestVersion = useRef(0)
   const currentChatId = useRef(chatId)
   currentChatId.current = chatId
@@ -150,15 +150,14 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   useEffect(() => {
     const version = ++requestVersion.current
     setTopics([])
-    setLinks([])
     setEnabled(false)
-    setCrossEnabled(false)
     setPending(0)
     setCombined(false)
     setNotice('')
     setError('')
     setLoadError('')
     setBusy(false)
+    setSettling(false)
 
     if (!api || !chatId) {
       setLoading(false)
@@ -181,18 +180,14 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
 
   async function loadChatTopics(chatIdAtStart: string, versionAtStart: number): Promise<void> {
     if (!api || !chatIdAtStart) return
-    const [result, cross, candidates, pendingCount] = await Promise.all([
+    const [result, pendingCount] = await Promise.all([
       api.list(chatIdAtStart),
-      selectedChatIsGroup ? api.crossChatEnabled(chatIdAtStart) : Promise.resolve(false),
-      selectedChatIsGroup ? api.linkCandidates(chatIdAtStart) : Promise.resolve([]),
       api.pendingCount(chatIdAtStart)
     ])
     if (!stillShowing(chatIdAtStart, versionAtStart)) return
     setEnabled(result.ok)
     setCombined(result.combined === true)
     setTopics(result.topics)
-    setCrossEnabled(cross)
-    setLinks(candidates)
     setPending(pendingCount)
     setLoadError('')
   }
@@ -214,14 +209,13 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
 
   async function refresh(chatIdAtStart: string, versionAtStart: number): Promise<void> {
     if (!api || !chatIdAtStart) return
-    const [result, candidates, pendingCount] = await Promise.all([
-      api.list(chatIdAtStart), selectedChatIsGroup ? api.linkCandidates(chatIdAtStart) : Promise.resolve([]), api.pendingCount(chatIdAtStart)
+    const [result, pendingCount] = await Promise.all([
+      api.list(chatIdAtStart), api.pendingCount(chatIdAtStart)
     ])
     if (!stillShowing(chatIdAtStart, versionAtStart)) return
     setEnabled(result.ok)
     setCombined(result.combined === true)
     setTopics(result.topics)
-    setLinks(candidates)
     setPending(pendingCount)
     setLoadError('')
   }
@@ -230,27 +224,37 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     if (!api || !chatId || busy) return
     const target = chatId
     const version = requestVersion.current
+    const previous = enabled
     setBusy(true)
     setError('')
     setNotice('')
+    setEnabled(value)
     try {
       const result = await api.setEnabled(target, value)
       if (!stillShowing(target, version)) return
       if (!result.ok) {
-        setError('僅可為未封鎖聊天室啟用議題分析。')
+        setEnabled(previous)
+        setError('切換失敗，請再試一次')
         return
       }
-      setEnabled(value)
-      setNotice(value ? `已為此${chatLabel}啟用議題分析` : '已停用；既有本機議題保留')
       if (!value) {
         setTopics([])
-        setLinks([])
         setPending(0)
       } else {
-        await refresh(target, version)
+        setSettling(true)
+        try {
+          await refresh(target, version)
+        } catch (refreshError) {
+          if (stillShowing(target, version)) setLoadError(errorMessage(refreshError, '議題資料載入失敗'))
+        } finally {
+          if (stillShowing(target, version)) setSettling(false)
+        }
       }
     } catch (actionError) {
-      if (stillShowing(target, version)) setError(errorMessage(actionError, '更新議題設定失敗'))
+      if (stillShowing(target, version)) {
+        setEnabled(previous)
+        setError('切換失敗，請再試一次')
+      }
     } finally {
       if (stillShowing(target, version)) setBusy(false)
     }
@@ -287,33 +291,6 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     }
   }
 
-  async function toggleCrossChat(value: boolean): Promise<void> {
-    if (!api || !chatId || busy || !enabled || !selectedChatIsGroup) return
-    const target = chatId
-    const version = requestVersion.current
-    setBusy(true)
-    setError('')
-    setNotice('')
-    try {
-      const result = await api.setCrossChatEnabled(target, value)
-      if (!stillShowing(target, version)) return
-      if (!result.ok) {
-        setError('請先啟用此群議題分析。')
-        return
-      }
-      setCrossEnabled(value)
-      setNotice(value ? '已開啟跨群語意候選；人物一致性仍標為不確定' : '已停用跨群候選')
-      if (value) {
-        const candidates = await api.linkCandidates(target)
-        if (stillShowing(target, version)) setLinks(candidates)
-      }
-    } catch (actionError) {
-      if (stillShowing(target, version)) setError(errorMessage(actionError, '更新跨群候選設定失敗'))
-    } finally {
-      if (stillShowing(target, version)) setBusy(false)
-    }
-  }
-
   async function openSourceChat(): Promise<void> {
     if (!chatId) return
     const target = chatId
@@ -343,6 +320,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
 
   const overviewLoading = viaOverview ? isOverview && !overviewLoaded && !overviewError : legacyOverviewLoading
   const heading = embedded ? `此${chatLabel}的議題` : '群組議題'
+  const topicsTitle = `此${chatLabel}的議題`
   const currentChatName = chatName ?? chats.find((chat) => chat.chatId === chatId)?.name ?? chatId
 
   return (
@@ -352,7 +330,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
         <summary>議題分析說明與群組設定</summary>
         <p>議題分析需逐群啟用。已開啟「議題與待辦合併整理」時，新訊息的議題會在「立即整理」與背景整理時一併產生，舊訊息可用「補分析舊訊息」手動補上；否則需手動執行分析。所有群組總覽只讀取各群既有結果，不會自動啟用或分析群組。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>
       </details>}
-      {embedded && <div className="group-topics-head"><h3>{heading}</h3></div>}
+      {(embedded || chatId) && <div className="group-topics-head"><h3>{topicsTitle}</h3>{chatId && api && !loading && !loadError && <ChatSwitch label={`${topicsTitle}開關`} checked={enabled} busy={busy} onChange={(value) => void toggleEnabled(value)} testId="topics-switch" />}</div>}
       {!api && <p className="muted">此版本未提供議題分析功能。</p>}
       {!embedded && chats.length === 0 && !overviewLoading && !overviewError && <p className="muted">目前沒有可用群組。</p>}
       {embedded && !chatId && <p className="muted">目前沒有選取中的聊天室。</p>}
@@ -407,16 +385,12 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
           {notice && <p className="group-topics-notice" role="status">{notice}</p>}
           {!loading && api && (
             <>
-              <div className="group-topics-controls">
-                <label><input type="checkbox" checked={enabled} disabled={!api || busy} onChange={(event) => void toggleEnabled(event.target.checked)} /> 啟用此{chatLabel}議題分析</label>
-                {selectedChatIsGroup && <label><input type="checkbox" checked={crossEnabled} disabled={!api || !enabled || busy} onChange={(event) => void toggleCrossChat(event.target.checked)} /> 顯示跨群語意候選（人物一致性不會由此確認）</label>}
+              {enabled && !settling && <div className="group-topics-controls">
                 {combined
                   ? (pending > 0 || busy) && <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '補分析中…' : '補分析舊訊息'}</button>
                   : <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '分析中…' : `分析最近${chatLabel}訊息`}</button>}
-              </div>
-              {enabled && combined && <p className="group-topics-pending">{busy ? '目前每批最多補分析 20 則；若仍有舊訊息，可再次執行。' : pending > 100 ? '有 100 則以上舊訊息尚未分析議題；每批最多補分析 20 則。' : pending > 0 ? `有 ${pending} 則舊訊息尚未分析議題，可按「補分析舊訊息」補上；新訊息會在「立即整理」時一併產生議題。` : '新訊息會在「立即整理」時一併產生議題；沒有需要補分析的舊訊息。'}</p>}
-              {enabled && !combined && <p className="group-topics-pending">{busy ? '目前每批最多整理 20 則；若仍有待整理訊息，可再次執行。' : pending > 100 ? '有 100 則以上新訊息待整理；每批最多整理 20 則。' : pending > 0 ? `有 ${pending} 則新訊息待整理；每批最多整理 20 則。` : '沒有新增訊息待處理，既有議題結果已保留。'}</p>}
-              {enabled && (
+              </div>}
+              {enabled && !settling && (
                 <div className="group-topics-results">
                   <h3>此{chatLabel}近期議題</h3>
                   {topics.length === 0 ? <p className="muted">尚無分析結果。</p> : topics.map((topic) => (
@@ -433,10 +407,6 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
                       <button type="button" className="ghost" onClick={() => void showTodoRefs(topic)}>檢查既有待辦關聯</button>
                     </article>
                   ))}
-                  {selectedChatIsGroup && crossEnabled && <section className="group-topic-cross-chat" aria-label="跨群候選">
-                    <h3>跨群候選</h3>
-                    {links.length === 0 ? <p className="muted">目前沒有足夠語意候選。</p> : links.map((link) => <p key={link.linkId}>{link.otherChatName ?? '其他群組'}：{link.topicTitle} — 關係不確定、人物一致性不確定（候選證據 {link.eventEvidenceCount} 則：{link.eventEvidenceMsgIds.join('、')}）</p>)}
-                  </section>}
                 </div>
               )}
             </>

@@ -22,7 +22,7 @@ function stubApi(overrides: { assetUrl?: boolean; driver?: boolean } = {}): Api 
     line: { status: never, setRunning: never, onMessage: noop, onStatus: noop },
     db: {
       messages: { list: never, recentByChat: never, byChatSince: never, count: never },
-      chats: { list: never, get: never, setBlocked: never, blockAndClear: never, addIgnoreKeyword: never, removeIgnoreKeyword: never, openOriginal: never },
+      chats: { list: never, get: never, todoExtractEnabled: never, setTodoExtractEnabled: never, setBlocked: never, blockAndClear: never, addIgnoreKeyword: never, removeIgnoreKeyword: never, openOriginal: never },
       todos: {},
       onMessagesPersisted: noop
     },

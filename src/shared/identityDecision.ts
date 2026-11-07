@@ -9,9 +9,9 @@ export const IDENTITY_REASON_CODES = [
 ] as const
 export const IDENTITY_RELATIONS = ['recurrence', 'related_action', 'follow_up', 'same_topic'] as const
 
-export const IdentityDecisionSchema = z.object({
+const IdentityDecisionObjectSchema = z.object({
   draftRef: z.string().regex(/^[a-z0-9_-]{1,40}$/i),
-  outcome: z.enum(['update_existing', 'new', 'link', 'defer']),
+  outcome: z.enum(['update_existing', 'new', 'link']),
   candidateType: z.enum(['todo', 'topic']).nullable(),
   candidateId: z.string().min(1).max(128).nullable(),
   relationKind: z.enum(IDENTITY_RELATIONS).nullable(),
@@ -20,7 +20,15 @@ export const IdentityDecisionSchema = z.object({
   evidenceMsgIds: z.array(z.string().min(1).max(256)).min(1).max(20)
 }).strict()
 
-export type IdentityDecision = z.infer<typeof IdentityDecisionSchema>
+/** Tolerance layer: a legacy model/session reply of outcome 'defer' is read as 'new' with the candidate fields cleared. */
+export const IdentityDecisionSchema = z.preprocess((value) => {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value) && (value as { outcome?: unknown }).outcome === 'defer') {
+    return { ...(value as Record<string, unknown>), outcome: 'new', candidateType: null, candidateId: null, relationKind: null }
+  }
+  return value
+}, IdentityDecisionObjectSchema)
+
+export type IdentityDecision = z.infer<typeof IdentityDecisionObjectSchema>
 export interface IdentityCandidate {
   entityType: 'todo' | 'topic'
   entityId: string
@@ -86,9 +94,6 @@ export function validateIdentityDecisions(
     if (!decision.evidenceMsgIds.every((id) => selected.has(id)) || new Set(decision.evidenceMsgIds).size !== decision.evidenceMsgIds.length) {
       throw new IdentityDecisionValidationError('identityDecisions.evidenceMsgIds', 'unselected_or_duplicate_evidence')
     }
-    if (context.candidatesTruncated) {
-      if (decision.outcome !== 'defer') throw new IdentityDecisionValidationError('identityDecisions.outcome', 'candidate_context_truncated')
-    }
     if (decision.candidateId === null) {
       if (decision.candidateType !== null || decision.relationKind !== null || decision.outcome === 'update_existing' || decision.outcome === 'link') {
         throw new IdentityDecisionValidationError('identityDecisions.candidateId', 'candidate_required_or_fields_inconsistent')
@@ -103,7 +108,6 @@ export function validateIdentityDecisions(
       if(decision.outcome==='new'&&decision.relationKind==='recurrence'&&decision.candidateType!==context.targetType){
         throw new IdentityDecisionValidationError('identityDecisions.candidateType','recurrence_target_type_mismatch')
       }
-      if (decision.outcome === 'defer' && decision.relationKind !== null) throw new IdentityDecisionValidationError('identityDecisions.relationKind', 'defer_cannot_link')
       if (decision.outcome === 'update_existing' && (decision.candidateType !== context.targetType || decision.relationKind !== null)) {
         throw new IdentityDecisionValidationError('identityDecisions.outcome', 'update_requires_same_type_candidate')
       }

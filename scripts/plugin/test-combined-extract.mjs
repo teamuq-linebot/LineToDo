@@ -200,12 +200,12 @@ test('measured length: the default topics system fits the host systemChars defau
   try {
     const plain = f.service.extractSystem('chat-1')
     const withTopics = f.service.extractSystem('chat-1', { topics: true })
-    assert.equal(plain.length, 8344, 'plain system length is unchanged from the 0.2.10 baseline')
-    assert.equal(withTopics.length, 11651, 'measured default length of extractSystem(chatId,{topics:true})')
+    assert.equal(plain.length, 8436, 'plain system length is unchanged from the 0.2.10 baseline')
+    assert.equal(withTopics.length, 11784, 'measured default length of extractSystem(chatId,{topics:true})')
     assert.ok(withTopics.length <= AI_CHAT_REFERENCE.systemChars, `${withTopics.length} must be <= ${AI_CHAT_REFERENCE.systemChars}`)
     assert.equal(AI_CHAT_REFERENCE.systemChars, 16000)
     const overhead = withTopics.length - plain.length
-    assert.equal(overhead, 3307)
+    assert.equal(overhead, 3348)
   } finally { f.cleanup() }
 })
 
@@ -224,11 +224,11 @@ test('measured worst case: a max-length custom prompt with the worst name EXCEED
     const combinedFormula = formula(COMBINED_TOPIC_SECTION.length, COMBINED_OUTPUT_CONTRACT.length)
     assert.equal(actualPlain.length, plainFormula, 'plain worst case = prompt + identity + base output contract')
     assert.equal(actualCombined.length, combinedFormula, 'combined worst case = prompt + identity + topic section + combined output contract (every "\\n\\n" separator counted)')
-    assert.equal(EXTRACT_OUTPUT_CONTRACT.length, 2592)
-    assert.equal(COMBINED_OUTPUT_CONTRACT.length, 4647)
-    assert.equal(COMBINED_TOPIC_SECTION.length, 1250, 'LF-normalized section length')
+    assert.equal(EXTRACT_OUTPUT_CONTRACT.length, 2584)
+    assert.equal(COMBINED_OUTPUT_CONTRACT.length, 4631)
+    assert.equal(COMBINED_TOPIC_SECTION.length, 1299, 'LF-normalized section length')
     assert.equal(worstIdentity, 377)
-    assert.equal(actualCombined.length, 18280)
+    assert.equal(actualCombined.length, 18313)
     assert.ok(actualPlain.length <= AI_CHAT_REFERENCE.systemChars, `${actualPlain.length}: the plain system still fits, so falling back to plain is always possible`)
     assert.ok(actualCombined.length > AI_CHAT_REFERENCE.systemChars, `${actualCombined.length} exceeds ${AI_CHAT_REFERENCE.systemChars} by ${actualCombined.length - AI_CHAT_REFERENCE.systemChars}: the boundary is crossed`)
     const budget = AI_CHAT_REFERENCE.systemChars - (2 + worstIdentity + 2 + COMBINED_TOPIC_SECTION.length + 2 + COMBINED_OUTPUT_CONTRACT.length)

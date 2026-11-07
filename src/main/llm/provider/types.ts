@@ -45,7 +45,7 @@ export interface LlmRequest {
 
 export interface LlmConversation {
   chatId: string
-  kind: 'draftReply' | 'analyzeNotMine' | 'groupTopics' | 'identityRetry'
+  kind: 'draftReply' | 'analyzeNotMine' | 'groupTopics'
 }
 
 export interface LlmResponse {

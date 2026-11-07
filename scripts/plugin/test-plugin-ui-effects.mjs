@@ -55,6 +55,9 @@ function scriptedBackend(handlers) {
   }
 }
 
+const switchByLabel = (view, label) => walk(view.container).find((element) => element.localName === 'input' && element.getAttribute('role') === 'switch' && element.getAttribute('aria-label') === label)
+const hasSwitch = (view, label) => switchByLabel(view, label) !== undefined
+
 function plugin(handlers, apiOptions = {}) {
   const backend = scriptedBackend(handlers)
   const core = createCoreGateStandin(backend, { methods: [...ui.BACKEND_METHOD_GROUPS] })
@@ -109,7 +112,7 @@ test('message composer stays disabled in flow with active residency status and l
     'settings.chatPrompt.list': () => ({ items: [] }),
     'groupTopics.list': () => ({ ok: true, topics: [] }),
     'groupTopics.pendingCount': () => 0,
-    'db.todos.openByChat': () => []
+    'db.chats.todoExtractEnabled': () => true, 'db.chats.setTodoExtractEnabled': (chatId, enabled) => ({ ok: true, enabled, skippedOlder: 0 }), 'db.todos.openByChat': () => []
   })
   let snapshot = { supported: true, requested: true, level: 'resident', reason: null }
   let onResidency = () => undefined
@@ -898,48 +901,6 @@ test('N1 (effects): the draft-reply dialog restores a saved draft without an AI 
   assert.deepEqual(unhandled, [])
 })
 
-test('identity inbox (effects): synthetic source, failed CAS retention, explicit re-evaluation and relation rejection stay visible',async()=>{
-  const sourceId='synthetic-source-1'
-  const item={entityType:'todo',decisionId:'synthetic-decision-1',chatId:'synthetic-group',sourceDigest:'digest',draftRef:'draft_one',outcome:'defer',state:'open',canonicalId:null,decisionRevision:1,sourceEpoch:2,scopeRevision:1,identityRevision:2,topicIdentityRevision:1,draft:{draftRef:'draft_one',title:'預約合成會議室',detail:'週五前確認時段',sourceMsgIds:[sourceId]},reasonCodes:['insufficient_evidence'],candidates:[{entityType:'todo',entityId:'todo-old',title:'過往會議室預約',summary:'舊任務',status:'done',bucket:'todo',dueAt:null,sourceMsgIds:[],recallReasons:['exact_title'],completionEventTs:10}],candidateRevisions:[{entityType:'todo',entityId:'todo-old',revision:3}],sourceMsgIds:[sourceId],updatedAt:'2026-10-28T05:00:00.000Z'}
-  const modelSuggestion={draftRef:'draft_one',outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'fresh_occurrence',confidenceBand:'medium',evidenceMsgIds:[sourceId]}
-  const relation={relationId:'synthetic-relation',chatId:'synthetic-group',todoId:'todo-old',todoTitle:'過往會議室預約',todoStatus:'done',todoRevision:3,topicId:'topic-current',topicTitle:'群組會議',topicRevision:2,relationType:'same_topic',status:'proposed',revision:1,decisionId:'synthetic-decision-1',sourceMsgIds:[sourceId]}
-  const link={linkId:'synthetic-link',leftTopicId:'topic-a',leftChatId:'synthetic-group',leftChatName:'合成群組',leftTitle:'群組會議',leftRevision:2,rightTopicId:'topic-b',rightChatId:'synthetic-group-b',rightChatName:'另一合成群組',rightTitle:'週會安排',rightRevision:4,relation:'related',identityEvidence:'unknown',status:'proposed',stale:false,eventEvidenceMsgIds:[],linkRevision:1,permissionAllowed:true}
-  const state={item:{...item},resolved:0,topicRelation:'proposed',topicLink:'proposed',failNextResolve:true}
-  const api={
-    db:{
-      chats:{list:async()=>[{chatId:'synthetic-group',name:'合成群組',isGroup:true,blocked:false},{chatId:'synthetic-group-b',name:'另一合成群組',isGroup:true,blocked:false}]},
-      todos:{identity:{
-        listPending:async()=>({items:state.resolved?[]:[state.item]}),
-        inspect:async()=>({item:state.item,sourceEvidence:[{msgId:sourceId,ts:100,timeIso:'2026-10-28T05:00:00.000Z',direction:'in',sender:'合成成員',text:'請協助預約合成會議室'}]}),
-        retry:async()=>{state.item={...state.item,decisionRevision:2,suggestedDecision:modelSuggestion};return{ok:true,item:state.item}},
-        resolve:async(input)=>{if(state.failNextResolve){state.failNextResolve=false;return{ok:false,reason:'revision_conflict'}}state.resolved+=1;return{ok:true,canonicalId:'todo-new',state:'resolved',decisionRevision:input.expectedDecisionRevision+1}},
-        todoTopicRelations:async()=>state.topicRelation==='proposed'?[relation]:[],
-        resolveTodoTopicRelation:async(input)=>{state.topicRelation=input.choice==='reject'?'rejected':'confirmed';return{ok:true,status:state.topicRelation,revision:2}}
-      }}
-    },
-    groupTopics:{linkProposals:async()=>state.topicLink==='proposed'?[link]:[],resolveLinkProposal:async(input)=>{state.topicLink=input.choice==='reject'?'rejected':'accepted';return{ok:true,status:state.topicLink,linkRevision:2}}}
-  }
-  const view=ui.mount(ui.identityInboxScene(api))
-  try{
-    await until(()=>view.container.textContent.includes('請協助預約合成會議室')&&view.container.textContent.includes('過往會議室預約'),{message:'source evidence and history candidate rendered'})
-    const button=(label)=>walk(view.container).find((el)=>el.localName==='button'&&el.textContent.trim()===label)
-    reactProps(button('重新判斷')).onClick()
-    await until(()=>view.container.textContent.includes('重新判斷完成')&&view.container.textContent.includes('可能是新一輪工作'),{message:'explicit retry suggestion rendered'})
-    reactProps(button('採用建議')).onClick()
-    await until(()=>view.container.textContent.includes('這項工作已被更新')&&view.container.textContent.includes('請協助預約合成會議室'),{message:'failed CAS keeps source and work visible'})
-    reactProps(button('採用建議')).onClick()
-    await until(()=>state.resolved===1&&view.container.textContent.includes('已處理延期身份'),{message:'user-confirmed resolution refreshes the inbox'})
-    assert.equal(state.topicRelation,'proposed','resolving a Todo does not implicitly confirm a separate relation')
-    assert.equal(state.topicLink,'proposed','resolving a Todo does not implicitly accept a cross-chat Topic link')
-    reactProps(button('拒絕關聯')).onClick()
-    await until(()=>state.topicRelation==='rejected',{message:'Todo–Topic relation rejection sent'})
-    assert.equal(state.resolved,1,'relation rejection leaves the canonical Todo untouched')
-    reactProps(button('拒絕跨群關聯')).onClick()
-    await until(()=>state.topicLink==='rejected',{message:'cross-chat relation rejection sent'})
-    assert.equal(state.resolved,1,'cross-chat relation rejection leaves both Topics untouched')
-  }finally{view.unmount()}
-})
-
 test('chat todos (effects): direct and group panes stay scoped; loading, failure, retry, empty and late-response states render correctly', async () => {
   const direct = { chatId: 'synthetic-direct', name: '合成單人聊天室', isGroup: false, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T01:00:00.000Z' }
   const group = { chatId: 'synthetic-group', name: '合成群組聊天室', isGroup: true, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
@@ -953,7 +914,6 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
   const topicEnableQueries = []
   const topicAnalyzeQueries = []
   const crossTopicQueries = []
-  const topicLinkQueries = []
   const todo = (id, chatId, title, status = 'pending') => ({
     id, chatId, bucket: status === 'waiting_reply' ? 'waiting' : 'todo', status, title,
     detail: `合成細節：${title}`, priority: 1, dueAt: null, sourceMsgIds: [`synthetic-source-${id}`],
@@ -984,12 +944,10 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
       return { ok: true }
     },
     'groupTopics.analyze': (chatId) => { topicAnalyzeQueries.push(chatId); return { ok: true, count: 1, analyzedCount: 1 } },
-    'groupTopics.crossChatEnabled': (chatId) => { crossTopicQueries.push(`cross:${chatId}`); return false },
-    'groupTopics.linkCandidates': (chatId) => { topicLinkQueries.push(chatId); return [] },
     'groupTopics.pendingCount': (chatId) => { crossTopicQueries.push(`pending:${chatId}`); return chatId === direct.chatId && !directTopicsEnabled ? 1 : 0 },
     'messages.recent': () => [],
     'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
-    'db.todos.openByChat': (chatId) => {
+    'db.chats.todoExtractEnabled': () => true, 'db.chats.setTodoExtractEnabled': (chatId, enabled) => ({ ok: true, enabled, skippedOlder: 0 }), 'db.todos.openByChat': (chatId) => {
       todoQueries.push(chatId)
       if (chatId === direct.chatId) {
         directCalls += 1
@@ -1016,13 +974,13 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
       assert.equal(paneButton('訊息').getAttribute('aria-pressed'), 'true')
 
       click(paneButton('議題與待辦'))
-      await until(() => topicListQueries.includes(direct.chatId) && view.container.textContent.includes('啟用此聊天室議題分析') && view.container.textContent.includes(directTodo.title), { message: 'the combined pane independently loads direct topics and todos from the selected chat' })
+      await until(() => topicListQueries.includes(direct.chatId) && hasSwitch(view, '此聊天室的議題開關') && view.container.textContent.includes(directTodo.title), { message: 'the combined pane independently loads direct topics and todos from the selected chat' })
       assert.ok(view.container.textContent.includes('此聊天室的議題'))
       assert.equal(view.container.textContent.includes('跨群語意候選'), false, 'direct topics do not expose cross-group controls')
       assert.ok(view.container.textContent.includes(directTodo.title), 'the todo remains visible beside the topic controls')
       assert.deepEqual(topicAnalyzeQueries, [], 'opening the topic pane does not auto-analyze')
       assert.deepEqual(topicEnableQueries, [], 'opening the topic pane does not auto-enable')
-      const directEnable = walk(view.container).find((element) => element.localName === 'input' && element.getAttribute('type') === 'checkbox')
+      const directEnable = switchByLabel(view, '此聊天室的議題開關')
       assert.ok(directEnable, 'the direct topic enable control renders')
       reactProps(directEnable).onChange({ target: { checked: true } })
       await until(() => topicEnableQueries.some((entry) => entry.chatId === direct.chatId && entry.enabled) && view.container.textContent.includes(directTopic.title), { message: 'enabling direct topics reads existing results for that chat' })
@@ -1033,7 +991,7 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
       assert.deepEqual(topicAnalyzeQueries, [direct.chatId])
       assert.ok(view.container.textContent.includes(directTopic.title))
       assert.ok(view.container.textContent.includes(directTodo.title), 'the todo content remains visible while using topic actions')
-      assert.deepEqual(crossTopicQueries.filter((value) => value.startsWith('cross:')), [], 'direct chats never query cross-group authorization')
+      assert.ok(crossTopicQueries.every((value) => value.startsWith('pending:')), 'chats never query cross-group authorization or candidates')
 
       assert.equal(paneButton('議題與待辦').getAttribute('aria-pressed'), 'true')
       assert.ok(view.container.textContent.includes('待辦'))
@@ -1074,13 +1032,10 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
       assert.ok(view.container.textContent.includes(directTopic.title), 'the current direct chat topic remains visible after a late group response')
       assert.equal(view.container.textContent.includes(groupTopic.title), false, 'a late group response cannot replace direct chat topics')
       assert.ok(topicListQueries.includes(group.chatId) && topicListQueries.includes(direct.chatId), 'both requests use their chat-scoped ids')
-      assert.equal(crossTopicQueries.filter((value) => value.startsWith('cross:')).includes(`cross:${direct.chatId}`), false)
-      assert.equal(topicLinkQueries.includes(direct.chatId), false, 'direct chat topics never request cross-group candidates')
       click(paneButton('訊息'))
       await until(() => walk(view.container).some((element) => hasClass(element, 'chat-message-log')), { message: 'the existing message pane still opens' })
       assert.deepEqual(todoQueries, [direct.chatId, direct.chatId, group.chatId, group.chatId, direct.chatId, group.chatId, direct.chatId], 'every read is scoped to the selected chat id')
-      assert.ok(crossTopicQueries.filter((value) => value.startsWith('cross:')).every((value) => value === `cross:${group.chatId}`), 'group cross-chat checks remain group-only')
-      assert.ok(topicLinkQueries.every((chatId) => chatId === group.chatId), 'group cross-chat candidate reads remain group-only')
+      assert.ok(crossTopicQueries.every((value) => value.startsWith('pending:')), 'no chat ever makes a cross-group query')
 
       const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
       assert.match(css, /\.chat-topics-todos-content\s*\{[^}]*overflow:\s*auto/s, 'the combined pane scrolls within the chat area')
@@ -1112,7 +1067,7 @@ test('chat topics and todos (effects): a topic read failure does not hide select
       return { ok: true, topics: [topic] }
     },
     'groupTopics.pendingCount': () => 0,
-    'db.todos.openByChat': (chatId) => { assert.equal(chatId, chat.chatId); todoReads += 1; return [todo] }
+    'db.chats.todoExtractEnabled': () => true, 'db.chats.setTodoExtractEnabled': (chatId, enabled) => ({ ok: true, enabled, skippedOlder: 0 }), 'db.todos.openByChat': (chatId) => { assert.equal(chatId, chat.chatId); todoReads += 1; return [todo] }
   })
   const view = ui.mount(ui.messageStreamScene(api))
   const paneButton = (label) => walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === label && element.hasAttribute('aria-pressed'))
@@ -2145,8 +2100,6 @@ test('group-topics root tab: an old saved topics value opens the all-groups over
     removeItem: (key) => { delete saved[key] }
   }
   const { api } = plugin(overviewHandlers(log, {
-    'groupTopics.crossChatEnabled': () => false,
-    'groupTopics.linkCandidates': () => [],
     'groupTopics.pendingCount': () => 0
   }))
   dom.document.documentElement.dataset ??= {}
@@ -2164,7 +2117,9 @@ test('group-topics root tab: an old saved topics value opens the all-groups over
     assert.ok(groupSelect, 'the existing group selector stays available')
     reactProps(groupSelect).onChange({ target: { value: 'ov-group-1' } })
     await until(() => log.some((entry) => entry.path === 'groupTopics.list' && entry.args[0] === 'ov-group-1') && view.container.textContent.includes('此群組近期議題'), { message: 'choosing a group opens its existing topic controls' })
-    assert.ok(view.container.textContent.includes('啟用此群組議題分析'), 'the existing per-group action remains available')
+    const groupSwitch = switchByLabel(view, '此群組的議題開關')
+    assert.ok(groupSwitch, 'the per-group start/stop switch renders next to the heading')
+    assert.ok(view.container.textContent.includes('此群組的議題'), 'the heading names the group topics')
     reactProps(tab('總覽')).onClick()
     await until(() => walk(view.container).some((element) => hasClassName(element, 'board-wrap')), { message: 'the existing overview board opens' })
     reactProps(tab('群組議題')).onClick()
@@ -2301,8 +2256,6 @@ test('L2/I2 overview: back from a single group the overview shows loading (not t
   const api = groupTopicsApi(log, {
     'groupTopics.overview': () => { calls += 1; if (calls === 1) return overviewRows(); if (calls === 2) return Promise.reject(new Error('second read failed')); return gate.then(() => overviewRows()) },
     'groupTopics.list': () => ({ ok: false, topics: [] }),
-    'groupTopics.crossChatEnabled': () => false,
-    'groupTopics.linkCandidates': () => [],
     'groupTopics.pendingCount': () => 0
   }, { onRun: () => undefined })
   dom.document.documentElement.dataset ??= {}
@@ -2311,11 +2264,11 @@ test('L2/I2 overview: back from a single group the overview shows loading (not t
   try {
     await until(() => view.container.textContent.includes('總覽議題0'), { message: 'first read shown' })
     reactProps(select()).onChange({ target: { value: 'ov-group-1' } })
-    await until(() => view.container.textContent.includes('啟用此群組議題分析'), { message: 'single-group detail' })
+    await until(() => hasSwitch(view, '此群組的議題開關'), { message: 'single-group detail' })
     reactProps(select()).onChange({ target: { value: '__all_groups__' } })
     await until(() => view.container.textContent.includes('second read failed'), { message: 'second read fails and the error is shown' })
     reactProps(select()).onChange({ target: { value: 'ov-group-1' } })
-    await until(() => view.container.textContent.includes('啟用此群組議題分析'), { message: 'single-group detail again' })
+    await until(() => hasSwitch(view, '此群組的議題開關'), { message: 'single-group detail again' })
     reactProps(select()).onChange({ target: { value: '__all_groups__' } })
     await until(() => calls === 3, { timeout: 5000, message: 'third read pending behind the 2 s spacing' })
     const text = view.container.textContent
@@ -2397,8 +2350,6 @@ test('Phase 4 groupTopics panel: while the combined path is active the button is
   const log = []
   const { api } = plugin(overviewHandlers(log, {
     'groupTopics.list': (chatId) => ({ ok: enabled.has(chatId), topics: [], ...(state.combined ? { combined: true } : {}) }),
-    'groupTopics.crossChatEnabled': () => false,
-    'groupTopics.linkCandidates': () => [],
     'groupTopics.pendingCount': () => state.pending,
     'groupTopics.analyze': () => ({ ok: true, count: 0, analyzedCount: 3 })
   }))
@@ -2410,7 +2361,8 @@ test('Phase 4 groupTopics panel: while the combined path is active the button is
     reactProps(select).onChange({ target: { value: 'ov-group-0' } })
     await until(() => buttonTexts(view).includes('補分析舊訊息'), { message: 'combined mode: backfill button with 3 old messages' })
     assert.ok(!buttonTexts(view).includes('分析最近群組訊息'))
-    assert.ok(view.container.textContent.includes('有 3 則舊訊息尚未分析議題'))
+    assert.equal(view.container.textContent.includes('每批最多'), false, 'the 20-per-batch line is gone')
+    assert.equal(walk(view.container).some((element) => hasClassName(element, 'group-topics-pending')), false, 'no pending explanation paragraph')
     const backfill = () => walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === '補分析舊訊息')
     reactProps(backfill()).onClick()
     await until(() => log.some((entry) => entry.path === 'groupTopics.analyze'), { message: 'the backfill calls groupTopics.analyze' })
@@ -2419,8 +2371,6 @@ test('Phase 4 groupTopics panel: while the combined path is active the button is
   state.pending = 0
   const quiet = plugin(overviewHandlers([], {
     'groupTopics.list': (chatId) => ({ ok: enabled.has(chatId), topics: [], combined: true }),
-    'groupTopics.crossChatEnabled': () => false,
-    'groupTopics.linkCandidates': () => [],
     'groupTopics.pendingCount': () => 0
   }))
   const view2 = ui.mount(ui.groupTopicsScene(quiet.api))
@@ -2428,8 +2378,252 @@ test('Phase 4 groupTopics panel: while the combined path is active the button is
     await until(() => view2.container.textContent.includes('總覽議題0'), { message: 'overview shown (second mount)' })
     const select = walk(view2.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
     reactProps(select).onChange({ target: { value: 'ov-group-0' } })
-    await until(() => view2.container.textContent.includes('沒有需要補分析的舊訊息'), { message: 'nothing to backfill' })
+    await until(() => hasSwitch(view2, '此群組的議題開關') && !walk(view2.container).some((element) => hasClassName(element, 'group-topics-pending')), { message: 'nothing to backfill: no button and no pending paragraph' })
     assert.ok(!buttonTexts(view2).includes('補分析舊訊息'), 'no old messages: the backfill button is hidden')
     assert.ok(!buttonTexts(view2).includes('分析最近群組訊息'), 'and the legacy button does not come back')
   } finally { view2.unmount(); quiet.api.dispose() }
+})
+
+// ───────────── 聊天室「議題」「待辦」兩個獨立開關（U1–U8） ─────────────
+
+function toggleChat(chatId, name, isGroup) {
+  return { chatId, name, isGroup, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
+}
+
+function toggleTodo(id, chatId, title) {
+  return { id, chatId, bucket: 'todo', status: 'pending', title, detail: null, priority: 1, dueAt: null, sourceMsgIds: [`${id}-src`], confidence: 0.9, completionEvidence: null, createdAt: '2026-10-29T00:00:00.000Z', updatedAt: '2026-10-30T00:00:00.000Z', resolvedAt: null }
+}
+
+function toggleScene(chats, handlers = {}) {
+  const calls = []
+  const rec = (path, fn) => (...args) => { calls.push({ path, args }); return fn(...args) }
+  const wrapped = Object.fromEntries(Object.entries(handlers).map(([path, fn]) => [path, rec(path, fn)]))
+  const { api } = plugin({
+    'db.chats.list': () => chats,
+    'db.messages.list': () => [],
+    'db.messages.recentByChat': () => [],
+    'messages.recent': () => [],
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+    'groupTopics.pendingCount': () => 0,
+    'groupTopics.list': () => ({ ok: false, topics: [] }),
+    'db.todos.openByChat': () => [],
+    'db.chats.todoExtractEnabled': () => true,
+    ...wrapped
+  })
+  const view = ui.mount(ui.messageStreamScene(api))
+  const paneButton = (label) => walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === label && element.hasAttribute('aria-pressed'))
+  const chatButton = (name) => walk(view.container).find((element) => hasClassName(element, 'chat-list-item') && element.textContent.includes(name))
+  const click = (button) => reactProps(button).onClick({ currentTarget: button })
+  const todoSwitch = () => switchByLabel(view, '此聊天室待辦開關')
+  const topicSwitch = (label) => switchByLabel(view, label)
+  const change = (input, checked) => reactProps(input).onChange({ target: { checked } })
+  const callsTo = (path) => calls.filter((entry) => entry.path === path)
+  return { api, view, calls, callsTo, paneButton, chatButton, click, todoSwitch, topicSwitch, change, dispose() { view.unmount(); api.dispose() } }
+}
+
+async function openCombinedPane(scene) {
+  await until(() => scene.paneButton('議題與待辦'), { message: 'combined pane button' })
+  scene.click(scene.paneButton('議題與待辦'))
+}
+
+test('U1 the todo switch starts on, turning it off calls only db.chats.setTodoExtractEnabled, and a failure or ok:false rolls back with an error', async () => {
+  const chat = toggleChat('toggle-u1', '合成群組U1', true)
+  let mode = 'ok'
+  const s = toggleScene([chat], {
+    'db.todos.openByChat': () => [toggleTodo('u1-todo', chat.chatId, 'U1 既有待辦')],
+    'db.chats.setTodoExtractEnabled': (chatId, enabled) => {
+      if (mode === 'throw') throw Object.assign(new Error('synthetic switch failure'), { code: 'internal' })
+      if (mode === 'refuse') return { ok: false, enabled: true, skippedOlder: 0 }
+      return { ok: true, enabled, skippedOlder: 0 }
+    }
+  })
+  try {
+    await openCombinedPane(s)
+    await until(() => s.todoSwitch(), { message: 'the todo switch renders once the preference is read' })
+    assert.equal(reactProps(s.todoSwitch()).checked, true, 'default is on')
+    s.change(s.todoSwitch(), false)
+    await until(() => s.callsTo('db.chats.setTodoExtractEnabled').length === 1 && reactProps(s.todoSwitch()).checked === false, { message: 'turned off' })
+    assert.equal(s.view.container.textContent.includes('已關閉'), false, 'no success or explanation text')
+    assert.deepEqual(s.callsTo('db.chats.setTodoExtractEnabled')[0].args, [chat.chatId, false])
+    assert.equal(s.callsTo('groupTopics.setEnabled').length, 0, 'the todo switch never touches the topic preference')
+    mode = 'throw'
+    s.change(s.todoSwitch(), true)
+    await until(() => s.view.container.textContent.includes('切換失敗，請再試一次') && reactProps(s.todoSwitch()).checked === false, { message: 'failure rolls the switch back and shows the error' })
+    mode = 'refuse'
+    s.change(s.todoSwitch(), true)
+    await until(() => s.callsTo('db.chats.setTodoExtractEnabled').length === 3 && reactProps(s.todoSwitch()).checked === false, { message: 'ok:false rolls the switch back' })
+    assert.ok(s.view.container.textContent.includes('切換失敗，請再試一次'))
+  } finally { s.dispose() }
+})
+
+test('U2 the topic switch calls only groupTopics.setEnabled and rolls back on failure or ok:false', async () => {
+  const chat = toggleChat('toggle-u2', '合成群組U2', true)
+  let mode = 'ok'
+  let enabled = false
+  const s = toggleScene([chat], {
+    'groupTopics.list': () => ({ ok: enabled, topics: [] }),
+    'groupTopics.setEnabled': (chatId, value) => {
+      if (mode === 'throw') throw Object.assign(new Error('synthetic topic switch failure'), { code: 'internal' })
+      if (mode === 'refuse') return { ok: false }
+      enabled = value
+      return { ok: true }
+    },
+    'db.chats.setTodoExtractEnabled': (chatId, value) => ({ ok: true, enabled: value, skippedOlder: 0 })
+  })
+  try {
+    await openCombinedPane(s)
+    await until(() => s.topicSwitch('此群組的議題開關'), { message: 'the topic switch renders' })
+    assert.equal(reactProps(s.topicSwitch('此群組的議題開關')).checked, false, 'topics default to off')
+    s.change(s.topicSwitch('此群組的議題開關'), true)
+    await until(() => s.callsTo('groupTopics.setEnabled').length === 1 && reactProps(s.topicSwitch('此群組的議題開關')).checked === true, { message: 'turned on' })
+    assert.equal(s.view.container.textContent.includes('已啟動'), false, 'no success text')
+    assert.equal(s.callsTo('db.chats.setTodoExtractEnabled').length, 0, 'the topic switch never touches the todo preference')
+    mode = 'throw'
+    s.change(s.topicSwitch('此群組的議題開關'), false)
+    await until(() => s.view.container.textContent.includes('切換失敗，請再試一次') && reactProps(s.topicSwitch('此群組的議題開關')).checked === true, { message: 'failure rolls back' })
+    mode = 'refuse'
+    s.change(s.topicSwitch('此群組的議題開關'), false)
+    await until(() => s.view.container.textContent.includes('切換失敗，請再試一次') && reactProps(s.topicSwitch('此群組的議題開關')).checked === true, { message: 'ok:false rolls back' })
+  } finally { s.dispose() }
+})
+
+test('F3a the topic switch fails only when setEnabled itself fails: a refresh failure afterwards shows the panel load error, never the switch failure text', async () => {
+  const chat = toggleChat('toggle-f3a', '合成群組F3a', true)
+  let enabled = false
+  let breakList = false
+  const s = toggleScene([chat], {
+    'groupTopics.list': () => {
+      if (breakList) throw Object.assign(new Error('synthetic refresh failure'), { code: 'internal' })
+      return { ok: enabled, topics: [] }
+    },
+    'groupTopics.setEnabled': (chatId, value) => { enabled = value; breakList = true; return { ok: true } }
+  })
+  try {
+    await openCombinedPane(s)
+    await until(() => s.topicSwitch('此群組的議題開關'), { message: 'the topic switch renders' })
+    s.change(s.topicSwitch('此群組的議題開關'), true)
+    await until(() => s.callsTo('groupTopics.setEnabled').length === 1 && s.view.container.textContent.includes('議題資料載入失敗'), { message: 'the existing load error is shown' })
+    assert.ok(!s.view.container.textContent.includes('切換失敗，請再試一次'), 'a refresh failure is not a switch failure')
+    breakList = false
+    const retry = walk(s.view.container).find((element) => element.localName === 'button' && element.textContent.includes('重試'))
+    assert.ok(retry, 'the load error offers its retry')
+    reactProps(retry).onClick({ currentTarget: retry })
+    await until(() => s.topicSwitch('此群組的議題開關') && reactProps(s.topicSwitch('此群組的議題開關')).checked === true, { message: 'the switch keeps the new value' })
+    assert.equal(s.callsTo('groupTopics.setEnabled').length, 1, 'no rollback call')
+  } finally { s.dispose() }
+})
+
+test('F3b turning topics on never flashes the empty result text or the analyse button before the refresh completes', async () => {
+  const chat = toggleChat('toggle-f3b', '合成群組F3b', true)
+  let enabled = false
+  let releaseList
+  let hold = false
+  const s = toggleScene([chat], {
+    'groupTopics.list': () => (hold ? new Promise((resolve) => { releaseList = () => resolve({ ok: true, topics: [] }) }) : { ok: enabled, topics: [] }),
+    'groupTopics.setEnabled': (chatId, value) => { enabled = value; hold = true; return { ok: true } }
+  })
+  try {
+    await openCombinedPane(s)
+    await until(() => s.topicSwitch('此群組的議題開關'), { message: 'the topic switch renders' })
+    s.change(s.topicSwitch('此群組的議題開關'), true)
+    await until(() => s.callsTo('groupTopics.setEnabled').length === 1 && typeof releaseList === 'function', { message: 'the refresh is pending' })
+    assert.ok(!s.view.container.textContent.includes('尚無分析結果'), 'no empty-result flash')
+    assert.ok(!s.view.container.textContent.includes('分析最近'), 'no analyse button flash')
+    releaseList()
+    await until(() => s.view.container.textContent.includes('尚無分析結果'), { message: 'the result area appears after the refresh' })
+  } finally { s.dispose() }
+})
+
+test('U3 switches are absent while loading, disabled and aria-busy while saving, and a late reply from another chat cannot overwrite the current one', async () => {
+  const one = { ...toggleChat('toggle-u3a', '合成甲', false), lastSeenAt: '2026-10-31T00:00:00.000Z' }
+  const two = toggleChat('toggle-u3b', '合成乙', false)
+  const lateRead = new Promise((resolve) => { setTimeout(() => resolve(false), 400) })
+  let releaseSave
+  const pendingSave = new Promise((resolve) => { releaseSave = resolve })
+  const s = toggleScene([one, two], {
+    'db.chats.todoExtractEnabled': (chatId) => (chatId === one.chatId ? lateRead : true),
+    'db.chats.setTodoExtractEnabled': (chatId, enabled) => pendingSave.then(() => ({ ok: true, enabled, skippedOlder: 0 }))
+  })
+  try {
+    await openCombinedPane(s)
+    await sleep(30)
+    assert.ok(!s.todoSwitch(), 'no todo switch while the preference is loading')
+    s.click(s.chatButton(two.name))
+    await until(() => s.todoSwitch(), { message: 'the second chat shows its switch' })
+    await sleep(500)
+    assert.equal(reactProps(s.todoSwitch()).checked, true, 'the late reply of the first chat did not overwrite the second chat')
+    s.change(s.todoSwitch(), false)
+    await until(() => reactProps(s.todoSwitch()).disabled === true && reactProps(s.todoSwitch())['aria-busy'] === true, { message: 'busy while saving' })
+    releaseSave()
+    await until(() => reactProps(s.todoSwitch()).disabled === false && reactProps(s.todoSwitch()).checked === false, { message: 'idle after saving' })
+  } finally { releaseSave(); s.dispose() }
+})
+
+test('U4 re-enabling the todo switch shows no explanation text (no 7-day or skipped-count wording)', async () => {
+  const chat = toggleChat('toggle-u4', '合成U4', false)
+  let skipped = 3
+  const s = toggleScene([chat], {
+    'db.chats.todoExtractEnabled': () => false,
+    'db.chats.setTodoExtractEnabled': (chatId, enabled) => ({ ok: true, enabled, skippedOlder: skipped })
+  })
+  try {
+    await openCombinedPane(s)
+    await until(() => s.todoSwitch() && reactProps(s.todoSwitch()).checked === false, { message: 'starts off' })
+    s.change(s.todoSwitch(), true)
+    await until(() => s.callsTo('db.chats.setTodoExtractEnabled').length === 1 && reactProps(s.todoSwitch()).checked === true, { message: 'turned on' })
+    for (const gone of ['最近 7 天', '更早的', '不補', '已啟動', '已關閉']) assert.equal(s.view.container.textContent.includes(gone), false, gone)
+    s.change(s.todoSwitch(), false)
+    await until(() => s.callsTo('db.chats.setTodoExtractEnabled').length === 2 && reactProps(s.todoSwitch()).checked === false, { message: 'off again' })
+    for (const gone of ['最近 7 天', '更早的', '不補', '已啟動', '已關閉']) assert.equal(s.view.container.textContent.includes(gone), false, gone)
+  } finally { s.dispose() }
+})
+
+test('U5 with the todo switch off the existing todos are still listed', async () => {
+  const chat = toggleChat('toggle-u5', '合成U5', true)
+  const todo = toggleTodo('u5-todo', chat.chatId, 'U5 保留的待辦')
+  const s = toggleScene([chat], { 'db.chats.todoExtractEnabled': () => false, 'db.todos.openByChat': () => [todo] })
+  try {
+    await openCombinedPane(s)
+    await until(() => s.view.container.textContent.includes(todo.title), { message: 'todo still listed' })
+    assert.equal(reactProps(s.todoSwitch()).checked, false)
+  } finally { s.dispose() }
+})
+
+test('U6 the topic heading says group or chat according to the chat type', async () => {
+  const group = toggleChat('toggle-u6g', '合成群組U6', true)
+  const direct = toggleChat('toggle-u6d', '合成單人U6', false)
+  const s = toggleScene([group, direct], {})
+  try {
+    await openCombinedPane(s)
+    s.click(s.chatButton(group.name))
+    await until(() => s.topicSwitch('此群組的議題開關'), { message: 'group switch label' })
+    assert.ok(s.view.container.textContent.includes('此群組的議題'))
+    s.click(s.chatButton(direct.name))
+    await until(() => s.topicSwitch('此聊天室的議題開關'), { message: 'direct switch label' })
+    assert.ok(s.view.container.textContent.includes('此聊天室的議題'))
+    assert.equal(s.topicSwitch('此群組的議題開關'), undefined)
+  } finally { s.dispose() }
+})
+
+test('U7 the cross-group controls, the 20-per-batch lines and the pending paragraph are gone; the combined pane has exactly two switches', async () => {
+  const chat = toggleChat('toggle-u7', '合成U7', true)
+  const s = toggleScene([chat], { 'groupTopics.list': () => ({ ok: true, topics: [] }), 'groupTopics.pendingCount': () => 7 })
+  try {
+    await openCombinedPane(s)
+    await until(() => s.topicSwitch('此群組的議題開關') && s.todoSwitch(), { message: 'both switches' })
+    const text = s.view.container.textContent
+    for (const gone of ['顯示跨群', '跨群候選', '跨群語意候選', '每批最多']) assert.equal(text.includes(gone), false, gone)
+    assert.equal(walk(s.view.container).some((element) => hasClassName(element, 'group-topics-pending')), false)
+    const pane = byAttr(s.view.container, 'data-testid', 'chat-topics-todos-content')
+    assert.ok(pane)
+    const switches = walk(pane).filter((element) => element.localName === 'input' && element.getAttribute('role') === 'switch')
+    assert.equal(switches.length, 2)
+    assert.equal(walk(pane).some((element) => element.localName === 'input' && element.getAttribute('type') === 'checkbox' && element.getAttribute('role') !== 'switch'), false, 'no leftover checkboxes')
+  } finally { s.dispose() }
+})
+
+test('U8 the stylesheet defines the shared switch wrapper', () => {
+  const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
+  assert.match(css, /\.chat-switch-wrap\s*\{/)
+  assert.equal(css.includes('.group-topic-cross-chat'), false)
 })

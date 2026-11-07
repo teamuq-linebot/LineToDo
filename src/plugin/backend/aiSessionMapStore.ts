@@ -92,10 +92,13 @@ function parseEffective(value: unknown): AiSessionMapEffective | null {
   return { providerId: value.providerId, modelId: value.modelId, effort: value.effort as string | null }
 }
 
+const LEGACY_DOC_KINDS: ReadonlySet<string> = new Set(['identityRetry'])
+
 function parseDocs(value: unknown): Record<string, AiSessionDocState> | null {
   if (!isRecord(value)) return null
   const docs: Record<string, AiSessionDocState> = {}
   for (const [kind, entry] of Object.entries(value)) {
+    if (LEGACY_DOC_KINDS.has(kind)) continue
     if (!(CHAT_TASK_KINDS as readonly string[]).includes(kind)) return null
     if (!isRecord(entry) || !exactKeys(entry, ['rev', 'at'])) return null
     if (typeof entry.rev !== 'string' || !/^[0-9a-f]{16}$/u.test(entry.rev) || typeof entry.at !== 'number' || !Number.isFinite(entry.at)) return null

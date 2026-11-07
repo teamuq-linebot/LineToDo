@@ -5,6 +5,7 @@ import type { MessageDTO } from './dto'
 import type { RawLineMessage } from '../line/types'
 import { upsertChat } from './chats.repo'
 import { readChatSourceState, sharedSourceRows, type AppendBatch } from './sourceCache'
+import { chatTodoPrefsReady } from './chatTodoPrefs.repo'
 
 /**
  * messages.repo — LINE 引擎（in-process TS watchEngine，經 watcher.ts emit）進來的訊息落庫 + 查詢。
@@ -375,11 +376,14 @@ export function getUnprocessedForPipeline(
   db: Database = getDb()
 ): MessageDTO[] {
   const n = Math.min(Math.max(limit, 1), 10000)
+  const todoGate = chatTodoPrefsReady(db)
   const selected = db
     .prepare(
       'SELECT m.chat_id,m.msg_id FROM messages m ' +
       'JOIN chats c ON c.chat_id = m.chat_id ' +
+      (todoGate ? 'LEFT JOIN chat_todo_preferences tp ON tp.chat_id = m.chat_id ' : '') +
       'WHERE m.processed = 0 AND c.blocked = 0 ' +
+      (todoGate ? 'AND COALESCE(tp.extract_enabled,1) = 1 ' : '') +
       'ORDER BY m.ts ASC LIMIT ?'
     )
     .all(n) as Array<{ chat_id: string; msg_id: string }>

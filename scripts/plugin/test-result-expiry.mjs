@@ -150,7 +150,7 @@ test('transport: only read-only paths are replay-safe', () => {
   for (const path of ['messages.recent', 'db.messages.list', 'db.messages.recentByChat', 'db.chats.list', 'db.todos.list', 'db.todos.openByChat', 'groupTopics.list', 'groupTopics.overview', 'pipeline.status', 'settings.get']) {
     assert.equal(isReplaySafePath(path), true, path)
   }
-  for (const path of ['db.todos.update', 'db.todos.updateStatus', 'db.todos.moveColumn', 'db.todos.draftReply', 'db.todos.markNotMine', 'db.chats.setBlocked', 'settings.update', 'pipeline.runOnce', 'pipeline.reviewLastDays', 'groupTopics.analyze', 'db.todos.identity.resolve', 'result.chunk', 'job.poll']) {
+  for (const path of ['db.todos.update', 'db.todos.updateStatus', 'db.todos.moveColumn', 'db.todos.draftReply', 'db.todos.markNotMine', 'db.chats.setBlocked', 'settings.update', 'pipeline.runOnce', 'pipeline.reviewLastDays', 'groupTopics.analyze', 'result.chunk', 'job.poll']) {
     assert.equal(isReplaySafePath(path), false, path)
   }
 })

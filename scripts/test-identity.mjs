@@ -18,10 +18,8 @@ import { reviewLastDays } from '../src/main/pipeline/backfill.ts'
 import { ExtractQueue } from '../src/plugin/backend/extractQueue.ts'
 import { ReviewCoordinator, ReviewLedger } from '../src/plugin/backend/reviewRun.ts'
 import { getPipelineDefaults } from '../src/main/config/defaults.ts'
-import { buildTopicSave, ensureGroupTopicsSchema, GROUP_TOPICS_SCHEMA_VERSION, setCrossChatEnabled, setEnabled } from '../src/main/features/groupTopics/repository.ts'
+import { buildTopicSave, ensureGroupTopicsSchema, GROUP_TOPICS_SCHEMA_VERSION, setEnabled } from '../src/main/features/groupTopics/repository.ts'
 import { createGroupTopicsService } from '../src/main/features/groupTopics/service.ts'
-import { createIdentityRetryService } from '../src/main/identity/retryService.ts'
-import { explainIdentityInboxQueryPlan, explainTopicLinkProposalQueryPlan, listIdentityInbox, listTodoRelationsForTodo, listTodoTopicRelationsForChat, listTodoTopicRelationsForTopic, listTopicLinkProposals, resolveIdentityDecision, resolveTodoTopicRelation, resolveTopicLinkProposal, retryIdentityDecision } from '../src/main/identity/reviewPorts.ts'
 import { EXTRACT_JSON_SCHEMA, validateExtractResult } from '../src/main/llm/schema.ts'
 import { extractTodos } from '../src/main/llm/extractor.ts'
 
@@ -123,41 +121,41 @@ test('Core v7 upgrades add identity objects transactionally and preserves the Ph
   }finally{db.close()}
 })
 
-test('file-backed native restart preserves identity index, defer inbox, exact source progress and cache checkpoint',()=>{
+test('file-backed native restart leaves legacy open defer rows untouched and later applies still work',()=>{
   const scratch='C:/teamuq/teamuq-plugins/output/linetodo-cache-identity-implementation-20261028/developer/phase2/scratch/native-identity-reopen'
   mkdirSync(scratch,{recursive:true})
   const folder=mkdtempSync(join(scratch,'fixture-'))
   const file=join(folder,'line-todo.db')
   let opened=openFixture(file);let db=opened.db;const chatId='identity-chat'
+  const digest='a'.repeat(64)
+  const legacyRows=(handle)=>({
+    todo:handle.prepare('SELECT * FROM todo_identity_decisions WHERE decision_id=?').get('legacy-todo-defer'),
+    topic:handle.prepare('SELECT * FROM topic_identity_decisions WHERE decision_id=?').get('legacy-topic-defer')
+  })
+  let before
   try{
+    ensureGroupTopicsSchema(db)
     const oldSource=addMessage(db,'reopen-existing-source',900,'alpha beta completed action')
     createTodo({chatId,bucket:'todo',status:'done',title:'Alpha beta completed action',sourceMsgIds:[oldSource]},db)
     drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
-    const deferSource=addMessage(db,'reopen-defer-source',1000,'alpha beta unclear request')
-    const work=buildWork(db,chatId,[deferSource],{truncated:true})
-    const oldCandidate=work.recalled.candidates.find((candidate)=>candidate.entityType==='todo')
-    assert.ok(oldCandidate)
-    const defer=todoDecision(deferSource,'d-reopen',{outcome:'defer',candidateType:'todo',candidateId:oldCandidate.entityId,relationKind:null,reasonCode:'candidate_cap',confidenceBand:'low'})
-    runTodoApply(db,chatId,deferSource,work,newExtract(deferSource,defer,todoDraft(deferSource,'d-reopen',{title:'Alpha beta unclear request'})))
-    const before=readChatSourceState(db,chatId)
-    assert.equal(before.windowComplete,true)
-    assert.equal(db.prepare("SELECT state FROM identity_index_meta WHERE chat_id=? AND entity_type='todo'").get(chatId).state,'ready')
+    addMessage(db,'reopen-defer-source',1000,'alpha beta unclear request')
+    db.prepare('UPDATE messages SET processed=1 WHERE msg_id=?').run(stored('reopen-defer-source'))
+    db.prepare("INSERT INTO todo_identity_decisions(decision_id,chat_id,source_digest,draft_ref,outcome,state,canonical_todo_id,decision_revision,source_epoch,scope_revision,identity_revision,topic_identity_revision,draft_json,candidate_snapshot_json,reason_codes_json,prompt_version,schema_version,query_version,created_at,updated_at) VALUES('legacy-todo-defer',?,?,'legacy-todo','defer','open',NULL,1,1,1,0,0,'{}','{}','[]','p','s','q',?,?)").run(chatId,digest,NOW,NOW)
+    db.prepare("INSERT INTO topic_identity_decisions(decision_id,chat_id,source_digest,draft_ref,outcome,state,canonical_topic_id,decision_revision,source_epoch,scope_revision,identity_revision,draft_json,candidate_snapshot_json,reason_codes_json,prompt_version,schema_version,query_version,created_at,updated_at) VALUES('legacy-topic-defer',?,?,'legacy-topic','defer','open',NULL,1,1,1,0,'{}','{}','[]','p','s','q',?,?)").run(chatId,digest,NOW,NOW)
+    before=legacyRows(db)
+    assert.equal(before.todo.state,'open');assert.equal(before.topic.state,'open')
   }finally{opened.close()}
   opened=openFixture(file);db=opened.db
   try{
     ensureGroupTopicsSchema(db)
+    assert.deepEqual(legacyRows(db),before)
     assert.equal(db.prepare('SELECT processed FROM messages WHERE msg_id=?').get(stored('reopen-defer-source')).processed,1)
-    assert.equal(readChatSourceState(db,chatId).windowComplete,true)
     assert.equal(db.prepare("SELECT state FROM identity_index_meta WHERE chat_id=? AND entity_type='todo'").get(chatId).state,'ready')
-    assert.ok(db.prepare('SELECT 1 FROM todo_identity_terms WHERE chat_id=? AND todo_id=?').get(chatId,db.prepare("SELECT id FROM todos WHERE title='Alpha beta completed action'").get().id))
-    const inbox=listIdentityInbox(db,'todo',{chatId,limit:10})
-    assert.equal(inbox.items.length,1)
-    assert.equal(inbox.items[0].state,'open')
-    assert.deepEqual(inbox.items[0].sourceMsgIds,[stored('reopen-defer-source')])
-    const retried=retryIdentityDecision(db,'todo',inbox.items[0].decisionId,inbox.items[0].decisionRevision)
-    assert.equal(retried.ok,true)
-    if(!retried.ok) throw new Error(retried.reason)
-    assert.equal(retried.item.decisionRevision,2)
+    const next=addMessage(db,'reopen-next-source',2000,'alpha beta fresh request')
+    const work=buildWork(db,chatId,[next])
+    const tally=runTodoApply(db,chatId,next,work,newExtract(next,todoDecision(next,'d-reopen-next'),todoDraft(next,'d-reopen-next',{title:'Alpha beta fresh request'})))
+    assert.equal(tally.todosCreated,1)
+    assert.deepEqual(legacyRows(db),before,'legacy open defer rows are left as they were')
     assert.equal(db.pragma('foreign_key_check').length,0)
   }finally{opened.close()}
 })
@@ -207,14 +205,16 @@ test('GroupTopics v2 to v3 adds historical identity storage without changing top
   }finally{opened.close()}
 })
 
-test('strict decision validation rejects invented candidates, unselected evidence and candidate-cap new outcomes',()=>{
+test('strict decision validation rejects invented candidates and unselected evidence, accepts new under truncation, and reads a legacy defer as new',()=>{
   const candidate={entityType:'todo',entityId:'todo-1',title:'Alpha beta',summary:null,status:'pending',bucket:'todo',dueAt:null,sourceMsgIds:[],recallReasons:['token_overlap'],completionEventTs:null}
   const context={candidates:[candidate],candidatesTruncated:false,selectedMessageIds:['i:m1'],targetType:'todo',allowedTodoIds:['todo-1']}
   const valid={importance:'action',newTodos:[todoDraft('i:m1','d1')],identityDecisions:[todoDecision('i:m1','d1',{outcome:'update_existing',candidateType:'todo',candidateId:'todo-1',reasonCode:'same_active_action',relationKind:null})],resolved:[],updates:[]}
   assert.equal(validateExtractResult(valid,context).identityDecisions.length,1)
   assert.throws(()=>validateExtractResult({...valid,identityDecisions:[{...valid.identityDecisions[0],candidateId:'invented'}]},context),/invalid_identity_decision|candidate_not_supplied/u)
   assert.throws(()=>validateExtractResult({...valid,identityDecisions:[{...valid.identityDecisions[0],evidenceMsgIds:['other']}]},context),/invalid_identity_decision|unselected_or_duplicate_evidence/u)
-  assert.throws(()=>validateExtractResult({...valid,identityDecisions:[todoDecision('i:m1','d1')]},{...context,candidatesTruncated:true}),/invalid_identity_decision|candidate_context_truncated/u)
+  assert.equal(validateExtractResult({...valid,identityDecisions:[todoDecision('i:m1','d1')]},{...context,candidatesTruncated:true}).identityDecisions[0].outcome,'new')
+  const legacyDefer=validateExtractResult({...valid,identityDecisions:[todoDecision('i:m1','d1',{outcome:'defer',candidateType:'todo',candidateId:'todo-1',relationKind:'recurrence',reasonCode:'candidate_cap',confidenceBand:'low'})]},{...context,candidatesTruncated:true}).identityDecisions[0]
+  assert.deepEqual({outcome:legacyDefer.outcome,candidateType:legacyDefer.candidateType,candidateId:legacyDefer.candidateId,relationKind:legacyDefer.relationKind},{outcome:'new',candidateType:null,candidateId:null,relationKind:null})
   assert.throws(()=>validateExtractResult({...valid,identityDecisions:[{...valid.identityDecisions[0],revision:1}]},context),(error)=>Array.isArray(error?.issues)&&error.issues.some((issue)=>issue.code==='unrecognized_keys'))
 })
 
@@ -274,8 +274,6 @@ test('historical Todo index covers every status beyond 100 rows, keeps aliases, 
     assert.equal(recallTodoIdentityCandidates(db,chatId,[longTerms],[]).truncated,true,'term-budget omissions force defer instead of assuming new')
     const plan=explainIdentityCandidateQuery(db,'todo',chatId,['alpha beta source'],[stored('history-0')])
     assert.ok(plan.some((row)=>/SEARCH/i.test(row.detail)&&/todo_identity_terms|todo_identity_sources/i.test(row.detail)),JSON.stringify(plan))
-    const inboxPlan=explainIdentityInboxQueryPlan(db,'todo',chatId)
-    assert.ok(inboxPlan.some((row)=>/SEARCH/i.test(row.detail)&&/idx_todo_identity_decisions_(inbox|keyset)/i.test(row.detail)),JSON.stringify(inboxPlan))
     const before=db.prepare('SELECT title,entity_revision FROM todos WHERE id=?').get('todo-003')
     updateStatus('todo-003','done',db)
     drainIndex(db,chatId,'todo',25)
@@ -325,7 +323,7 @@ test('identity index term overflow remains not-ready and is visible to the migra
   }finally{opened.close()}
 })
 
-test('Todo new/update/defer/resolve and exact acknowledgement share the source lease transaction',()=>{
+test('Todo new/update/truncated-defer-as-new/resolve and exact acknowledgement share the source lease transaction',()=>{
   const opened=openFixture();const db=opened.db;const chatId='identity-chat'
   try{
     const first=addMessage(db,'todo-new',1000,'alpha beta action')
@@ -353,81 +351,16 @@ test('Todo new/update/defer/resolve and exact acknowledgement share the source l
     const work3=buildWork(db,chatId,[third],{truncated:true})
     const defer=todoDecision(third,'d-defer',{outcome:'defer',candidateType:null,candidateId:null,relationKind:null,reasonCode:'candidate_cap',confidenceBand:'low'})
     const tally3=runTodoApply(db,chatId,third,work3,newExtract(third,defer,todoDraft(third,'d-defer',{title:'釐清 alpha beta 下一步'})))
-    assert.equal(tally3.todosCreated,0)
+    assert.equal(tally3.todosCreated,1)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todos WHERE title='釐清 alpha beta 下一步'").get().count,1)
     assert.equal(db.prepare('SELECT processed FROM messages WHERE msg_id=?').get(third).processed,1)
-    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_decisions WHERE state='open'").get().count,1)
-    const inbox=listIdentityInbox(db,'todo',{chatId,limit:10})
-    assert.equal(inbox.items.length,1)
-    const retry=retryIdentityDecision(db,'todo',inbox.items[0].decisionId,inbox.items[0].decisionRevision)
-    assert.equal(retry.ok,true)
-    if(!retry.ok) throw new Error(retry.reason)
-    assert.equal(retry.item.decisionRevision,inbox.items[0].decisionRevision+1)
-    const resolved=resolveIdentityDecision(db,{entityType:'todo',decisionId:retry.item.decisionId,expectedDecisionRevision:retry.item.decisionRevision,expectedCandidateRevisions:retry.item.candidateRevisions,outcome:'new'})
-    assert.equal(resolved.ok,true)
+    const deferDecision=db.prepare("SELECT decision_id,outcome,state FROM todo_identity_decisions WHERE draft_ref='d-defer'").get()
+    assert.equal(deferDecision.outcome,'new');assert.equal(deferDecision.state,'resolved')
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_decisions WHERE state='open' OR outcome='defer'").get().count,0)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_events WHERE decision_id=? AND action='resolved_new'").get(deferDecision.decision_id).count,1)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_events WHERE decision_id=? AND action='deferred'").get(deferDecision.decision_id).count,0)
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_decisions WHERE state='resolved'").get().count,3)
     assert.equal(db.pragma('foreign_key_check').length,0)
-  }finally{opened.close()}
-})
-
-test('identity retry uses the trusted source/candidate context once, records every serialized attempt, and leaves the user to confirm the suggestion',async()=>{
-  const opened=openFixture();const db=opened.db;const chatId='identity-chat'
-  try{
-    const source=addMessage(db,'retry-ai-source',2000,'Alpha request: please book a room for Friday')
-    drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
-    const work=buildWork(db,chatId,[source],{truncated:true})
-    const defer=todoDecision(source,'retry_ai_draft',{outcome:'defer',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'low'})
-    runTodoApply(db,chatId,source,work,newExtract(source,defer,todoDraft(source,'retry_ai_draft',{title:'Book a room Friday'})))
-    const deferred=listIdentityInbox(db,'todo',{chatId}).items[0]
-    let calls=0;let submittedUser=''
-    const provider={id:'http',kind:'http',runtimeFingerprint:async()=> 'fixture-effective-model-effort',health:async()=>({ok:true,summary:'fixture',details:{}}),complete:async(request)=>{
-      calls+=1;submittedUser=request.user
-      const context=JSON.parse(request.user)
-      assert.equal(context.sourceEvidence[0].msgId,source)
-      assert.equal(context.sourceEvidence[0].text,'Alpha request: please book a room for Friday')
-      assert.equal(Object.hasOwn(context,'candidateRevisions'),false,'application revisions are not serialized to the model')
-      assert.equal(Object.hasOwn(context,'selectedFingerprints'),false,'private source fingerprints are not serialized')
-      assert.equal(Object.hasOwn(context,'sessionFingerprint'),false,'cache session identity is not serialized')
-      assert.equal(request.onAdditionalUserPayload('repair request bytes'),true)
-      return {text:'',structured:[todoDecision(source,'retry_ai_draft',{outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'fresh_occurrence',confidenceBand:'high'})],meta:{provider:'http',model:'fixture',durationMs:1}}
-    }}
-    const service=createIdentityRetryService(db)
-    const result=await service.retry({entityType:'todo',decisionId:deferred.decisionId,expectedDecisionRevision:deferred.decisionRevision},()=>provider)
-    assert.equal(result.ok,true,JSON.stringify(result))
-    if(!result.ok)throw new Error(result.reason)
-    assert.equal(calls,1,'one explicit retry performs one re-evaluation')
-    assert.equal(result.item.decisionRevision,deferred.decisionRevision+1)
-    assert.equal(result.item.state,'open','a suggestion does not resolve the defer without user confirmation')
-    assert.equal(result.item.suggestedDecision.outcome,'new')
-    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todos WHERE chat_id=?').get(chatId).count,0,'no canonical Todo is silently created')
-    assert.equal(db.prepare('SELECT processed FROM messages WHERE msg_id=?').get(source).processed,1,'the prior owning-feature acknowledgement remains exact')
-    const state=readChatSourceState(db,chatId)
-    assert.equal(state.submittedRequests,2,'primary and repair/retry bytes are both accounted once')
-    assert.equal(state.submittedUserUtf8Bytes,Buffer.byteLength(submittedUser,'utf8')+Buffer.byteLength('repair request bytes','utf8'))
-    const retryEvents=db.prepare("SELECT payload_json FROM todo_identity_events WHERE decision_id=? AND action='retried' ORDER BY event_revision").all(deferred.decisionId)
-    assert.equal(retryEvents.length,2,'one audit event records the user retry and one records the evaluated suggestion')
-    assert.equal(JSON.parse(retryEvents.at(-1).payload_json).suggestedDecision.outcome,'new')
-  }finally{opened.close()}
-})
-
-test('a deferred Todo is marked stale when the Topic candidate corpus changes and remains retrievable',()=>{
-  const opened=openFixture();const db=opened.db;const chatId='identity-chat'
-  try{
-    ensureGroupTopicsSchema(db)
-    const source=addMessage(db,'defer-with-topic',1000,'alpha beta project action unclear')
-    db.prepare('INSERT INTO discussion_topics(topic_id,chat_id,local_ref,title,summary,created_at,last_source_ts,revision) VALUES(?,?,?,?,?,?,?,1)')
-      .run('topic-alpha',chatId,'alpha','Alpha beta project','Old topic',NOW,900)
-    drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
-    const work=buildWork(db,chatId,[source])
-    const decision=todoDecision(source,'d-topic-defer',{outcome:'defer',candidateType:'topic',candidateId:'topic-alpha',relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'low'})
-    runTodoApply(db,chatId,source,work,newExtract(source,decision,todoDraft(source,'d-topic-defer',{title:'Alpha beta project action'})))
-    const open=listIdentityInbox(db,'todo',{chatId}).items[0]
-    assert.equal(open.state,'open')
-    db.prepare('INSERT INTO discussion_topics(topic_id,chat_id,local_ref,title,summary,created_at,last_source_ts,revision) VALUES(?,?,?,?,?,?,?,1)')
-      .run('topic-new',chatId,'new-topic','Unrelated new subject','New topic',NOW,1100)
-    const stale=listIdentityInbox(db,'todo',{chatId}).items[0]
-    assert.equal(stale.state,'stale','a change to the related Topic candidate corpus stales the Todo defer')
-    assert.equal(db.prepare('SELECT processed FROM messages WHERE msg_id=?').get(source).processed,1)
-    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_events e WHERE e.decision_id=? AND e.action='stale'").get(stale.decisionId).count,1)
   }finally{opened.close()}
 })
 
@@ -600,6 +533,137 @@ test('ExtractQueue refreshes historical candidates between bounded parts after e
   }finally{queue.dispose();opened.close()}
 })
 
+test('guards that used to defer now create a new item without relation rows (R1, R5 and same-title completed item)',()=>{
+  const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+  try{
+    const doneSource=addMessage(db,'guard-done-source',1000,'alpha beta report action')
+    const done=createTodo({chatId,bucket:'todo',status:'done',title:'Alpha beta report action',sourceMsgIds:[doneSource]},db)
+    const activeSource=addMessage(db,'guard-active-source',1100,'gamma delta budget review')
+    const active=createTodo({chatId,bucket:'todo',title:'Gamma delta budget review',sourceMsgIds:[activeSource]},db)
+    drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
+    const doneRevision=db.prepare('SELECT entity_revision FROM todos WHERE id=?').get(done.id).entity_revision
+    const activeRevision=db.prepare('SELECT entity_revision FROM todos WHERE id=?').get(active.id).entity_revision
+
+    const r1Source=addMessage(db,'guard-r1',2000,'alpha beta report action once more')
+    const r1Work=buildWork(db,chatId,[r1Source])
+    assert.ok(r1Work.recalled.candidates.some((candidate)=>candidate.entityId===done.id))
+    const r1=todoDecision(r1Source,'g-r1',{outcome:'update_existing',candidateType:'todo',candidateId:done.id,relationKind:null,reasonCode:'same_active_action'})
+    const r1Tally=runTodoApply(db,chatId,r1Source,r1Work,newExtract(r1Source,r1,todoDraft(r1Source,'g-r1',{title:'Alpha beta report action once more'})))
+    assert.equal(r1Tally.todosCreated,1);assert.equal(r1Tally.todosMerged,0)
+    assert.equal(db.prepare('SELECT status FROM todos WHERE id=?').get(done.id).status,'done')
+    assert.equal(db.prepare('SELECT entity_revision FROM todos WHERE id=?').get(done.id).entity_revision,doneRevision)
+
+    const r5Source=addMessage(db,'guard-r5',3000,'gamma delta budget review next round')
+    const r5Work=buildWork(db,chatId,[r5Source])
+    assert.ok(r5Work.recalled.candidates.some((candidate)=>candidate.entityId===active.id))
+    const r5=todoDecision(r5Source,'g-r5',{outcome:'new',candidateType:'todo',candidateId:active.id,relationKind:'recurrence',reasonCode:'fresh_occurrence'})
+    const r5Tally=runTodoApply(db,chatId,r5Source,r5Work,newExtract(r5Source,r5,todoDraft(r5Source,'g-r5',{title:'Gamma delta budget review next round'})))
+    assert.equal(r5Tally.todosCreated,1)
+    assert.equal(db.prepare('SELECT entity_revision FROM todos WHERE id=?').get(active.id).entity_revision,activeRevision)
+
+    const sameTitleSource=addMessage(db,'guard-same-title',4000,'alpha beta report action')
+    const sameTitleWork=buildWork(db,chatId,[sameTitleSource])
+    const sameTitle=todoDecision(sameTitleSource,'g-same-title')
+    const sameTitleTally=runTodoApply(db,chatId,sameTitleSource,sameTitleWork,newExtract(sameTitleSource,sameTitle,todoDraft(sameTitleSource,'g-same-title',{title:'Alpha beta report action'})))
+    assert.equal(sameTitleTally.todosCreated,1)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todos WHERE title='Alpha beta report action'").get().count,2)
+
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_identity_relations').get().count,0)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_topic_identity_relations').get().count,0)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_decisions WHERE state='open' OR outcome='defer'").get().count,0)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_decisions WHERE outcome='new' AND state='resolved' AND draft_ref IN ('g-r1','g-r5','g-same-title')").get().count,3)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_events WHERE action='resolved_new' AND json_extract(payload_json,'$.guard') IN ('R1','R5')").get().count,2)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_events WHERE action='deferred'").get().count,0)
+    assert.equal(db.pragma('foreign_key_check').length,0)
+  }finally{opened.close()}
+})
+
+test('R4 guard: a recurrence whose time evidence does not hold creates a new item without relation rows and leaves the old card unchanged',()=>{
+  const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+  try{
+    const first=addMessage(db,'r4-first',1000,'alpha beta complete report')
+    drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
+    const work1=buildWork(db,chatId,[first])
+    const canonical=runTodoApply(db,chatId,first,work1,newExtract(first,todoDecision(first,'r4-d-first'))).createdIds[0]
+    const completion=addMessage(db,'r4-completion',2000,'alpha beta report delivered')
+    const work2=buildWork(db,chatId,[completion])
+    runTodoApply(db,chatId,completion,work2,{importance:'action',newTodos:[],identityDecisions:[],resolved:[{todoId:canonical,evidence:'delivered',evidenceMsgIds:[completion]}],updates:[]})
+    assert.equal(db.prepare('SELECT status FROM todos WHERE id=?').get(canonical).status,'done')
+    drainIndex(db,chatId,'todo')
+    const revisionBefore=db.prepare('SELECT entity_revision FROM todos WHERE id=?').get(canonical).entity_revision
+    const sourcesBefore=db.prepare('SELECT source_msg_ids FROM todos WHERE id=?').get(canonical).source_msg_ids
+
+    const early=addMessage(db,'r4-early',1500,'alpha beta complete report claimed as a new occurrence')
+    const work=buildWork(db,chatId,[early])
+    assert.ok(work.recalled.candidates.some((candidate)=>candidate.entityId===canonical))
+    const decision=todoDecision(early,'r4-d',{outcome:'new',candidateType:'todo',candidateId:canonical,relationKind:'recurrence',reasonCode:'fresh_occurrence'})
+    const tally=runTodoApply(db,chatId,early,work,newExtract(early,decision,todoDraft(early,'r4-d',{title:'Alpha beta report claimed recurrence'})))
+    assert.equal(tally.todosCreated,1);assert.equal(tally.todosMerged,0)
+    assert.notEqual(tally.createdIds[0],canonical)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todos WHERE chat_id=?').get(chatId).count,2)
+    const old=db.prepare('SELECT status,entity_revision,source_msg_ids FROM todos WHERE id=?').get(canonical)
+    assert.equal(old.status,'done');assert.equal(old.entity_revision,revisionBefore);assert.equal(old.source_msg_ids,sourcesBefore)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_identity_relations').get().count,0)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_topic_identity_relations').get().count,0)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_events WHERE action='resolved_new' AND json_extract(payload_json,'$.guard')='R4'").get().count,1)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_decisions WHERE draft_ref='r4-d' AND outcome='new' AND state='resolved'").get().count,1)
+    assert.equal(db.pragma('foreign_key_check').length,0)
+  }finally{opened.close()}
+})
+
+test('R6 guard: update_existing against a target whose state cannot be updated creates a new item without relation rows and leaves the old card unchanged',()=>{
+  const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+  try{
+    const activeSource=addMessage(db,'r6-active-source',1000,'gamma delta budget review')
+    const active=createTodo({chatId,bucket:'todo',title:'Gamma delta budget review',sourceMsgIds:[activeSource]},db)
+    drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
+    const before=db.prepare('SELECT status,entity_revision,source_msg_ids,title FROM todos WHERE id=?').get(active.id)
+
+    const next=addMessage(db,'r6-next',2000,'gamma delta budget review completed again')
+    const work=buildWork(db,chatId,[next])
+    assert.ok(work.recalled.candidates.some((candidate)=>candidate.entityId===active.id))
+    const decision=todoDecision(next,'r6-d',{outcome:'update_existing',candidateType:'todo',candidateId:active.id,relationKind:null,reasonCode:'same_completed_action'})
+    const tally=runTodoApply(db,chatId,next,work,newExtract(next,decision,todoDraft(next,'r6-d',{title:'Gamma delta budget review again'})))
+    assert.equal(tally.todosCreated,1);assert.equal(tally.todosMerged,0)
+    assert.notEqual(tally.createdIds[0],active.id)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todos WHERE chat_id=?').get(chatId).count,2)
+    const after=db.prepare('SELECT status,entity_revision,source_msg_ids,title FROM todos WHERE id=?').get(active.id)
+    assert.deepEqual({...after},{...before})
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_identity_relations').get().count,0)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_topic_identity_relations').get().count,0)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_events WHERE action='resolved_new' AND json_extract(payload_json,'$.guard')='R6'").get().count,1)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_decisions WHERE draft_ref='r6-d' AND outcome='new' AND state='resolved'").get().count,1)
+    assert.equal(db.pragma('foreign_key_check').length,0)
+  }finally{opened.close()}
+})
+
+test('R3 scenario: a new draft that cites a completed candidate without a recurrence relation creates a new item with no relation rows and leaves the old card unchanged',()=>{
+  const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+  try{
+    const doneSource=addMessage(db,'r3-done-source',1000,'alpha beta report action')
+    const done=createTodo({chatId,bucket:'todo',status:'done',title:'Alpha beta report action',sourceMsgIds:[doneSource]},db)
+    drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
+    const before=db.prepare('SELECT status,entity_revision,source_msg_ids,title FROM todos WHERE id=?').get(done.id)
+
+    const next=addMessage(db,'r3-next',2000,'alpha beta report action for the next quarter')
+    const work=buildWork(db,chatId,[next])
+    assert.ok(work.recalled.candidates.some((candidate)=>candidate.entityId===done.id))
+    const decision=todoDecision(next,'r3-d',{outcome:'new',candidateType:'todo',candidateId:done.id,relationKind:null,reasonCode:'distinct_action'})
+    const tally=runTodoApply(db,chatId,next,work,newExtract(next,decision,todoDraft(next,'r3-d',{title:'Alpha beta report action next quarter'})))
+    assert.equal(tally.todosCreated,1);assert.equal(tally.todosMerged,0)
+    assert.notEqual(tally.createdIds[0],done.id)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todos WHERE chat_id=?').get(chatId).count,2)
+    const after=db.prepare('SELECT status,entity_revision,source_msg_ids,title FROM todos WHERE id=?').get(done.id)
+    assert.deepEqual({...after},{...before})
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_identity_relations').get().count,0)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_topic_identity_relations').get().count,0)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_decisions WHERE draft_ref='r3-d' AND outcome='new' AND state='resolved'").get().count,1)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_events WHERE action='resolved_new' AND json_extract(payload_json,'$.guard') IS NOT NULL").get().count,0)
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM todo_identity_events WHERE action='deferred'").get().count,0)
+    assert.equal(db.pragma('foreign_key_check').length,0)
+  }finally{opened.close()}
+})
+
 test('completed action source time preserves the old canonical ID; a later occurrence gets a recurrence ID',()=>{
   const opened=openFixture();const db=opened.db;const chatId='identity-chat'
   try{
@@ -632,7 +696,6 @@ test('completed action source time preserves the old canonical ID; a later occur
     const newId=nextTally.createdIds[0]
     assert.notEqual(newId,canonical)
     assert.equal(db.prepare("SELECT relation_type,status FROM todo_identity_relations WHERE chat_id=? AND (left_todo_id=? OR right_todo_id=?)").get(chatId,newId,newId).relation_type,'recurrence')
-    assert.equal(listTodoRelationsForTodo(db,chatId,newId)[0].relationType,'recurrence')
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todos WHERE chat_id=?').get(chatId).count,2)
 
     const legacySource=addMessage(db,'temporal-legacy-done',2600,'legacy alpha beta action')
@@ -643,9 +706,11 @@ test('completed action source time preserves the old canonical ID; a later occur
     const work5=buildWork(db,chatId,[uncertainSource])
     const unsupportedRecurrence=todoDecision(uncertainSource,'d-unknown-event',{outcome:'new',candidateType:'todo',candidateId:legacyTodo.id,relationKind:'recurrence',reasonCode:'fresh_occurrence'})
     const uncertainTally=runTodoApply(db,chatId,uncertainSource,work5,newExtract(uncertainSource,unsupportedRecurrence,todoDraft(uncertainSource,'d-unknown-event',{title:'Legacy alpha beta action'})))
-    assert.equal(uncertainTally.todosCreated,0)
+    assert.equal(uncertainTally.todosCreated,1,'recurrence evidence that cannot be proven creates a new item')
     assert.equal(db.prepare('SELECT processed FROM messages WHERE msg_id=?').get(uncertainSource).processed,1)
-    assert.equal(db.prepare("SELECT state FROM todo_identity_decisions WHERE draft_ref='d-unknown-event'").get().state,'open')
+    const unknownDecision=db.prepare("SELECT decision_id,outcome,state FROM todo_identity_decisions WHERE draft_ref='d-unknown-event'").get()
+    assert.equal(unknownDecision.outcome,'new');assert.equal(unknownDecision.state,'resolved')
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_identity_relations WHERE decision_id=?').get(unknownDecision.decision_id).count,0)
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todos WHERE id=?').get(legacyTodo.id).count,1)
   }finally{opened.close()}
 })
@@ -665,27 +730,25 @@ test('Todo to Topic link retains two canonical IDs and rolls back the full sourc
     const analyzed=await service.analyze(chatId,()=>provider)
     assert.equal(analyzed.ok,true)
     const topic=db.prepare('SELECT topic_id FROM discussion_topics WHERE chat_id=?').get(chatId).topic_id
-    const todoPlan=explainIdentityCandidateQuery(db,'todo',chatId,['alpha beta'],[topicSource])
     const topicPlan=explainIdentityCandidateQuery(db,'topic',chatId,['alpha beta'],[topicSource])
-    const topicInboxPlan=explainIdentityInboxQueryPlan(db,'topic',chatId)
     assert.ok(topicPlan.some((row)=>/SEARCH/i.test(row.detail)&&/topic_identity_terms/i.test(row.detail)),JSON.stringify(topicPlan))
-    assert.ok(topicInboxPlan.some((row)=>/SEARCH/i.test(row.detail)&&/idx_topic_identity_decisions_(inbox|keyset)/i.test(row.detail)),JSON.stringify(topicInboxPlan))
-    console.log('IDENTITY_QUERY_PLANS '+JSON.stringify({todo:todoPlan,topic:topicPlan,todoInbox:explainIdentityInboxQueryPlan(db,'todo',chatId),topicInbox:topicInboxPlan}))
     const uncertainSource=addMessage(db,'topic-defer-source',1500,'gamma delta unclear discussion')
     let deferCalls=0
     const deferProvider={...provider,complete:async()=>{deferCalls+=1;return {text:'',structured:{
       topics:[{ref:'gamma_delta',title:'Gamma delta discussion',summary:'Unclear next step'}],
       identityDecisions:[{draftRef:'gamma_delta',outcome:'defer',candidateType:null,candidateId:null,relationKind:null,reasonCode:'insufficient_evidence',confidenceBand:'low',evidenceMsgIds:[uncertainSource]}],
-      assignments:[{msgId:uncertainSource,topicRef:'gamma_delta',relation:'uncertain',confidence:.3,relevance:'unknown',relevanceEvidenceMsgIds:[]}]
+      assignments:[{msgId:uncertainSource,topicRef:'gamma_delta',relation:'about',confidence:.3,relevance:'unknown',relevanceEvidenceMsgIds:[]}]
     },meta:{provider:'codexCli',model:'fixture',durationMs:0}}}}
     const deferred=await service.analyze(chatId,()=>deferProvider)
     assert.equal(deferred.ok,true)
-    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM discussion_topics WHERE chat_id=?').get(chatId).count,1)
-    assert.equal(db.prepare("SELECT disposition FROM topic_message_decisions WHERE chat_id=? AND msg_id=?").get(chatId,uncertainSource).disposition,'uncertain')
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM discussion_topics WHERE chat_id=?').get(chatId).count,2,'a model defer creates a new Topic')
+    assert.equal(db.prepare("SELECT disposition FROM topic_message_decisions WHERE chat_id=? AND msg_id=?").get(chatId,uncertainSource).disposition,'assigned')
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM topic_evidence WHERE msg_id=?').get(uncertainSource).count,1)
+    const topicDecision=db.prepare("SELECT outcome,state FROM topic_identity_decisions WHERE chat_id=? AND draft_ref='gamma_delta'").get(chatId)
+    assert.equal(topicDecision.outcome,'new');assert.equal(topicDecision.state,'resolved')
     assert.equal(service.pendingCount(chatId),0)
     await service.analyze(chatId,()=>deferProvider)
-    assert.equal(deferCalls,1,'an open Topic defer is not polled into another AI call')
-    assert.equal(listIdentityInbox(db,'topic',{chatId,limit:10}).items[0].state,'open')
+    assert.equal(deferCalls,1,'the processed source is not submitted to the AI again')
     const todoSource=addMessage(db,'todo-topic-link',2000,'alpha beta project arrange supplier call')
     drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
     const work=buildWork(db,chatId,[todoSource])
@@ -699,41 +762,13 @@ test('Todo to Topic link retains two canonical IDs and rolls back the full sourc
     assert.ok(todoId);assert.notEqual(todoId,topic)
     assert.deepEqual(db.prepare('SELECT chat_id,todo_id,topic_id,relation_type,status FROM todo_topic_identity_relations').get(),{chat_id:chatId,todo_id:todoId,topic_id:topic,relation_type:'same_topic',status:'proposed'})
     assert.equal(service.todoRefs(topic).length,0,'the semantic relation is retained independently of message source overlap')
-    const semanticLinks=listTodoTopicRelationsForTopic(db,topic)
-    assert.deepEqual(semanticLinks.map((relation)=>relation.todoId).sort(),[...tally.createdIds].sort())
-    assert.ok(semanticLinks.every((relation)=>relation.relationType==='same_topic'&&JSON.stringify(relation.sourceMsgIds)==JSON.stringify([todoSource])))
-    const chatRelations=listTodoTopicRelationsForChat(db,chatId)
-    assert.ok(chatRelations.some((relation)=>relation.todoId===todoId&&relation.topicId===topic&&relation.revision===1))
+    const semanticLinks=db.prepare('SELECT todo_id,relation_type,status FROM todo_topic_identity_relations WHERE topic_id=?').all(topic)
+    assert.deepEqual(semanticLinks.map((relation)=>relation.todo_id).sort(),[...tally.createdIds].sort())
+    assert.ok(semanticLinks.every((relation)=>relation.relation_type==='same_topic'&&relation.status==='proposed'))
     assert.equal(service.todoRefs(topic).length,0,'the API relation projection also does not depend on source-id intersection')
     const decisionId=db.prepare("SELECT decision_id FROM todo_identity_decisions WHERE draft_ref='d-topic-link'").get().decision_id
-    const topicRevision=db.prepare('SELECT revision FROM discussion_topics WHERE topic_id=?').get(topic).revision
-    const todoRevision=db.prepare('SELECT entity_revision FROM todos WHERE id=?').get(todoId).entity_revision
-    const relationId=db.prepare('SELECT relation_id FROM todo_topic_identity_relations WHERE todo_id=?').get(todoId).relation_id
-    const accepted=resolveTodoTopicRelation(db,{relationId,expectedRevision:1,expectedTodoRevision:todoRevision,expectedTopicRevision:topicRevision,choice:'confirm'})
-    assert.equal(accepted.ok,true)
-    assert.equal(listTodoTopicRelationsForTopic(db,topic).find((relation)=>relation.relationId===relationId).relationStatus,'confirmed')
-    const secondTodo=tally.createdIds[1]
-    const secondRelation=db.prepare('SELECT relation_id FROM todo_topic_identity_relations WHERE todo_id=?').get(secondTodo).relation_id
-    const rejected=resolveTodoTopicRelation(db,{relationId:secondRelation,expectedRevision:1,expectedTodoRevision:db.prepare('SELECT entity_revision FROM todos WHERE id=?').get(secondTodo).entity_revision,expectedTopicRevision:topicRevision,choice:'reject'})
-    assert.equal(rejected.ok,true)
-    assert.equal(db.prepare('SELECT status FROM todo_topic_identity_relations WHERE relation_id=?').get(secondRelation).status,'rejected')
-    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todos WHERE chat_id=?').get(chatId).count,2,'rejecting a relation preserves both independent Todo rows')
-    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM discussion_topics WHERE chat_id=?').get(chatId).count,1)
-
-    const staleSource=addMessage(db,'todo-topic-stale-link',2500,'alpha beta project reserve another supplier')
-    drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
-    const staleWork=buildWork(db,chatId,[staleSource])
-    const staleDecision=todoDecision(staleSource,'d-topic-stale',{outcome:'link',candidateType:'topic',candidateId:topic,relationKind:'same_topic',reasonCode:'related_topic'})
-    const staleTally=runTodoApply(db,chatId,staleSource,staleWork,newExtract(staleSource,staleDecision,todoDraft(staleSource,'d-topic-stale',{title:'預約 alpha beta supplier'})))
-    const staleTodo=staleTally.createdIds[0]
-    const staleRelation=db.prepare('SELECT relation_id FROM todo_topic_identity_relations WHERE todo_id=?').get(staleTodo).relation_id
-    const staleTodoRevision=db.prepare('SELECT entity_revision FROM todos WHERE id=?').get(staleTodo).entity_revision
-    const staleTopicRevision=db.prepare('SELECT revision FROM discussion_topics WHERE topic_id=?').get(topic).revision
-    setEnabled(db,chatId,false)
-    const denied=resolveTodoTopicRelation(db,{relationId:staleRelation,expectedRevision:1,expectedTodoRevision:staleTodoRevision,expectedTopicRevision:staleTopicRevision,choice:'confirm'})
-    assert.deepEqual(denied,{ok:false,reason:'scope_denied'})
-    assert.equal(db.prepare('SELECT status FROM todo_topic_identity_relations WHERE relation_id=?').get(staleRelation).status,'stale')
-    setEnabled(db,chatId,true)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todos WHERE chat_id=?').get(chatId).count,2)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM discussion_topics WHERE chat_id=?').get(chatId).count,2)
     assert.throws(()=>db.prepare(`INSERT INTO todo_identity_relations(relation_id,chat_id,left_todo_id,right_todo_id,relation_type,status,decision_id,created_at) VALUES(?,?,?,?,?,'proposed',?,?)`).run('self-relation',chatId,todoId,todoId,'recurrence',decisionId,NOW))
     assert.throws(()=>db.prepare(`INSERT INTO todo_topic_identity_relations(relation_id,chat_id,todo_id,topic_id,relation_type,status,decision_id,revision,created_at) VALUES(?,?,?, ?,?,'invalid',?,1,?)`).run('bad-state',chatId,todoId,topic,'same_topic',decisionId,NOW))
     assert.throws(()=>db.prepare(`INSERT INTO todo_topic_identity_relations(relation_id,chat_id,todo_id,topic_id,relation_type,status,decision_id,revision,created_at) VALUES(?,?,?,?,?,'proposed',?,1,?)`).run('wrong-chat','other-chat',todoId,topic,'same_topic',decisionId,NOW))
@@ -752,56 +787,41 @@ test('Todo to Topic link retains two canonical IDs and rolls back the full sourc
   }finally{opened.close()}
 })
 
-test('cross-chat Topic link ports recheck both endpoint revisions and live permissions without merging Topics',()=>{
-  const opened=openFixture();const db=opened.db
+test('O2 one-to-one chat: a same_topic relation commits while topics are enabled and is refused once topics are disabled',async()=>{
+  const opened=openFixture();const db=opened.db;const chatId='identity-chat'
   try{
     ensureGroupTopicsSchema(db)
-    const leftChat='left-chat';const rightChat='right-chat'
-    addMessage(db,'left-source',1000,'left group message',leftChat)
-    addMessage(db,'right-source',1100,'right group message',rightChat)
-    setEnabled(db,leftChat,true);setEnabled(db,rightChat,true)
-    setCrossChatEnabled(db,leftChat,true);setCrossChatEnabled(db,rightChat,true)
-    const insertTopic=db.prepare('INSERT INTO discussion_topics(topic_id,chat_id,local_ref,title,summary,created_at,last_source_ts,revision) VALUES(?,?,?,?,?,?,?,1)')
-    insertTopic.run('left-topic',leftChat,'left','Shared alpha topic','Left summary',NOW,1000)
-    insertTopic.run('right-topic',rightChat,'right','Shared alpha topic','Right summary',NOW,1100)
-    drainIndex(db,leftChat,'topic');drainIndex(db,rightChat,'topic')
-    assert.deepEqual(recallTopicIdentityCandidates(db,leftChat,['Shared alpha topic']).candidates.map((candidate)=>candidate.entityId),['left-topic'])
-    const insertLink=(id)=>{
-      db.prepare(`INSERT INTO topic_links(link_id,left_topic_id,right_topic_id,relation,identity_evidence,event_evidence_msg_ids,status,created_at) VALUES(?,?,?,'unknown','unknown','[]','proposed',?)`).run(id,'left-topic','right-topic',NOW)
-      db.prepare(`INSERT INTO topic_link_identity_events(event_id,link_id,event_revision,actor,action,left_topic_revision,right_topic_revision,permission_snapshot_json,created_at) VALUES(?,?,1,'system','proposed',1,1,?,?)`).run(`event-${id}`,id,JSON.stringify({leftCrossChat:true,rightCrossChat:true}),NOW)
-    }
-    insertLink('cross-link-accepted')
-    const linkPlan=explainTopicLinkProposalQueryPlan(db,leftChat)
-    console.log('TOPIC_LINK_PROPOSAL_QUERY_PLAN '+JSON.stringify(linkPlan))
-    assert.ok(linkPlan.some((row)=>/SEARCH/i.test(row.detail)&&/idx_topic_links_(left|right)_status/i.test(row.detail)),JSON.stringify(linkPlan))
-    const listed=listTopicLinkProposals(db,{chatId:leftChat})[0]
-    assert.equal(listed.permissionAllowed,true)
-    const accepted=resolveTopicLinkProposal(db,{linkId:listed.linkId,expectedLinkRevision:listed.linkRevision,leftTopicRevision:listed.leftRevision,rightTopicRevision:listed.rightRevision,choice:'accept'})
-    assert.equal(accepted.ok,true)
-    assert.equal(db.prepare('SELECT status,identity_evidence FROM topic_links WHERE link_id=?').get(listed.linkId).status,'accepted')
-    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM discussion_topics WHERE topic_id IN (?,?)').get('left-topic','right-topic').count,2)
+    const topicSource=addMessage(db,'o2-topic-seed',1000,'alpha beta project discussion')
+    db.prepare('UPDATE chats SET is_group=0 WHERE chat_id=?').run(chatId)
+    setEnabled(db,chatId,true)
+    const service=createGroupTopicsService(db)
+    const provider={id:'codexCli',kind:'cli',health:async()=>({ok:true,summary:'fixture',details:{}}),complete:async()=>({text:'',structured:{
+      topics:[{ref:'alpha_beta',title:'Alpha beta project',summary:'Project discussion'}],
+      identityDecisions:[{draftRef:'alpha_beta',outcome:'new',candidateType:null,candidateId:null,relationKind:null,reasonCode:'related_topic',confidenceBand:'high',evidenceMsgIds:[topicSource]}],
+      assignments:[{msgId:topicSource,topicRef:'alpha_beta',relation:'about',confidence:.9,relevance:'unknown',relevanceEvidenceMsgIds:[]}]
+    },meta:{provider:'codexCli',model:'fixture',durationMs:0}})}
+    assert.equal((await service.analyze(chatId,()=>provider)).ok,true)
+    const topic=db.prepare('SELECT topic_id FROM discussion_topics WHERE chat_id=?').get(chatId).topic_id
+    const first=addMessage(db,'o2-todo-1',2000,'alpha beta project arrange supplier call')
+    drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
+    const work=buildWork(db,chatId,[first])
+    const link=todoDecision(first,'o2-link',{outcome:'link',candidateType:'topic',candidateId:topic,relationKind:'same_topic',reasonCode:'related_topic'})
+    const tally=runTodoApply(db,chatId,first,work,newExtract(first,link,todoDraft(first,'o2-link',{title:'安排 alpha beta supplier call'})))
+    assert.equal(tally.todosCreated,1)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_topic_identity_relations WHERE topic_id=?').get(topic).count,1)
 
-    insertTopic.run('right-topic-reject',rightChat,'reject','Shared alpha follow-up','Independent right topic',NOW,1200)
-    drainIndex(db,rightChat,'topic')
-    insertLink('cross-link-rejected')
-    db.prepare('UPDATE topic_links SET right_topic_id=? WHERE link_id=?').run('right-topic-reject','cross-link-rejected')
-    const rejectListed=listTopicLinkProposals(db,{chatId:leftChat}).find((item)=>item.linkId==='cross-link-rejected')
-    assert.ok(rejectListed)
-    const rejected=resolveTopicLinkProposal(db,{linkId:rejectListed.linkId,expectedLinkRevision:rejectListed.linkRevision,leftTopicRevision:rejectListed.leftRevision,rightTopicRevision:rejectListed.rightRevision,choice:'reject'})
-    assert.equal(rejected.ok,true)
-    assert.equal(db.prepare('SELECT status FROM topic_links WHERE link_id=?').get('cross-link-rejected').status,'rejected')
-    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM discussion_topics WHERE topic_id IN (?,?,?)').get('left-topic','right-topic','right-topic-reject').count,3,'rejecting a cross-chat link preserves both canonical Topics')
-
-    insertLink('cross-link-stale')
-    setCrossChatEnabled(db,rightChat,false)
-    const denied=resolveTopicLinkProposal(db,{linkId:'cross-link-stale',expectedLinkRevision:1,leftTopicRevision:1,rightTopicRevision:1,choice:'accept'})
-    assert.deepEqual(denied,{ok:false,reason:'scope_denied'})
-    assert.ok(db.prepare('SELECT stale_at FROM topic_links WHERE link_id=?').get('cross-link-stale').stale_at)
-    assert.equal(db.prepare("SELECT action FROM topic_link_identity_events WHERE link_id=? ORDER BY event_revision DESC LIMIT 1").get('cross-link-stale').action,'stale')
+    const second=addMessage(db,'o2-todo-2',3000,'alpha beta project arrange invoice review')
+    drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
+    const work2=buildWork(db,chatId,[second])
+    setEnabled(db,chatId,false)
+    const link2=todoDecision(second,'o2-link-2',{outcome:'link',candidateType:'topic',candidateId:topic,relationKind:'same_topic',reasonCode:'related_topic'})
+    assert.throws(()=>runTodoApply(db,chatId,second,work2,newExtract(second,link2,todoDraft(second,'o2-link-2',{title:'核對 alpha beta invoice'}))))
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM todo_topic_identity_relations WHERE topic_id=?').get(topic).count,1)
+    assert.equal(db.prepare('SELECT processed FROM messages WHERE msg_id=?').get(second).processed,0)
   }finally{opened.close()}
 })
 
-test('Topic prompt candidate-budget truncation records visible defer and removes the source from automatic polling',async()=>{
+test('Topic prompt candidate-budget truncation with a model defer creates a new Topic and removes the source from automatic polling',async()=>{
   const opened=openFixture();const db=opened.db;const chatId='identity-chat'
   try{
     const source=addMessage(db,'topic-budget-source',1000,'alpha project topic has an ambiguous follow-up')
@@ -816,18 +836,20 @@ test('Topic prompt candidate-budget truncation records visible defer and removes
       const payload=JSON.parse(request.user);assert.equal(payload.historicalCandidatesTruncated,true)
       return {text:'',structured:{topics:[{ref:'ambiguous',title:'Alpha project follow-up',summary:'Unclear follow-up'}],
         identityDecisions:[{draftRef:'ambiguous',outcome:'defer',candidateType:null,candidateId:null,relationKind:null,reasonCode:'candidate_cap',confidenceBand:'low',evidenceMsgIds:[source]}],
-        assignments:[{msgId:source,topicRef:'ambiguous',relation:'uncertain',confidence:.2,relevance:'unknown',relevanceEvidenceMsgIds:[]}]},meta:{provider:'http',model:'fixture',durationMs:0}}
+        assignments:[{msgId:source,topicRef:'ambiguous',relation:'about',confidence:.2,relevance:'unknown',relevanceEvidenceMsgIds:[]}]},meta:{provider:'http',model:'fixture',durationMs:0}}
     }}
     const first=await service.analyze(chatId,()=>provider)
     assert.equal(first.ok,true,JSON.stringify(first))
     assert.equal(providerCalls,1)
     assert.ok(payloadText.length<=7500)
-    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM discussion_topics WHERE chat_id=?').get(chatId).count,60)
-    assert.equal(db.prepare("SELECT disposition FROM topic_message_decisions WHERE chat_id=? AND msg_id=?").get(chatId,source).disposition,'uncertain')
-    assert.equal(db.prepare("SELECT state,reason_codes_json FROM topic_identity_decisions WHERE chat_id=?").get(chatId).state,'open')
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM discussion_topics WHERE chat_id=?').get(chatId).count,61)
+    assert.equal(db.prepare("SELECT disposition FROM topic_message_decisions WHERE chat_id=? AND msg_id=?").get(chatId,source).disposition,'assigned')
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM topic_evidence WHERE msg_id=?').get(source).count,1)
+    const decision=db.prepare("SELECT outcome,state FROM topic_identity_decisions WHERE chat_id=?").get(chatId)
+    assert.equal(decision.outcome,'new');assert.equal(decision.state,'resolved')
     assert.equal(service.pendingCount(chatId),0)
     await service.analyze(chatId,()=>provider)
-    assert.equal(providerCalls,1,'the stored defer is not automatically submitted again')
+    assert.equal(providerCalls,1,'the processed source is not automatically submitted again')
   }finally{opened.close()}
 })
 
@@ -861,8 +883,7 @@ test('provider-reported payload room truncates Topic candidates in the service: 
   assert.ok(deferred.seen.payload.historicalCandidates.length<8,'some candidates were dropped for the room')
   assert.deepEqual(deferred.seen.payload.historicalCandidates.map((candidate)=>candidate.entityId),deferred.seen.enumIds,'the model sees exactly the candidates the service validates and stores')
   const forced=await run('new')
-  assert.equal(forced.result.ok,false,'candidatesTruncated=true forces defer: a "new" outcome is rejected')
-  assert.equal(forced.result.failure.stage,'domain_validate')
+  assert.equal(forced.result.ok,true,JSON.stringify(forced.result))
 })
 
 test('GroupTopics keeps its user-priority provider path and rotates its durable epoch when the effective Host model/effort fingerprint changes',async()=>{

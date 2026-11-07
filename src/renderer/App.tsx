@@ -1,7 +1,6 @@
 import { MessageStream } from './components/MessageStream'
 import { OverviewPage } from './components/OverviewPage'
 import { SettingsPanel } from './components/Settings/SettingsPanel'
-import { IdentityInboxPanel } from './features/identity/IdentityInboxPanel'
 import { GroupTopicsPanel } from './features/groupTopics/GroupTopicsPanel'
 import { useHostCapabilities } from './platform/LineTodoApi'
 import { APP_VERSION } from './lib/appVersion'
@@ -10,7 +9,7 @@ import { parseOneOf, usePersistentState } from './lib/uiState'
 
 /**
  * App（M3：待辦看板）。
- * 頂部分頁切換：總覽 / 聊天 / 群組議題 / 待確認 / 設定。
+ * 頂部分頁切換：總覽 / 聊天 / 群組議題 / 設定。
  *   - 總覽：四欄（待辦 / 等回覆 / 行程 / 已完成）+ 今日摘要。
  *   - 聊天：LINE 聊天室、訊息與對話內群組議題。
  *   - 群組議題：所有群組的既有議題總覽與逐群操作。
@@ -20,8 +19,8 @@ import { parseOneOf, usePersistentState } from './lib/uiState'
  * 目前分頁（G-04）：外掛版存進 UI 狀態（lib/uiState.ts），view 重新建立後回到同一個分頁；standalone 不保存（與原本相同）。
  */
 
-type Tab = 'board' | 'stream' | 'topics' | 'identity' | 'settings'
-const parseTab = parseOneOf<Tab>(['board', 'stream', 'topics', 'identity', 'settings'])
+type Tab = 'board' | 'stream' | 'topics' | 'settings'
+const parseTab = parseOneOf<Tab>(['board', 'stream', 'topics', 'settings'])
 
 function App(): JSX.Element {
   const caps = useHostCapabilities()
@@ -55,12 +54,6 @@ function App(): JSX.Element {
           >
             群組議題
           </button>
-          <button
-            className={`tab ${tab === 'identity' ? 'active' : ''}`}
-            onClick={() => setTab('identity')}
-          >
-            待確認
-          </button>
           {caps.settingsTab && (
             <button
               className={`tab ${tab === 'settings' ? 'active' : ''}`}
@@ -84,7 +77,6 @@ function App(): JSX.Element {
         {tab === 'board' && <OverviewPage />}
         {tab === 'stream' && <MessageStream />}
         {tab === 'topics' && <GroupTopicsPanel />}
-        {tab === 'identity' && <IdentityInboxPanel />}
         {tab === 'settings' && caps.settingsTab && <SettingsPanel />}
       </main>
     </div>

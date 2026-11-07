@@ -17,7 +17,6 @@ import { NotMineReviewPanel } from '../../../src/renderer/components/Board/NotMi
 import { ReviewControls } from '../../../src/renderer/components/Board/KanbanBoard'
 import { TodaySummary } from '../../../src/renderer/components/TodaySummary'
 import { DraftReplyDialog } from '../../../src/renderer/components/DraftReplyDialog'
-import { IdentityInboxPanel } from '../../../src/renderer/features/identity/IdentityInboxPanel'
 import { ResidencyNotice, ResidencyStatusBar } from '../../../src/plugin/ui/ResidencyStatus'
 import type { ResidencyViewSource } from '../../../src/plugin/ui/ResidencyStatus'
 import { PluginRootLayout } from '../../../src/plugin/ui/PluginRootLayout'
@@ -74,9 +73,6 @@ export function appScene(api: Api): ReactElement {
 }
 export function appSceneWithState(api: Api, storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>): ReactElement {
   return <Host api={api}><UiStateProvider value={createLocalUiState(storage)}><App /></UiStateProvider></Host>
-}
-export function identityInboxScene(api: Api): ReactElement {
-  return <Host api={api}><IdentityInboxPanel /></Host>
 }
 
 /** what the board reads from useTodos: the error line, the number of todos and the 重試 of the error row */

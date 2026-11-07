@@ -11,6 +11,7 @@ import {
   markProcessed
 } from '../db/messages.repo'
 import { getChat, setBlocked } from '../db/chats.repo'
+import { isTodoExtractEnabled } from '../db/chatTodoPrefs.repo'
 import {
   createTodo,
   getOpenTodosByChat,
@@ -28,7 +29,6 @@ import { extractTodos } from '../llm/extractor'
 import { validateExtractResult, type ExtractResult } from '../llm/schema'
 import { evaluateChatAutoBlock, isBatchNoise, matchesChatIgnoreKeyword } from './blocklist'
 import { mapLimited } from './concurrency'
-import { normalizeTitle } from './dedup'
 import { assertIdentitySnapshotCurrent, deterministicSourceDigest, identityMetaState, insertIdentityEvent, refreshTodoIdentityTerms, tableExists } from '../db/identity.repo'
 import type { IdentityContextSnapshot as TrustedIdentitySnapshot, IdentityDecision } from '../../shared/identityDecision'
 import { IDENTITY_QUERY_VERSION } from '../../shared/identityDecision'
@@ -214,6 +214,7 @@ export function buildTodoApply(
   const { db, cfg, now } = ctx
   const versions = ctx.identityVersions ?? DEFAULT_TODO_IDENTITY_VERSIONS
   const apply = (): void => {
+    if (!isTodoExtractEnabled(db, chatId)) throw new Error('todo_extract_disabled')
     if (ctx.identity) {
       if (!opts.skipSnapshotAssert) assertIdentitySnapshotCurrent(db,chatId,ctx.identity.snapshot,'todo')
       const meta=identityMetaState(db,chatId,'todo')
@@ -238,11 +239,11 @@ export function buildTodoApply(
     const todoCandidates=new Map((ctx.identity?.candidates ?? []).filter((candidate)=>candidate.entityType==='todo').map((candidate)=>[candidate.entityId,candidate]))
     const snapshotCandidate=(candidateId:string,type:'todo'|'topic')=>ctx.identity?.snapshot.candidateRevisions.find((item)=>item.entityType===type&&item.entityId===candidateId)
 
-    const createDecisionRow=(draftRef:string,outcome:'update_existing'|'new'|'link'|'defer',draft:unknown,candidateIds:string[],reasonCode:string,canonicalTodoId:string|null):string=>{
+    const createDecisionRow=(draftRef:string,outcome:'update_existing'|'new'|'link',draft:unknown,candidateIds:string[],reasonCode:string,canonicalTodoId:string|null):string=>{
       const decisionId=randomUUID()
       const revision=(db.prepare('SELECT COALESCE(MAX(decision_revision),0)+1 AS revision FROM todo_identity_decisions WHERE chat_id=? AND source_digest=? AND draft_ref=?').get(chatId,digest,draftRef) as {revision:number}).revision
       db.prepare(`INSERT INTO todo_identity_decisions(decision_id,chat_id,source_digest,draft_ref,outcome,state,canonical_todo_id,decision_revision,source_epoch,scope_revision,identity_revision,topic_identity_revision,draft_json,candidate_snapshot_json,reason_codes_json,prompt_version,schema_version,query_version,created_at,updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(decisionId,chatId,digest,draftRef,outcome,outcome==='defer'?'open':'resolved',canonicalTodoId,revision,ctx.identity?.snapshot.sourceEpoch??1,ctx.identity?.snapshot.scopeRevision??1,ctx.identity?.snapshot.identityRevision??0,ctx.identity?.snapshot.topicIdentityRevision??0,JSON.stringify(draft),JSON.stringify({candidateIds,revisions:candidateIds.map((id)=>ctx.identity?.snapshot.candidateRevisions.find((candidate)=>candidate.entityId===id)??null)}),JSON.stringify([reasonCode]),versions.promptVersion,versions.schemaVersion,IDENTITY_QUERY_VERSION,now,now)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(decisionId,chatId,digest,draftRef,outcome,'resolved',canonicalTodoId,revision,ctx.identity?.snapshot.sourceEpoch??1,ctx.identity?.snapshot.scopeRevision??1,ctx.identity?.snapshot.identityRevision??0,ctx.identity?.snapshot.topicIdentityRevision??0,JSON.stringify(draft),JSON.stringify({candidateIds,revisions:candidateIds.map((id)=>ctx.identity?.snapshot.candidateRevisions.find((candidate)=>candidate.entityId===id)??null)}),JSON.stringify([reasonCode]),versions.promptVersion,versions.schemaVersion,IDENTITY_QUERY_VERSION,now,now)
       return decisionId
     }
     const addSources=(decisionId:string,evidenceIds:string[])=>{
@@ -261,10 +262,15 @@ export function buildTodoApply(
       const times=evidenceIds.map((id)=>eventTsById.get(id)).filter((x):x is number=>x!==undefined)
       return times.length===evidenceIds.length&&times.every((ts)=>ts<=candidate.completionEventTs!)
     }
-    const deferIdentityDraft=(nt:ExtractResult['newTodos'][number],decision:IdentityDecision,candidateIds:string[],reasonCode:string):void=>{
-      const decisionId=createDecisionRow(nt.draftRef!,'defer',nt,candidateIds,reasonCode,null)
+    const createNewTodo=(nt:ExtractResult['newTodos'][number],decision:IdentityDecision,candidateIds:string[],guard:string):void=>{
+      const created=createCanonicalTodo(nt)
+      changedTodoIds.add(created.id)
+      const canonicalId=created.id
+      const decisionId=createDecisionRow(nt.draftRef!,'new',nt,candidateIds,'insufficient_evidence',canonicalId)
       addSources(decisionId,decision.evidenceMsgIds??nt.sourceMsgIds)
-      addEvent(decisionId,'deferred',{modelOutcome:decision.outcome,modelReasonCode:decision.reasonCode,reasonCode,candidateIds})
+      insertSourceHistory(canonicalId,nt.sourceMsgIds)
+      addEvent(decisionId,'resolved_new',{canonicalTodoId:canonicalId,downgradedFrom:decision.outcome,guard})
+      result.todosCreated+=1;result.createdIds.push(canonicalId)
     }
 
     // Candidate decisions for new drafts are strict and take place in the same transaction as canonical writes and acknowledgement.
@@ -276,26 +282,17 @@ export function buildTodoApply(
         if(matchesChatIgnoreKeyword(nt,cfg.chatIgnoreKeywords[chatId]??[])) continue
         const candidate=decision.candidateType==='todo'&&decision.candidateId?todoCandidates.get(decision.candidateId):undefined
         const terminalCandidate=candidate&&(candidate.status==='done'||candidate.status==='dismissed')?candidate:undefined
-        const exactTerminalSignal=!decision.candidateId?(ctx.identity?.candidates.find((item)=>item.entityType==='todo'&&(item.status==='done'||item.status==='dismissed')&&normalizeTitle(item.title)===normalizeTitle(nt.title))):undefined
         if(terminalCandidate&&decision.outcome==='update_existing'&&(decision.reasonCode!=='same_completed_action'||!canUpdateTerminal(terminalCandidate,nt.sourceMsgIds))){
-          deferIdentityDraft(nt,decision,[terminalCandidate.entityId],'insufficient_evidence')
-          continue
-        }
-        if(exactTerminalSignal&&decision.outcome==='new'){
-          deferIdentityDraft(nt,decision,[exactTerminalSignal.entityId],'insufficient_evidence')
-          continue
-        }
-        if(terminalCandidate&&decision.outcome==='new'&&decision.relationKind!=='recurrence'){
-          deferIdentityDraft(nt,decision,[terminalCandidate.entityId],'insufficient_evidence')
+          createNewTodo(nt,decision,[terminalCandidate.entityId],'R1')
           continue
         }
         if(terminalCandidate&&(decision.outcome==='new'||decision.outcome==='link')&&decision.relationKind==='recurrence'){
           const times=nt.sourceMsgIds.map((id)=>eventTsById.get(id)).filter((x):x is number=>x!==undefined)
           const validRecurrence=decision.reasonCode==='fresh_occurrence'&&terminalCandidate.completionEventTs!==null&&times.length===nt.sourceMsgIds.length&&times.every((ts)=>ts>terminalCandidate.completionEventTs!)
-          if(!validRecurrence){deferIdentityDraft(nt,decision,[terminalCandidate.entityId],'insufficient_evidence');continue}
+          if(!validRecurrence){createNewTodo(nt,decision,[terminalCandidate.entityId],'R4');continue}
         }
         if(candidate&& !terminalCandidate && (decision.outcome==='new'||decision.outcome==='link') && decision.relationKind==='recurrence'){
-          deferIdentityDraft(nt,decision,[candidate.entityId],'insufficient_evidence')
+          createNewTodo(nt,decision,[candidate.entityId],'R5')
           continue
         }
         if(decision.outcome==='update_existing') {
@@ -306,7 +303,7 @@ export function buildTodoApply(
           const isTerminal=current.status==='done'||current.status==='dismissed'
           if(isTerminal&&(decision.reasonCode!=='same_completed_action'||!canUpdateTerminal(candidate,nt.sourceMsgIds))) throw new Error('completed_identity_event_time_unavailable')
           if(!isTerminal&&(!['pending','waiting_reply','scheduled','suggested_done'].includes(current.status)||decision.reasonCode==='same_completed_action')) {
-            deferIdentityDraft(nt,decision,[current.id],'insufficient_evidence')
+            createNewTodo(nt,decision,[current.id],'R6')
             continue
           }
           const existingSourceIds=parseSourceIdJson(current.source_msg_ids)
@@ -320,10 +317,6 @@ export function buildTodoApply(
           const decisionId=createDecisionRow(nt.draftRef!,decision.outcome,nt,[current.id],decision.reasonCode,current.id)
           addSources(decisionId,decision.evidenceMsgIds);addEvent(decisionId,'updated_existing',{todoId:current.id,sourceEventTs:Math.max(...nt.sourceMsgIds.map((id)=>eventTsById.get(id)??0)),preservedStatus:isTerminal?current.status:null})
           result.todosMerged+=1;result.updatedIds.push(current.id)
-        } else if(decision.outcome==='defer') {
-          const ids=decision.candidateId?[decision.candidateId]:[]
-          const decisionId=createDecisionRow(nt.draftRef!,decision.outcome,nt,ids,decision.reasonCode,null)
-          addSources(decisionId,decision.evidenceMsgIds);addEvent(decisionId,'deferred',{reasonCode:decision.reasonCode,candidateIds:ids})
         } else {
           if(decision.outcome==='link'&&!decision.candidateId) throw new Error('identity_link_target_missing')
           const created=createCanonicalTodo(nt)
@@ -414,7 +407,7 @@ export function applyChatExtract(
 
 function isTopicRelationAllowed(db:Database,chatId:string,topicId:string):boolean {
   const row=db.prepare(`SELECT t.topic_id FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
-    LEFT JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.chat_id=? AND t.topic_id=? AND c.is_group=1 AND c.blocked=0 AND p.enabled=1`).get(chatId,topicId)
+    LEFT JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.chat_id=? AND t.topic_id=? AND c.blocked=0 AND p.enabled=1`).get(chatId,topicId)
   return !!row
 }
 
@@ -654,9 +647,10 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
         candidates:input.identityCandidates,candidatesTruncated:input.identityCandidatesTruncated,
         selectedMessageIds:outcome.msgIds,targetType:'todo',allowedTodoIds:input.openTodos.map((todo)=>todo.id)
       }}, outcome.chatId, outcome.msgIds, outcome.extract, result)
-    } catch {
+    } catch (applyError) {
       result.chatsProcessed=Math.max(0,result.chatsProcessed-1)
-      result.chatsFailed+=1
+      if ((applyError instanceof Error && applyError.message === 'todo_extract_disabled') || !isTodoExtractEnabled(db, outcome.chatId)) result.chatsSkipped += 1
+      else result.chatsFailed+=1
       if(outcome.input.identitySnapshot.sourceLease) releaseIdentitySourceAttempt(db,outcome.input.identitySnapshot.sourceLease,true)
     }
   }

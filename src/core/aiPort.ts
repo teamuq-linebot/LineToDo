@@ -17,7 +17,7 @@ export type AiPriority = 'user' | 'background'
 export type AiJsonCheck = (value: unknown) => { ok: true; value: unknown } | { ok: false; reason: string }
 
 /** 外掛內所有 AI 用途的種類；同一個聊天室的所有用途共用一個 Host Session，種類只決定要套用哪一份規則文件。 */
-export type AiConversationKind = 'extract' | 'extractTopics' | 'draftReply' | 'analyzeNotMine' | 'groupTopics' | 'identityRetry' | 'promptRefine'
+export type AiConversationKind = 'extract' | 'extractTopics' | 'draftReply' | 'analyzeNotMine' | 'groupTopics' | 'promptRefine'
 
 /**
  * 外掛內部的對話歸屬提示，不會送給 Host AI API：

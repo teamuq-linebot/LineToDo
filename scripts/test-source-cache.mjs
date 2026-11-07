@@ -27,7 +27,6 @@ import {
   ensureGroupTopicsSchema,
   GROUP_TOPICS_SCHEMA_VERSION,
   loadPendingMessages,
-  setCrossChatEnabled,
   setEnabled
 } from '../src/main/features/groupTopics/repository.ts'
 
@@ -305,7 +304,7 @@ test('Todo and GroupTopics preserve their independent selector IDs while sharing
     assert.equal(readChatSourceState(db, 'chat-a').scopeRevision, scopeBefore + 1)
     assert.equal(setEnabled(db, 'chat-a', true), true)
     assert.equal(readChatSourceState(db, 'chat-a').scopeRevision, scopeBefore + 1)
-    assert.equal(setCrossChatEnabled(db, 'chat-a', true), true)
+    assert.equal(db.prepare("UPDATE group_topic_preferences SET cross_chat_enabled=1 WHERE chat_id='chat-a'").run().changes, 1)
     assert.equal(readChatSourceState(db, 'chat-a').scopeRevision, scopeBefore + 2)
   } finally {
     opened.close()

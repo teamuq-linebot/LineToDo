@@ -61,9 +61,10 @@ const noiseReply = () => ({ importance: 'noise', newTodos: [], identityDecisions
  * 旗標 OFF（或 0.2.10）的基準快照：已啟用議題的群組、數個 part，逐個記下 pull 出來的 user、item 欄位、system、system 雜湊與 session 指紋。
  * 回覆一律用合法的純待辦 noise，讓下一個 part 可以領。
  */
-export async function captureOffBaseline(queueOptions = {}) {
+export async function captureOffBaseline(queueOptions = {}, prepare = undefined) {
   const opened = openFixture()
   const db = opened.db
+  if (prepare) prepare(db)
   const dir = mkdtempSync(join(tmpdir(), 'line-todo-baseline-'))
   const chatId = 'group-baseline'
   try {

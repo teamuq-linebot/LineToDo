@@ -667,7 +667,7 @@ test('e2e groupTopics.analyze: the JSON Schema is put in the prompt (no structur
   await withStack({
     settings: { pluginCombinedExtract: false },
     reply: (ctx) => {
-      if (!ctx.system.includes('ONE group chat')) return fenced(todoFor(ctx.user))
+      if (!ctx.system.includes('ONE chat only')) return fenced(todoFor(ctx.user))
       const payload = JSON.parse(ctx.user)
       return '```json\n' + JSON.stringify({
         topics: [{ ref: 'launch', title: '產品發表會', summary: '討論發表會的場地與時間。' }],
@@ -686,14 +686,14 @@ test('e2e groupTopics.analyze: the JSON Schema is put in the prompt (no structur
     const listed = await api.groupTopics.list('g-launch')
     assert.equal(listed.topics.length, 1)
     assert.equal(listed.topics[0].title, '產品發表會')
-    const topicCall = calls.find((c) => c.system.includes('ONE group chat'))
+    const topicCall = calls.find((c) => c.system.includes('ONE chat only'))
     assert.ok(topicCall.system.includes('【輸出格式') && topicCall.system.includes('"msgId"') && topicCall.system.includes('i:m1'), 'the per-batch JSON Schema (with the msgId enum) is in the prompt')
     assert.ok(topicCall.user.length <= CONTRACT.limits.inputChars)
   })
   // invalid output (an assignment for a message that was never sent) is rejected by the backend and nothing is saved
   await withStack({
     settings: { pluginCombinedExtract: false },
-    reply: (ctx) => (ctx.system.includes('ONE group chat') ? JSON.stringify({ topics: [], identityDecisions:[], assignments: [{ msgId: 'ghost', topicRef: null, relation: 'uncertain', confidence: 0.1, relevance: 'unknown', relevanceEvidenceMsgIds: [] }] }) : fenced(todoFor(ctx.user)))
+    reply: (ctx) => (ctx.system.includes('ONE chat only') ? JSON.stringify({ topics: [], identityDecisions:[], assignments: [{ msgId: 'ghost', topicRef: null, relation: 'uncertain', confidence: 0.1, relevance: 'unknown', relevanceEvidenceMsgIds: [] }] }) : fenced(todoFor(ctx.user)))
   }, async ({ api, line }) => {
     line.emit(raw(1, { chatId: 'g-x', chat: '群', isGroup: true, text: '大家好' }))
     await until(async () => (await api.db.chats.get('g-x')) !== null, { message: 'chat persisted' })
@@ -742,7 +742,7 @@ test('e2e combined extraction: with pluginCombinedExtract on (the default), one 
     const overview = (await api.groupTopics.overview()).find((row) => row.chatId === 'g-launch')
     assert.equal(overview.backlogCount, 0, 'nothing is left for the manual backfill')
     const combinedDiag = (await api.plugin.info()).extract.combined
-    assert.deepEqual({ topicApplied: combinedDiag.topicApplied, topicFailed: combinedDiag.topicFailed, decisions: combinedDiag.decisions, deferDecisions: combinedDiag.deferDecisions }, { topicApplied: 1, topicFailed: 0, decisions: 1, deferDecisions: 0 }, 'diagnostics expose the combined counters (the defer ratio)')
+    assert.deepEqual({ topicApplied: combinedDiag.topicApplied, topicFailed: combinedDiag.topicFailed, decisions: combinedDiag.decisions }, { topicApplied: 1, topicFailed: 0, decisions: 1 }, 'diagnostics expose the combined counters')
   })
   await withStack({ settings: { pollIntervalSec: 3600, pluginCombinedExtract: false }, reply: replyFor }, async ({ api, line, calls }) => {
     for (let i = 1; i <= 2; i += 1) line.emit(raw(i, { chatId: 'g-launch', chat: '發表會籌備群', isGroup: true, text: `發表會場地第 ${i} 案要不要訂？` }))

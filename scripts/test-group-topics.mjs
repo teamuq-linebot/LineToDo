@@ -42,8 +42,7 @@ function withIdentityDecisions(result,user) {
     const existing=candidates.find((candidate)=>candidate.entityType==='topic'&&candidate.title.trim().toLocaleLowerCase()===topic.title.trim().toLocaleLowerCase())
     const evidence=(result.assignments??[]).filter((assignment)=>assignment.topicRef===topic.ref).map((assignment)=>assignment.msgId).filter((id)=>messages.some((message)=>message.msgId===id))
     const evidenceMsgIds=evidence.length?evidence:[messages[0]?.msgId].filter(Boolean)
-    const defer=payload.historicalCandidatesTruncated===true
-    return {draftRef:topic.ref,outcome:defer?'defer':existing?'update_existing':'new',candidateType:defer?null:existing?'topic':null,candidateId:defer?null:existing?.entityId??null,relationKind:null,reasonCode:defer?'candidate_cap':existing?'same_active_action':'insufficient_evidence',confidenceBand:defer?'low':'high',evidenceMsgIds}
+    return {draftRef:topic.ref,outcome:existing?'update_existing':'new',candidateType:existing?'topic':null,candidateId:existing?.entityId??null,relationKind:null,reasonCode:existing?'same_active_action':'insufficient_evidence',confidenceBand:'high',evidenceMsgIds}
   })}
 }
 
@@ -70,7 +69,7 @@ test('group topic analysis is opt-in, chat-local, fail-closed, and never writes 
   const db = dbFixture()
   const service = createGroupTopicsService(db)
   let calls = 0
-  const providerA = fakeProvider(analysisA, (req) => { calls++; assert.match(req.system,/ONE group chat/); assert.equal(JSON.parse(req.user).messages[0].msgId,'a1'); assert.equal(Object.hasOwn(JSON.parse(req.user).messages[0],'sender'),false); assert.equal(/participant_key|sender_mid|account_mid|_from/i.test(req.user),false) })
+  const providerA = fakeProvider(analysisA, (req) => { calls++; assert.match(req.system,/ONE chat only/); assert.equal(JSON.parse(req.user).messages[0].msgId,'a1'); assert.equal(Object.hasOwn(JSON.parse(req.user).messages[0],'sender'),false); assert.equal(/participant_key|sender_mid|account_mid|_from/i.test(req.user),false) })
   assert.deepEqual(await service.analyze('group-a',()=>providerA),{ok:false,reason:'disabled'})
   assert.equal(calls,0)
   assert.deepEqual(service.enable('group-a',true),{ok:true})
@@ -121,21 +120,9 @@ test('direct chat topics are opt-in, stay chat-local, retain todo references, an
   assert.equal(ownTopic.topics[0].chatId,'dm')
   assert.deepEqual(service.todoRefs(ownTopic.topics[0].topicId),[{todoId:'todo-dm',status:'pending',bucket:'todo',matchedMsgIds:['d1']}])
   assert.deepEqual(service.list('group-a'),{ok:false,topics:[]})
-  assert.deepEqual(service.enableCrossChat('dm',true),{ok:false})
-  assert.equal(service.crossChatEnabled('dm'),false)
-  assert.deepEqual(service.listLinkCandidates('dm'),[])
-
-  service.enable('group-a',true); service.enableCrossChat('group-a',true)
-  service.enable('group-b',true); service.enableCrossChat('group-b',true)
-  await service.analyze('group-a',()=>fakeProvider(analysisA))
-  await service.analyze('group-b',()=>fakeProvider({topics:[{ref:'budget',title:'Orion budget',summary:'Project Orion budget timeline.'}],assignments:[
-    {msgId:'b1',topicRef:'budget',relation:'about',confidence:.7,relevance:'unknown',relevanceEvidenceMsgIds:[]}
-  ]}))
-  const groupCandidates=service.listLinkCandidates('group-b')
-  assert.equal(groupCandidates.length,1)
-  assert.equal(groupCandidates[0].otherChatName,'群甲')
-  assert.deepEqual(groupCandidates[0].eventEvidenceMsgIds.sort(),['a1','b1'])
-  assert.equal(groupCandidates[0].eventEvidenceMsgIds.includes('d1'),false)
+  assert.equal(service.enableCrossChat,undefined)
+  assert.equal(service.crossChatEnabled,undefined)
+  assert.equal(service.listLinkCandidates,undefined)
 
   service.enable('dm',false)
   assert.deepEqual(service.list('dm'),{ok:false,topics:[]})
@@ -153,35 +140,31 @@ test('direct chat topics are opt-in, stay chat-local, retain todo references, an
   db.close()
 })
 
-test('semantic cross-group recall is only a proposed unknown relation; chat-scoped identities never become same-person claims', async () => {
+test('X1 cross-group lexical recall is retired: overlapping terms create no topic_links even with legacy cross_chat_enabled rows', async () => {
   const db=dbFixture(); const service=createGroupTopicsService(db)
-  service.enable('group-a',true); service.enableCrossChat('group-a',true)
-  service.enable('group-b',true); service.enableCrossChat('group-b',true)
+  service.enable('group-a',true); service.enable('group-b',true)
+  db.prepare('UPDATE group_topic_preferences SET cross_chat_enabled=1 WHERE chat_id IN (?,?)').run('group-a','group-b')
   await service.analyze('group-a',()=>fakeProvider(analysisA))
   const resultB={topics:[{ref:'budget',title:'Orion budget',summary:'Project Orion budget timeline.'}],assignments:[{msgId:'b1',topicRef:'budget',relation:'about',confidence:.7,relevance:'unknown',relevanceEvidenceMsgIds:[]}]}
-  await service.analyze('group-b',()=>fakeProvider(resultB))
-  const candidates=service.listLinkCandidates('group-b')
-  assert.equal(candidates.length,1)
-  assert.equal(candidates[0].relation,'unknown')
-  assert.equal(candidates[0].identityEvidence,'unknown')
-  assert.equal(candidates[0].eventEvidenceCount,2)
-  const stored=db.prepare('SELECT relation,identity_evidence,status FROM topic_links').get()
-  assert.equal(stored.relation,'unknown'); assert.equal(stored.identity_evidence,'unknown'); assert.equal(stored.status,'proposed')
-  assert.equal(service.listLinkCandidates('group-a').length,1)
-  service.enable('group-b',false)
-  assert.equal(service.listLinkCandidates('group-a').length,0)
-  service.enable('group-b',true)
-  service.enableCrossChat('group-b',false)
-  assert.equal(service.listLinkCandidates('group-a').length,0)
-  service.enableCrossChat('group-b',true)
-  assert.equal(service.listLinkCandidates('group-a').length,1)
-  assert.deepEqual(service.listLinkCandidates('group-a')[0].eventEvidenceMsgIds.sort(),['a1','b1'])
-  db.prepare("UPDATE chats SET blocked=1 WHERE chat_id='group-b'").run()
-  assert.equal(service.listLinkCandidates('group-a').length,0)
-  db.prepare("UPDATE chats SET blocked=0 WHERE chat_id='group-b'").run()
-  db.prepare("UPDATE chats SET blocked=1 WHERE chat_id='group-a'").run()
-  assert.equal(service.listLinkCandidates('group-a').length,0)
+  const analysed=await service.analyze('group-b',()=>fakeProvider(resultB))
+  assert.equal(analysed.ok,true)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_links').get().n,0)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_link_identity_events').get().n,0)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM discussion_topics').get().n>=2,true)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM group_topic_preferences WHERE cross_chat_enabled=1').get().n,2)
   assert.equal(db.prepare('SELECT COUNT(*) n FROM todos').get().n,0)
+  db.close()
+})
+
+test('X2 pre-existing proposed links and stale_at semantics are unchanged by the retired recall', async () => {
+  const db=dbFixture(); const service=createGroupTopicsService(db)
+  service.enable('group-a',true)
+  db.prepare(`INSERT INTO discussion_topics(topic_id,chat_id,local_ref,title,summary,created_at,last_source_ts) VALUES('peer-x2','group-b','peer','Peer subject','Peer summary','now',3)`).run()
+  await service.analyze('group-a',()=>fakeProvider(analysisA))
+  const topic=listTopics(db,'group-a')[0]
+  db.prepare(`INSERT INTO topic_links(link_id,left_topic_id,right_topic_id,relation,identity_evidence,event_evidence_msg_ids,status,created_at) VALUES('keep-link',?,'peer-x2','unknown','unknown','["a1","b1"]','proposed','now')`).run(topic.topicId)
+  const row=db.prepare("SELECT relation,identity_evidence,status,stale_at FROM topic_links WHERE link_id='keep-link'").get()
+  assert.deepEqual({...row},{relation:'unknown',identity_evidence:'unknown',status:'proposed',stale_at:null})
   db.close()
 })
 
@@ -689,10 +672,10 @@ test('Phase 2: the existing v4/v3 bundle exports are unchanged by the combined a
   assert.equal(GROUP_TOPICS_BUNDLE_ENABLED, true)
   assert.equal(GROUP_TOPICS_PROMPT_VERSION, 'group-topics-v4')
   assert.equal(GROUP_TOPICS_SCHEMA_VERSION, 'topic-output-v3')
-  assert.equal(GROUP_TOPICS_PROMPT_HASH, '4755390607a1f94edb755ca6206f38a131300f2337bc1c02eeda0d207e8f880c')
-  assert.equal(GROUP_TOPICS_SCHEMA_HASH, 'a3b46874a34034a9ec23d8c3759a2cb80e18c63ed1ffded15f7e6757a828c2ce')
-  assert.equal(createHash('sha256').update(GROUP_TOPICS_PROMPT).digest('hex'), '7b4cc94d39b61c9b60db523089196b2a2dfc2b2bfaabfd9e06988feb01b1d0f5')
-  assert.equal(createHash('sha256').update(JSON.stringify(GROUP_TOPICS_JSON_SCHEMA)).digest('hex'), '24389c95635021486866a5ffe9b324e78adbdb57712d10ae36a6e45d9024f758')
+  assert.equal(GROUP_TOPICS_PROMPT_HASH, 'a2159b4d35e24f4c78d8cef19394a8d51e99fe2b875ef8cf18092b84cb88d3d5')
+  assert.equal(GROUP_TOPICS_SCHEMA_HASH, '41ad5712b34c87ddec70b084e6757872e22bc73e2039e60388c6aee3673ddf9f')
+  assert.equal(createHash('sha256').update(GROUP_TOPICS_PROMPT).digest('hex'), '30e31c41f44342ba8c95a5c895e6ec70b6dafe6b2a70ecb797d8c8b14b426d2e')
+  assert.equal(createHash('sha256').update(JSON.stringify(GROUP_TOPICS_JSON_SCHEMA)).digest('hex'), 'cdb0b8188f11901d9ed80ece6580ff544c1c7aaab0bdb3d5e91b63e13ea7ed33')
 })
 
 test('Phase 2: the combined bundle has its own versions and tracked hashes distinct from the topic bundle', () => {

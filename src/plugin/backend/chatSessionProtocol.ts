@@ -1,7 +1,7 @@
 /**
  * chatSessionProtocol.ts — 每個 LINE 聊天室（與全域 prompt 修正）固定一個 Host Session 的對話協議。
  *
- * Host 不允許接續時換 `system`，而同一個聊天室的所有 AI 用途（抽取、草擬回覆、誤判分析、群組議題、身份重判）要共用同一個 Session，
+ * Host 不允許接續時換 `system`，而同一個聊天室的所有 AI 用途（抽取、草擬回覆、誤判分析、群組議題）要共用同一個 Session，
  * 所以 Session 的 `system` 在建立時凍結為與用途無關的 `CHAT_SESSION_SYSTEM_V1`；各用途的靜態規則改以「規則文件」turn 送進對話，
  * 之後每個任務 turn 只帶短標籤。規則改版（使用者改 prompt、名字、輸出合約升版）＝多送一份新 rev 的規則文件，Session 不換。
  *
@@ -12,7 +12,7 @@ import type { AiConversationKind } from '../../core/aiPort'
 
 export type ChatTaskKind = AiConversationKind
 
-export const CHAT_TASK_KINDS: readonly ChatTaskKind[] = Object.freeze(['extract', 'extractTopics', 'draftReply', 'analyzeNotMine', 'groupTopics', 'identityRetry', 'promptRefine'] as const)
+export const CHAT_TASK_KINDS: readonly ChatTaskKind[] = Object.freeze(['extract', 'extractTopics', 'draftReply', 'analyzeNotMine', 'groupTopics', 'promptRefine'] as const)
 
 /** 協議版本：只有改 `CHAT_SESSION_SYSTEM_V1` 或下列標籤格式時才需要改；改了＝對照列失效、建新 Session（舊 Session 不動）。 */
 export const CHAT_SESSION_CONTRACT_REVISION = 'line-chat-session.v1'

@@ -423,6 +423,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   })
   // 草擬回覆／誤判分析／群組議題分析：core 照 standalone 的邏輯跑，provider.complete() 直接經 AI port 呼叫 host.ai.complete（使用者動作，排在背景抽取之前）。
   const aiProvider = createPortAiProvider(aiPort, { usable: () => { const state = aiPort.status().state; return state !== 'unavailable' && state !== 'revoked' && state !== 'stopped' } })
+  // 議題背景分析：同一個 port，但排在使用者動作之後。
+  const aiProviderBackground = createPortAiProvider(aiPort, { priority: 'background', usable: () => { const state = aiPort.status().state; return state !== 'unavailable' && state !== 'revoked' && state !== 'stopped' } })
   // ai-status 事件：最多每秒一則（trailing）。每一輪 AI 呼叫都會讓 busy 翻兩次，不節流會擠掉與 line-message 共用的 512 則事件環。
   let aiStatusTimer: ReturnType<typeof setTimeout> | null = null
   let lastAiStatusAt = 0
@@ -484,7 +486,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       pipelineConfig: { getDefaults, getQwenConfig, isProviderConfigured: () => true },
       // 舊的「補分析」只處理集合 B（processed=1 且尚無議題決策）：只在合併整理真的會跑的時候（外掛 backend、旗標開、bundle 可用）。
       combinedExtractActive: () => settings.get().pluginCombinedExtract === true && COMBINED_BUNDLE_ENABLED,
-      providers: { resolveProvider: () => aiProvider },
+      providers: { resolveProvider: () => aiProvider, resolveBackgroundProvider: () => aiProviderBackground },
+      topicBackgroundLog: (event, detail) => log(`[topic-bg] ${event} ${JSON.stringify(detail ?? {})}`),
       onSettingsChanged: () => {
         scheduler?.notifySettingsChanged()
         // 選了別的供應者／模型／推理強度：port 下一次呼叫前會發現並重新讀 host 的選項；叫 worker 現在就看一次，不必等退避到期。

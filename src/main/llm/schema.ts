@@ -42,7 +42,7 @@ export const EXTRACT_JSON_SCHEMA = {
           required:['draftRef','outcome','candidateType','candidateId','relationKind','reasonCode','confidenceBand','evidenceMsgIds'],
           properties:{
             draftRef:{type:'string',pattern:'^[a-zA-Z0-9_-]{1,40}$'},
-            outcome:{type:'string',enum:['update_existing','new','link','defer']},
+            outcome:{type:'string',enum:['update_existing','new','link']},
             candidateType:{type:['string','null'],enum:['todo','topic',null]},
             candidateId:{type:['string','null']},
             relationKind:{type:['string','null'],enum:['recurrence','related_action','follow_up','same_topic',null]},

@@ -6,7 +6,6 @@ import type {
   ReconcileProgress, ReviewLastDaysResult, QwenTestResult, ProviderHealth,
   SettingsView, SettingsPatch, DraftReplyResult,
   DriverStatus, DriverPostRequest, DriverPostResult, DriverPostProgress, DriverFollowUpResult,
-  IdentityEntityTypeDTO, IdentityResolveInputDTO, IdentityRetryResultDTO, IdentityReviewItemDTO, IdentityInspectDTO, TodoTopicRelationDTO, TopicLinkProposalDTO
 } from '../shared/api'
 export * from '../shared/api'
 
@@ -48,15 +47,10 @@ const api = {
 
   groupTopics: {
     setEnabled: (chatId: string, enabled: boolean) => ipcRenderer.invoke('groupTopics:setEnabled', { chatId, enabled }),
-    setCrossChatEnabled: (chatId: string, enabled: boolean) => ipcRenderer.invoke('groupTopics:setCrossChatEnabled', { chatId, enabled }),
-    crossChatEnabled: (chatId: string) => ipcRenderer.invoke('groupTopics:crossChatEnabled', { chatId }),
     pendingCount: (chatId: string) => ipcRenderer.invoke('groupTopics:pendingCount', { chatId }),
     list: (chatId: string) => ipcRenderer.invoke('groupTopics:list', { chatId }),
-    linkCandidates: (chatId: string) => ipcRenderer.invoke('groupTopics:linkCandidates', { chatId }),
     analyze: (chatId: string) => ipcRenderer.invoke('groupTopics:analyze', { chatId }),
     todoRefs: (topicId: string) => ipcRenderer.invoke('groupTopics:todoRefs', { topicId }),
-    linkProposals: (chatId: string): Promise<TopicLinkProposalDTO[]> => ipcRenderer.invoke('groupTopics:linkProposals', { chatId }),
-    resolveLinkProposal: (input: { linkId: string; expectedLinkRevision: number; leftTopicRevision: number; rightTopicRevision: number; choice: 'accept' | 'reject' }) => ipcRenderer.invoke('groupTopics:resolveLinkProposal', input)
   },
 
   messages: {
@@ -104,6 +98,12 @@ const api = {
       /** 取單一聊天室。 */
       get: (chatId: string): Promise<ChatDTO | null> =>
         ipcRenderer.invoke('chats:get', { chatId }),
+      /** 此聊天室的待辦抽取開關（預設開）。 */
+      todoExtractEnabled: (chatId: string): Promise<boolean> =>
+        ipcRenderer.invoke('chats:todoExtractEnabled', { chatId }),
+      /** 切換待辦抽取開關；重新開啟補抽最近 7 天。 */
+      setTodoExtractEnabled: (chatId: string, enabled: boolean): Promise<{ ok: boolean; enabled: boolean; skippedOlder: number }> =>
+        ipcRenderer.invoke('chats:setTodoExtractEnabled', { chatId, enabled }),
       /** 切換黑名單。 */
       setBlocked: (
         chatId: string,
@@ -181,14 +181,6 @@ const api = {
       reopenNotMine: (feedbackId) => ipcRenderer.invoke('todos:reopenNotMine',{feedbackId}),
       applyNotMineCorrection: (feedbackId,condition,effect) => ipcRenderer.invoke('todos:applyNotMineCorrection',{feedbackId,condition,effect}),
       setNotMineCorrectionEnabled: (correctionId,enabled) => ipcRenderer.invoke('todos:setNotMineCorrectionEnabled',{correctionId,enabled}),
-      identity: {
-        listPending: (input: { entityType: IdentityEntityTypeDTO; chatId?: string; after?: { decisionId: string }; limit?: number }): Promise<{ items: IdentityReviewItemDTO[]; next?: { decisionId: string } }> => ipcRenderer.invoke('identity:listPending', input),
-        inspect: (input: { entityType: IdentityEntityTypeDTO; decisionId: string }): Promise<IdentityInspectDTO | null> => ipcRenderer.invoke('identity:inspect', input),
-        retry: (input: { entityType: IdentityEntityTypeDTO; decisionId: string; expectedDecisionRevision: number }): Promise<IdentityRetryResultDTO> => ipcRenderer.invoke('identity:retry', input),
-        resolve: (input: IdentityResolveInputDTO) => ipcRenderer.invoke('identity:resolve', input),
-        todoTopicRelations: (chatId: string): Promise<TodoTopicRelationDTO[]> => ipcRenderer.invoke('identity:todoTopicRelations', { chatId }),
-        resolveTodoTopicRelation: (input: { relationId: string; expectedRevision: number; expectedTodoRevision: number; expectedTopicRevision: number; choice: 'confirm' | 'reject' }) => ipcRenderer.invoke('identity:resolveTodoTopicRelation', input)
-      }
     },
     /** 訂閱「DB 有新訊息落庫」事件；回傳 unsubscribe。 */
     onMessagesPersisted: (

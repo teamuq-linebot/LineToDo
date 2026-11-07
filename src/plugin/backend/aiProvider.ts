@@ -119,6 +119,8 @@ export interface PortAiProviderOptions {
   id?: 'codexCli'
   /** 為 true＝port 現在不會馬上拒絕（`health()` 用）。 */
   usable?(): boolean
+  /** AI port 排程優先權；預設 'user'。背景議題分析用 'background'。 */
+  priority?: 'user' | 'background'
 }
 
 /** core 的 `providers.resolveProvider()` 回傳這個：complete() 交給 AI port，不碰任何網路或行程。 */
@@ -139,7 +141,7 @@ export function createPortAiProvider(port: AiPort, options: PortAiProviderOption
         const system = scope === undefined && contract !== undefined ? `${req.system}\n\n${contract}` : req.system
         const user = fitUserPayload(req.user, maxUserCharsFor(scope !== undefined, contract))
         const result = await port.complete({
-          system, user, expectJson, priority: 'user',
+          system, user, expectJson, priority: options.priority ?? 'user',
           ...(scope !== undefined ? { conversationScope: scope, ...(contract !== undefined ? { dynamicContract: contract } : {}) } : {}),
           ...(req.onAdditionalUserPayload ? { onAdditionalUserPayload: req.onAdditionalUserPayload } : {})
         })

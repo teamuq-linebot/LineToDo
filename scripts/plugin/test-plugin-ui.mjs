@@ -83,8 +83,8 @@ test('board: plugin and standalone both expose the five main tabs including grou
   // App reads the theme from the DOM on first render; a server render has no DOM
   globalThis.document = { documentElement: { dataset: {} } }
   try {
-    assert.deepEqual(tabs(renderApp(STANDALONE)), ['總覽', '聊天', '群組議題', '待確認', '設定'])
-    assert.deepEqual(tabs(renderApp(PLUGIN)), ['總覽', '聊天', '群組議題', '待確認', '設定'])
+    assert.deepEqual(tabs(renderApp(STANDALONE)), ['總覽', '聊天', '群組議題', '設定'])
+    assert.deepEqual(tabs(renderApp(PLUGIN)), ['總覽', '聊天', '群組議題', '設定'])
   } finally { delete globalThis.document }
 })
 
@@ -168,7 +168,7 @@ test('G-04: a re-created plugin view restores the tab, the sort / filters and gr
   assert.equal(active(renderAppWithState(PLUGIN, null)), '總覽')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'topics' })), '群組議題', 'the previously saved group-topics tab is restored')
   assert.equal(active(renderAppWithState(STANDALONE, { 'app.tab': 'topics' })), '群組議題')
-  assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'identity' })), '待確認')
+  assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'identity' })), '總覽', 'a saved value from the removed review tab falls back to the overview')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'settings' })), '設定')
   assert.equal(active(renderAppWithState(STANDALONE, { 'app.tab': 'settings' })), '設定')
   assert.equal(active(renderAppWithState(PLUGIN, { 'app.tab': 'unknown-tab' })), '總覽', 'unknown saved values still fall back to the overview')

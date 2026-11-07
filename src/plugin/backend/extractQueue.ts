@@ -38,6 +38,7 @@ import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapsh
 import { getMessagesByChatAndIds, getRecentByChat } from '../../main/db/messages.repo'
 import { IDENTITY_QUERY_VERSION } from '../../shared/identityDecision'
 import { sharedSourceRows } from '../../main/db/sourceCache'
+import { isTodoExtractEnabled } from '../../main/db/chatTodoPrefs.repo'
 import type { ChatSourceLease } from '../../main/db/sourceCache'
 
 export const EXTRACT_SYSTEM_SHA256 = createHash('sha256').update(EXTRACT_SYSTEM_PROMPT).digest('hex')
@@ -67,10 +68,10 @@ export const COMBINED_LOCAL_TOPICS_RATIO = 0.15
 export const COMBINED_DEGRADE_FAILS = 2
 export const COMBINED_DEGRADE_MS = 30 * 60_000
 
-/** 合併整理的診斷計數（replyChars＝已解析的回覆 JSON 序列化後的字元數；decisions／deferDecisions＝議題身分決策總數與 defer 數）。 */
+/** 合併整理的診斷計數（replyChars＝已解析的回覆 JSON 序列化後的字元數；decisions＝議題身分決策總數）。 */
 export interface CombinedCounters {
   partsWithTopic: number; topicApplied: number; topicFailed: number; topicAbsent: number; topicDiscarded: number; todoFailedTopicApplied: number
-  decisions: number; deferDecisions: number; replyChars: number; replyCharsMax: number; fallbackSystemTooLarge: number; fallbackDegraded: number
+  decisions: number; replyChars: number; replyCharsMax: number; fallbackSystemTooLarge: number; fallbackDegraded: number
 }
 
 // ───────────────────────── 切片：把一個 chat 的輸入切成 ≤ maxChars 的 payload ─────────────────────────
@@ -423,7 +424,7 @@ export class ExtractQueue implements ExtractSink {
   /** 合併整理的議題邊自動降級（設計 §4.3）：連續失敗 COMBINED_DEGRADE_FAILS 次後 COMBINED_DEGRADE_MS 內只送純待辦；議題成功一次就清零；重啟後清空。 */
   private readonly topicDegrade = new Map<string, { fails: number; until: number }>()
   private readonly fallbackLogged = new Set<string>()
-  private readonly combinedCounters: CombinedCounters = { partsWithTopic: 0, topicApplied: 0, topicFailed: 0, topicAbsent: 0, topicDiscarded: 0, todoFailedTopicApplied: 0, decisions: 0, deferDecisions: 0, replyChars: 0, replyCharsMax: 0, fallbackSystemTooLarge: 0, fallbackDegraded: 0 }
+  private readonly combinedCounters: CombinedCounters = { partsWithTopic: 0, topicApplied: 0, topicFailed: 0, topicAbsent: 0, topicDiscarded: 0, todoFailedTopicApplied: 0, decisions: 0, replyChars: 0, replyCharsMax: 0, fallbackSystemTooLarge: 0, fallbackDegraded: 0 }
 
   constructor(opts: ExtractQueueOptions) {
     this.opts = opts
@@ -450,6 +451,10 @@ export class ExtractQueue implements ExtractSink {
     if (this.disposed) return
     this.reap()
     const chatId = input.chat.chatId
+    if (!isTodoExtractEnabled(this.opts.db, chatId)) {
+      for (const [id, e] of this.entries) if (e.chatId === chatId && e.mode === 'apply' && e.state === 'pending') this.entries.delete(id)
+      return
+    }
     const wanted = new Set(msgIds)
     // 已被領走（租約中）的訊息不重複供料；其餘訊息照常排隊。
     const inflight = new Set<string>()
@@ -563,6 +568,7 @@ export class ExtractQueue implements ExtractSink {
     let soonest: number | null = null
     for (const e of [...this.entries.values()]) {
       if (e.state !== 'pending') continue
+      if (e.mode === 'apply' && !isTodoExtractEnabled(this.opts.db, e.chatId)) { this.entries.delete(e.id); continue }
       if (e.notBefore > now) { soonest = soonest === null ? e.notBefore : Math.min(soonest, e.notBefore); continue }
       if (busyChats.has(e.chatId)) continue // 同一個 chat 一次只領一片，後面的片段等前一片回來
       if(e.input.identitySnapshot){
@@ -825,7 +831,7 @@ export class ExtractQueue implements ExtractSink {
           })
           topicApplied = applied.topic === 'applied'
           this.afterTopicOutcome(entry, applied.topic, applied.topicError, combinedTopic, topicFailure, topicTargets)
-          // 診斷（累計計數，不含訊息內容）：defer 比例＝deferDecisions／decisions；回覆長度＝replyChars／partsWithTopic。
+          // 診斷（累計計數，不含訊息內容）：回覆長度＝replyChars／partsWithTopic。
           try { this.opts.log?.('combined_commit', { chatId: entry.chatId, topic: applied.topic, todo: extract !== null, targets: topicTargets.length, ...this.combinedCounters }) } catch { /* 診斷失敗不影響流程 */ }
           if (topicApplied) topicChatIds.add(entry.chatId)
         } else applyChatExtract({ db: this.opts.db, cfg: this.opts.getConfig(), now: new Date(this.now()).toISOString(), ...(identity?{identity}:{}) }, entry.chatId, entry.msgIds, extract!, local)
@@ -839,6 +845,13 @@ export class ExtractQueue implements ExtractSink {
         if (extract === null) {
           // 待辦邊失敗、議題邊已寫入：待辦走現有失敗路徑（退避、訊息維持未處理）；下一次領取時議題目標已被決策過，只送純待辦。
           this.combinedCounters.todoFailedTopicApplied += 1
+          if (!isTodoExtractEnabled(this.opts.db, entry.chatId)) {
+            if(entry.sourceLease) releaseIdentitySourceAttempt(this.opts.db,entry.sourceLease,true)
+            this.entries.delete(entry.id)
+            this.chatFail.delete(entry.chatId)
+            out.push({ itemId, status: 'rejected', chatId: entry.chatId, code: 'todo_disabled' })
+            continue
+          }
           const retryInMs = this.recordFailure(entry, 'invalid_result')
           tally.chatsFailed += 1
           out.push({ itemId, status: 'rejected', chatId: entry.chatId, code: 'invalid_result', issues: issuesOf(todoError), retryInMs })
@@ -850,6 +863,12 @@ export class ExtractQueue implements ExtractSink {
         this.chatFail.delete(entry.chatId)
         out.push({ itemId, status: 'applied', chatId: entry.chatId, createdIds: local.createdIds, resolvedIds: local.resolvedIds, updatedIds: local.updatedIds })
       } catch (error) {
+        if (!isTodoExtractEnabled(this.opts.db, entry.chatId)) {
+          if(entry.sourceLease) releaseIdentitySourceAttempt(this.opts.db,entry.sourceLease,true)
+          this.entries.delete(entry.id)
+          out.push({ itemId, status: 'rejected', chatId: entry.chatId, code: 'todo_disabled' })
+          continue
+        }
         if(entry.sourceLease) releaseIdentitySourceAttempt(this.opts.db,entry.sourceLease,true)
         const retryInMs = this.recordFailure(entry, 'apply_failed')
         tally.chatsFailed += 1
@@ -944,7 +963,7 @@ export class ExtractQueue implements ExtractSink {
 
   // ── 內部 ──
 
-  /** 這個聊天室現在要不要走合併整理：旗標、bundle、群組已啟用議題、沒被降級、system 放得下。 */
+  /** 這個聊天室現在要不要走合併整理：旗標、bundle、聊天室已啟用議題、沒被降級、system 放得下。 */
   private combinedActiveFor(chatId: string): boolean {
     const combined = this.opts.combined
     if (!combined || !combined.enabled()) return false
@@ -952,9 +971,9 @@ export class ExtractQueue implements ExtractSink {
     try {
       if (!tableExists(this.opts.db, 'discussion_topics') || !tableExists(this.opts.db, 'group_topic_preferences')) return false
       const row = this.opts.db.prepare(
-        'SELECT c.is_group AS isGroup, c.blocked AS blocked, p.enabled AS enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?'
-      ).get(chatId) as { isGroup: number; blocked: number; enabled: number | null } | undefined
-      if (!row || row.isGroup !== 1 || row.blocked === 1 || row.enabled !== 1) return false
+        'SELECT c.blocked AS blocked, p.enabled AS enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?'
+      ).get(chatId) as { blocked: number; enabled: number | null } | undefined
+      if (!row || row.blocked === 1 || row.enabled !== 1) return false
     } catch { return false }
     const degraded = this.topicDegrade.get(chatId)
     if (degraded && degraded.until > this.now()) { this.noteFallback(chatId, 'degraded'); return false }
@@ -1020,7 +1039,7 @@ export class ExtractQueue implements ExtractSink {
     if (outcome === 'applied') {
       this.combinedCounters.topicApplied += 1
       this.topicDegrade.delete(entry.chatId)
-      for (const decision of topicOk?.identityDecisions ?? []) { this.combinedCounters.decisions += 1; if (decision.outcome === 'defer') this.combinedCounters.deferDecisions += 1 }
+      this.combinedCounters.decisions += topicOk?.identityDecisions?.length ?? 0
       return
     }
     if (outcome === 'discarded') {
@@ -1067,6 +1086,11 @@ export class ExtractQueue implements ExtractSink {
     if(entry.group?.sourceLease===entry.sourceLease) entry.group.sourceLease=undefined
     if(entry.group&&entry.group.identitySnapshotRef?.sourceLease===entry.sourceLease) entry.group.identitySnapshotRef.sourceLease=undefined
     entry.sourceLease=null
+    if (entry.mode === 'apply' && !isTodoExtractEnabled(this.opts.db, entry.chatId)) {
+      this.entries.delete(entry.id)
+      this.chatFail.delete(entry.chatId)
+      return 0
+    }
     if (entry.mode === 'await') {
       // 同步呼叫端（回顧）沿用 extractFn throw 語意：整個 chat 失敗，不在佇列內重試。
       this.entries.delete(entry.id)

@@ -118,7 +118,7 @@ test('flag OFF at pull time: a part offered while the flag was on is pulled as a
 
 // ───────────────────────── when the combined path applies ─────────────────────────
 
-test('flag ON: only groups with topics enabled get a topic key; 1:1 chats, groups without topics, and DBs without the topic tables stay todo-only', async () => {
+test('flag ON: only chats with topics enabled (groups and 1:1) get a topic key; chats without topics and DBs without the topic tables stay todo-only', async () => {
   const on = scenario()
   try {
     await on.feed()
@@ -147,7 +147,9 @@ test('flag ON: only groups with topics enabled get a topic key; 1:1 chats, group
   try {
     oneToOne.db.prepare('UPDATE chats SET is_group=0 WHERE chat_id=?').run(oneToOne.chatId)
     await oneToOne.feed()
-    assert.equal(oneToOne.pull().payload.topic, undefined)
+    const oneToOnePull = oneToOne.pull()
+    assert.equal(oneToOnePull.item.topics, true)
+    assert.deepEqual(oneToOnePull.payload.topic.targetMsgIds, oneToOne.ids)
   } finally { oneToOne.close() }
 })
 
@@ -737,15 +739,14 @@ test('measurement: size of a realistic maximal combined reply (20 targets) and t
     console.log('COMBINED_REPLY_CHARS ' + JSON.stringify({ replyChars: stats.replyChars, targets: 20, topics: 6, userChars: pulled.item.userChars }))
     assert.ok(stats.replyChars > 0 && stats.replyChars === stats.replyCharsMax)
     assert.equal(stats.decisions, 6)
-    assert.equal(stats.deferDecisions, 0)
     const logged = s.logs.filter(([event]) => event === 'combined_commit')
     assert.equal(logged.length, 1)
-    assert.deepEqual({ topic: logged[0][1].topic, todo: logged[0][1].todo, targets: logged[0][1].targets, decisions: logged[0][1].decisions, deferDecisions: logged[0][1].deferDecisions }, { topic: 'applied', todo: true, targets: 20, decisions: 6, deferDecisions: 0 })
+    assert.deepEqual({ topic: logged[0][1].topic, todo: logged[0][1].todo, targets: logged[0][1].targets, decisions: logged[0][1].decisions }, { topic: 'applied', todo: true, targets: 20, decisions: 6 })
     assert.equal(JSON.stringify(logged[0][1]).includes('Orion'), false, 'the diagnostic carries counters only, never message text')
   } finally { s.close() }
 })
 
-test('measurement: defer decisions are counted per topic identity decision (the diagnostic for R5)', async () => {
+test('a legacy topic defer decision in a combined reply is applied as a new topic', async () => {
   const s = scenario({ count: 4 })
   try {
     await s.feed()
@@ -753,10 +754,14 @@ test('measurement: defer decisions are counted per topic identity decision (the 
     const targets = pulled.payload.topic.targetMsgIds
     const topic = topicPart(pulled.payload)
     topic.identityDecisions = [{ ...decisionNew('orion', targets[0]), outcome: 'defer', reasonCode: 'ambiguous_candidates' }]
+    const topicsBefore = topicRows(s.db).topics
     commitOne(s, pulled.item, { todo: todoPart(pulled.payload), topic })
     const stats = s.queue.combinedStats()
+    assert.equal(stats.topicApplied, 1)
+    assert.equal(topicRows(s.db).topics, topicsBefore + 1)
     assert.equal(stats.decisions, 1)
-    assert.equal(stats.deferDecisions, 1)
+    assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM topic_identity_decisions WHERE outcome='new' AND state='resolved'").get().n, 1)
+    assert.equal(s.db.prepare("SELECT COUNT(*) AS n FROM topic_identity_decisions WHERE outcome='defer' OR state='open'").get().n, 0)
   } finally { s.close() }
 })
 

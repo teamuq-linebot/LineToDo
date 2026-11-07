@@ -1,5 +1,4 @@
 import type { HostAiControl, HostAiSelection } from './hostAi'
-import type { IdentityCandidate, IdentityDecision } from './identityDecision'
 
 export interface RawLineMessage {
   /** DB 主鍵（main 端由 deriveMsgId 衍生，含 'i:'/'d:' 前綴）；供 linemedia://media/<msgId> 顯圖與 media.open/saveAs。keyMaterial 絕不跨橋。 */
@@ -552,61 +551,6 @@ export interface DriverApi {
   onProgress(cb: (p: DriverPostProgress) => void): () => void
 }
 
-export type IdentityEntityTypeDTO = 'todo' | 'topic'
-export interface IdentityCandidateRevisionDTO { entityType: IdentityEntityTypeDTO; entityId: string; revision: number }
-export interface IdentitySourceEvidenceDTO { msgId: string; ts: number; timeIso: string; direction: 'in' | 'out'; sender: string | null; text: string | null }
-export interface IdentityReviewItemDTO {
-  entityType: IdentityEntityTypeDTO
-  decisionId: string
-  chatId: string
-  sourceDigest: string
-  draftRef: string
-  outcome: 'update_existing' | 'new' | 'link' | 'defer'
-  state: 'open' | 'stale' | 'resolved' | 'dismissed'
-  canonicalId: string | null
-  decisionRevision: number
-  sourceEpoch: number
-  scopeRevision: number
-  identityRevision: number
-  topicIdentityRevision: number
-  draft: unknown
-  reasonCodes: string[]
-  candidates: IdentityCandidate[]
-  candidateRevisions: IdentityCandidateRevisionDTO[]
-  sourceMsgIds: string[]
-  suggestedDecision?: IdentityDecision | null
-  updatedAt: string
-}
-export interface IdentityInspectDTO { item: IdentityReviewItemDTO; sourceEvidence: IdentitySourceEvidenceDTO[] }
-export interface IdentityResolveInputDTO {
-  entityType: IdentityEntityTypeDTO
-  decisionId: string
-  expectedDecisionRevision: number
-  expectedCandidateRevisions: IdentityCandidateRevisionDTO[]
-  outcome: 'existing' | 'new' | 'link' | 'dismiss'
-  candidateType?: IdentityEntityTypeDTO
-  candidateId?: string
-  relationKind?: 'recurrence' | 'related_action' | 'follow_up' | 'same_topic'
-}
-export type IdentityResolveResultDTO =
-  | { ok: true; canonicalId: string | null; state: 'resolved' | 'dismissed'; decisionRevision: number }
-  | { ok: false; reason: string }
-export type IdentityRetryResultDTO =
-  | { ok: true; item: IdentityReviewItemDTO }
-  | { ok: false; reason: string; item?: IdentityReviewItemDTO }
-export interface TodoTopicRelationDTO {
-  relationId: string; chatId: string; todoId: string; todoTitle: string; todoStatus: string; todoRevision: number
-  topicId: string; topicTitle: string; topicRevision: number
-  relationType: 'same_topic' | 'related_action'; status: 'proposed' | 'confirmed' | 'rejected' | 'stale'; revision: number
-  decisionId: string; sourceMsgIds: string[]
-}
-export interface TopicLinkProposalDTO {
-  linkId: string; leftTopicId: string; leftChatId: string; leftChatName: string | null; leftTitle: string; leftRevision: number
-  rightTopicId: string; rightChatId: string; rightChatName: string | null; rightTitle: string; rightRevision: number
-  relation: string; identityEvidence: 'verified' | 'unknown'; status: 'proposed' | 'accepted' | 'rejected'; stale: boolean
-  eventEvidenceMsgIds: string[]; linkRevision: number; permissionAllowed: boolean
-}
-
 /** todos:draftReply 結果（只草擬不送出）。 */
 export interface DraftReplyResult {
   draft?: string
@@ -632,6 +576,10 @@ export interface LineTodoApi {
     chats: {
       list(includeBlocked?: boolean): Promise<ChatDTO[]>; get(chatId: string): Promise<ChatDTO | null>
       setBlocked(chatId: string, blocked: boolean, reason?: string): Promise<ChatDTO | null>
+      /** 此聊天室的待辦抽取開關（預設開）。 */
+      todoExtractEnabled(chatId: string): Promise<boolean>
+      /** 關閉期間不抽待辦；重新開啟只補抽最近 7 天，更早的標為已處理（skippedOlder 為略過的則數）。 */
+      setTodoExtractEnabled(chatId: string, enabled: boolean): Promise<{ ok: boolean; enabled: boolean; skippedOlder: number }>
       blockAndClear(chatId: string): Promise<{ ok: boolean; dismissed: number }>
       addIgnoreKeyword(chatId: string, keyword: string): Promise<{ ok: boolean; dismissed: number; error?: string }>
       removeIgnoreKeyword(chatId: string, keyword: string): Promise<{ ok: boolean }>
@@ -652,15 +600,6 @@ export interface LineTodoApi {
       reopenNotMine(feedbackId: string): Promise<{ ok: boolean; error?: string }>
       applyNotMineCorrection(feedbackId: string, condition: string, effect: string): Promise<{ ok: boolean; error?: string }>
       setNotMineCorrectionEnabled(correctionId: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>
-      /** Deferred identity work is user operated; old hosts may omit this optional Phase 3 surface. */
-      identity?: {
-        listPending(input: { entityType: IdentityEntityTypeDTO; chatId?: string; after?: { decisionId: string }; limit?: number }): Promise<{ items: IdentityReviewItemDTO[]; next?: { decisionId: string } }>
-        inspect(input: { entityType: IdentityEntityTypeDTO; decisionId: string }): Promise<IdentityInspectDTO | null>
-        retry(input: { entityType: IdentityEntityTypeDTO; decisionId: string; expectedDecisionRevision: number }): Promise<IdentityRetryResultDTO>
-        resolve(input: IdentityResolveInputDTO): Promise<IdentityResolveResultDTO>
-        todoTopicRelations(chatId: string): Promise<TodoTopicRelationDTO[]>
-        resolveTodoTopicRelation(input: { relationId: string; expectedRevision: number; expectedTodoRevision: number; expectedTopicRevision: number; choice: 'confirm' | 'reject' }): Promise<{ ok: boolean; reason?: string; status?: 'confirmed' | 'rejected'; revision?: number }>
-      }
     }
     onMessagesPersisted(cb: (e: MessagesPersistedEvent) => void): () => void
   }
@@ -704,18 +643,13 @@ export interface LineTodoApi {
   /** Optional main-owned group discussion projection. Never carries LINE participant keys or raw source identities. */
   groupTopics?: {
     setEnabled(chatId: string, enabled: boolean): Promise<{ ok: boolean }>
-    setCrossChatEnabled(chatId: string, enabled: boolean): Promise<{ ok: boolean }>
-    crossChatEnabled(chatId: string): Promise<boolean>
     pendingCount(chatId: string): Promise<number>
     /** `combined: true`＝待辦與議題合併整理正在背景運作：新訊息的議題會隨「立即整理」產生，手動分析只補舊訊息。 */
     list(chatId: string): Promise<{ ok: boolean; topics: GroupTopicDTO[]; combined?: boolean }>
     /** 一次回傳所有未封鎖群組的議題總覽（取代逐群 list）。選填：沒有的宿主，view 退回逐群 list。 */
     overview?(): Promise<GroupTopicsOverviewDTO[]>
-    linkCandidates(chatId: string): Promise<GroupTopicLinkCandidateDTO[]>
     analyze(chatId: string): Promise<{ ok: boolean; reason?: string; failure?: { stage: 'provider_resolve'|'provider_complete'|'response_decode'|'domain_validate'|'persist'; path: string|null; code: string }; count?: number; analyzedCount?: number }>
     todoRefs(topicId: string): Promise<Array<{ todoId: string; status: string; bucket: string; matchedMsgIds: string[] }>>
-    linkProposals?(chatId: string): Promise<TopicLinkProposalDTO[]>
-    resolveLinkProposal?(input: { linkId: string; expectedLinkRevision: number; leftTopicRevision: number; rightTopicRevision: number; choice: 'accept' | 'reject' }): Promise<{ ok: boolean; reason?: string; status?: 'accepted' | 'rejected'; linkRevision?: number }>
   }
   /** 主機能力（選填）：Electron preload 提供；core application 不實作。 */
   driver?: DriverApi
@@ -750,13 +684,4 @@ export interface GroupTopicsOverviewDTO {
   compacted?: boolean
   pendingCount: number
   backlogCount: number
-}
-export interface GroupTopicLinkCandidateDTO {
-  linkId: string
-  otherChatName: string | null
-  topicTitle: string
-  relation: 'unknown'
-  identityEvidence: 'unknown'
-  eventEvidenceCount: number
-  eventEvidenceMsgIds: string[]
 }

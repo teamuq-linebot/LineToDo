@@ -5,9 +5,7 @@ owner: main/features/groupTopics
 production_entry: core/application.ts
 public_api:
   - setEnabled
-  - setCrossChatEnabled
   - list
-  - linkCandidates
   - analyze
   - todoRefs
 authority:

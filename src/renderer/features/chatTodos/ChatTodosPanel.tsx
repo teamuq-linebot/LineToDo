@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TodoDTO } from '../../types/api'
 import { useLineTodoApi } from '../../platform/LineTodoApi'
 import { backendErrorText } from '../../lib/backendError'
+import { ChatSwitch } from '../../components/ChatSwitch'
 import { fmtDue, isOverdue, isSuggestedDone, priorityLabel } from '../../components/Board/buckets'
 
 interface Props {
@@ -27,6 +28,60 @@ export function ChatTodosPanel({ chatId, chatName }: Props): JSX.Element {
   const [todos, setTodos] = useState<TodoDTO[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const switchVersion = useRef(0)
+  const currentChatId = useRef(chatId)
+  currentChatId.current = chatId
+  const [todoEnabled, setTodoEnabled] = useState<boolean | null>(null)
+  const [switching, setSwitching] = useState(false)
+  const [switchError, setSwitchError] = useState('')
+
+  const loadSwitch = useCallback(async (): Promise<void> => {
+    const version = ++switchVersion.current
+    setTodoEnabled(null)
+    setSwitching(false)
+    setSwitchError('')
+    if (typeof api.db.chats.todoExtractEnabled !== 'function') return
+    try {
+      const value = await api.db.chats.todoExtractEnabled(chatId)
+      if (switchVersion.current !== version) return
+      setTodoEnabled(value !== false)
+    } catch {
+      /* 讀取失敗：不顯示開關 */
+    }
+  }, [api, chatId])
+
+  useEffect(() => {
+    void loadSwitch()
+    return () => { switchVersion.current += 1 }
+  }, [loadSwitch])
+
+  async function toggleTodo(value: boolean): Promise<void> {
+    if (todoEnabled === null || switching) return
+    const target = chatId
+    const version = switchVersion.current
+    const previous = todoEnabled
+    const stillHere = (): boolean => switchVersion.current === version && currentChatId.current === target
+    setSwitching(true)
+    setSwitchError('')
+    setTodoEnabled(value)
+    try {
+      const result = await api.db.chats.setTodoExtractEnabled(target, value)
+      if (!stillHere()) return
+      if (!result.ok) {
+        setTodoEnabled(previous)
+        setSwitchError('切換失敗，請再試一次')
+        return
+      }
+      setTodoEnabled(result.enabled)
+    } catch (switchFailure) {
+      if (stillHere()) {
+        setTodoEnabled(previous)
+        setSwitchError('切換失敗，請再試一次')
+      }
+    } finally {
+      if (stillHere()) setSwitching(false)
+    }
+  }
 
   const load = useCallback(async (): Promise<void> => {
     const version = ++requestVersion.current
@@ -57,7 +112,9 @@ export function ChatTodosPanel({ chatId, chatName }: Props): JSX.Element {
     <section className="chat-todos-content" aria-label={`${chatName}的待辦`}>
       <header className="chat-todos-heading">
         <h3>此聊天室待辦</h3>
+        {todoEnabled !== null && <ChatSwitch label="此聊天室待辦開關" checked={todoEnabled} busy={switching} onChange={(value) => void toggleTodo(value)} testId="todos-switch" />}
       </header>
+      {switchError && <p className="chat-todos-error" role="alert">{switchError}</p>}
       {loading && <p className="muted" role="status">正在載入「{chatName}」的待辦…</p>}
       {error && (
         <p className="chat-todos-error" role="alert">

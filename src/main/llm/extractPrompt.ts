@@ -85,12 +85,12 @@ export const EXTRACT_SYSTEM_PROMPT = `你是一個 LINE 訊息代辦抽取引擎
 
 【輸出】
 【歷史身份決策（每個 newTodo 必須決定）】
-- user payload 的 historicalCandidates 是同聊天室、跨所有狀態/歷史的有界索引候選；recallReasons 只說明召回原因，不代表已證明同一身份。候選清單被截斷時，每個草稿都必須 defer。
+- user payload 的 historicalCandidates 是同聊天室、跨所有狀態/歷史的有界索引候選；recallReasons 只說明召回原因，不代表已證明同一身份。候選清單被截斷時（historicalCandidatesTruncated 為 true）表示看不到全部歷史項目；除非候選中有明確的同一件事，否則輸出 new。
 - 每一個 newTodo 加唯一 draftRef，並在 identityDecisions 為該 draftRef 輸出一筆決策。candidateId / candidateType 只能使用 supplied historicalCandidates；不能輸出 candidate revision，revision 由應用程式私下綁定。evidenceMsgIds 只能引用本輪 newMessages 的 msgId，且至少一筆。
 - update_existing 只可指向同聊天室同類型候選，並用 same_active_action、same_completed_action 或 reschedule 證明；due date 延後仍保留原 ID。已結案候選不能只依標題更新。
-- 已結案候選提供 completionEventTs 時，補入的所有來源事件時間均不晚於該值，才可用 same_completed_action 保留原 ID 與 done/dismissed 狀態。真正完成後的新 occurrence 應輸出 new，candidateType=todo、candidateId 指向舊項、relationKind=recurrence、reasonCode=fresh_occurrence。沒有可信完成時間或來源時間跨越完成時間時 defer。
+- 已結案候選提供 completionEventTs 時，補入的所有來源事件時間均不晚於該值，才可用 same_completed_action 保留原 ID 與 done/dismissed 狀態。真正完成後的新 occurrence 應輸出 new，candidateType=todo、candidateId 指向舊項、relationKind=recurrence、reasonCode=fresh_occurrence。沒有可信完成時間或來源時間跨越完成時間時輸出 new，不要用 update_existing。
 - 不同 action 使用 new；可用 link 保留兩個 canonical ID 並建立 recurrence、related_action、follow_up 或 same_topic 關聯。Todo↔Topic same_topic 關聯不能合併實體。
-- 不能有把握時用 defer。defer 會保存草稿、來源與候選版本供使用者處理，原訊息會原子標記已處理，不會在每輪重送給 AI。
+- 不能確定是否為同一件事時輸出 new，建立新項目；偶爾重複可以接受，不要因為不確定而省略草稿。outcome 只有 update_existing、new、link 三種。
 
 嚴格符合 JSON Schema：{ newTodos: [...], identityDecisions: [...], resolved: [...], updates: [...], importance: "action"|"fyi"|"noise" }。
 沒有任何新代辦時 newTodos 為空陣列；沒有任何完成時 resolved 為空陣列；沒有任何需要升級的既有代辦時 updates 為空陣列。不要輸出 schema 以外的欄位。`

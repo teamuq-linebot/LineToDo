@@ -97,8 +97,7 @@ function modelReply(user) {
   const first = payload.newMessages[0]
   const draftRef = `draft_${first.msgId.replace(/[^a-z0-9_-]/giu, '_')}`
   const candidate = payload.historicalCandidates?.find((item) => item.entityType === 'todo')
-  const defer = payload.historicalCandidatesTruncated === true
-  return { importance: 'action', newTodos: [{ draftRef, bucket: 'todo', title: `處理${payload.chat.name}的報價問題 ${first.msgId}`, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], identityDecisions: [{ draftRef, outcome: defer ? 'defer' : candidate ? 'update_existing' : 'new', candidateType: defer ? null : candidate ? 'todo' : null, candidateId: defer ? null : candidate?.entityId ?? null, relationKind: null, reasonCode: defer ? 'candidate_cap' : candidate ? 'same_active_action' : 'insufficient_evidence', confidenceBand: defer ? 'low' : 'high', evidenceMsgIds: [first.msgId] }], resolved: [], updates: [] }
+  return { importance: 'action', newTodos: [{ draftRef, bucket: 'todo', title: `處理${payload.chat.name}的報價問題 ${first.msgId}`, detail: null, priority: 2, dueAt: null, confidence: 0.9, sourceMsgIds: [first.msgId] }], identityDecisions: [{ draftRef, outcome: candidate ? 'update_existing' : 'new', candidateType: candidate ? 'todo' : null, candidateId: candidate?.entityId ?? null, relationKind: null, reasonCode: candidate ? 'same_active_action' : 'insufficient_evidence', confidenceBand: 'high', evidenceMsgIds: [first.msgId] }], resolved: [], updates: [] }
 }
 const fyiReply = { importance: 'fyi', newTodos: [], identityDecisions: [], resolved: [], updates: [] }
 const asReply = (value) => '```json\n' + JSON.stringify(value) + '\n```'

@@ -1,4 +1,4 @@
-// Every LINE chat keeps ONE dedicated Host session for all AI purposes (extract, draft reply, not-mine analysis, group topics, identity retry);
+// Every LINE chat keeps ONE dedicated Host session for all AI purposes (extract, draft reply, not-mine analysis, group topics);
 // prompt refinement uses one global session. Acceptance matrix A1-A10 of output/line-todo-chat-session-20261104/design.md (A11 lives in test-host-ai.mjs,
 // A7 in test-backend-units.mjs, A12 is a manual dogfood).
 import assert from 'node:assert/strict'
@@ -13,7 +13,6 @@ import { AiPortError } from '../../src/core/aiPort.ts'
 import { AI_SESSION_ACTIVE_KEY, AI_SESSION_MAP_KEY_PREFIX, AI_SESSION_MAP_V1_KEY_PREFIX, GLOBAL_SCOPE_KEY, chatScopeKey, createAiSessionMapStore } from '../../src/plugin/backend/aiSessionMapStore.ts'
 import { createPortAiProvider, fitUserPayload, maxUserCharsFor } from '../../src/plugin/backend/aiProvider.ts'
 import { GROUP_TOPICS_BATCH_SIZE, fitTopicRequestPayload, requestSchemaForBatch } from '../../src/main/features/groupTopics/service.ts'
-import { identitySchema } from '../../src/main/identity/retryService.ts'
 import { CHAT_SESSION_SYSTEM_V1, RULE_DOC_SEGMENT_MAX_CHARS, TASK_TURN_OVERHEAD_CHARS, buildRuleDoc, buildTaskTurn } from '../../src/plugin/backend/chatSessionProtocol.ts'
 import { createHostAiPort } from '../../src/plugin/backend/hostAi.ts'
 import { createPromptService } from '../../src/plugin/backend/promptService.ts'
@@ -117,17 +116,17 @@ const makePort = (host, store, extra = {}) => createHostAiPort({
 
 const chatScope = (chatId, taskKind, epoch) => ({ kind: 'line-chat', chatId, taskKind, ...(epoch !== undefined ? { epoch } : {}) })
 const RULES = {
-  extract: 'EXTRACT RULES', extractTopics: 'EXTRACT+TOPICS RULES', draftReply: 'DRAFT RULES', analyzeNotMine: 'NOTMINE RULES', groupTopics: 'GROUPTOPICS RULES', identityRetry: 'IDENTITY RULES'
+  extract: 'EXTRACT RULES', extractTopics: 'EXTRACT+TOPICS RULES', draftReply: 'DRAFT RULES', analyzeNotMine: 'NOTMINE RULES', groupTopics: 'GROUPTOPICS RULES'
 }
 const request = (chatId, taskKind, extra = {}) => ({
   system: RULES[taskKind], user: JSON.stringify({ chatId, taskKind }), expectJson: taskKind !== 'draftReply', validate: (value) => ({ ok: true, value }),
   priority: taskKind === 'extract' || taskKind === 'extractTopics' ? 'background' : 'user', conversationScope: chatScope(chatId, taskKind), ...extra
 })
-const KINDS = ['extract', 'draftReply', 'analyzeNotMine', 'groupTopics', 'identityRetry', 'extractTopics']
+const KINDS = ['extract', 'draftReply', 'analyzeNotMine', 'groupTopics', 'extractTopics']
 const freshCount = (host) => host.operations.filter((entry) => entry.op === 'fresh').length
 const resumeCount = (host) => host.operations.filter((entry) => entry.op === 'resume').length
 
-test('A1 200 mixed AI calls (extract, draft, not-mine, group topics, identity retry, topics extract) of one chat open exactly ONE session and resume it every other time', async () => {
+test('A1 200 mixed AI calls (extract, draft, not-mine, group topics, topics extract) of one chat open exactly ONE session and resume it every other time', async () => {
   const host = chatHost()
   const store = memoryStore()
   const port = makePort(host, store)
@@ -222,7 +221,7 @@ test('A5 after a restart (a new port over the same durable store) the first call
 })
 
 test('A6 a deleted or unresumable session is rebuilt inside the same job for every purpose (buttons succeed on the first press), the old id is never touched again', async () => {
-  for (const kind of ['draftReply', 'analyzeNotMine', 'groupTopics', 'identityRetry', 'extract']) {
+  for (const kind of ['draftReply', 'analyzeNotMine', 'groupTopics', 'extract']) {
     const host = chatHost()
     const store = memoryStore()
     const port = makePort(host, store)
@@ -341,7 +340,7 @@ test('A9 every turn fits the 8,000-char host limit: rule segments <= 7,000, task
   } finally { port.stop() }
 })
 
-test('A9b the real dynamic schemas of group topics (full 20-message batch, 30 candidates) and identity retry leave room for the payload: the group-topics payload is fitted without dropping a message', () => {
+test('A9b the real dynamic schemas of group topics (full 20-message batch, 30 candidates) leave room for the payload: the group-topics payload is fitted without dropping a message', () => {
   const uuid = (i) => `${String(i).padStart(8, '0')}-0000-4000-8000-000000000000`
   const ids = Array.from({ length: GROUP_TOPICS_BATCH_SIZE }, (_, i) => ({ msgId: `i:${1_000_000_000_000_000 + i}` }))
   const candidates = Array.from({ length: 30 }, (_, i) => ({ entityId: uuid(i) }))
@@ -367,10 +366,6 @@ test('A9b the real dynamic schemas of group topics (full 20-message batch, 30 ca
   assert.ok(service.user.length <= cap)
   assert.equal(fitUserPayload(service.user, cap), service.user, 'the provider layer no longer changes (or silently drops from) an already fitted group-topics payload')
   assert.throws(() => fitUserPayload(payload, cap), (error) => error.code === 'input_too_large', 'the provider never drops candidates on its own')
-  const context = { draftRef: 'draft_1', messages: ids.slice(0, 8), candidates: candidates.slice(0, 20) }
-  const identityContract = outputContractFor(identitySchema(context))
-  assert.ok(identityContract.length < 3_000, `identity retry contract: ${identityContract.length}`)
-  assert.ok(maxUserCharsFor(true, identityContract) >= 4_500, 'the 7.5k identity-retry payload cap is cut by at most ~3k')
 })
 
 test('A10 prompt refinement uses the single global session (global:main), distinct from every chat session', async () => {
@@ -404,8 +399,7 @@ test('C2-C5 through the real LlmProvider: a `conversation` on the request become
     assert.equal(draft, '好的，我會處理。')
     await provider.complete({ system: 'NOTMINE RULES', user: '{}', conversation: { chatId: 'u-alice', kind: 'analyzeNotMine' } })
     await provider.complete({ system: 'GROUPTOPICS RULES', user: '{"messages":[]}', jsonSchema: { name: 'group_topics', schema }, conversation: { chatId: 'u-alice', kind: 'groupTopics' } })
-    await provider.complete({ system: 'IDENTITY RULES', user: '{"draft":1}', jsonSchema: { name: 'identity_retry', schema }, conversation: { chatId: 'u-alice', kind: 'identityRetry' } })
-    assert.equal(freshCount(host), 1, 'all four purposes of one chat share one session')
+    assert.equal(freshCount(host), 1, 'all three purposes of one chat share one session')
     const sends = host.sessions.get('100').sends
     const groupTurn = sends.find((text) => text.startsWith('【任務 groupTopics'))
     assert.ok(groupTurn.includes(outputContractFor(schema)), 'the dynamic schema is in the task turn')
@@ -414,14 +408,13 @@ test('C2-C5 through the real LlmProvider: a `conversation` on the request become
   } finally { port.stop() }
 })
 
-test('wiring: all six production callers pass their chat (or the global scope) to the AI port', () => {
+test('wiring: all five production callers pass their chat (or the global scope) to the AI port', () => {
   const read = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
   assert.match(read('src/plugin/backend/extractWorker.ts'), /conversationScope: \{ kind: 'line-chat', chatId: item\.chatId, taskKind: item\.topics \? 'extractTopics' : 'extract'/u)
   assert.match(read('src/core/application.ts'), /\}, \{ chatId: todo\.chatId \}\)/u)
   assert.match(read('src/main/llm/draftReply.ts'), /conversation: \{ chatId: opts\.chatId, kind: 'draftReply'/u)
   assert.match(read('src/core/application.ts'), /conversation:\{chatId:review\.todo\.chatId,kind:'analyzeNotMine'\}/u)
   assert.match(read('src/main/features/groupTopics/service.ts'), /conversation: \{ chatId, kind: 'groupTopics' \}/u)
-  assert.match(read('src/main/identity/retryService.ts'), /conversation: \{ chatId: item\.chatId, kind: 'identityRetry' \}/u)
   assert.match(read('src/plugin/backend/promptService.ts'), /conversationScope: \{ kind: 'line-global', taskKind: 'promptRefine' \}/u)
   assert.match(read('src/plugin/backend/aiProvider.ts'), /conversationScope: scope/u)
 })

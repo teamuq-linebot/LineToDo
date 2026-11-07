@@ -211,18 +211,6 @@ export function setEnabled(db: Database, chatId: string, enabled: boolean): bool
   return true
 }
 
-export function setCrossChatEnabled(db: Database, chatId: string, enabled: boolean): boolean {
-  const chat = db.prepare('SELECT is_group,blocked FROM chats WHERE chat_id=?').get(chatId) as { is_group: number; blocked: number } | undefined
-  if (!chat || chat.is_group !== 1 || chat.blocked === 1 || !isEnabled(db, chatId)) return false
-  db.prepare(`INSERT INTO group_topic_preferences(chat_id,enabled,cross_chat_enabled,updated_at) VALUES(?,1,?,?)
-    ON CONFLICT(chat_id) DO UPDATE SET cross_chat_enabled=excluded.cross_chat_enabled,updated_at=excluded.updated_at`).run(chatId, Number(enabled), new Date().toISOString())
-  return true
-}
-
-export function crossChatIsEnabled(db: Database, chatId: string): boolean {
-  return (db.prepare('SELECT cross_chat_enabled FROM group_topic_preferences WHERE chat_id=?').get(chatId) as { cross_chat_enabled: number } | undefined)?.cross_chat_enabled === 1
-}
-
 export function isEnabled(db: Database, chatId: string): boolean {
   return (db.prepare('SELECT enabled FROM group_topic_preferences WHERE chat_id=?').get(chatId) as { enabled: number } | undefined)?.enabled === 1
 }
@@ -327,8 +315,8 @@ export function buildTopicSave(db: Database, chatId: string, input: TopicMessage
   const wasIdentityReady=identityMetaState(db,chatId,'topic')==='ready'
   const tx = db.transaction(() => {
     if(identity&&!opts.skipSnapshotAssert) assertIdentitySnapshotCurrent(db,chatId,identity.snapshot,'topic')
-    const active = db.prepare(`SELECT c.is_group,c.blocked,p.enabled FROM chats c
-      LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {is_group:number;blocked:number;enabled:number|null}|undefined
+    const active = db.prepare(`SELECT c.blocked,p.enabled FROM chats c
+      LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {blocked:number;enabled:number|null}|undefined
     if (!active || active.blocked === 1 || active.enabled !== 1) return 'inactive' as const
     const existing = db.prepare('SELECT state FROM topic_analysis_runs WHERE chat_id=? AND input_digest=?').get(chatId,digest) as { state: string } | undefined
     if (existing?.state === 'complete') return false
@@ -337,7 +325,6 @@ export function buildTopicSave(db: Database, chatId: string, input: TopicMessage
       prompt_version=excluded.prompt_version,prompt_hash=excluded.prompt_hash,schema_version=excluded.schema_version,schema_hash=excluded.schema_hash,state='complete',error_code=NULL,
       failure_stage=NULL,failure_path=NULL,failure_reason=NULL,provider_kind=NULL,created_at=excluded.created_at`).run(runId,chatId,digest,versions.promptVersion,versions.promptHash,versions.schemaVersion,versions.schemaHash,now)
     const refs = new Map<string,string>()
-    const deferredRefs=new Set<string>()
     const touchedTopicIds=new Set<string>()
     const identityByRef=new Map((result.identityDecisions??[]).map((decision)=>[decision.draftRef,decision]))
     const createTopic=(topic:TopicAnalysis['topics'][number]):string=>{
@@ -352,9 +339,7 @@ export function buildTopicSave(db: Database, chatId: string, input: TopicMessage
       const identityDecision=identity?identityByRef.get(topic.ref):undefined
       if(identity&&!identityDecision) throw new Error('topic_identity_decision_missing')
       let topicId:string|null=null
-      if(identityDecision?.outcome==='defer') {
-        deferredRefs.add(topic.ref)
-      } else if(identityDecision?.outcome==='update_existing'&&identity) {
+      if(identityDecision?.outcome==='update_existing'&&identity) {
         const revision=identity.snapshot.candidateRevisions.find((candidate)=>candidate.entityType==='topic'&&candidate.entityId===identityDecision.candidateId)
         const current=db.prepare('SELECT revision FROM discussion_topics WHERE chat_id=? AND topic_id=?').get(chatId,identityDecision.candidateId) as {revision:number}|undefined
         if(!revision||!current||current.revision!==revision.revision) throw new Error('topic_identity_candidate_stale')
@@ -373,10 +358,10 @@ export function buildTopicSave(db: Database, chatId: string, input: TopicMessage
         const candidateIds=identityDecision.candidateId?[identityDecision.candidateId]:[]
         const revisions=candidateIds.map((id)=>identity.snapshot.candidateRevisions.find((candidate)=>candidate.entityType==='topic'&&candidate.entityId===id)??null)
         db.prepare(`INSERT INTO topic_identity_decisions(decision_id,chat_id,source_digest,draft_ref,outcome,state,canonical_topic_id,decision_revision,source_epoch,scope_revision,identity_revision,draft_json,candidate_snapshot_json,reason_codes_json,prompt_version,schema_version,query_version,created_at,updated_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(decisionId,chatId,digest,topic.ref,identityDecision.outcome,identityDecision.outcome==='defer'?'open':'resolved',canonical,decisionRevision,identity.snapshot.sourceEpoch,identity.snapshot.scopeRevision,identity.snapshot.topicIdentityRevision,JSON.stringify(topic),JSON.stringify({candidateIds,revisions}),JSON.stringify([identityDecision.reasonCode]),versions.promptVersion,versions.schemaVersion,IDENTITY_QUERY_VERSION,now,now)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(decisionId,chatId,digest,topic.ref,identityDecision.outcome,'resolved',canonical,decisionRevision,identity.snapshot.sourceEpoch,identity.snapshot.scopeRevision,identity.snapshot.topicIdentityRevision,JSON.stringify(topic),JSON.stringify({candidateIds,revisions}),JSON.stringify([identityDecision.reasonCode]),versions.promptVersion,versions.schemaVersion,IDENTITY_QUERY_VERSION,now,now)
         const insertSource=db.prepare('INSERT INTO topic_identity_decision_sources(decision_id,chat_id,msg_id,ordinal,evidence_role) VALUES(?,?,?,?,?)')
         identityDecision.evidenceMsgIds.forEach((msgId,index)=>insertSource.run(decisionId,chatId,msgId,index,'discussion'))
-        const eventAction=identityDecision.outcome==='defer'?'deferred':identityDecision.outcome==='link'?'linked':identityDecision.outcome==='update_existing'?'updated_existing':'resolved_new'
+        const eventAction=identityDecision.outcome==='link'?'linked':identityDecision.outcome==='update_existing'?'updated_existing':'resolved_new'
         insertIdentityEvent(db,{decisionId,revision:1,actor:'ai',action:eventAction,payload:{draftRef:topic.ref,candidateId:identityDecision.candidateId,reasonCode:identityDecision.reasonCode},table:'topic_identity_events'})
         if(identityDecision.outcome==='link'&&topicId&&identityDecision.candidateId){
           const pair=[topicId,identityDecision.candidateId].sort()
@@ -425,8 +410,7 @@ export function buildTopicSave(db: Database, chatId: string, input: TopicMessage
     }
     for (const assignment of result.assignments) {
       const topicId = assignment.topicRef ? refs.get(assignment.topicRef) : undefined
-      const deferred=assignment.topicRef?deferredRefs.has(assignment.topicRef):false
-      writeDecision.run(chatId,assignment.msgId,runId,topicId ? (assignment.relation==='uncertain'?'uncertain':'assigned') : deferred?'uncertain':'not_topic')
+      writeDecision.run(chatId,assignment.msgId,runId,topicId ? (assignment.relation==='uncertain'?'uncertain':'assigned') : 'not_topic')
       if (topicId) writeEvidence(topicId,assignment)
       else {
         const previous=db.prepare('SELECT topic_id FROM topic_evidence WHERE msg_id=?').get(assignment.msgId) as {topic_id:string}|undefined
@@ -439,35 +423,6 @@ export function buildTopicSave(db: Database, chatId: string, input: TopicMessage
     const firstInput = input[0]
     if (firstInput) db.prepare(`INSERT OR IGNORE INTO topic_message_checkpoints(chat_id,baseline_ts,baseline_msg_id) VALUES(?,?,?)`)
       .run(chatId,firstInput.ts,firstInput.msgId)
-    // Candidate recall only: this lexical overlap cannot verify either participant identity
-    // or that two groups mean the same occurrence. Persist as unknown/proposed with local evidence refs.
-    if (active.is_group === 1 && crossChatIsEnabled(db, chatId)) {
-      const tokenize = (text: string): Set<string> => new Set((text.toLocaleLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? []).filter((w) => !['這個','那個','我們','可以','今天','明天','目前','問題','群組','有人','about','from','with'].includes(w)))
-      const current = result.topics.map((t) => ({ id: refs.get(t.ref)!, words: tokenize(`${t.title} ${t.summary}`) })).filter((x) => x.words.size >= 2)
-      const enabledRows = db.prepare(`SELECT t.topic_id,t.chat_id,t.title,t.summary FROM discussion_topics t
-        JOIN group_topic_preferences p ON p.chat_id=t.chat_id JOIN chats c ON c.chat_id=t.chat_id
-        WHERE p.enabled=1 AND p.cross_chat_enabled=1 AND c.is_group=1 AND c.blocked=0 AND t.chat_id<>?`).all(chatId) as Array<{topic_id:string;chat_id:string;title:string;summary:string}>
-      const insertLink = db.prepare(`INSERT INTO topic_links(link_id,left_topic_id,right_topic_id,relation,identity_evidence,event_evidence_msg_ids,status,created_at)
-        VALUES(?,?,?,'unknown','unknown',?,'proposed',?)`)
-      const existsLink = db.prepare(`SELECT 1 FROM topic_links WHERE stale_at IS NULL AND ((left_topic_id=? AND right_topic_id=?) OR (left_topic_id=? AND right_topic_id=?))`)
-      const sourceIds = (topicId:string):string[] => (db.prepare('SELECT msg_id FROM topic_evidence WHERE topic_id=? ORDER BY msg_id LIMIT 20').all(topicId) as Array<{msg_id:string}>).map((r)=>r.msg_id)
-      let created=0
-      for (const local of current) for (const candidate of enabledRows) {
-        if(created>=100) break
-        const words = tokenize(`${candidate.title} ${candidate.summary}`)
-        const shared = [...local.words].filter((w)=>words.has(w))
-        if(shared.length<2) continue
-        const pair=[local.id,candidate.topic_id].sort()
-        if(existsLink.get(pair[0],pair[1],pair[1],pair[0])) continue
-        const linkId=randomUUID()
-        insertLink.run(linkId,pair[0],pair[1],JSON.stringify([...new Set([...sourceIds(pair[0]),...sourceIds(pair[1])])]),now)
-        const leftRevision=(db.prepare('SELECT revision FROM discussion_topics WHERE topic_id=?').get(pair[0]) as {revision:number}).revision
-        const rightRevision=(db.prepare('SELECT revision FROM discussion_topics WHERE topic_id=?').get(pair[1]) as {revision:number}).revision
-        db.prepare(`INSERT INTO topic_link_identity_events(event_id,link_id,event_revision,actor,action,left_topic_revision,right_topic_revision,permission_snapshot_json,created_at) VALUES(?,?,1,'system','proposed',?,?,?,?)`)
-          .run(randomUUID(),linkId,leftRevision,rightRevision,JSON.stringify({requesterChatId:chatId,crossChatEnabled:true}),now)
-        created++
-      }
-    }
     for(const row of changedTopics) touchedTopicIds.add(row.topic_id)
     for(const topicId of touchedTopicIds) syncTopicIdentityTerms(db,chatId,topicId,wasIdentityReady)
     return true
@@ -525,30 +480,6 @@ export function listTopics(db: Database, chatId: string): TopicView[] {
     relevance:'unknown' as const,relevanceEvidenceMsgIds:grouped.flatMap((x)=>x.evidenceMsgIds),relevanceEvidence:grouped,
     observation:'unknown',heat:'unvalidated',trend:'unknown'}
   })
-}
-
-export function listLinkCandidates(db: Database, chatId: string): Array<{linkId:string;otherChatName:string|null;topicTitle:string;relation:'unknown';identityEvidence:'unknown';eventEvidenceCount:number;eventEvidenceMsgIds:string[]}> {
-  const requester=db.prepare('SELECT is_group,blocked FROM chats WHERE chat_id=?').get(chatId) as {is_group:number;blocked:number}|undefined
-  if (!requester || requester.is_group!==1 || requester.blocked===1 || !isEnabled(db,chatId) || !crossChatIsEnabled(db,chatId)) return []
-  const rows=db.prepare(`WITH proposal_endpoints AS (
-      SELECT l.link_id,l.event_evidence_msg_ids,here.topic_id AS here_topic_id,other.topic_id AS other_topic_id FROM topic_links l
-        JOIN discussion_topics here ON here.topic_id=l.left_topic_id JOIN discussion_topics other ON other.topic_id=l.right_topic_id
-        WHERE here.chat_id=? AND other.chat_id<>? AND l.status='proposed' AND l.identity_evidence='unknown' AND l.stale_at IS NULL
-      UNION
-      SELECT l.link_id,l.event_evidence_msg_ids,here.topic_id AS here_topic_id,other.topic_id AS other_topic_id FROM topic_links l
-        JOIN discussion_topics here ON here.topic_id=l.right_topic_id JOIN discussion_topics other ON other.topic_id=l.left_topic_id
-        WHERE here.chat_id=? AND other.chat_id<>? AND l.status='proposed' AND l.identity_evidence='unknown' AND l.stale_at IS NULL
-    )
-    SELECT l.link_id,x.event_evidence_msg_ids,other.name AS other_chat_name,t.title AS topic_title
-    FROM proposal_endpoints x JOIN topic_links l ON l.link_id=x.link_id
-    JOIN discussion_topics here ON here.topic_id=x.here_topic_id
-    JOIN discussion_topics t ON t.topic_id=x.other_topic_id
-    JOIN chats other ON other.chat_id=t.chat_id
-    JOIN chats own ON own.chat_id=here.chat_id
-    JOIN group_topic_preferences hp ON hp.chat_id=here.chat_id AND hp.enabled=1 AND hp.cross_chat_enabled=1
-    JOIN group_topic_preferences op ON op.chat_id=t.chat_id AND op.enabled=1 AND op.cross_chat_enabled=1
-    WHERE own.is_group=1 AND own.blocked=0 AND other.is_group=1 AND other.blocked=0 ORDER BY other.name,t.title LIMIT 100`).all(chatId,chatId,chatId,chatId) as Array<{link_id:string;other_chat_name:string|null;topic_title:string;event_evidence_msg_ids:string}>
-  return rows.map((r)=>{const refs=JSON.parse(r.event_evidence_msg_ids) as string[];return {linkId:r.link_id,otherChatName:r.other_chat_name,topicTitle:r.topic_title,relation:'unknown',identityEvidence:'unknown',eventEvidenceCount:refs.length,eventEvidenceMsgIds:refs}})
 }
 
 export function todoRefs(db: Database, topicId: string): Array<{todoId:string;status:string;bucket:string;matchedMsgIds:string[]}> {

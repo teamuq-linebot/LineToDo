@@ -3,7 +3,7 @@ import type {
   Api, BackfillProgress, LineBridgeStatus, MessagesPersistedEvent, ReconcileProgress,
   PipelineLoadStats, PipelineRunResult, PipelineStatus, ProviderHealth, RawLineMessage,
   ReviewLastDaysResult, SettingsPatch, SettingsView, TodoDTO,
-  TodosChangedEvent, QwenTestResult, IdentityResolveInputDTO
+  TodosChangedEvent, QwenTestResult
   , NotMineReasonCode
 } from '../shared/api'
 import { openDatabase } from '../main/db/database'
@@ -32,11 +32,10 @@ import type { ParticipantIdentityProvider } from '../main/line/identity'
 import { commitLineImportBatch, ensureLineImportSchema } from '../main/db/lineImport.repo'
 import { insertMessages } from '../main/db/messages.repo'
 import { ensureGroupTopicsSchema } from '../main/features/groupTopics/repository'
+import { createTopicBackground } from '../main/features/groupTopics/background'
+import { ensureChatTodoPrefsSchema, isTodoExtractEnabled, setTodoExtractEnabled } from '../main/db/chatTodoPrefs.repo'
 import { createGroupTopicsService } from '../main/features/groupTopics/service'
 import { GROUP_TOPICS_BUNDLE_ENABLED } from '../main/features/groupTopics/prompts/bundle'
-import { createIdentityRetryService } from '../main/identity/retryService'
-import { inspectIdentityDecision, listIdentityInbox, listTodoTopicRelationsForChat, listTopicLinkProposals, resolveIdentityDecision, resolveTodoTopicRelation, resolveTopicLinkProposal } from '../main/identity/reviewPorts'
-import type { IdentityEntityType } from '../main/identity/reviewPorts'
 
 export interface LineTodoApplicationPorts {
   dataDir: string
@@ -61,7 +60,9 @@ export interface LineTodoApplicationPorts {
   schedulerFactory?: (db: import('better-sqlite3').Database, repos: ReturnType<typeof createRepositories>) => PipelineScheduler
   settings: SettingsStore
   pipelineConfig: { getDefaults(): PipelineDefaults; getQwenConfig(): QwenConfig; isProviderConfigured(): boolean }
-  providers: { resolveProvider(): ReturnType<typeof import('../main/llm/provider').resolveProvider> }
+  providers: { resolveProvider(): ReturnType<typeof import('../main/llm/provider').resolveProvider>; resolveBackgroundProvider?(): ReturnType<typeof import('../main/llm/provider').resolveProvider> }
+  /** 議題背景分析的診斷事件（不含訊息內容）。 */
+  topicBackgroundLog?(event: string, detail?: Record<string, unknown>): void
   makeExtract(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null
   media: {
     open(msgId: string, db: Database): Promise<{ ok: boolean; error?: string }>
@@ -73,7 +74,7 @@ export interface LineTodoApplicationPorts {
     openOriginal(chatId: string): Promise<{ ok: boolean; error?: string }>
   }
   onSettingsChanged?(): void
-  /** 合併整理（待辦＋議題一次 AI 呼叫）目前是否會在背景運作；true 時 groupTopics.analyze 只補分析集合 B。省略＝false（standalone）。 */
+  /** 合併整理與議題背景自動分析是否啟用；true 時待辦開啟的聊天室 groupTopics.analyze 只補分析集合 B，待辦關閉的聊天室由背景驅動器分析。省略＝false（standalone）。 */
   combinedExtractActive?(): boolean
   afterPipelineRun?(result: PipelineRunResult, db: Database, schedule: (job: BackgroundJob) => void): void
   afterStart?(db: Database, schedule: (job: BackgroundJob) => void): void
@@ -93,29 +94,6 @@ const RECENT_DAYS = 7
 const UPDATE_BUCKETS = new Set<TodoDTO['bucket']>(['todo', 'waiting', 'schedule'])
 const UPDATE_COLUMNS = new Set(['todo', 'waiting', 'schedule', 'done'])
 function validFeedbackId(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value) }
-function identityEntityType(value: unknown): value is IdentityEntityType { return value==='todo'||value==='topic' }
-function revision(value: unknown): value is number { return typeof value==='number'&&Number.isSafeInteger(value)&&value>=0 }
-function normalizeIdentityResolveInput(raw: unknown): IdentityResolveInputDTO | null {
-  if(!raw||typeof raw!=='object')return null
-  const value=raw as Record<string,unknown>
-  if(!identityEntityType(value.entityType)||typeof value.decisionId!=='string'||value.decisionId.length<1||value.decisionId.length>128||!revision(value.expectedDecisionRevision)||!Array.isArray(value.expectedCandidateRevisions)||value.expectedCandidateRevisions.length>50)return null
-  const candidateRevisions=value.expectedCandidateRevisions.flatMap((candidate):Array<{entityType:'todo'|'topic';entityId:string;revision:number}>=>{
-    if(!candidate||typeof candidate!=='object')return[]
-    const ref=candidate as Record<string,unknown>
-    return identityEntityType(ref.entityType)&&typeof ref.entityId==='string'&&ref.entityId.length>0&&ref.entityId.length<=128&&revision(ref.revision)?[{entityType:ref.entityType,entityId:ref.entityId,revision:ref.revision}]:[]
-  })
-  if(candidateRevisions.length!==value.expectedCandidateRevisions.length)return null
-  if(!['existing','new','link','dismiss'].includes(String(value.outcome)))return null
-  const candidateType=value.candidateType===undefined?undefined:identityEntityType(value.candidateType)?value.candidateType:null
-  if(candidateType===null)return null
-  const candidateId=value.candidateId===undefined?undefined:typeof value.candidateId==='string'&&value.candidateId.length>0&&value.candidateId.length<=128?value.candidateId:null
-  if(candidateId===null)return null
-  const relations=['recurrence','related_action','follow_up','same_topic'] as const
-  const relationKind=value.relationKind===undefined?undefined:relations.includes(value.relationKind as typeof relations[number])?value.relationKind as typeof relations[number]:null
-  if(relationKind===null)return null
-  return {entityType:value.entityType,decisionId:value.decisionId,expectedDecisionRevision:value.expectedDecisionRevision,expectedCandidateRevisions:candidateRevisions,outcome:value.outcome as IdentityResolveInputDTO['outcome'],...(candidateType?{candidateType}:{}),...(candidateId?{candidateId}:{}),...(relationKind?{relationKind}:{})}
-}
-
 function subscribe<T>(events: EventEmitter, event: string, cb: (value: T) => void): () => void {
   events.on(event, cb)
   return () => events.off(event, cb)
@@ -169,6 +147,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   if(ports.runtimeOwnerProof)recoverAbandonedSourceLeases(database.db,ports.runtimeOwnerProof,ports.dataDir,ports.dbPath)
   ports.onDatabase?.(database.db)
   const repos = createRepositories(database.db)
+  try { ensureChatTodoPrefsSchema(database.db) } catch { console.warn('[chat-todo-prefs] schema unavailable; per-chat todo toggle disabled') }
   const settings = ports.settings
   let scheduler: PipelineScheduler
   try {
@@ -185,6 +164,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   let durableLineBatchInstalled = false
   let lineImportSchemaReady = false
   let groupTopicsService: ReturnType<typeof createGroupTopicsService> | null = null
+  let topicBackground: ReturnType<typeof createTopicBackground> | null = null
   const unknownIdentity: ParticipantIdentityProvider = {
     resolve: () => ({ participantKey: null, scope: 'unknown', keyVersion: null, status: 'unknown', reason: 'safe_storage_unavailable' }),
     epoch: () => null
@@ -265,10 +245,19 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
     if (!GROUP_TOPICS_BUNDLE_ENABLED) throw new Error('prompt_bundle_invalid')
     ensureGroupTopicsSchema(database.db)
     groupTopicsService = createGroupTopicsService(database.db, { isCombinedActive: () => ports.combinedExtractActive?.() === true })
+    if (ports.providers.resolveBackgroundProvider) {
+      topicBackground = createTopicBackground({
+        db: database.db,
+        service: groupTopicsService,
+        resolveProvider: () => ports.providers.resolveBackgroundProvider!(),
+        active: () => ports.combinedExtractActive?.() === true,
+        log: ports.topicBackgroundLog
+      })
+      disposers.push(() => topicBackground?.stop())
+    }
   } catch (error) {
     console.warn('[group-topics] additive schema unavailable; feature disabled:', error instanceof Error ? error.name : 'unknown')
   }
-  const identityRetryService=createIdentityRetryService(database.db)
 
   disposers.push(ports.line.onMessage((message) => {
     if (state !== 'running') return
@@ -305,6 +294,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
       const changed: TodosChangedEvent = { createdIds: result.createdIds, resolvedIds: result.resolvedIds, updatedIds: result.updatedIds }
       events.emit('todos-changed', changed)
     }
+    topicBackground?.kick()
     ports.afterPipelineRun?.(result, database.db, scheduleBackground)
   }
   const onSchedulerStatus = (status: PipelineStatus) => { if (state === 'running') events.emit('pipeline-status', status) }
@@ -317,18 +307,14 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   const api: Api = {
     ping: async () => ports.app.ping(),
     groupTopics: groupTopicsService ? {
-      setEnabled: async (chatId, enabled) => groupTopicsService?.enable(chatId, !!enabled) ?? { ok: false },
-      setCrossChatEnabled: async (chatId, enabled) => groupTopicsService?.enableCrossChat(chatId, !!enabled) ?? { ok: false },
-      crossChatEnabled: async (chatId) => groupTopicsService?.crossChatEnabled(chatId) ?? false,
+      setEnabled: async (chatId, enabled) => {
+        const result = groupTopicsService?.enable(chatId, !!enabled) ?? { ok: false }
+        if (result.ok && enabled) topicBackground?.kick()
+        return result
+      },
       pendingCount: async (chatId) => groupTopicsService?.pendingCount(chatId) ?? 0,
       list: async (chatId) => groupTopicsService?.list(chatId) ?? { ok: false, topics: [] },
       overview: async () => groupTopicsService?.overview() ?? [],
-      linkCandidates: async (chatId) => groupTopicsService?.listLinkCandidates(chatId) ?? [],
-      linkProposals: async (chatId) => listTopicLinkProposals(database.db,{chatId}),
-      resolveLinkProposal: async (input) => {
-        if(!input||typeof input.linkId!=='string'||!input.linkId||!revision(input.expectedLinkRevision)||!revision(input.leftTopicRevision)||!revision(input.rightTopicRevision)||(input.choice!=='accept'&&input.choice!=='reject'))return{ok:false,reason:'invalid_request'}
-        return resolveTopicLinkProposal(database.db,input)
-      },
       analyze: async (chatId) => groupTopicsService?.analyze(chatId, () => ports.providers.resolveProvider()) ?? { ok: false, reason: 'unavailable' },
       todoRefs: async (topicId) => groupTopicsService?.todoRefs(topicId) ?? []
     } : undefined,
@@ -349,6 +335,13 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
       chats: {
         list: async (includeBlocked = false) => repos.chats.list({ includeBlocked }),
         get: async (chatId) => repos.chats.get(chatId),
+        todoExtractEnabled: async (chatId) => (typeof chatId === 'string' && chatId ? isTodoExtractEnabled(database.db, chatId) : true),
+        setTodoExtractEnabled: async (chatId, enabled) => {
+          if (typeof chatId !== 'string' || !chatId) return { ok: false, enabled: true, skippedOlder: 0 }
+          const result = setTodoExtractEnabled(database.db, chatId, !!enabled)
+          if (result.ok) topicBackground?.kick()
+          return result
+        },
         setBlocked: async (chatId, blocked, reason) => repos.chats.setBlocked(chatId, !!blocked, reason ?? null),
         blockAndClear: async (chatId) => {
           repos.chats.setBlocked(chatId, true, 'manual')
@@ -437,32 +430,6 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
         reopenNotMine: async (feedbackId) => validFeedbackId(feedbackId) ? repos.notMine.reopen(feedbackId) : {ok:false,error:'feedback id 格式不正確'},
         applyNotMineCorrection: async (feedbackId,condition,effect) => validFeedbackId(feedbackId)&&typeof condition==='string'&&typeof effect==='string' ? repos.notMine.apply(feedbackId,condition,effect) : {ok:false,error:'修正資料格式不正確'},
         setNotMineCorrectionEnabled: async (correctionId,enabled) => validFeedbackId(correctionId) ? repos.notMine.setEnabled(correctionId,!!enabled) : {ok:false,error:'correction id 格式不正確'},
-        identity: {
-          listPending: async (input) => {
-            if(!input||!identityEntityType(input.entityType))return{items:[]}
-            const chatId=typeof input.chatId==='string'&&input.chatId.length<=128?input.chatId:undefined
-            const after=input.after&&typeof input.after.decisionId==='string'?{decisionId:input.after.decisionId}:undefined
-            return listIdentityInbox(database.db,input.entityType,{...(chatId?{chatId}:{}),...(after?{after}:{}),...(revision(input.limit)?{limit:input.limit}:{})})
-          },
-          inspect: async (input) => {
-            if(!input||!identityEntityType(input.entityType)||typeof input.decisionId!=='string'||input.decisionId.length>128)return null
-            const result=inspectIdentityDecision(database.db,input.entityType,input.decisionId)
-            return result?{item:result.item,sourceEvidence:result.messages}:null
-          },
-          retry: async (input) => {
-            if(!input||!identityEntityType(input.entityType)||typeof input.decisionId!=='string'||!revision(input.expectedDecisionRevision))return{ok:false,reason:'invalid_request'}
-            return identityRetryService.retry(input,()=>ports.providers.resolveProvider())
-          },
-          resolve: async (raw) => {
-            const input=normalizeIdentityResolveInput(raw)
-            return input?resolveIdentityDecision(database.db,input):{ok:false,reason:'invalid_request'}
-          },
-          todoTopicRelations: async (chatId) => typeof chatId==='string'&&chatId.length<=128?listTodoTopicRelationsForChat(database.db,chatId):[],
-          resolveTodoTopicRelation: async (input) => {
-            if(!input||typeof input.relationId!=='string'||!input.relationId||!revision(input.expectedRevision)||!revision(input.expectedTodoRevision)||!revision(input.expectedTopicRevision)||(input.choice!=='confirm'&&input.choice!=='reject'))return{ok:false,reason:'invalid_request'}
-            return resolveTodoTopicRelation(database.db,input)
-          }
-        }
       },
       onMessagesPersisted: (cb) => subscribe(events, 'messages-persisted', cb)
     },
@@ -545,6 +512,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
     transition = (async () => {
       state = 'stopping'
       try {
+        topicBackground?.stop()
         await stopBackground()
         await scheduler.stop()
         await ports.line.stop()
@@ -565,9 +533,11 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
           state = 'running'
           await ports.line.start()
           scheduler.start()
+          topicBackground?.start()
           ports.afterStart?.(database.db, scheduleBackground)
         } catch (error) {
           state = 'stopping'
+          topicBackground?.stop()
           await stopBackground()
           try { await scheduler.stop() } catch { /* preserve startup failure */ }
           try { await ports.line.stop() } catch { /* preserve startup failure */ }

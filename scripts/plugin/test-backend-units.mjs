@@ -113,6 +113,26 @@ test('AI session map v2 uses hashed scope keys in existing app_settings, never t
   }
 })
 
+test('AI session map reads a legacy identityRetry rule-document entry and drops it, while other unknown kinds stay corrupt', async () => {
+  const { db } = freshDb()
+  const store = createAiSessionMapStore({ getDatabase: () => db })
+  const scopeKey = chatScopeKey('u-alice')
+  const record = { scopeKey, hostSessionId: '42', effective: { providerId: 'codex', modelId: 'gpt-6-luna', effort: 'medium' }, contractRevision: CHAT_SESSION_CONTRACT_REVISION, docs: { extract: { rev: 'a'.repeat(16), at: 1 } }, epoch: 0, createdAt: 1 }
+  try {
+    await store.put(record)
+    const key = `${AI_SESSION_MAP_KEY_PREFIX}${createHash('sha256').update(scopeKey, 'utf8').digest('hex')}`
+    const legacyDocs = { extract: { rev: 'a'.repeat(16), at: 1 }, identityRetry: { rev: 'b'.repeat(16), at: 2 } }
+    db.prepare('UPDATE app_settings SET value = ? WHERE key = ?').run(JSON.stringify({ schemaVersion: 2, ...record, docs: legacyDocs }), key)
+    const read = await store.get(scopeKey)
+    assert.deepEqual(Object.keys(read.docs), ['extract'])
+    assert.equal(Object.hasOwn(read.docs, 'identityRetry'), false)
+    db.prepare('UPDATE app_settings SET value = ? WHERE key = ?').run(JSON.stringify({ schemaVersion: 2, ...record, docs: { bogusKind: { rev: 'a'.repeat(16), at: 1 } } }), key)
+    await assert.rejects(store.get(scopeKey), (error) => error instanceof AiSessionMapStoreError && error.code === 'corrupt')
+  } finally {
+    db.close()
+  }
+})
+
 // ───────────── partitionExtractInput ─────────────
 
 function inputOf(messages, extra = {}) {

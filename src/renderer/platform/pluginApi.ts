@@ -332,6 +332,8 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       chats: {
         list: (includeBlocked) => call('db.chats.list', includeBlocked),
         get: (chatId) => call('db.chats.get', chatId),
+        todoExtractEnabled: (chatId) => call('db.chats.todoExtractEnabled', chatId),
+        setTodoExtractEnabled: (chatId, enabled) => call('db.chats.setTodoExtractEnabled', chatId, enabled),
         setBlocked: (chatId, blocked, reason) => call('db.chats.setBlocked', chatId, blocked, reason),
         blockAndClear: (chatId) => call('db.chats.blockAndClear', chatId),
         addIgnoreKeyword: (chatId, keyword) => call('db.chats.addIgnoreKeyword', chatId, keyword),
@@ -354,14 +356,6 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
         reopenNotMine: (feedbackId) => call('db.todos.reopenNotMine', feedbackId),
         applyNotMineCorrection: (feedbackId, condition, effect) => call('db.todos.applyNotMineCorrection', feedbackId, condition, effect),
         setNotMineCorrectionEnabled: (correctionId, enabled) => call('db.todos.setNotMineCorrectionEnabled', correctionId, enabled),
-        identity: {
-          listPending: (input) => call('db.todos.identity.listPending', input),
-          inspect: (input) => call('db.todos.identity.inspect', input),
-          retry: (input) => runAi<Awaited<ReturnType<NonNullable<LineTodoApi['db']['todos']['identity']>['retry']>>>('db.todos.identity.retry', [input], () => ({ ok: false, reason: 'retry_failed' })),
-          resolve: (input) => call('db.todos.identity.resolve', input),
-          todoTopicRelations: (chatId) => call('db.todos.identity.todoTopicRelations', chatId),
-          resolveTodoTopicRelation: (input) => call('db.todos.identity.resolveTodoTopicRelation', input)
-        }
       },
       onMessagesPersisted: on('messages-persisted')
     },
@@ -424,16 +418,11 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
     },
     groupTopics: {
       setEnabled: (chatId, enabled) => call('groupTopics.setEnabled', chatId, enabled),
-      setCrossChatEnabled: (chatId, enabled) => call('groupTopics.setCrossChatEnabled', chatId, enabled),
-      crossChatEnabled: (chatId) => call('groupTopics.crossChatEnabled', chatId),
       pendingCount: (chatId) => call('groupTopics.pendingCount', chatId),
       list: (chatId) => call('groupTopics.list', chatId),
       overview: () => call('groupTopics.overview'),
-      linkCandidates: (chatId) => call('groupTopics.linkCandidates', chatId),
       analyze: (chatId) => runAi<Awaited<ReturnType<GroupTopicsApi['analyze']>>>('groupTopics.analyze', [chatId], () => ({ ok: false, reason: 'analysis_failed' })),
       todoRefs: (topicId) => call('groupTopics.todoRefs', topicId),
-      linkProposals: (chatId) => call('groupTopics.linkProposals', chatId),
-      resolveLinkProposal: (input) => call('groupTopics.resolveLinkProposal', input)
     },
     driver: undefined,
     plugin: {

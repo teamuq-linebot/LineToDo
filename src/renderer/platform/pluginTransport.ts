@@ -279,7 +279,7 @@ const BULK_PATHS: ReadonlySet<string> = new Set(['media.prepare', 'ai.status', '
 export const STATUS_TIMEOUT_PATHS: ReadonlySet<string> = new Set(['line.status', 'messages.recent', 'db.chats.list'])
 /** backend 本來就會執行到 soft deadline（20 s）才回 `pending` 的路徑（AI 草擬／分析、回顧、補金鑰…）：走 core，但等待上限用 `longMs`。 */
 export const LONG_CALL_PATHS: ReadonlySet<string> = new Set([
-  'db.todos.draftReply', 'db.todos.analyzeNotMine', 'db.todos.identity.retry', 'groupTopics.analyze', 'settings.prompt.refine',
+  'db.todos.draftReply', 'db.todos.analyzeNotMine', 'groupTopics.analyze', 'settings.prompt.refine',
   'pipeline.runOnce', 'pipeline.reviewLastDays', 'pipeline.backfillMediaKeys'
 ])
 
@@ -307,10 +307,9 @@ export const RESULT_REPLAYS = 2
 const REPLAY_SAFE_PATHS: ReadonlySet<string> = new Set([
   'messages.recent', 'line.status', 'settings.get',
   'db.messages.list', 'db.messages.recentByChat', 'db.messages.byChatSince', 'db.messages.count',
-  'db.chats.list', 'db.chats.get',
+  'db.chats.list', 'db.chats.get', 'db.chats.todoExtractEnabled',
   'db.todos.list', 'db.todos.get', 'db.todos.openByChat', 'db.todos.listNotMine', 'db.todos.listNotMineCorrections', 'db.todos.getNotMineReview',
-  'db.todos.identity.listPending', 'db.todos.identity.inspect', 'db.todos.identity.todoTopicRelations',
-  'groupTopics.list', 'groupTopics.overview', 'groupTopics.linkCandidates', 'groupTopics.todoRefs', 'groupTopics.linkProposals', 'groupTopics.pendingCount', 'groupTopics.crossChatEnabled',
+  'groupTopics.list', 'groupTopics.overview', 'groupTopics.todoRefs', 'groupTopics.pendingCount',
   'pipeline.status', 'pipeline.loadStats',
   'settings.chatPrompt.get', 'settings.chatPrompt.list'
 ])

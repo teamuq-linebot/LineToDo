@@ -48,14 +48,13 @@ export const SUPPORTED_API_PATHS: readonly string[] = Object.freeze([
   'messages.recent',
   'line.status', 'line.setRunning',
   'db.messages.list', 'db.messages.recentByChat', 'db.messages.byChatSince', 'db.messages.count',
-  'db.chats.list', 'db.chats.get', 'db.chats.setBlocked', 'db.chats.blockAndClear', 'db.chats.addIgnoreKeyword', 'db.chats.removeIgnoreKeyword',
+  'db.chats.list', 'db.chats.get', 'db.chats.todoExtractEnabled', 'db.chats.setTodoExtractEnabled', 'db.chats.setBlocked', 'db.chats.blockAndClear', 'db.chats.addIgnoreKeyword', 'db.chats.removeIgnoreKeyword',
   'db.todos.list', 'db.todos.get', 'db.todos.openByChat', 'db.todos.updateStatus', 'db.todos.update', 'db.todos.moveColumn',
   'db.todos.draftReply', 'db.todos.analyzeNotMine', 'groupTopics.analyze',
-  'db.todos.identity.listPending', 'db.todos.identity.inspect', 'db.todos.identity.retry', 'db.todos.identity.resolve', 'db.todos.identity.todoTopicRelations', 'db.todos.identity.resolveTodoTopicRelation',
   'db.todos.markNotMine', 'db.todos.listNotMine', 'db.todos.listNotMineCorrections', 'db.todos.getNotMineReview',
   'db.todos.reopenNotMine', 'db.todos.applyNotMineCorrection', 'db.todos.setNotMineCorrectionEnabled',
-  'groupTopics.setEnabled', 'groupTopics.setCrossChatEnabled', 'groupTopics.crossChatEnabled', 'groupTopics.pendingCount',
-  'groupTopics.list', 'groupTopics.overview', 'groupTopics.linkCandidates', 'groupTopics.todoRefs', 'groupTopics.linkProposals', 'groupTopics.resolveLinkProposal',
+  'groupTopics.setEnabled', 'groupTopics.pendingCount',
+  'groupTopics.list', 'groupTopics.overview', 'groupTopics.todoRefs',
   'pipeline.status', 'pipeline.loadStats', 'pipeline.runOnce', 'pipeline.reviewLastDays', 'pipeline.backfillMediaKeys', 'pipeline.setRunning',
   'settings.get', 'settings.update', 'settings.hasSafeStorageKey'
 ])
