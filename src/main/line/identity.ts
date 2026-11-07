@@ -19,6 +19,7 @@ export interface ParticipantIdentity {
 export interface ParticipantIdentityProvider {
   resolve(input: { senderMid: string | null; accountMid: string | null; chatId: string }): ParticipantIdentity
   epoch(): string | null
+  readonly persistUnknown?: boolean
 }
 
 function hmac(secret: Buffer, value: string): string {

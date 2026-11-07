@@ -167,7 +167,8 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   let topicBackground: ReturnType<typeof createTopicBackground> | null = null
   const unknownIdentity: ParticipantIdentityProvider = {
     resolve: () => ({ participantKey: null, scope: 'unknown', keyVersion: null, status: 'unknown', reason: 'safe_storage_unavailable' }),
-    epoch: () => null
+    epoch: () => null,
+    persistUnknown: false
   }
   let transition: Promise<void> | null = null
   const recent: RawLineMessage[] = []

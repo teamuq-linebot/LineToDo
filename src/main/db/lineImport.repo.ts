@@ -33,7 +33,6 @@ export function ensureLineImportSchema(db: Database): void {
         FOREIGN KEY(msg_id) REFERENCES messages(msg_id) ON DELETE CASCADE,
         FOREIGN KEY(chat_id) REFERENCES chats(chat_id)
       );
-      CREATE INDEX IF NOT EXISTS idx_message_participants_chat_key ON message_participants(chat_id, participant_key);
       CREATE TABLE IF NOT EXISTS line_import_batches (
         batch_id TEXT PRIMARY KEY,
         source TEXT NOT NULL CHECK(source IN ('line-watch','line-backfill')),
@@ -128,6 +127,7 @@ export function commitLineImportBatch(
       const status = resolved.participantKey ? 'keyed' : 'unknown'
       if (status === 'keyed') keyedIdentityCount++
       else unknownIdentityCount++
+      if (status === 'unknown' && identity.persistUnknown === false) continue
       upsertParticipant.run({ msgId, chatId: item.message.chatId,
         participantKey: resolved.participantKey, scope: resolved.scope, keyVersion: resolved.keyVersion,
         status, reason: resolved.reason ?? (status === 'unknown' ? 'identity_failure' : null), isMe: knownSelf })

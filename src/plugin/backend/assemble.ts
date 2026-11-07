@@ -101,7 +101,8 @@ const NO_SECRETS: SettingsSecretStorage = {
 /** 首版降級（設計 v2 §5.2）：沒有 safeStorage 的 install secret，participant 一律 unknown（與 application 內建的 fallback 相同）。 */
 const UNKNOWN_IDENTITY: ParticipantIdentityProvider = {
   resolve: () => ({ participantKey: null, scope: 'unknown', keyVersion: null, status: 'unknown', reason: 'safe_storage_unavailable' }),
-  epoch: () => null
+  epoch: () => null,
+  persistUnknown: false
 }
 
 /** 近期收回掃描的最短間隔（對齊 standalone 的 5 分鐘）。 */

@@ -452,6 +452,42 @@ test('avatar write without the tables (standalone, schema unavailable): silently
   rmSync(temp, { recursive: true, force: true })
 })
 
+const unknownNoPersist = {
+  resolve: () => ({ participantKey: null, scope: 'unknown', keyVersion: null, status: 'unknown', reason: 'safe_storage_unavailable' }),
+  epoch: () => null,
+  persistUnknown: false
+}
+
+test('unknown identity with persistUnknown=false writes no participant rows but keeps receipt counts', () => {
+  const db = createDb()
+  const items = [item({ msgId: 'm-1', senderMid: 'mid-A' }), item({ msgId: 'm-2', senderMid: null, ts: 11 }), item({ msgId: 'm-3', senderMid: 'mid-B', ts: 12 })]
+  const result = commitLineImportBatch(db, batch(items, 'batch-no-persist', { createdTime: 12, rowId: 3 }), unknownNoPersist)
+  assert.equal(result.inserted, 3)
+  assert.equal(result.unknownIdentityCount, 3)
+  assert.equal(result.keyedIdentityCount, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM message_participants').get().n, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM messages').get().n, 3)
+  const receipt = db.prepare('SELECT row_count,keyed_identity_count,unknown_identity_count FROM line_import_batches').get()
+  assert.deepEqual({ ...receipt }, { row_count: 3, keyed_identity_count: 0, unknown_identity_count: 3 })
+  db.close()
+})
+
+test('persistUnknown=false still writes keyed rows, and a throwing resolver is skipped the same way as an unknown one', () => {
+  const db = createDb()
+  const temp = mkdtempSync(join(tmpdir(), 'line-identity-nopersist-test-'))
+  const keyed = identityProvider(temp)
+  const keyedNoPersist = { resolve: (input) => keyed.resolve(input), epoch: () => keyed.epoch(), persistUnknown: false }
+  commitLineImportBatch(db, batch([item({ msgId: 'm-1', senderMid: 'mid-A' }), item({ msgId: 'm-2', senderMid: null, ts: 11 })], 'batch-mixed', { createdTime: 11, rowId: 2 }), keyedNoPersist)
+  const rows = db.prepare('SELECT msg_id,identity_status FROM message_participants ORDER BY msg_id').all().map((row) => ({ ...row }))
+  assert.deepEqual(rows, [{ msg_id: 'i:m-1', identity_status: 'keyed' }])
+  const throwing = { resolve: () => { throw new Error('resolver down') }, epoch: () => null, persistUnknown: false }
+  const failed = commitLineImportBatch(db, batch([item({ msgId: 'm-3', senderMid: 'mid-C', ts: 12 })], 'batch-throwing', { createdTime: 12, rowId: 3 }), throwing)
+  assert.equal(failed.unknownIdentityCount, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM message_participants').get().n, 1)
+  db.close()
+  rmSync(temp, { recursive: true, force: true })
+})
+
 test('avatar schema: user_version stays at the current SCHEMA_VERSION for an old (v8, tables missing) database and for a new one, and running it again has no side effect', () => {
   const old = avatarDb({ withTables: false })
   assert.equal(old.pragma('user_version', { simple: true }), SCHEMA_VERSION)
@@ -509,4 +545,20 @@ test('avatar write with the account MID unknown (the source _profile is not ther
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM line_avatar_meta WHERE key='link_watermark'").get().n, 1)
   db.close()
   rmSync(temp, { recursive: true, force: true })
+})
+
+test('a provider without persistUnknown keeps writing unknown rows', () => {
+  const db = createDb()
+  const legacy = { resolve: unknownNoPersist.resolve, epoch: () => null }
+  commitLineImportBatch(db, batch([item({ msgId: 'm-1', senderMid: 'mid-A' })], 'batch-legacy', { createdTime: 10, rowId: 1 }), legacy)
+  const rows = db.prepare('SELECT msg_id,identity_status,identity_reason FROM message_participants').all().map((row) => ({ ...row }))
+  assert.deepEqual(rows, [{ msg_id: 'i:m-1', identity_status: 'unknown', identity_reason: 'safe_storage_unavailable' }])
+  db.close()
+})
+
+test('a freshly created import schema no longer builds idx_message_participants_chat_key', () => {
+  const db = createDb()
+  const names = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='message_participants'").all().map((row) => row.name)
+  assert.equal(names.includes('idx_message_participants_chat_key'), false)
+  db.close()
 })
