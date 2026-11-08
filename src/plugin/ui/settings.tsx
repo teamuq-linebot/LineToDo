@@ -8,6 +8,7 @@ import { BackendStatusBar } from './BackendStatusBar'
 import { ResidencyNotice } from './ResidencyStatus'
 import { useTheme } from '../../renderer/lib/theme'
 import { UiStateProvider, browserUiState } from '../../renderer/lib/uiState'
+import { installZoom } from '../../renderer/lib/zoom'
 
 /** 設定 view 跟隨 TeamUQ 宿主外觀（Electron nativeTheme → prefers-color-scheme）。 */
 function ThemeFollower(): null {
@@ -17,6 +18,9 @@ function ThemeFollower(): null {
 
 // 外掛設定 view 的入口（manifest：contributes.views[settings]，presentations:['settings']；TeamUQ 把它嵌在「設定 → 外掛 → line-todo → 設定」）。
 // 與看板 view 是不同的 webContents，所以有自己的 adapter（自己的事件 session，需要時才開）。
+// 畫面縮放：與看板 view 共用同一個檔位（localStorage lt-zoom）。
+installZoom()
+
 const container = document.getElementById('root')
 if (!container) throw new Error('#root not found in settings.html')
 

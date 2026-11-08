@@ -1077,6 +1077,22 @@ code {
   background: var(--chip-bg);
 }
 
+/* 整頁／還原鈕（外掛頂部列，與主題鈕同款）；被拒時旁邊一行短錯誤 */
+.presentation-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.presentation-error {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--err);
+  white-space: nowrap;
+}
+@media (max-width: 420px) {
+  .presentation-error { order: 1; }
+}
+
 /* ── 共用按鈕變體 ─────────────────────────────────── */
 button.ghost {
   background: transparent;

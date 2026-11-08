@@ -2,6 +2,7 @@ import { MessageStream } from './components/MessageStream'
 import { OverviewPage } from './components/OverviewPage'
 import { SettingsPanel } from './components/Settings/SettingsPanel'
 import { GroupTopicsPanel } from './features/groupTopics/GroupTopicsPanel'
+import { PresentationToggle } from './components/PresentationToggle'
 import { useHostCapabilities } from './platform/LineTodoApi'
 import { APP_VERSION } from './lib/appVersion'
 import { useTheme } from './lib/theme'
@@ -63,6 +64,7 @@ function App(): JSX.Element {
             </button>
           )}
         </nav>
+        <PresentationToggle />
         {caps.host !== 'plugin' && <button
           className="theme-toggle"
           onClick={toggleTheme}

@@ -14,6 +14,7 @@ import { undoInSettingsHint } from '../../../shared/teamuqPlaces'
 // 未儲存的編輯／關鍵字草稿保留多久（G-04：重新開啟畫面後還原；太舊的就丟掉）：7 天，定義在 uiState.ts 的 UI_DRAFT_RETENTION，
 // 看板啟動時與開著的期間每小時也會主動清掉過期的（review N1）。
 import { CARD_DRAFT_MAX_AGE_MS, useUiState } from '../../lib/uiState'
+import { layoutScale, placeFixedMenu } from '../../lib/zoom'
 
 interface EditDraft { title: string; detail: string; bucket: TodoDTO['bucket']; priority: number; due: string }
 
@@ -130,16 +131,8 @@ function OverflowMenu({ children }: { children: ReactNode }): JSX.Element {
     }
     const el = triggerRef.current
     if (el) {
-      const r = el.getBoundingClientRect()
-      const MENU_W = 168
-      const gap = 4
-      const left = Math.max(8, Math.min(r.right - MENU_W, window.innerWidth - MENU_W - 8))
-      const spaceBelow = window.innerHeight - r.bottom
-      setPos(
-        spaceBelow < 260
-          ? { bottom: window.innerHeight - r.top + gap, left } // 下方不夠 → 往上開
-          : { top: r.bottom + gap, left }
-      )
+      // 畫面縮放（lib/zoom.ts）之後 rect 與 innerWidth 是實際像素、fixed 的 left／top 是縮放前的長度 → 由 placeFixedMenu 換算；下方不夠 → 往上開
+      setPos(placeFixedMenu(el.getBoundingClientRect(), { width: window.innerWidth, height: window.innerHeight }, layoutScale()))
     }
     setOpen(true)
   }
