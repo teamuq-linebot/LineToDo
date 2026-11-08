@@ -3,7 +3,7 @@
  *
  * TeamUQ 主畫面的縮放（webFrame.setZoomFactor）不會作用在外掛 view（獨立的 WebContentsView），SDK 也沒有縮放 API，所以外掛自己做：
  * Ctrl + `=`／`+`、Ctrl + `-`、Ctrl + `0`（重設）與 Ctrl + 滾輪，調整 `<html>` 的 CSS `zoom`。
- * 檔位沿用 TeamUQ 主畫面的 [0.8, 0.9, 1.0, 1.1, 1.25]，預設 1.0；值存在這個外掛自己的 localStorage（`lt-zoom`），重開仍維持，
+ * 檔位 [0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0]，預設 1.0；值存在這個外掛自己的 localStorage（`lt-zoom`），重開仍維持，
  * 看板與設定 view 共用同一個值（`storage` 事件讓另一個 view 即時跟上）。
  *
  * - 快捷鍵在輸入框／文字區內一樣有效（與瀏覽器縮放相同；這些組合在文字編輯裡沒有別的意思）。
@@ -14,7 +14,7 @@
  * 但 position:fixed 的 left／top／bottom 是縮放前的 CSS 長度（會再乘上縮放）。`layoutScale()` 量出這個比例，`placeFixedMenu()` 用它換算。
  */
 
-export const ZOOM_STEPS: readonly number[] = Object.freeze([0.8, 0.9, 1.0, 1.1, 1.25])
+export const ZOOM_STEPS: readonly number[] = Object.freeze([0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0])
 export const DEFAULT_ZOOM = 1.0
 export const ZOOM_KEY = 'lt-zoom'
 /** 一格滑鼠滾輪的 deltaY；觸控板捏合的小 delta 累積到這個量才換一檔。 */
@@ -41,18 +41,20 @@ export function stepZoom(current: number, action: ZoomAction): number {
 
 export interface ZoomKeyLike {
   key: string
-  code?: string
   ctrlKey: boolean
   metaKey?: boolean
   altKey?: boolean
 }
 
-/** Ctrl（或 Cmd）+ =／+／-／0 → 動作；其他任何按鍵（沒按 Ctrl、同時按 Alt…）→ null。 */
+/**
+ * Ctrl（或 Cmd）+ =／+／-／0 → 動作；其他任何按鍵（沒按 Ctrl、同時按 Alt…）→ null。
+ * 只看 key（小鍵盤的 + － 0 在 NumLock 開著時 key 也是 + - 0）；不看 code：NumLock 關著時小鍵盤 0 的 key 是 Insert，Ctrl+Insert 是複製，不能被當成重設吞掉。
+ */
 export function zoomActionForKey(event: ZoomKeyLike): ZoomAction | null {
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return null
-  if (event.key === '=' || event.key === '+' || event.code === 'NumpadAdd') return 'in'
-  if (event.key === '-' || event.key === '_' || event.code === 'NumpadSubtract') return 'out'
-  if (event.key === '0' || event.code === 'Numpad0') return 'reset'
+  if (event.key === '=' || event.key === '+') return 'in'
+  if (event.key === '-' || event.key === '_') return 'out'
+  if (event.key === '0') return 'reset'
   return null
 }
 
@@ -109,6 +111,7 @@ export function installZoom(options: InstallZoomOptions = {}): ZoomState {
 
   let wheelAcc = 0
   const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.isComposing || event.keyCode === 229) return // 輸入法組字中的按鍵不是快捷鍵
     const action = zoomActionForKey(event)
     if (!action) return
     event.preventDefault()

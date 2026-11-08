@@ -1110,6 +1110,25 @@ test('L9 fail-closed is intact: legacy blocked=1 chats still read as off before 
   } finally { bare.close() }
 })
 
+test('L9b restoring a blocked=1 chat that has no preference row reports ok:false and changes nothing (no false "restored")', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'old', [['m1', NOW_MS - 1000, 'a'], ['m2', NOW_MS - 30 * DAY, 'b']])
+    db.prepare("UPDATE chats SET blocked=1, block_reason='legacy' WHERE chat_id='old'").run()
+    const processedBefore = [processedOf(db, stored('m1')), processedOf(db, stored('m2'))]
+    assert.deepEqual(setTodoExtractEnabled(db, 'old', true, NOW_MS), { ok: false, enabled: false, skippedOlder: 0 })
+    assert.deepEqual(setChatIgnored(db, 'old', false, { nowMs: NOW_MS }), { ok: false, ignored: true, skippedOlder: 0 })
+    assert.equal(isTodoExtractEnabled(db, 'old'), false, 'still off: the answer matches the state')
+    assert.equal(topicRow(db, 'old'), undefined, 'the failed restore did not switch topics on')
+    assert.deepEqual([processedOf(db, stored('m1')), processedOf(db, stored('m2'))], processedBefore, 'no backfill happened')
+    assert.deepEqual(blockedOf(db, 'old'), { blocked: 1, block_reason: 'legacy' })
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 1 })
+    const restored = setChatIgnored(db, 'old', false, { nowMs: NOW_MS })
+    assert.equal(restored.ok, true, 'once a row exists the restore is real')
+    assert.equal(isTodoExtractEnabled(db, 'old'), true)
+  } finally { close() }
+})
+
 test('L10 listPrefs reads every flag in one call with the same meaning as the single-chat readers', () => {
   const { db, close } = listFixture()
   try {

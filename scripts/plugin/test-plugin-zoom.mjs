@@ -1,7 +1,9 @@
 // Screen zoom + the 整頁 button (line-todo plugin only; nothing in TeamUQ Core changes).
-//   lib/zoom.ts            Ctrl + = / + / - / 0 and Ctrl + wheel move through [0.8, 0.9, 1.0, 1.1, 1.25]; the step is remembered (localStorage lt-zoom)
+//   lib/zoom.ts            Ctrl + = / + / - / 0 and Ctrl + wheel move through [0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0]; the step is remembered (localStorage lt-zoom)
 //   PresentationToggle     window.tuqPlugin.presentation.request('fullpage' | 'tab'), icon follows onChange, one short error line when refused, hidden without the API
 //   placeFixedMenu         the card 「更多」menu is positioned correctly under CSS zoom (the real-browser check is in the dev report; this is the arithmetic)
+//   RWD                    layout breakpoints are @container (effective width = window / zoom), no vw/vh, no @media (max-width — static pins; the real-browser matrix is `npm run check:browser-layout`
+//   OverflowMenu           the card menu integration passes layoutScale() to placeFixedMenu (mini-dom, rect/probe stubbed at 1.25)
 //   bundle                 both view entries (board + settings) install the zoom; the pinned standalone index.html is untouched
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -40,8 +42,8 @@ async function until(predicate, { timeout = 30_000, message = 'condition' } = {}
 
 // ───────────── zoom: the pure steps ─────────────
 
-test('zoom: the steps are the TeamUQ main-window steps, default 1.0', () => {
-  assert.deepEqual([...ZOOM_STEPS], [0.8, 0.9, 1.0, 1.1, 1.25])
+test('zoom: the steps run 0.8 … 2.0, default 1.0', () => {
+  assert.deepEqual([...ZOOM_STEPS], [0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0])
   assert.equal(DEFAULT_ZOOM, 1)
   assert.equal(ZOOM_KEY, 'lt-zoom')
 })
@@ -49,18 +51,21 @@ test('zoom: the steps are the TeamUQ main-window steps, default 1.0', () => {
 test('zoom: in / out walk the steps and stop at both ends; reset goes back to 1.0 from anywhere', () => {
   let z = DEFAULT_ZOOM
   const seenIn = []
-  for (let i = 0; i < 6; i += 1) { z = stepZoom(z, 'in'); seenIn.push(z) }
-  assert.deepEqual(seenIn, [1.1, 1.25, 1.25, 1.25, 1.25, 1.25], 'upper limit 1.25')
+  for (let i = 0; i < 9; i += 1) { z = stepZoom(z, 'in'); seenIn.push(z) }
+  assert.deepEqual(seenIn, [1.1, 1.25, 1.5, 1.75, 2, 2, 2, 2, 2], 'upper limit 2.0')
   const seenOut = []
-  for (let i = 0; i < 8; i += 1) { z = stepZoom(z, 'out'); seenOut.push(z) }
-  assert.deepEqual(seenOut, [1.1, 1.0, 0.9, 0.8, 0.8, 0.8, 0.8, 0.8], 'lower limit 0.8')
-  for (const from of [0.8, 0.9, 1.1, 1.25]) assert.equal(stepZoom(from, 'reset'), 1)
+  for (let i = 0; i < 11; i += 1) { z = stepZoom(z, 'out'); seenOut.push(z) }
+  assert.deepEqual(seenOut, [1.75, 1.5, 1.25, 1.1, 1.0, 0.9, 0.8, 0.8, 0.8, 0.8, 0.8], 'lower limit 0.8')
+  for (const from of [0.8, 0.9, 1.1, 1.25, 1.5, 1.75, 2]) assert.equal(stepZoom(from, 'reset'), 1)
 })
 
 test('zoom: stored garbage is normalized to a valid step (nearest step, junk → 1.0)', () => {
   assert.equal(normalizeZoom('1.25'), 1.25)
   assert.equal(normalizeZoom('0.86'), 0.9)
-  assert.equal(normalizeZoom('5'), 1.25)
+  assert.equal(normalizeZoom('5'), 2)
+  assert.equal(normalizeZoom('1.6'), 1.5)
+  assert.equal(normalizeZoom('1.7'), 1.75)
+  assert.equal(normalizeZoom('2'), 2)
   assert.equal(normalizeZoom('0.1'), 0.8)
   for (const junk of [null, undefined, '', 'abc', NaN, -1, 0, {}, [], Infinity]) assert.equal(normalizeZoom(junk), 1, String(junk))
 })
@@ -72,8 +77,15 @@ test('zoom keys: Ctrl+= Ctrl++ Ctrl+- Ctrl+0 (and numpad) map to in / in / out /
   assert.equal(k('-'), 'out')
   assert.equal(k('_'), 'out')
   assert.equal(k('0'), 'reset')
-  assert.equal(k('Add', { code: 'NumpadAdd' }), 'in')
-  assert.equal(k('Subtract', { code: 'NumpadSubtract' }), 'out')
+  assert.equal(k('+', { code: 'NumpadAdd' }), 'in')
+  assert.equal(k('-', { code: 'NumpadSubtract' }), 'out')
+  assert.equal(k('0', { code: 'Numpad0' }), 'reset')
+  // NumLock off: numpad 0 reports key Insert, and Ctrl+Insert is copy — it must not be swallowed as a reset (the key decides, not the physical code)
+  assert.equal(k('Insert', { code: 'Numpad0' }), null)
+  assert.equal(k('Delete', { code: 'NumpadDecimal' }), null)
+  assert.equal(k('End', { code: 'Numpad1' }), null)
+  assert.equal(k('Add', { code: 'NumpadAdd' }), null, 'no key named Add exists; only the key is looked at')
+  assert.equal(k('Subtract', { code: 'NumpadSubtract' }), null)
   // not Ctrl → nothing, whatever the key
   for (const key of ['=', '+', '-', '0', 'a', 'Enter', 'Escape']) assert.equal(zoomActionForKey({ key, ctrlKey: false }), null, `plain ${key}`)
   // other Ctrl combinations are not ours
@@ -111,8 +123,8 @@ test('zoom: Ctrl keys change the page zoom step by step, preventDefault, and per
   assert.equal(env.root.style.zoom, '1.1'); assert.equal(env.store.get(ZOOM_KEY), '1.1')
   env.key('+', { shiftKey: true })
   assert.equal(env.root.style.zoom, '1.25')
-  assert.equal(env.key('=').prevented, true, 'at the upper limit the key is still ours (no browser zoom)')
-  assert.equal(env.root.style.zoom, '1.25', 'stays at 1.25')
+  for (const expected of ['1.5', '1.75', '2', '2']) { assert.equal(env.key('=').prevented, true, 'at the upper limit the key is still ours (no browser zoom)'); assert.equal(env.root.style.zoom, expected) }
+  assert.equal(env.store.get(ZOOM_KEY), '2')
   env.key('0')
   assert.equal(env.root.style.zoom, ''); assert.equal(env.store.get(ZOOM_KEY), '1')
   for (const expected of ['0.9', '0.8', '0.8']) { env.key('-'); assert.equal(env.root.style.zoom, expected) }
@@ -144,9 +156,9 @@ test('zoom: Ctrl+wheel up zooms in, down zooms out, one notch = one step, limits
   assert.equal(env.listeners.get('wheel').options.capture, true)
   assert.equal(env.wheel(-WHEEL_STEP_DELTA).prevented, true)
   assert.equal(env.root.style.zoom, '1.1')
-  env.wheel(-WHEEL_STEP_DELTA); env.wheel(-WHEEL_STEP_DELTA); env.wheel(-WHEEL_STEP_DELTA)
-  assert.equal(env.root.style.zoom, '1.25', 'upper limit')
-  for (let i = 0; i < 6; i += 1) env.wheel(WHEEL_STEP_DELTA)
+  for (let i = 0; i < 6; i += 1) env.wheel(-WHEEL_STEP_DELTA)
+  assert.equal(env.root.style.zoom, '2', 'upper limit')
+  for (let i = 0; i < 9; i += 1) env.wheel(WHEEL_STEP_DELTA)
   assert.equal(env.root.style.zoom, '0.8', 'lower limit')
   assert.equal(env.store.get(ZOOM_KEY), '0.8')
   env.wheel(-100000)
@@ -164,6 +176,28 @@ test('zoom: trackpad pinch (many tiny Ctrl+wheel deltas) needs one notch worth o
   env.wheel(15)
   env.wheel(15)
   assert.equal(env.root.style.zoom, '1.1', 'reversing discards the pending amount')
+})
+
+test('zoom keys: Ctrl+Insert (numpad 0 with NumLock off, = copy) is left alone; Ctrl+numpad 0/+/- with NumLock on still zoom', () => {
+  const env = fakeEnv()
+  installZoom({ target: env.target, root: env.root, storage: env.storage })
+  assert.equal(env.key('Insert', { code: 'Numpad0' }).prevented, false)
+  assert.equal(env.root.style.zoom, '')
+  assert.equal(env.key('+', { code: 'NumpadAdd' }).prevented, true)
+  assert.equal(env.root.style.zoom, '1.1')
+  assert.equal(env.key('0', { code: 'Numpad0' }).prevented, true)
+  assert.equal(env.root.style.zoom, '')
+})
+
+test('zoom keys: keys typed while an input method is composing (isComposing / keyCode 229) are not shortcuts', () => {
+  const env = fakeEnv()
+  installZoom({ target: env.target, root: env.root, storage: env.storage })
+  assert.equal(env.key('=', { isComposing: true }).prevented, false)
+  assert.equal(env.key('-', { keyCode: 229 }).prevented, false)
+  assert.equal(env.key('0', { isComposing: true, keyCode: 229 }).prevented, false)
+  assert.equal(env.root.style.zoom, '', 'nothing changed')
+  assert.equal(env.key('=', { isComposing: false, keyCode: 187 }).prevented, true, 'a normal key press still zooms')
+  assert.equal(env.root.style.zoom, '1.1')
 })
 
 test('zoom: a wheel without Ctrl and ordinary keys are not touched (no preventDefault, no zoom change)', () => {
@@ -229,10 +263,10 @@ test('placeFixedMenu: at scale 1 the arithmetic is the pre-zoom one (open below 
 })
 
 test('placeFixedMenu: under zoom the rect (screen px) is converted to the CSS lengths that land on the trigger, and the clamps are in screen px', () => {
-  for (const scale of [0.8, 0.9, 1.1, 1.25]) {
+  for (const scale of [0.8, 0.9, 1.1, 1.25, 1.5, 1.75, 2]) {
     const vp = { width: 1000, height: 800 }
     const rect = { top: 100 * scale, bottom: 130 * scale, right: 500 * scale } // a trigger at layout (…, 100..130, right 500)
-    const below = placeFixedMenu(rect, vp, scale)
+    const below = placeFixedMenu(rect, { width: vp.width * scale, height: vp.height * scale }, scale) // a window whose effective (layout) size is 1000 x 800
     assert.ok(Math.abs(below.top - 134) < 1e-9 && Math.abs(below.left - 332) < 1e-9, `scale ${scale}: layout coordinates equal the unzoomed ones: ${JSON.stringify(below)}`)
     // the menu's right edge (left+168 css px → ×scale on screen) never leaves the viewport
     const edge = placeFixedMenu({ top: 100, bottom: 130, right: 995 }, vp, scale)
@@ -250,8 +284,60 @@ test('layoutScale: ratio of the measured probe width to its CSS width; 1 when un
   assert.equal(layoutScale(doc(125)), 1.25)
   assert.equal(layoutScale(doc(80)), 0.8)
   assert.equal(layoutScale(doc(0)), 1)
+  assert.equal(layoutScale(doc(200)), 2)
   assert.equal(layoutScale(null), 1)
   assert.equal(layoutScale({ createElement() { throw new Error('x') }, body: {} }), 1)
+})
+
+// ───────────── the card menu integration (TodoCard → OverflowMenu → layoutScale → placeFixedMenu) ─────────────
+
+test('OverflowMenu at zoom 1.25: the menu lands at placeFixedMenu(rect, viewport, layoutScale()) (a menu that ignored the scale would be ~1.25x off)', async () => {
+  const proto = Object.getPrototypeOf(dom.document.createElement('div'))
+  const saved = { rect: proto.getBoundingClientRect, remove: proto.remove, w: dom.window.innerWidth, h: dom.window.innerHeight }
+  const scale = 1.25
+  const trigger = { top: 100 * scale, bottom: 130 * scale, right: 500 * scale, left: 420 * scale, width: 80 * scale, height: 30 * scale, x: 0, y: 0 }
+  proto.getBoundingClientRect = function () {
+    if (String(this.style?.cssText ?? '').includes('width:100px')) return { width: 100 * scale, height: scale, top: 0, left: 0, right: 100 * scale, bottom: scale, x: 0, y: 0 } // layoutScale's probe
+    if (String(this.getAttribute?.('class') ?? '').includes('menu-trigger')) return trigger
+    return { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }
+  }
+  proto.remove = function () { this.parentNode?.removeChild(this) }
+  dom.window.innerWidth = 1000 * scale; dom.window.innerHeight = 800 * scale
+  try {
+    const view = ui.mount(ui.overflowMenuScene())
+    try {
+      const findTrigger = () => walk(view.container).find((el) => el.localName === 'button' && (el.getAttribute('class') ?? '').includes('menu-trigger'))
+      await until(findTrigger, { message: 'the 更多 trigger' })
+      const triggerEl = findTrigger()
+      reactProps(triggerEl).onClick({ currentTarget: triggerEl })
+      await until(() => walk(view.container).some((el) => (el.getAttribute('class') ?? '') === 'menu-pop'), { message: 'menu-pop' })
+      const pop = walk(view.container).find((el) => (el.getAttribute('class') ?? '') === 'menu-pop')
+      const expected = placeFixedMenu(trigger, { width: 1000 * scale, height: 800 * scale }, scale)
+      assert.deepEqual(expected, { top: 134, left: 332 })
+      assert.equal(pop.style.top, `${expected.top}px`)
+      assert.equal(pop.style.left, `${expected.left}px`)
+      const unscaled = placeFixedMenu(trigger, { width: 1000 * scale, height: 800 * scale }, 1)
+      assert.notEqual(unscaled.left, expected.left, 'the scale really changes the answer in this scenario')
+    } finally { view.unmount() }
+  } finally {
+    proto.getBoundingClientRect = saved.rect
+    if (saved.remove === undefined) delete proto.remove; else proto.remove = saved.remove
+    dom.window.innerWidth = saved.w; dom.window.innerHeight = saved.h
+  }
+})
+
+// ───────────── responsive layout: static pins ─────────────
+
+test('css: breakpoints are @container lt-app (effective width), nothing uses vw/vh or a window @media width, and #root is the container', () => {
+  const css = readFileSync(join(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.equal(css.match(/\d(vw|vh|dvh|svh|lvh|vmin|vmax)\b/g), null, 'vw/vh grow with CSS zoom')
+  assert.equal(css.match(/@media\s*\(\s*(max|min)-width/g), null, '@media width follows the window, not the zoom')
+  assert.match(css, /#root\s*\{\s*container:\s*lt-app\s*\/\s*inline-size;/)
+  const containers = css.match(/@container lt-app \([^)]*\)/g) ?? []
+  assert.deepEqual([...new Set(containers)].sort(), ['@container lt-app (max-width: 1000px)', '@container lt-app (max-width: 420px)', '@container lt-app (max-width: 760px)'])
+  assert.ok(!/@container(?! lt-app)/.test(css), 'every @container query names lt-app')
+  assert.match(css, /\.kb-board\s*\{[^}]*repeat\(4, minmax\(0, 1fr\)\)/)
+  assert.match(css, /\.overview-page > \.board-wrap\s*\{[^}]*min-height: 480px/)
 })
 
 // ───────────── 整頁 button ─────────────

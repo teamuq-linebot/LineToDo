@@ -8,6 +8,7 @@ import { LineTodoApiProvider } from '../../../src/renderer/platform/LineTodoApi'
 import { PLUGIN_CAPABILITIES, STANDALONE_CAPABILITIES } from '../../../src/renderer/platform/capabilities'
 import type { Api } from '../../../src/shared/api'
 import { PresentationToggle, PRESENTATION_ERROR_TEXT } from '../../../src/renderer/components/PresentationToggle'
+import { OverflowMenu } from '../../../src/renderer/components/Board/TodoCard'
 
 export { PRESENTATION_ERROR_TEXT }
 
@@ -19,6 +20,8 @@ export function mount(element: ReactElement): { container: HTMLElement; unmount(
 }
 
 export const toggleScene = (): ReactElement => <PresentationToggle />
+
+export const overflowMenuScene = (): ReactElement => <OverflowMenu><button type="button">x</button></OverflowMenu>
 
 export function renderHeader(plugin: boolean): string {
   const never = (): Promise<never> => new Promise(() => undefined)

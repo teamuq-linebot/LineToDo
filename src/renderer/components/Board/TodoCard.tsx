@@ -119,7 +119,7 @@ interface Props {
  *   下方空間不足時自動往上開。
  * - 關閉：點選任一項（事件冒泡到 .menu-pop）或點半透明 backdrop。
  */
-function OverflowMenu({ children }: { children: ReactNode }): JSX.Element {
+export function OverflowMenu({ children }: { children: ReactNode }): JSX.Element {
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ top?: number; bottom?: number; left: number } | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)

@@ -1035,9 +1035,9 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
 
       const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
       assert.match(css, /\.chat-topics-todos-content\s*\{[^}]*overflow:\s*auto/s, 'the combined pane scrolls within the chat area')
-      assert.match(css, /\.chat-topics-todos-content\s*\{[^}]*padding:\s*16px clamp\(14px, 3vw, 34px\)/s, 'the combined content padding adapts to viewport width')
+      assert.match(css, /\.chat-topics-todos-content\s*\{[^}]*padding:\s*16px clamp\(14px, 3cqw, 34px\)/s, 'the combined content padding adapts to the app width (container units: stable under CSS zoom)')
       assert.match(css, /\.chat-topics-todos-content\s*>\s*\.chat-todos-content\s*\{[^}]*border-top:\s*1px solid var\(--border\)/s, 'the two data types remain visually distinct in one scroll area')
-      assert.match(css, /@media \(max-width:\s*420px\)[\s\S]*?\.chat-pane-view-toggle button\s*\{[^}]*white-space:\s*nowrap/s, 'the combined tab label stays on one line on narrow screens')
+      assert.match(css, /@container lt-app \(max-width:\s*420px\)[\s\S]*?\.chat-pane-view-toggle button\s*\{[^}]*white-space:\s*nowrap/s, 'the combined tab label stays on one line on narrow screens')
       assert.match(css, /\.chat-todo-card\s*\{[^}]*cursor:\s*default[^}]*user-select:\s*text/s, 'read-only todo cards do not advertise drag actions')
     } finally { view.unmount(); api.dispose() }
   })
@@ -3186,6 +3186,22 @@ test('M1 right-clicking a chat row opens a menu: 置頂／忽略／隱藏, or �
     assert.equal(walk(s.view.container).filter((element) => element.getAttribute('role') === 'menu').length, 1, 'a single menu state')
     const style = reactProps(s.menu()).style
     assert.ok(Number.isFinite(style.left) && (Number.isFinite(style.top) || Number.isFinite(style.bottom)), 'placed by placeFixedMenu with finite numbers')
+  } finally { s.dispose() }
+})
+
+test('M1b todo off but topics on is not "ignored": the menu offers 忽略 and the row is not faded; todo off alone is ignored (menu offers 恢復)', async () => {
+  const s = listScene(three(), { prefs: PREFS({ todoOff: ['m-a', 'm-b'], topicsOn: ['m-a'] }) })
+  try {
+    await until(() => s.rowNames().length === 3, { message: 'three rows' })
+    assert.equal(hasClassName(s.rowOf('聊天甲'), 'ignored'), false, 'topics still on: not faded')
+    assert.equal(s.rowOf('聊天甲').textContent.includes('已忽略'), false)
+    assert.equal(hasClassName(s.rowOf('聊天乙'), 'ignored'), true, 'todo off and topics off: faded')
+    s.openMenu('聊天甲')
+    await until(() => s.menu(), { message: 'menu on the todo-off, topics-on chat' })
+    assert.deepEqual(s.menuLabels(), ['置頂', '忽略', '隱藏'])
+    s.openMenu('聊天乙')
+    await until(() => s.menuLabels()?.[1] === '恢復', { message: 'menu on the fully ignored chat' })
+    assert.deepEqual(s.menuLabels(), ['置頂', '恢復', '隱藏'])
   } finally { s.dispose() }
 })
 

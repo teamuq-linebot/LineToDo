@@ -143,6 +143,11 @@ body,
   margin: 0;
 }
 
+/* 縮放（html 的 CSS zoom）時 @media 看的是實體視窗、vw／vh 會被放大；版面斷點與相對長度一律用這個容器（有效寬＝視窗寬÷縮放）。 */
+#root {
+  container: lt-app / inline-size;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -845,7 +850,7 @@ code {
 }
 .chat-message-bubble .sm-file {
   min-width: 0;
-  max-width: min(320px, 72vw);
+  max-width: min(320px, 72cqw);
 }
 .chat-file-error {
   display: block;
@@ -919,7 +924,7 @@ code {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 16px clamp(14px, 3vw, 34px) 24px;
+  padding: 16px clamp(14px, 3cqw, 34px) 24px;
   background: var(--bg);
 }
 .chat-topics-todos-content > .group-topics-panel.embedded,
@@ -941,7 +946,7 @@ code {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 16px clamp(14px, 3vw, 34px) 24px;
+  padding: 16px clamp(14px, 3cqw, 34px) 24px;
   background: var(--bg);
 }
 .chat-todos-heading {
@@ -962,7 +967,7 @@ code {
 .chat-todos-error .link-btn { margin-left: 8px; }
 .group-topics-panel.embedded {
   min-height: 100%;
-  padding: 16px clamp(14px, 3vw, 34px) 24px;
+  padding: 16px clamp(14px, 3cqw, 34px) 24px;
 }
 .group-topics-head {
   display: flex;
@@ -993,7 +998,7 @@ code {
 .group-topics-notice { color: var(--muted); font-size: 11px; }
 .group-topics-group-select { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
 
-@media (max-width: 760px) {
+@container lt-app (max-width: 760px) {
   .chat-workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
@@ -1027,7 +1032,7 @@ code {
   .chat-message-list { padding: 16px 12px 20px; }
 }
 
-@media (max-width: 420px) {
+@container lt-app (max-width: 420px) {
   .app-header { flex-wrap: wrap; gap: 7px; padding: 8px 10px; }
   .app-header h1 { flex: 0 0 auto; font-size: 14px; }
   .app-tabs { order: 2; flex: 0 0 100%; min-width: 0; gap: 2px; overflow: visible; margin-left: 0; justify-content: space-between; }
@@ -1103,7 +1108,7 @@ code {
   color: var(--err);
   white-space: nowrap;
 }
-@media (max-width: 420px) {
+@container lt-app (max-width: 420px) {
   .presentation-error { order: 1; }
 }
 
@@ -1162,11 +1167,13 @@ button:disabled {
 .overview-page {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
 }
 .overview-page > .board-wrap {
-  flex: 0 0 auto;
-  height: max(480px, calc(100vh - 150px));
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 480px;
 }
 .ops-row {
   display: flex;
@@ -1247,7 +1254,7 @@ button:disabled {
 /* 四欄 */
 .kb-board {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
   flex: 1;
   min-height: 0;
@@ -1645,7 +1652,7 @@ button:disabled {
   border-radius: 10px;
   padding: 16px 18px;
   width: 480px;
-  max-width: 92vw;
+  max-width: 92%;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1687,8 +1694,8 @@ button:disabled {
 /* ── 來源訊息 modal（過去 24 小時對話 + 往上分頁）────────
    沿用 .modal-backdrop / .modal 基底；色彩一律用主題變數，深/淺皆正確。 */
 .modal.source-modal {
-  width: min(560px, 92vw);
-  max-height: 82vh;
+  width: min(560px, 92%);
+  max-height: 82%;
   padding: 0;
   gap: 0;
   overflow: hidden;
@@ -1843,7 +1850,7 @@ button:disabled {
 .sm-thumb {
   display: block;
   width: 210px;
-  max-width: 62vw;
+  max-width: 62cqw;
   aspect-ratio: 4 / 3;
   object-fit: cover;
   border-radius: 12px;
@@ -1862,7 +1869,7 @@ button:disabled {
 /* 未下載 / 失敗：灰態虛線佔位（置中小字，如「尚未下載」） */
 .sm-media-missing {
   width: 210px;
-  max-width: 62vw;
+  max-width: 62cqw;
   aspect-ratio: 4 / 3;
   border: 1px dashed var(--border);
   border-radius: 12px;
@@ -1938,8 +1945,8 @@ button:disabled {
   padding: 32px;
 }
 .sm-lightbox img {
-  max-width: 90vw;
-  max-height: 90vh;
+  max-width: 90%;
+  max-height: 90%;
   border-radius: 12px;
   box-shadow: var(--shadow-pop);
 }
@@ -2335,9 +2342,9 @@ select.set-select.is-err,
 }
 
 /* 看板/設定主區用一般 padding（覆寫 stream 的 0）；窄螢幕看板改兩欄 */
-@media (max-width: 900px) {
+@container lt-app (max-width: 1000px) {
   .kb-board {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -2345,8 +2352,8 @@ select.set-select.is-err,
    只使用既有 token，沒有新增顏色。對話框寬 480 → 540（notes §6-9）。 */
 .modal.draft-modal {
   width: 540px;
-  max-width: 92vw;
-  max-height: 92vh;
+  max-width: 92%;
+  max-height: 92%;
   overflow-y: auto;
 }
 .modal.draft-modal .modal-actions {
