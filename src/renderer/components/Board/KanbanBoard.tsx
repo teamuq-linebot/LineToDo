@@ -81,6 +81,9 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
   // 看板拖曳搬移狀態（§3.2）：拖曳中卡片 id、目前 dragover 的目標欄。
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dragOverCol, setDragOverCol] = useState<ColumnId | null>(null)
+  // 欄標題選單「全部移到 X」：先記下當下（篩選後）該欄的 id，確認後才搬。
+  const [pendingMove, setPendingMove] = useState<{ from: ColumnId; to: ColumnId; ids: string[] } | null>(null)
+  const [bulkMoving, setBulkMoving] = useState(false)
 
   const dnd: BoardDnd = useMemo(
     () => ({
@@ -146,6 +149,28 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
     for (const todo of visibleTodos) g[columnOf(todo)].push(todo)
     return g
   }, [visibleTodos])
+
+  const requestBulkMove = useCallback((from: ColumnId, to: ColumnId): void => {
+    const ids = grouped[from].map((todo) => todo.id)
+    if (ids.length > 0) setPendingMove({ from, to, ids })
+  }, [grouped])
+
+  const confirmBulkMove = async (): Promise<void> => {
+    if (!pendingMove || bulkMoving) return
+    const { to, ids } = pendingMove
+    setBulkMoving(true)
+    try {
+      const byId = new Map(t.todos.map((x) => [x.id, x]))
+      const items = ids.flatMap((id) => byId.get(id) ?? [])
+      const { failed } = await t.moveManyToColumn(items, to)
+      setBoardNote(failed > 0 ? `${failed} 張沒移成功` : null)
+    } catch (error) {
+      setBoardNote(backendErrorText(error, '搬移失敗'))
+    } finally {
+      setBulkMoving(false)
+      setPendingMove(null)
+    }
+  }
 
   const setViewedLocal = useCallback((id: string, viewed: boolean): void => {
     setViewedLocalIds((current) => {
@@ -281,9 +306,32 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
             groupByChat={groupByChat}
             viewedLocalIds={viewedLocalIds}
             dnd={dnd}
+            onBulkMove={requestBulkMove}
           />
         ))}
       </div>
+
+      {pendingMove && (
+        <div className="modal-backdrop" onClick={() => { if (!bulkMoving) setPendingMove(null) }}>
+          <div
+            className="modal bulk-move-confirm"
+            role="alertdialog"
+            aria-modal="true"
+            aria-label="全部移動"
+            data-testid="bulk-move-confirm"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && !bulkMoving) setPendingMove(null)
+            }}
+          >
+            <div>{`要把 ${pendingMove.ids.length} 張移到${COLUMNS.find((c) => c.id === pendingMove.to)?.title ?? ''}嗎？`}</div>
+            <div className="modal-actions">
+              <button type="button" data-testid="bulk-move-ok" disabled={bulkMoving} onClick={() => void confirmBulkMove()}>確定</button>
+              <button type="button" data-testid="bulk-move-cancel" autoFocus disabled={bulkMoving} onClick={() => setPendingMove(null)}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {draftTodo && (
         <DraftReplyDialog

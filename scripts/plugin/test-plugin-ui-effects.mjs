@@ -2791,3 +2791,202 @@ test('overview cleanup: reopening the settings tab while a review runs shows it 
     assert.equal(reactProps(byAttr(second.container, 'data-testid', 'ops-review')).disabled, false)
   } finally { second.unmount(); api.dispose() }
 })
+
+// ── column bulk move (right-click / ContextMenu on a column title) ──
+const BULK_NOW = '2026-11-08T00:00:00.000Z'
+const BULK_CANON = { todo: 'pending', waiting: 'waiting_reply', schedule: 'scheduled' }
+function bulkRow(id, chatId, bucket, status, extra = {}) {
+  return { id, chatId, bucket, status, title: `標題${id}`, detail: null, priority: 2, dueAt: null, sourceMsgIds: [`${id}-src`], confidence: 0.9, completionEvidence: null, createdAt: '2026-10-29T00:00:00.000Z', updatedAt: '2026-10-30T00:00:00.000Z', resolvedAt: status === 'done' ? '2026-11-01T00:00:00.000Z' : null, ...extra }
+}
+/** a stateful backend whose db.todos.moveColumn mirrors todos.repo moveTodoToColumn (including the no-op guard) */
+function bulkScene(rows, { fail = new Set() } = {}) {
+  const state = rows.map((row) => ({ ...row }))
+  const calls = []
+  const { api } = plugin(settingsHandlers({
+    'db.chats.list': () => [toggleChat('g1', '群組一', true), toggleChat('d1', '私訊一', false)],
+    'db.todos.list': (query) => { calls.push({ path: 'list', args: [query] }); return state.filter((row) => query.statuses.includes(row.status)).map((row) => ({ ...row })) },
+    'db.todos.moveColumn': (id, column) => {
+      calls.push({ path: 'move', args: [id, column] })
+      if (fail.has(id)) throw Object.assign(new Error('boom'), { code: 'internal' })
+      const cur = state.find((row) => row.id === id)
+      if (!cur) return null
+      if (column === 'done') { const wasDone = cur.status === 'done'; cur.status = 'done'; cur.resolvedAt = wasDone ? cur.resolvedAt : BULK_NOW } else { cur.bucket = column; cur.status = BULK_CANON[column]; cur.resolvedAt = null }
+      return { ...cur }
+    }
+  }))
+  const view = ui.mount(ui.boardScene(api))
+  const heads = () => walk(view.container).filter((element) => hasClassName(element, 'kb-col-head'))
+  const head = (title) => heads().find((element) => element.textContent.startsWith(title))
+  const items = () => walk(view.container).filter((element) => element.getAttribute('role') === 'menuitem')
+  const dialog = () => byAttr(view.container, 'data-testid', 'bulk-move-confirm')
+  const moves = () => calls.filter((entry) => entry.path === 'move').map((entry) => entry.args)
+  const lists = () => calls.filter((entry) => entry.path === 'list').length
+  const press = (key, options = {}) => ({ key, shiftKey: false, preventDefault() {}, stopPropagation() {}, ...options })
+  const rightClick = (title) => reactProps(head(title)).onContextMenu({ preventDefault() {}, stopPropagation() {} })
+  const key = (title, k, options) => reactProps(head(title)).onKeyDown(press(k, options))
+  const click = (element) => reactProps(element).onClick({ currentTarget: element, stopPropagation() {} })
+  const item = (label) => items().find((element) => element.textContent === label)
+  const drop = (column, id) => reactProps(walk(view.container).find((element) => hasClassName(element, `col-${column}`))).onDrop({ preventDefault() {}, dataTransfer: { getData: () => id } })
+  const setKind = (value) => reactProps(walk(view.container).find((element) => element.localName === 'select' && element.textContent.includes('只看群組'))).onChange({ target: { value } })
+  const note = () => walk(view.container).filter((element) => element.getAttribute('role') === 'alert')
+  return { api, view, state, calls, heads, head, items, dialog, moves, lists, rightClick, key, click, item, drop, setKind, note, dispose() { view.unmount(); api.dispose() } }
+}
+const BULK_ROWS = () => [
+  bulkRow('t1', 'g1', 'todo', 'pending'), bulkRow('t2', 'd1', 'todo', 'pending'), bulkRow('t3', 'd1', 'todo', 'suggested_done'),
+  bulkRow('w1', 'g1', 'waiting', 'waiting_reply'),
+  bulkRow('d1', 'd1', 'todo', 'done'), bulkRow('d2', 'g1', 'schedule', 'done')
+]
+
+test('column bulk move: right-clicking a column title lists the other three columns, and nothing else', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    assert.equal(s.items().length, 0, 'no menu before the click')
+    s.rightClick('待辦')
+    await until(() => s.items().length > 0, { message: 'the menu' })
+    assert.deepEqual(s.items().map((element) => element.textContent), ['全部移到等回覆', '全部移到行程', '全部移到已完成'])
+    assert.equal(s.items().every((element) => reactProps(element).disabled === false), true)
+    s.key('待辦', 'Escape')
+    await until(() => s.items().length === 0, { message: 'closed' })
+    s.rightClick('已完成')
+    await until(() => s.items().some((element) => element.textContent === '全部移到待辦'), { message: 'the menu of another column' })
+    assert.deepEqual(s.items().map((element) => element.textContent), ['全部移到待辦', '全部移到等回覆', '全部移到行程'])
+    assert.deepEqual(s.moves(), [])
+  } finally { s.dispose() }
+})
+
+test('column bulk move: the confirm names the real count and 取消 moves nothing', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    s.rightClick('待辦')
+    await until(() => s.item('全部移到已完成'), { message: 'the menu' })
+    s.click(s.item('全部移到已完成'))
+    await until(() => s.dialog(), { message: 'the confirm' })
+    assert.equal(s.items().length, 0, 'the menu closes once an item is chosen')
+    assert.match(s.dialog().textContent, /^要把 3 張移到已完成嗎？/)
+    assert.deepEqual(walk(s.dialog()).filter((element) => element.localName === 'button').map((element) => element.textContent), ['確定', '取消'])
+    assert.deepEqual(s.moves(), [], 'nothing moves before 確定')
+    s.click(byAttr(s.view.container, 'data-testid', 'bulk-move-cancel'))
+    await until(() => !s.dialog(), { message: 'the confirm closes' })
+    await sleep(40)
+    assert.deepEqual(s.moves(), [])
+    assert.equal(s.head('待辦').textContent, '待辦3')
+  } finally { s.dispose() }
+})
+
+test('column bulk move: 確定 moves only the cards the filters leave in that column; the same column outside the filter stays put', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    s.setKind('direct')
+    await until(() => s.head('待辦').textContent === '待辦2', { message: 'the direct-only filter' })
+    s.rightClick('待辦')
+    await until(() => s.item('全部移到已完成'), { message: 'the menu' })
+    s.click(s.item('全部移到已完成'))
+    await until(() => s.dialog(), { message: 'the confirm' })
+    assert.match(s.dialog().textContent, /^要把 2 張移到已完成嗎？/, 'the count is the filtered column, not the whole column')
+    const listsBefore = s.lists()
+    s.click(byAttr(s.view.container, 'data-testid', 'bulk-move-ok'))
+    await until(() => !s.dialog() && s.lists() > listsBefore, { message: 'moved and re-read' })
+    assert.deepEqual(s.moves(), [['t2', 'done'], ['t3', 'done']])
+    assert.equal(s.state.find((row) => row.id === 't1').status, 'pending', 'the group card filtered out is untouched')
+    assert.equal(s.lists(), listsBefore + 1, 'one re-read after the whole batch')
+    assert.equal(s.note().length, 0)
+  } finally { s.dispose() }
+})
+
+for (const [from, to, label] of [['todo', 'done', '待辦'], ['done', 'waiting', '已完成'], ['waiting', 'schedule', '等回覆'], ['todo', 'waiting', '待辦']]) {
+  test(`column bulk move: ${label} → ${to} leaves every card exactly as dragging it alone would`, async () => {
+    const toTitle = { todo: '待辦', waiting: '等回覆', schedule: '行程', done: '已完成' }[to]
+    const bulk = bulkScene(BULK_ROWS())
+    const dragged = bulkScene(BULK_ROWS())
+    try {
+      await until(() => bulk.head(label)?.textContent.length > label.length && dragged.head(label)?.textContent.length > label.length, { message: 'both boards' })
+      const ids = bulk.state.filter((row) => (from === 'done' ? row.status === 'done' : row.status !== 'done' && row.bucket === from)).map((row) => row.id)
+      assert.ok(ids.length > 0)
+      for (const id of ids) {
+        const before = dragged.lists()
+        // the drop handler can still be the one from before the first load commit; drop again until the backend has seen this card
+        for (let attempt = 0; attempt < 50 && !dragged.moves().some(([moved]) => moved === id); attempt += 1) {
+          dragged.drop(to, id)
+          await sleep(100)
+        }
+        await until(() => dragged.lists() > before, { message: `drag ${id}` })
+      }
+      bulk.rightClick(label)
+      await until(() => bulk.item(`全部移到${toTitle}`), { message: 'the menu' })
+      bulk.click(bulk.item(`全部移到${toTitle}`))
+      await until(() => bulk.dialog(), { message: 'the confirm' })
+      const before = bulk.lists()
+      bulk.click(byAttr(bulk.view.container, 'data-testid', 'bulk-move-ok'))
+      await until(() => !bulk.dialog() && bulk.lists() > before, { message: 'the batch' })
+      assert.deepEqual(bulk.moves(), dragged.moves(), 'the same moveColumn calls as the drag path')
+      assert.deepEqual(bulk.state, dragged.state, 'the same resulting rows')
+    } finally { bulk.dispose(); dragged.dispose() }
+  })
+}
+
+test('column bulk move: a partial failure keeps the rest and shows one short line after re-reading', async () => {
+  const s = bulkScene(BULK_ROWS(), { fail: new Set(['t2']) })
+  const unhandled = await collectingUnhandled(async () => {
+    try {
+      await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+      s.rightClick('待辦')
+      await until(() => s.item('全部移到已完成'), { message: 'the menu' })
+      s.click(s.item('全部移到已完成'))
+      await until(() => s.dialog(), { message: 'the confirm' })
+      const before = s.lists()
+      s.click(byAttr(s.view.container, 'data-testid', 'bulk-move-ok'))
+      await until(() => !s.dialog() && s.lists() > before, { message: 'the batch' })
+      assert.deepEqual(s.moves(), [['t1', 'done'], ['t2', 'done'], ['t3', 'done']], 'a failure does not stop the later cards')
+      assert.equal(s.lists(), before + 1)
+      await until(() => s.note().length === 1, { message: 'the failure line' })
+      assert.equal(s.note()[0].textContent, '1 張沒移成功')
+      assert.equal(s.head('待辦').textContent, '待辦1', 'the card that failed stays where it was; the others moved')
+      assert.equal(s.head('已完成').textContent, '已完成4')
+    } finally { s.dispose() }
+  })
+  assert.deepEqual(unhandled, [])
+})
+
+test('column bulk move: an empty column opens a menu whose items are disabled and open no confirm', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    assert.equal(s.head('行程').textContent, '行程0')
+    s.rightClick('行程')
+    await until(() => s.items().length === 3, { message: 'the menu' })
+    assert.equal(s.items().every((element) => reactProps(element).disabled === true), true)
+    s.click(s.items()[0])
+    await sleep(40)
+    assert.equal(s.dialog(), null)
+    assert.deepEqual(s.moves(), [])
+  } finally { s.dispose() }
+})
+
+test('column bulk move: a column title takes focus and opens the menu from the ContextMenu key or Shift+F10; Esc closes it', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    for (const title of ['待辦', '等回覆', '行程', '已完成']) assert.equal(s.head(title).getAttribute('tabindex'), '0', `${title} title can take focus`)
+    s.key('等回覆', 'ContextMenu')
+    await until(() => s.items().length === 3, { message: 'the ContextMenu key opens it' })
+    s.key('等回覆', 'Escape')
+    await until(() => s.items().length === 0, { message: 'Esc closes it' })
+    s.key('等回覆', 'F10')
+    await sleep(40)
+    assert.equal(s.items().length, 0, 'F10 alone does nothing')
+    s.key('等回覆', 'F10', { shiftKey: true })
+    await until(() => s.items().length === 3, { message: 'Shift+F10 opens it' })
+    s.key('等回覆', 'Escape')
+    await until(() => s.items().length === 0, { message: 'Esc closes it again' })
+    s.rightClick('待辦')
+    await until(() => s.item('全部移到已完成'), { message: 'the menu' })
+    s.click(s.item('全部移到已完成'))
+    await until(() => s.dialog(), { message: 'the confirm' })
+    reactProps(s.dialog()).onKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    await until(() => !s.dialog(), { message: 'Esc closes the confirm' })
+    assert.deepEqual(s.moves(), [])
+  } finally { s.dispose() }
+})

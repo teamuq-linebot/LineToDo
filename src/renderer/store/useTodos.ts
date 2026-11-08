@@ -72,6 +72,8 @@ export interface UseTodos {
   update: (id: string, patch: TodoUpdatePatch, onWriteConfirmed?: () => void) => Promise<CompleteTodoResult>
   /** 看板拖曳搬移到目標欄（含同欄 no-op 防抖）。 */
   moveToColumn: (todo: TodoDTO, toColumn: ColumnId) => Promise<void>
+  /** 整欄搬移：逐張走與單張拖曳相同的路徑（同樣的 no-op 防抖與 moveColumn），全部做完只重讀一次；回沒移成功的張數。 */
+  moveManyToColumn: (todos: TodoDTO[], toColumn: ColumnId) => Promise<{ failed: number }>
 }
 
 /** bucket → 對應的 active 狀態（suggested_done 退回時用）。 */
@@ -263,6 +265,24 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
     [refresh]
   )
 
+  const moveManyToColumn = useCallback(
+    async (items: TodoDTO[], toColumn: ColumnId): Promise<{ failed: number }> => {
+      let failed = 0
+      for (const todo of items) {
+        if (isNoopMove(todo, toColumn)) continue
+        try {
+          if (!await api.db.todos.moveColumn(todo.id, toColumn)) failed += 1
+        } catch (err) {
+          console.error('[useTodos] moveManyToColumn 失敗：', err)
+          failed += 1
+        }
+      }
+      await refresh()
+      return { failed }
+    },
+    [refresh]
+  )
+
   return {
     todos,
     chatMap,
@@ -278,7 +298,8 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
     ignoreByKeyword,
     snooze,
     update,
-    moveToColumn
+    moveToColumn,
+    moveManyToColumn
   }
 }
 

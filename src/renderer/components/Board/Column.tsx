@@ -1,6 +1,6 @@
-import { memo } from 'react'
+import { memo, useRef, useState, type KeyboardEvent } from 'react'
 import type { TodoDTO } from '../../types/api'
-import type { ColumnDef } from './buckets'
+import { COLUMNS, type ColumnDef, type ColumnId } from './buckets'
 import { TodoCard, type TodoCardActions } from './TodoCard'
 import type { ChatNameMap } from '../../store/useTodos'
 import type { BoardDnd } from './KanbanBoard'
@@ -18,6 +18,8 @@ interface Props {
   groupByChat: boolean
   viewedLocalIds: Set<string>
   dnd: BoardDnd
+  /** 欄標題選單選了「全部移到 X」：由看板先跳確認。 */
+  onBulkMove: (from: ColumnId, to: ColumnId) => void
 }
 
 interface TodoChatGroup {
@@ -48,9 +50,41 @@ function ColumnView({
   actions,
   groupByChat,
   viewedLocalIds,
-  dnd
+  dnd,
+  onBulkMove
 }: Props): JSX.Element {
   const groups = groupByChat ? groupTodosByChat(todos) : []
+  const [menuOpen, setMenuOpen] = useState(false)
+  const headRef = useRef<HTMLElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  function openMenu(): void {
+    setMenuOpen(true)
+    setTimeout(() => menuRef.current?.querySelector?.<HTMLElement>('button:not(:disabled)')?.focus?.(), 0)
+  }
+
+  function closeMenu(refocus: boolean): void {
+    setMenuOpen(false)
+    if (refocus) headRef.current?.focus?.()
+  }
+
+  function onHeadKeyDown(e: KeyboardEvent<HTMLElement>): void {
+    if (e.key === 'Escape' && menuOpen) {
+      e.preventDefault()
+      e.stopPropagation()
+      closeMenu(true)
+    } else if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+      e.preventDefault()
+      openMenu()
+    } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && menuOpen) {
+      e.preventDefault()
+      const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled)') ?? [])
+      if (items.length === 0) return
+      const at = items.indexOf(document.activeElement as HTMLElement)
+      const step = e.key === 'ArrowDown' ? 1 : -1
+      items[(at + step + items.length) % items.length].focus()
+    }
+  }
 
   function renderCard(todo: TodoDTO): JSX.Element {
     return (
@@ -85,9 +119,60 @@ function ColumnView({
         if (id) dnd.onColumnDrop(def.id, id)
       }}
     >
-      <header className="kb-col-head">
+      <header
+        ref={headRef}
+        className="kb-col-head"
+        tabIndex={0}
+        aria-haspopup="menu"
+        onContextMenu={(e) => {
+          e.preventDefault()
+          openMenu()
+        }}
+        onKeyDown={onHeadKeyDown}
+        onBlur={(e) => {
+          if (menuOpen && !e.currentTarget.contains(e.relatedTarget as Node | null)) setMenuOpen(false)
+        }}
+      >
         <span className="kb-col-title">{def.title}</span>
         <span className="kb-col-count">{todos.length}</span>
+        {menuOpen && (
+          <>
+            <div
+              className="menu-backdrop"
+              onMouseDown={() => closeMenu(false)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                closeMenu(false)
+              }}
+            />
+            <div
+              ref={menuRef}
+              className="menu-pop kb-col-menu"
+              role="menu"
+              onContextMenu={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+              }}
+            >
+              {COLUMNS.filter((other) => other.id !== def.id).map((other) => (
+                <button
+                  key={other.id}
+                  type="button"
+                  role="menuitem"
+                  className="menu-item"
+                  disabled={todos.length === 0}
+                  onClick={() => {
+                    closeMenu(true)
+                    onBulkMove(def.id, other.id)
+                  }}
+                >
+                  {`全部移到${other.title}`}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </header>
       <div className="kb-col-body">
         {todos.length === 0 ? (

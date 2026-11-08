@@ -1256,6 +1256,23 @@ button:disabled {
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
 }
+.kb-col-head {
+  position: relative;
+}
+.kb-col-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.kb-col-menu.menu-pop {
+  position: absolute;
+  top: calc(100% - 4px);
+  left: 10px;
+  width: 168px;
+}
+.kb-col-menu .menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .kb-col-title {
   font-weight: 600;
   font-size: 14px;
