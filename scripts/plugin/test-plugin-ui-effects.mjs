@@ -83,7 +83,7 @@ async function collectingUnhandled(body) {
 
 const VIEW = {
   pollIntervalSec: 30, concurrency: 2, recentContextLimit: 10,
-  blocklist: { nameKeywords: [], senderKeywords: [], contentTypeNoiseOnly: [], minTextLenForLLM: 2 },
+  blocklist: { contentTypeNoiseOnly: [], minTextLenForLLM: 2 },
   chatIgnoreKeywords: {}, openAtLogin: false, reconcile: { enabled: true, scopeMonths: 0 },
   aiBaseUrl: '', aiProvider: 'http',
   claudeCli: { execPath: '', model: '', timeoutMs: 120000 }, codexCli: { execPath: '', model: '', timeoutMs: 120000 },
@@ -92,7 +92,7 @@ const VIEW = {
 }
 
 test('message composer stays disabled in flow with active residency status and long synthetic history', async () => {
-  const chat = { chatId: 'composer-synthetic', name: '合成長訊息聊天室', isGroup: false, blocked: false, blockReason: null, firstSeenAt: '2026-11-06T02:00:00.000Z', lastSeenAt: '2026-11-06T03:11:00.000Z' }
+  const chat = { chatId: 'composer-synthetic', name: '合成長訊息聊天室', isGroup: false, firstSeenAt: '2026-11-06T02:00:00.000Z', lastSeenAt: '2026-11-06T03:11:00.000Z' }
   const rows = Array.from({ length: 72 }, (_, index) => {
     const ts = Date.UTC(2026, 10, 6, 2, 0) + index * 60_000
     return {
@@ -185,8 +185,8 @@ const settingsHandlers = (extra = {}) => ({
 })
 
 test('chat search finds senders and older messages that are loaded in the selected conversation without searching unloaded history', async () => {
-  const bni = { chatId: 'bni', name: 'BNI 商會', isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(1700000000000).toISOString(), lastSeenAt: new Date(1700000003000).toISOString() }
-  const family = { chatId: 'family', name: '家庭群', isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(1699999000000).toISOString(), lastSeenAt: new Date(1699999000000).toISOString() }
+  const bni = { chatId: 'bni', name: 'BNI 商會', isGroup: true, firstSeenAt: new Date(1700000000000).toISOString(), lastSeenAt: new Date(1700000003000).toISOString() }
+  const family = { chatId: 'family', name: '家庭群', isGroup: true, firstSeenAt: new Date(1699999000000).toISOString(), lastSeenAt: new Date(1699999000000).toISOString() }
   const message = (chatId, ts, sender, text) => ({
     msgId: `i:${chatId}:${ts}`, chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender, text,
     contentType: 0, processed: false, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: false
@@ -242,7 +242,7 @@ test('chat search finds senders and older messages that are loaded in the select
 test('avatar renderer fixture shows the same chat image in list/header and a sender image beside the message', async () => {
   const chatId = 'm-square-fixture'
   const ts = Date.UTC(2026, 9, 30, 3, 0, 0)
-  const chat = { chatId, name: chatId, isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts).toISOString() }
+  const chat = { chatId, name: chatId, isGroup: true, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts).toISOString() }
   const offscreenChatId = 'm-square-offscreen-fixture'
   const offscreenChat = { ...chat, chatId: offscreenChatId, name: offscreenChatId, firstSeenAt: new Date(ts - 86400000).toISOString(), lastSeenAt: new Date(ts - 86400000).toISOString() }
   const message = { msgId: 'i:42', chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender: '未知發話者', text: 'fixture message', contentType: 0, processed: true, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: false }
@@ -284,7 +284,7 @@ test('avatar renderer fixture shows the same chat image in list/header and a sen
 test('real img error switches to text fallback and failed source is not retried after remount', async () => {
   const chatId = 'm-image-error-fixture'
   const ts = Date.UTC(2026, 9, 30, 3, 30, 0)
-  const chat = { chatId, name: '404 測試群組', isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts).toISOString() }
+  const chat = { chatId, name: '404 測試群組', isGroup: true, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts).toISOString() }
   const message = { msgId: 'i:404', chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender: '404 成員', text: 'image error fixture', contentType: 0, processed: true, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: false }
   const calls = { chats: 0, messages: 0 }
   const { api } = plugin({
@@ -323,7 +323,7 @@ test('real img error switches to text fallback and failed source is not retried 
 test('avatar fixture keeps readable fallback labels when source images are unavailable', async () => {
   const chatId = 'm-no-avatar-fixture'
   const ts = Date.UTC(2026, 9, 30, 4, 0, 0)
-  const chat = { chatId, name: chatId, isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts).toISOString() }
+  const chat = { chatId, name: chatId, isGroup: true, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts).toISOString() }
   const message = { msgId: 'i:43', chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender: '未知發話者', text: 'fallback message', contentType: 0, processed: true, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: false }
   const { api } = plugin({
     ...settingsHandlers(),
@@ -349,7 +349,7 @@ test('avatar fixture keeps readable fallback labels when source images are unava
 test('recalled persistence refresh covers all 1001 loaded rows with bounded pages and keeps late updates inside their chat', async () => {
   const ts0 = Date.UTC(2026, 9, 26, 3, 0, 0)
   const chatId = 'c-f1-history-fixture'
-  const chat = { chatId, name: 'F1 歷史測試群組', isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(ts0).toISOString(), lastSeenAt: new Date(ts0 + 1_000_000).toISOString() }
+  const chat = { chatId, name: 'F1 歷史測試群組', isGroup: true, firstSeenAt: new Date(ts0).toISOString(), lastSeenAt: new Date(ts0 + 1_000_000).toISOString() }
   const rows = Array.from({ length: 1001 }, (_, index) => ({
     msgId: `i:history-${String(index + 1).padStart(4, '0')}`,
     chatId,
@@ -371,7 +371,7 @@ test('recalled persistence refresh covers all 1001 loaded rows with bounded page
   let recentByChatCalls = 0
   const api = {
     db: {
-      chats: { list: async () => [chat], setBlocked: async () => chat },
+      chats: { list: async () => [chat] },
       messages: {
         list: async (query = {}) => {
           if (query.chatId) refreshQueries.push({ ...query })
@@ -476,7 +476,7 @@ test('recalled persistence refresh covers all 1001 loaded rows with bounded page
 
 test('MessageStream renders definite missing, ambiguous legacy, and saved whitespace states separately', async () => {
   const ts = Date.UTC(2026, 9, 26, 5, 0, 0)
-  const chat = { chatId: 'c-f2-ui', name: 'F2 來源測試群組', isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts + 2000).toISOString() }
+  const chat = { chatId: 'c-f2-ui', name: 'F2 來源測試群組', isGroup: true, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts + 2000).toISOString() }
   const rows = [
     { msgId: 'i:empty', chatId: chat.chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender: 'A', text: '', contentType: 0, processed: false, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: true },
     { msgId: 'i:literal', chatId: chat.chatId, ts: ts + 1000, timeIso: new Date(ts + 1000).toISOString(), direction: 'in', sender: 'A', text: '[type=0]', contentType: 0, processed: false, ingestedAt: new Date(ts + 1000).toISOString(), origFilename: null, fileSize: null, unsent: true },
@@ -484,7 +484,7 @@ test('MessageStream renders definite missing, ambiguous legacy, and saved whites
   ]
   const api = {
     db: {
-      chats: { list: async () => [chat], setBlocked: async () => chat },
+      chats: { list: async () => [chat] },
       messages: { list: async () => rows, recentByChat: async () => rows },
       onMessagesPersisted: () => () => undefined
     },
@@ -902,8 +902,8 @@ test('N1 (effects): the draft-reply dialog restores a saved draft without an AI 
 })
 
 test('chat todos (effects): direct and group panes stay scoped; loading, failure, retry, empty and late-response states render correctly', async () => {
-  const direct = { chatId: 'synthetic-direct', name: '合成單人聊天室', isGroup: false, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T01:00:00.000Z' }
-  const group = { chatId: 'synthetic-group', name: '合成群組聊天室', isGroup: true, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
+  const direct = { chatId: 'synthetic-direct', name: '合成單人聊天室', isGroup: false, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T01:00:00.000Z' }
+  const group = { chatId: 'synthetic-group', name: '合成群組聊天室', isGroup: true, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
   const directTopic = { topicId: 'direct-topic', chatId: direct.chatId, title: '單人聊天室的既有議題', summary: '只屬於單人聊天室的摘要。', evidenceCount: 1, evidenceMsgIds: ['synthetic-direct-source'], userParticipation: 'unknown', relevance: 'unknown', relevanceEvidence: [], participantLowerBound: null, observation: 'unknown', heat: 'unvalidated', trend: 'unknown' }
   const groupTopic = { topicId: 'group-topic', chatId: group.chatId, title: '群組聊天室的既有議題', summary: '只屬於群組聊天室的摘要。', evidenceCount: 1, evidenceMsgIds: ['synthetic-group-source'], userParticipation: 'unknown', relevance: 'unknown', relevanceEvidence: [], participantLowerBound: null, observation: 'unknown', heat: 'unvalidated', trend: 'unknown' }
   let directTopicsEnabled = false
@@ -1049,7 +1049,7 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
 })
 
 test('chat topics and todos (effects): a topic read failure does not hide selected-chat todos, and both recover independently', async () => {
-  const chat = { chatId: 'synthetic-independent', name: '合成隔離聊天室', isGroup: false, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
+  const chat = { chatId: 'synthetic-independent', name: '合成隔離聊天室', isGroup: false, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
   const topic = { topicId: 'independent-topic', chatId: chat.chatId, title: '合成議題', summary: '只屬於目前聊天室的議題。', evidenceCount: 1, evidenceMsgIds: ['synthetic-independent-source'], userParticipation: 'unknown', relevance: 'unknown', relevanceEvidence: [], participantLowerBound: null, observation: 'unknown', heat: 'unvalidated', trend: 'unknown' }
   const todo = { id: 'independent-todo', chatId: chat.chatId, bucket: 'todo', status: 'pending', title: '合成待辦', detail: null, priority: 1, dueAt: null, sourceMsgIds: ['synthetic-independent-source'], confidence: 0.9, completionEvidence: null, createdAt: '2026-10-29T00:00:00.000Z', updatedAt: '2026-10-30T00:00:00.000Z', resolvedAt: null }
   let failTopics = true
@@ -1113,7 +1113,7 @@ const streamStatusText = (scene) => walk(scene.container).find((element) => hasC
 const retryButtons = (scene) => walk(scene.container).filter((element) => element.localName === 'button' && element.textContent.trim() === '重試')
 const chatItem = (scene, name) => walk(scene.container).find((element) => hasClassName(element, 'chat-list-item') && element.textContent.includes(name))
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r }); return { promise, resolve } }
-const wpChat = (chatId, name) => ({ chatId, name, isGroup: true, blocked: false, blockReason: null, firstSeenAt: new Date(1700000000000).toISOString(), lastSeenAt: new Date(1700000003000).toISOString() })
+const wpChat = (chatId, name) => ({ chatId, name, isGroup: true, firstSeenAt: new Date(1700000000000).toISOString(), lastSeenAt: new Date(1700000003000).toISOString() })
 const STOPPED = { state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }
 
 test('WP-C acceptance 5 (non-device): with ai.status, 100 avatar batches and a long poll holding the auxiliary lanes, the chat list appears in < 1 s', async () => {
@@ -1636,7 +1636,7 @@ test('N1 (effects): the waits grow by doubling up to maxMs and stay there', asyn
 // ───────────── per-chat prompt / my name (A16, A17, A18) ─────────────
 
 test('A16 settings: the default name field is always there and saves through saveName without touching an unsaved prompt draft; "各對話的個別設定" is collapsed and does not call list before it is opened', async () => {
-  const chatAlice = { chatId: 'u-alice', name: 'Alice', isGroup: false, blocked: false, blockReason: null, firstSeenAt: '2026-11-01T00:00:00.000Z', lastSeenAt: '2026-11-01T00:00:00.000Z' }
+  const chatAlice = { chatId: 'u-alice', name: 'Alice', isGroup: false, firstSeenAt: '2026-11-01T00:00:00.000Z', lastSeenAt: '2026-11-01T00:00:00.000Z' }
   let promptState = { initialPrompt: '初始待辦判斷規則', activePrompt: '初始待辦判斷規則', customized: false, revision: 'initial', maxChars: 12000, outputFormat: '固定格式', myName: '舊名字', nameRevision: 'n1', maxNameChars: 40 }
   const nameSaves = []
   const listCalls = []
@@ -1729,7 +1729,7 @@ test('A16 settings: an older backend (no myName / nameRevision in the state) sti
 })
 
 function boardChat(chatId, name) {
-  return { chatId, name, isGroup: false, blocked: false, blockReason: null, firstSeenAt: new Date(1700000000000).toISOString(), lastSeenAt: new Date(1700000003000).toISOString() }
+  return { chatId, name, isGroup: false, firstSeenAt: new Date(1700000000000).toISOString(), lastSeenAt: new Date(1700000003000).toISOString() }
 }
 const noOverride = (extra = {}) => ({
   chatId: 'bni', revision: 'r0', overridePrompt: null, overrideName: null, effectivePrompt: '預設的抽取規則', effectiveName: '預設名', promptSource: 'default', nameSource: 'default',
@@ -1917,7 +1917,7 @@ function installVisibility() {
 function avatarScrollFixture(count) {
   const ts0 = Date.UTC(2026, 10, 3, 1, 0, 0)
   const iso = (ts) => new Date(ts).toISOString()
-  const chat = (chatId, name, ts) => ({ chatId, name, isGroup: true, blocked: false, blockReason: null, firstSeenAt: iso(ts0), lastSeenAt: iso(ts) })
+  const chat = (chatId, name, ts) => ({ chatId, name, isGroup: true, firstSeenAt: iso(ts0), lastSeenAt: iso(ts) })
   const messages = Array.from({ length: count }, (_, index) => {
     const n = index + 1
     return { msgId: `i:${n}`, chatId: 'c1', ts: ts0 + n * 1000, timeIso: iso(ts0 + n * 1000), direction: 'in', sender: `成員${n}`, text: `訊息 ${n}`, contentType: 0, processed: true, ingestedAt: iso(ts0 + n * 1000), origFilename: null, fileSize: null, unsent: false }
@@ -2066,7 +2066,7 @@ function overviewRows() {
 function overviewHandlers(log, extra = {}) {
   return recordingHandlers({
     ...settingsHandlers(),
-    'db.chats.list': () => OVERVIEW_GROUPS.map((group) => ({ ...group, isGroup: true, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' })),
+    'db.chats.list': () => OVERVIEW_GROUPS.map((group) => ({ ...group, isGroup: true, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' })),
     'db.todos.list': () => [],
     'groupTopics.overview': () => overviewRows(),
     'groupTopics.list': (chatId) => { const row = overviewRows().find((entry) => entry.chatId === chatId); return { ok: !!row?.enabled, topics: row?.topics ?? [] } },
@@ -2387,7 +2387,7 @@ test('Phase 4 groupTopics panel: while the combined path is active the button is
 // ───────────── 聊天室「議題」「待辦」兩個獨立開關（U1–U8） ─────────────
 
 function toggleChat(chatId, name, isGroup) {
-  return { chatId, name, isGroup, blocked: false, blockReason: null, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
+  return { chatId, name, isGroup, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
 }
 
 function toggleTodo(id, chatId, title) {
@@ -2628,97 +2628,43 @@ test('U8 the stylesheet defines the shared switch wrapper', () => {
   assert.equal(css.includes('.group-topic-cross-chat'), false)
 })
 
-function ignoreScene(chats, stored) {
-  const find = (chatId) => chats.find((chat) => chat.chatId === chatId)
-  return toggleScene(chats, {
-    'db.chats.setBlocked': (chatId, blocked) => { find(chatId).blocked = blocked; return { ...find(chatId) } },
-    'db.chats.todoExtractEnabled': (chatId) => stored[chatId].todo,
-    'db.chats.setTodoExtractEnabled': (chatId, value) => { stored[chatId].todo = value; return { ok: true, enabled: value, skippedOlder: 0 } },
-    'groupTopics.list': (chatId) => ({ ok: stored[chatId].topics && !find(chatId).blocked, topics: [] }),
-    'groupTopics.setEnabled': (chatId, value) => { stored[chatId].topics = value; return { ok: true } }
-  })
-}
-
-const ignoreFilterButton = (s) => walk(s.view.container).find((element) => element.localName === 'button' && element.hasAttribute('aria-pressed') && element.textContent.trim().startsWith('已忽略'))
-const activeFilterButton = (s) => walk(s.view.container).find((element) => element.localName === 'button' && element.hasAttribute('aria-pressed') && element.textContent.trim().startsWith('聊天'))
-const menuItem = (s, text) => walk(s.view.container).find((element) => element.localName === 'button' && element.getAttribute('role') === 'menuitem' && element.textContent.trim() === text)
+const legacyBlocked = (chat) => ({ ...chat, blocked: true, blockReason: 'manual' })
 const paneFor = (s, name) => walk(s.view.container).find((element) => element.localName === 'section' && hasClassName(element, 'chat-pane') && element.getAttribute('aria-label') === name)
-const openChatMenu = (s, name) => {
-  const more = walk(s.view.container).find((element) => element.localName === 'button' && element.getAttribute('aria-label') === '更多操作：' + name)
-  reactProps(more).onClick({ stopPropagation() {}, currentTarget: more })
-}
 
-test('I1 an ignored chat shows both switches off and disabled, and clicking never calls a set API', async () => {
-  const chat = toggleChat('ignore-i1', '合成群組I1', true)
-  chat.blocked = true
-  const other = toggleChat('ignore-i1b', '合成其他I1', true)
-  const stored = { [chat.chatId]: { todo: true, topics: true }, [other.chatId]: { todo: true, topics: true } }
-  const s = ignoreScene([chat, other], stored)
+test('I3 the chat list has no ignore filter, no per-chat menu and no ignore wording, even for a chat a legacy backend still marks blocked', async () => {
+  const chat = legacyBlocked(toggleChat('ignore-i3', '合成群組I3', true))
+  const s = toggleScene([chat])
   try {
-    await until(() => paneFor(s, other.name), { message: 'default selection settled' })
-    await until(() => ignoreFilterButton(s), { message: 'filter buttons' })
-    s.click(ignoreFilterButton(s))
-    await until(() => ignoreFilterButton(s).getAttribute('aria-pressed') === 'true' && s.chatButton(chat.name), { message: 'ignored chat listed' })
-    s.click(s.chatButton(chat.name))
-    await until(() => paneFor(s, chat.name), { message: 'ignored chat selected' })
-    await openCombinedPane(s)
-    await until(() => s.todoSwitch() && s.topicSwitch('此群組的議題開關'), { message: 'both switches render' })
-    for (const input of [s.todoSwitch(), s.topicSwitch('此群組的議題開關')]) {
-      assert.equal(reactProps(input).checked, false)
-      assert.equal(reactProps(input).disabled, true)
-    }
-    s.change(s.todoSwitch(), true)
-    s.change(s.topicSwitch('此群組的議題開關'), true)
-    await sleep(50)
-    assert.equal(s.callsTo('db.chats.setTodoExtractEnabled').length, 0)
-    assert.equal(s.callsTo('groupTopics.setEnabled').length, 0)
-    assert.equal(reactProps(s.todoSwitch()).checked, false)
-    assert.equal(reactProps(s.topicSwitch('此群組的議題開關')).checked, false)
-    assert.equal(s.view.container.textContent.includes('切換失敗'), false)
-    assert.deepEqual(stored[chat.chatId], { todo: true, topics: true }, 'stored values untouched')
+    await until(() => s.chatButton(chat.name), { message: 'the chat is listed without any filter' })
+    await until(() => paneFor(s, chat.name), { message: 'the chat is selected' })
+    const all = walk(s.view.container)
+    assert.equal(all.some((element) => element.localName === 'button' && element.hasAttribute('aria-pressed') && /^(已忽略|聊天s*d)/.test(element.textContent.trim())), false, 'no filter buttons')
+    assert.equal(all.some((element) => (element.getAttribute('aria-label') ?? '').startsWith('更多操作：')), false, 'no per-chat more button')
+    assert.equal(all.some((element) => element.getAttribute('role') === 'menuitem' || element.getAttribute('role') === 'menu'), false, 'no menu')
+    const text = s.view.container.textContent
+    for (const gone of ['已忽略', '忽略對話', '恢復對話']) assert.equal(text.includes(gone), false, gone)
   } finally { s.dispose() }
 })
 
-test('I2 ignoring on screen turns both switches off at once and restoring brings back each stored state', async () => {
-  const chat = toggleChat('ignore-i2', '合成群組I2', true)
-  const other = toggleChat('ignore-i2b', '合成其他I2', true)
-  const stored = { [chat.chatId]: { todo: false, topics: true }, [other.chatId]: { todo: true, topics: false } }
-  const s = ignoreScene([chat, other], stored)
+test('I4 both switches stay usable for a chat a legacy backend still marks blocked, and each click calls its own set API once', async () => {
+  const chat = legacyBlocked(toggleChat('ignore-i4', '合成群組I4', true))
+  const s = toggleScene([chat], {
+    'db.chats.setTodoExtractEnabled': (chatId, value) => ({ ok: true, enabled: value, skippedOlder: 0 }),
+    'groupTopics.list': () => ({ ok: true, topics: [] }),
+    'groupTopics.setEnabled': () => ({ ok: true })
+  })
   try {
-    await until(() => paneFor(s, chat.name) || paneFor(s, other.name), { message: 'default selection settled' })
+    await until(() => paneFor(s, chat.name), { message: 'the chat is selected' })
     await openCombinedPane(s)
     await until(() => s.todoSwitch() && s.topicSwitch('此群組的議題開關'), { message: 'both switches render' })
-    const topicsOn = () => { const input = s.topicSwitch('此群組的議題開關'); return input ? reactProps(input) : {} }
-    const todoOn = () => { const input = s.todoSwitch(); return input ? reactProps(input) : {} }
-    s.click(s.chatButton(chat.name))
-    await until(() => paneFor(s, chat.name), { message: 'chat selected' })
-    await until(() => todoOn().checked === false && topicsOn().checked === true, { message: 'unignored chat shows stored states (todo off, topics on)' })
-    assert.equal(reactProps(s.todoSwitch()).disabled, false)
-    assert.equal(topicsOn().disabled, false)
-
-    openChatMenu(s, chat.name)
-    await until(() => menuItem(s, '忽略對話'), { message: 'menu opens' })
-    reactProps(menuItem(s, '忽略對話')).onClick({})
-    await until(() => chat.blocked === true && ignoreFilterButton(s), { message: 'ignored' })
-    s.click(ignoreFilterButton(s))
-    await until(() => ignoreFilterButton(s).getAttribute('aria-pressed') === 'true' && s.chatButton(chat.name), { message: 'listed under ignored' })
-    s.click(s.chatButton(chat.name))
-    await until(() => paneFor(s, chat.name), { message: 'ignored chat selected' })
-    await openCombinedPane(s)
-    await until(() => s.todoSwitch() && s.topicSwitch('此群組的議題開關'), { message: 'switches on ignored chat' })
-    await until(() => todoOn().disabled === true && topicsOn().disabled === true && topicsOn().checked === false, { message: 'both off and disabled' })
-    assert.equal(reactProps(s.todoSwitch()).checked, false)
-
-    openChatMenu(s, chat.name)
-    await until(() => menuItem(s, '恢復對話'), { message: 'menu opens' })
-    reactProps(menuItem(s, '恢復對話')).onClick({})
-    await until(() => chat.blocked === false, { message: 'restored' })
-    await openCombinedPane(s)
-    await until(() => s.todoSwitch() && s.topicSwitch('此群組的議題開關') && todoOn().disabled === false && topicsOn().checked === true, { message: 'stored states return' })
-    assert.equal(reactProps(s.todoSwitch()).checked, false, 'todo stays at its stored off state')
-    assert.equal(topicsOn().disabled, false)
-    assert.equal(s.callsTo('db.chats.setTodoExtractEnabled').length, 0)
+    for (const input of [s.todoSwitch(), s.topicSwitch('此群組的議題開關')]) assert.equal(Boolean(reactProps(input).disabled), false, 'not disabled')
+    assert.equal(reactProps(s.todoSwitch()).checked, true)
+    s.change(s.todoSwitch(), false)
+    await until(() => s.callsTo('db.chats.setTodoExtractEnabled').length === 1 && reactProps(s.todoSwitch()).checked === false, { message: 'todo switched' })
+    assert.deepEqual(s.callsTo('db.chats.setTodoExtractEnabled')[0].args, [chat.chatId, false])
     assert.equal(s.callsTo('groupTopics.setEnabled').length, 0)
-    assert.deepEqual(stored[chat.chatId], { todo: false, topics: true })
+    s.change(s.topicSwitch('此群組的議題開關'), false)
+    await until(() => s.callsTo('groupTopics.setEnabled').length === 1, { message: 'topics switched' })
+    assert.equal(s.callsTo('db.chats.setTodoExtractEnabled').length, 1)
   } finally { s.dispose() }
 })

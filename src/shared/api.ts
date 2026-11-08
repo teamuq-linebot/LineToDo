@@ -34,8 +34,6 @@ export interface ChatDTO {
   chatId: string
   name: string | null
   isGroup: boolean
-  blocked: boolean
-  blockReason: string | null
   firstSeenAt: string
   lastSeenAt: string
 }
@@ -275,10 +273,8 @@ export interface CliProviderSettings {
   timeoutMs: number
 }
 
-/** 降噪黑名單規則（與 main/config/defaults.ts BlocklistRules 對齊）。 */
+/** 降噪規則（與 main/config/defaults.ts BlocklistRules 對齊）。 */
 export interface BlocklistRules {
-  nameKeywords: string[]
-  senderKeywords: string[]
   contentTypeNoiseOnly: number[]
   minTextLenForLLM: number
 }
@@ -574,13 +570,11 @@ export interface LineTodoApi {
       count(chatId?: string): Promise<number>
     }
     chats: {
-      list(includeBlocked?: boolean): Promise<ChatDTO[]>; get(chatId: string): Promise<ChatDTO | null>
-      setBlocked(chatId: string, blocked: boolean, reason?: string): Promise<ChatDTO | null>
+      list(): Promise<ChatDTO[]>; get(chatId: string): Promise<ChatDTO | null>
       /** 此聊天室的待辦抽取開關（預設開）。 */
       todoExtractEnabled(chatId: string): Promise<boolean>
       /** 關閉期間不抽待辦；重新開啟只補抽最近 7 天，更早的標為已處理（skippedOlder 為略過的則數）。 */
       setTodoExtractEnabled(chatId: string, enabled: boolean): Promise<{ ok: boolean; enabled: boolean; skippedOlder: number }>
-      blockAndClear(chatId: string): Promise<{ ok: boolean; dismissed: number }>
       addIgnoreKeyword(chatId: string, keyword: string): Promise<{ ok: boolean; dismissed: number; error?: string }>
       removeIgnoreKeyword(chatId: string, keyword: string): Promise<{ ok: boolean }>
       openOriginal(chatId: string): Promise<{ ok: boolean; error?: string }>

@@ -66,6 +66,33 @@ export function isTodoExtractEnabled(db: Database, chatId: string): boolean {
   }
 }
 
+export interface MigrateIgnoredChatsResult {
+  migrated: number
+  skipped?: 'prefs_unavailable'
+}
+
+export function migrateIgnoredChats(db: Database, nowMs = Date.now()): MigrateIgnoredChatsResult {
+  if (!chatTodoPrefsReady(db)) return { migrated: 0, skipped: 'prefs_unavailable' }
+  const stamp = new Date(nowMs).toISOString()
+  const tx = db.transaction((): MigrateIgnoredChatsResult => {
+    const count = (db.prepare('SELECT COUNT(*) AS n FROM chats WHERE blocked=1').get() as { n: number }).n
+    if (count === 0) return { migrated: 0 }
+    db.prepare(
+      'INSERT INTO chat_todo_preferences(chat_id,extract_enabled,updated_at) SELECT chat_id,0,? FROM chats WHERE blocked=1 ' +
+      'ON CONFLICT(chat_id) DO UPDATE SET extract_enabled=0, updated_at=excluded.updated_at'
+    ).run(stamp)
+    const hasTopicPrefs = (db.prepare("SELECT 1 AS yes FROM sqlite_master WHERE type='table' AND name='group_topic_preferences'").get() as { yes: number } | undefined)?.yes === 1
+    if (hasTopicPrefs) {
+      db.prepare(
+        'UPDATE group_topic_preferences SET enabled=0, updated_at=? WHERE enabled=1 AND chat_id IN (SELECT chat_id FROM chats WHERE blocked=1)'
+      ).run(stamp)
+    }
+    db.prepare('UPDATE chats SET blocked=0, block_reason=NULL WHERE blocked=1').run()
+    return { migrated: count }
+  })
+  return runImmediateTransaction(tx)
+}
+
 export interface SetTodoExtractResult {
   ok: boolean
   enabled: boolean
@@ -75,9 +102,9 @@ export interface SetTodoExtractResult {
 export function setTodoExtractEnabled(db: Database, chatId: string, enabled: boolean, nowMs = Date.now()): SetTodoExtractResult {
   if (!chatTodoPrefsReady(db)) return { ok: false, enabled: true, skippedOlder: 0 }
   const tx = db.transaction((): SetTodoExtractResult => {
-    const chat = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as { blocked: number } | undefined
+    const chat = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
     const current = isTodoExtractEnabled(db, chatId)
-    if (!chat || chat.blocked === 1) return { ok: false, enabled: current, skippedOlder: 0 }
+    if (!chat) return { ok: false, enabled: current, skippedOlder: 0 }
     const stamp = new Date(nowMs).toISOString()
     if (!enabled) {
       db.prepare(

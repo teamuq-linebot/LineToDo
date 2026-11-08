@@ -27,13 +27,12 @@ test('同一事件迴圈的固定 burst 合併成一次並保持完整 chat map 
   const clock = fakeClock()
   const state = { map: {} }
   let calls = 0
-  const list = async (includeBlocked) => {
-    assert.equal(includeBlocked, true)
+  const list = async () => {
     calls += 1
     return chats
   }
   const baselineRefresh = async () => {
-    state.map = buildChatNameMap(await list(true))
+    state.map = buildChatNameMap(await list())
   }
   const beforeStart = performance.now()
   await Promise.all(Array.from({ length: 40 }, () => baselineRefresh()))
@@ -41,7 +40,7 @@ test('同一事件迴圈的固定 burst 合併成一次並保持完整 chat map 
   calls = 0
 
   const scheduler = createChatRefreshScheduler(async (isActive) => {
-    const result = await list(true)
+    const result = await list()
     if (isActive()) state.map = buildChatNameMap(result)
   }, clock.schedule)
   const afterStart = performance.now()
@@ -54,7 +53,7 @@ test('同一事件迴圈的固定 burst 合併成一次並保持完整 chat map 
   assert.equal(calls, 1)
   assert.deepEqual(state.map, buildChatNameMap(chats))
   t.diagnostic(JSON.stringify({
-    fixture: '40 events; 2 fake chat DTOs; list(true); disposable in-memory state',
+    fixture: '40 events; 2 fake chat DTOs; list(); disposable in-memory state',
     before: { calls: 40, elapsedMs: Number(beforeElapsedMs.toFixed(3)) },
     after: { calls, elapsedMs: Number(afterElapsedMs.toFixed(3)) },
     limit: 'synthetic call-count/timing only; no Electron, LINE source, DB, provider, or UI frame claim'

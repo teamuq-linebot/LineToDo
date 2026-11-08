@@ -129,10 +129,11 @@ test('direct chat topics are opt-in, stay chat-local, retain todo references, an
   assert.equal(service.pendingCount('dm'),0)
   assert.deepEqual(service.enable('dm',true),{ok:true})
   db.prepare("UPDATE chats SET blocked=1 WHERE chat_id='dm'").run()
-  assert.deepEqual(service.enable('dm',true),{ok:false})
+  assert.equal(service.list('dm').ok,true,'a leftover ignore flag is not read any more')
+  service.enable('dm',false)
   assert.deepEqual(service.list('dm'),{ok:false,topics:[]})
   assert.equal(service.pendingCount('dm'),0)
-  assert.deepEqual(await service.analyze('dm',()=>{throw new Error('blocked chat must not resolve a provider')}),{ok:false,reason:'unsupported_chat'})
+  assert.deepEqual(await service.analyze('dm',()=>{throw new Error('disabled chat must not resolve a provider')}),{ok:false,reason:'disabled'})
   assert.deepEqual(service.enable('missing-chat',true),{ok:false})
   assert.deepEqual(service.list('missing-chat'),{ok:false,topics:[]})
   assert.equal(service.pendingCount('missing-chat'),0)
@@ -454,8 +455,8 @@ test('late arrival at the baseline timestamp is pending regardless of its smalle
   db.close()
 })
 
-test('disable or block during provider wait prevents commit and preserves pending messages', async () => {
-  for (const mode of ['disabled','blocked']) {
+test('disable during provider wait prevents commit and preserves pending messages', async () => {
+  for (const mode of ['disabled']) {
     const db=dbFixture(); const service=createGroupTopicsService(db); service.enable('group-a',true)
     let enteredResolve
     const entered=new Promise((resolve)=>{enteredResolve=resolve})
@@ -465,18 +466,16 @@ test('disable or block during provider wait prevents commit and preserves pendin
     const provider={complete:(req)=>{calls++;enteredResolve();return response.then((value)=>({...value,text:JSON.stringify(withIdentityDecisions(analysisA,req.user))}))}}
     const pending=service.analyze('group-a',()=>provider)
     await entered
-    if(mode==='disabled') service.enable('group-a',false)
-    else db.prepare("UPDATE chats SET blocked=1 WHERE chat_id='group-a'").run()
+    service.enable('group-a',false)
     responseResolve({meta:{provider:'fake',model:'fake',durationMs:0}})
-    assert.deepEqual(await pending,{ok:false,reason:mode==='disabled'?'disabled':'unsupported_chat'})
+    assert.deepEqual(await pending,{ok:false,reason:'disabled'})
     assert.equal(calls,1)
     assert.equal(db.prepare('SELECT COUNT(*) n FROM discussion_topics').get().n,0)
     assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_evidence').get().n,0)
     assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_message_decisions').get().n,0)
     assert.equal(db.prepare('SELECT COUNT(*) n FROM topic_message_checkpoints').get().n,0)
     assert.equal(db.prepare("SELECT COUNT(*) n FROM topic_analysis_runs WHERE state='complete'").get().n,0)
-    if(mode==='disabled') service.enable('group-a',true)
-    else db.prepare("UPDATE chats SET blocked=0 WHERE chat_id='group-a'").run()
+    service.enable('group-a',true)
     assert.equal(service.pendingCount('group-a'),2)
     db.close()
   }
@@ -769,10 +768,9 @@ test('overview that already fits is returned untouched (no compaction flag, full
   db.close()
 })
 
-test('overview aggregates every unblocked group in one read: enabled flag, capped recent topics, pending counts; disabled groups carry no topics; blocked and direct chats are left out', async () => {
+test('overview aggregates every group in one read: enabled flag, capped recent topics, pending counts; disabled groups carry no topics; direct chats are left out', async () => {
   const db = dbFixture()
   const service = createGroupTopicsService(db)
-  db.prepare("INSERT INTO chats(chat_id,name,is_group,blocked,first_seen_at,last_seen_at) VALUES('group-blocked','封鎖群',1,1,'2026-09-30','2026-09-30')").run()
   assert.deepEqual(service.overview().map((row) => [row.chatId, row.enabled, row.topics.length, row.pendingCount, row.backlogCount]).sort(), [['group-a', false, 0, 0, 0], ['group-b', false, 0, 0, 0]])
   service.enable('group-a', true)
   const before = service.overview().find((row) => row.chatId === 'group-a')
@@ -785,7 +783,7 @@ test('overview aggregates every unblocked group in one read: enabled flag, cappe
   assert.deepEqual(a.topics, service.list('group-a').topics, 'the aggregate carries exactly what list returns for the group')
   assert.equal(a.pendingCount, 0)
   assert.equal(rows.find((row) => row.chatId === 'group-b').topics.length, 0)
-  assert.equal(rows.some((row) => row.chatId === 'dm' || row.chatId === 'group-blocked'), false)
+  assert.equal(rows.some((row) => row.chatId === 'dm'), false)
   assert.ok(JSON.stringify(rows).length < 64 * 1024, 'the aggregate stays well under the 64 KiB response budget')
   const insertTopic = db.prepare('INSERT INTO discussion_topics(topic_id,chat_id,local_ref,title,summary,created_at,last_source_ts) VALUES(?,?,?,?,?,?,?)')
   for (let i = 0; i < 40; i += 1) insertTopic.run('bulk-' + i, 'group-b', 'ref-' + i, '大量議題' + i, '摘要', '2026-09-30', 100 + i)

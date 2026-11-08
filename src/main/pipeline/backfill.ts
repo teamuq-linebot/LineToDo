@@ -10,7 +10,6 @@ import {
   listMessages,
   markProcessed
 } from '../db/messages.repo'
-import { getChat, setBlocked } from '../db/chats.repo'
 import { isTodoExtractEnabled } from '../db/chatTodoPrefs.repo'
 import {
   getOpenTodosByChat
@@ -22,7 +21,8 @@ import type { PipelineDefaults } from '../config/defaults'
 import { applyChatExtract, makeExtractFn } from './runOnce'
 import type { ApplyTally, ChatExtractInput } from './runOnce'
 import { EXTRACT_JSON_SCHEMA, type ExtractResult } from '../llm/schema'
-import { evaluateChatAutoBlock, isBatchNoise } from './blocklist'
+import { getChat } from '../db/chats.repo'
+import { isBatchNoise } from './blocklist'
 import { mapLimited } from './concurrency'
 import type { RawLineMessage } from '../line/types'
 import type { LineImportBatch, LineSourceCursor } from '../line/importTypes'
@@ -39,10 +39,10 @@ import { IDENTITY_QUERY_VERSION } from '../../shared/identityDecision'
  * 流程（對齊 IMPLEMENTATION_PLAN.md §8，但訊息來源是時間窗口而非 live drain）：
  *   1. 開一筆 pipeline_runs。
  *   2. getMessagesSince(now - N天) → RawLineMessage[]。
- *   3. insertMessages：upsert chats（套自動黑名單）+ INSERT OR IGNORE messages（msg_id 去重）。
+ *   3. insertMessages：upsert chats + INSERT OR IGNORE messages（msg_id 去重）。
  *      → 讓抽出的 todo.sourceMsgIds 連得到 messages 表。
- *   4. 依 chatId 分組（用本窗口訊息；blocked chat 整組跳過）。
- *   5. 每個 chat：撈 openTodos 去重 → 套整批噪音黑名單 → 呼叫 extractTodos（並發節流）。
+ *   4. 依 chatId 分組（用本窗口訊息；待辦開關關閉的 chat 整組跳過）。
+ *   5. 每個 chat：撈 openTodos 去重 → 套整批噪音過濾 → 呼叫 extractTodos（並發節流）。
  *   6. upsert newTodos（近似去重命中則 merge）/ resolve resolved（schedule 未來不自動 done）。
  *      → 該 chat 窗口訊息標 processed=1（避免 live scheduler 重抽）。
  *   7. emit 進度（已處理/總聊天數）+ 收尾 pipeline_runs。
@@ -119,7 +119,7 @@ function fetchSinceWindow(
 
 /**
  * 回顧過去 days 天：拉窗口訊息 → 落庫 → 逐 chat 抽取 → upsert/resolve todos。
- * 重用既有抽取/去重/完成偵測/並發/黑名單邏輯，僅來源改為時間窗口。
+ * 重用既有抽取/去重/完成偵測/並發/噪音過濾邏輯，僅來源改為時間窗口。
  */
 export async function reviewLastDays(
   days = DEFAULT_DAYS,
@@ -192,7 +192,7 @@ export async function reviewLastDays(
     return result
   }
 
-  // ── 2. 落庫 messages（去重）+ chats upsert（套自動黑名單）─────
+  // ── 2. 落庫 messages（去重）+ chats upsert ─────
   const ins = importWindow
     ? {
         inserted: importWindow.commits.reduce((sum, commit) => sum + commit.inserted, 0),
@@ -201,20 +201,13 @@ export async function reviewLastDays(
       }
     : insertMessages(win.messages, db)
   result.newMsgs = ins.inserted
-  for (const chatId of ins.chatIds) {
-    const chat = getChat(chatId, db)
-    if (!chat || chat.blocked) continue
-    const verdict = evaluateChatAutoBlock(chat, rules)
-    if (verdict.block) setBlocked(chatId, true, verdict.reason, db)
-  }
 
   // ── 3. 依 chatId 分組（用本窗口的全部訊息；去重後 msg_id 對齊 DB）─
   // 用窗口訊息推導出 msgId → 再從 DB 取回對應 MessageDTO（含 processed 等欄位）。
-  // 直接以「本窗口 chatId 清單」分組，並排除已被 block 的 chat。
+  // 直接以「本窗口 chatId 清單」分組，並排除待辦開關關閉的 chat。
   const byChat = new Map<string, MessageDTO[]>()
   for (const chatId of ins.chatIds) {
-    const chat = getChat(chatId, db)
-    if (chat?.blocked || !isTodoExtractEnabled(db, chatId)) continue
+    if (!isTodoExtractEnabled(db, chatId)) continue
     // B2：直接 WHERE ts>=sinceMs 撈整個窗口（無 1000 筆上限），確保 7 天內超過 1000
     // 則的大群也完整送進 LLM；不再用 getRecentByChat（會被夾成最近 1000 筆）。
     const windowMsgs = getByChatSince(chatId, sinceMs, db)

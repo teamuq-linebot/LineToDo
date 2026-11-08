@@ -10,7 +10,6 @@ import {
   getRecentByChat,
   markProcessed
 } from '../db/messages.repo'
-import { getChat, setBlocked } from '../db/chats.repo'
 import { isTodoExtractEnabled } from '../db/chatTodoPrefs.repo'
 import {
   createTodo,
@@ -27,7 +26,8 @@ import type { PipelineDefaults } from '../config/defaults'
 import { resolveProvider } from '../llm/provider'
 import { extractTodos } from '../llm/extractor'
 import { validateExtractResult, type ExtractResult } from '../llm/schema'
-import { evaluateChatAutoBlock, isBatchNoise, matchesChatIgnoreKeyword } from './blocklist'
+import { getChat } from '../db/chats.repo'
+import { isBatchNoise, matchesChatIgnoreKeyword } from './blocklist'
 import { mapLimited } from './concurrency'
 import { assertIdentitySnapshotCurrent, deterministicSourceDigest, identityMetaState, insertIdentityEvent, refreshTodoIdentityTerms, tableExists } from '../db/identity.repo'
 import type { IdentityContextSnapshot as TrustedIdentitySnapshot, IdentityDecision } from '../../shared/identityDecision'
@@ -45,8 +45,8 @@ import { EXTRACT_JSON_SCHEMA } from '../llm/schema'
  * 1. 開 pipeline_runs。
  * 2. 取本輪 LINE 新訊息（watchSource，可注入；正式版為 dbDrainSource——live LineWatcher 已用
  *    in-process TS 引擎把訊息鏡像進 DB，這裡回空 batch）。
- * 3. upsert chats（套自動黑名單）+ INSERT OR IGNORE messages（msg_id 去重）。
- * 4. 取「未處理且 chat 未 blocked」訊息，按 chatId 分組。
+ * 3. upsert chats + INSERT OR IGNORE messages（msg_id 去重）。
+ * 4. 取「未處理且待辦開關開啟」訊息，按 chatId 分組。
  * 5. 每 chat：撈 recentContext + openTodos → extractFn（qwen，並發≤2）→ ExtractResult。
  * 6. 落 newTodos（套近似去重）、套 resolved（完成偵測門檻）；來源訊息標 processed=1。
  * 7. 收尾 pipeline_runs；回傳結果供 IPC 推播。
@@ -407,7 +407,7 @@ export function applyChatExtract(
 
 function isTopicRelationAllowed(db:Database,chatId:string,topicId:string):boolean {
   const row=db.prepare(`SELECT t.topic_id FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
-    LEFT JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.chat_id=? AND t.topic_id=? AND c.blocked=0 AND p.enabled=1`).get(chatId,topicId)
+    LEFT JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.chat_id=? AND t.topic_id=? AND p.enabled=1`).get(chatId,topicId)
   return !!row
 }
 
@@ -469,17 +469,7 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
   const ins = insertMessages(watch.messages, db)
   result.newMsgs = ins.inserted
 
-  // 對「本輪觸及的 chat」評估自動黑名單（只對尚未被手動/自動 block 的）。
-  for (const chatId of ins.chatIds) {
-    const chat = getChat(chatId, db)
-    if (!chat || chat.blocked) continue
-    const verdict = evaluateChatAutoBlock(chat, rules)
-    if (verdict.block) {
-      setBlocked(chatId, true, verdict.reason, db)
-    }
-  }
-
-  // ── 4. 取未處理且未 blocked 的訊息，按 chatId 分組 ─────────
+  // ── 4. 取未處理且待辦開關開啟的訊息，按 chatId 分組 ─────────
   const unprocessed = getUnprocessedForPipeline(2000, db)
   const byChat = new Map<string, MessageDTO[]>()
   for (const m of unprocessed) {

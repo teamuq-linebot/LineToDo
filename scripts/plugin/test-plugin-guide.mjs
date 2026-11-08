@@ -610,7 +610,7 @@ test('N1: drafts holding LINE-derived text have ONE retention table (cards 7 d, 
 
 // ───────────── 0.1.3 r1: every other sentence that names a place in TeamUQ ─────────────
 
-test('0.1.3 r1: the sentences that send the user somewhere in TeamUQ use only names both 1.6.8 and 1.7.1 show — not-in-host page, where to undo a block / keyword ignore, ai:chat off', () => {
+test('0.1.3 r1: the sentences that send the user somewhere in TeamUQ use only names both 1.6.8 and 1.7.1 show — not-in-host page, where to undo a keyword ignore, ai:chat off', () => {
   // the view opened outside TeamUQ (board and settings share it): was 「設定 → 外掛 → line-todo」 (1.6.8 only)
   const root = { textContent: '', style: {} }
   renderNotInHost(root)
@@ -625,14 +625,14 @@ test('0.1.3 r1: the sentences that send the user somewhere in TeamUQ use only na
   assert.equal(places.AI_CHAT_TOGGLE_TITLE, CORE_AI_CHAT_TITLE)
   assert.equal(places.PLUGIN_SETTINGS_TAB_LABEL, CORE_PLUGIN_SETTINGS_TAB_LABEL)
   assert.equal(places.PERMISSIONS_SECTION_TITLE, CORE_PERMISSIONS_SECTION_TITLE)
-  // block a chat / ignore by keyword: the plugin board and standalone both expose 「設定頁」
+  // ignore by keyword: the plugin board and standalone both expose 「設定頁」
   assert.equal(PLUGIN_CAPABILITIES.settingsTab, true)
   assert.equal(STANDALONE_CAPABILITIES.settingsTab, true)
   assert.equal(places.undoInSettingsHint(PLUGIN_CAPABILITIES.settingsTab), EXPECTED_UNDO_HINT_STANDALONE)
   assert.equal(places.undoInSettingsHint(STANDALONE_CAPABILITIES.settingsTab), EXPECTED_UNDO_HINT_STANDALONE, 'standalone unchanged')
   const card = readFileSync(join(ROOT, 'src', 'renderer', 'components', 'Board', 'TodoCard.tsx'), 'utf8')
-  assert.equal(card.includes('可到設定頁解除'), false, 'TodoCard.tsx: both hints follow the host capability')
-  assert.equal(card.split('undoInSettingsHint(caps.settingsTab)').length - 1, 2, 'TodoCard.tsx: both hints (block chat, ignore by keyword) follow the host')
+  assert.equal(card.includes('可到設定頁解除'), false, 'TodoCard.tsx: the hint follows the host capability')
+  assert.equal(card.split('undoInSettingsHint(caps.settingsTab)').length - 1, 1, 'TodoCard.tsx: the ignore-by-keyword hint follows the host')
   // every r1 sentence: the plugin page by the name both versions show, no version-specific parent
   for (const [name, sentence] of Object.entries(R1_PLACE_SENTENCES)) {
     assert.ok(sentence.includes(PLUGIN_PAGE_PLACE_TEXT), `${name}: ${PLUGIN_PAGE_PLACE_TEXT}`)

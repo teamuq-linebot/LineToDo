@@ -9,8 +9,6 @@ export interface ChatDTO {
   chatId: string
   name: string | null
   isGroup: boolean
-  blocked: boolean
-  blockReason: string | null
   firstSeenAt: string
   lastSeenAt: string
 }

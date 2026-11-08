@@ -35,7 +35,7 @@ function renderer() {
 
 const VIEW = {
   pollIntervalSec: 30, concurrency: 2, recentContextLimit: 10,
-  blocklist: { nameKeywords: [], senderKeywords: [], contentTypeNoiseOnly: [], minTextLenForLLM: 2 },
+  blocklist: { contentTypeNoiseOnly: [], minTextLenForLLM: 2 },
   chatIgnoreKeywords: {}, openAtLogin: false, reconcile: { enabled: true, scopeMonths: 0 },
   aiBaseUrl: '', aiProvider: 'http',
   claudeCli: { execPath: '', model: '', timeoutMs: 120000 }, codexCli: { execPath: '', model: '', timeoutMs: 120000 },
@@ -67,7 +67,8 @@ test('settings: the plugin host hides provider choice / CLI / custom endpoint / 
     assert.ok(!plugin.includes(needle), `plugin hides: ${label} (${needle})`)
   }
   // what stays
-  for (const kept of ['輪詢頻率（秒）', '自我對帳', '降噪', '黑名單', '逐對話關鍵字忽略']) assert.ok(plugin.includes(kept), `plugin keeps: ${kept}`)
+  for (const kept of ['輪詢頻率（秒）', '自我對帳', '逐對話關鍵字忽略']) assert.ok(plugin.includes(kept), `plugin keeps: ${kept}`)
+  for (const gone of ['降噪', '黑名單', '已忽略', '忽略對話', '恢復對話']) assert.equal(plugin.includes(gone), false, `plugin drops: ${gone}`)
   assert.ok(plugin.includes('data-testid="ai-by-host"') && plugin.includes('TeamUQ'), 'plugin explains that AI comes from TeamUQ')
   assert.ok(plugin.includes('TeamUQ 的 AI 歷史'), 'review F8: the conversations the AI organises are recorded in the TeamUQ AI history, and the settings page says so')
   assert.ok(!standalone.includes('ai-by-host'))

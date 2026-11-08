@@ -422,32 +422,6 @@ code {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
-.chat-list-filters {
-  display: flex;
-  gap: 6px;
-  flex: 0 0 auto;
-  padding: 0 12px 9px;
-}
-.chat-list-filters button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-}
-.chat-list-filters button span { font-size: 10px; opacity: .8; }
-.chat-list-filters button.selected {
-  border-color: var(--border);
-  background: var(--chip-bg);
-  color: var(--text);
-}
-.chat-list-filters button:focus-visible,
-.chat-more-button:focus-visible,
-.chat-context-menu button:focus-visible,
 .chat-pane-view-toggle button:focus-visible,
 .chat-back-button:focus-visible {
   outline: 2px solid var(--accent);
@@ -458,8 +432,7 @@ code {
   outline-offset: 2px;
 }
 
-.chat-action-error,
-.chat-action-notice {
+.chat-action-error {
   flex: 0 0 auto;
   margin: 0 10px 7px;
   padding: 7px 9px;
@@ -469,11 +442,6 @@ code {
   color: var(--err);
   font-size: 11px;
   line-height: 1.45;
-}
-.chat-action-notice {
-  border-color: var(--notice-info-border);
-  background: var(--notice-info-bg);
-  color: var(--text);
 }
 
 .chat-list {
@@ -495,7 +463,6 @@ code {
   border-bottom: 1px solid var(--row-border);
 }
 .chat-list-row.active { background: var(--chat-selected-bg); }
-.chat-list-row.menu-open { z-index: 5; }
 .chat-list-row:hover { background: var(--hover-row); }
 
 .chat-list-item {
@@ -539,50 +506,6 @@ code {
   outline-offset: -2px;
   border-radius: 5px;
 }
-.chat-more-button {
-  align-self: center;
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--muted);
-  font-size: 21px;
-  line-height: 1;
-}
-.chat-more-button:hover,
-.chat-list-row.menu-open .chat-more-button {
-  border-color: var(--border);
-  background: var(--chip-bg);
-  color: var(--text);
-  filter: none;
-}
-.chat-context-menu {
-  position: absolute;
-  z-index: 10;
-  top: calc(100% - 4px);
-  right: 10px;
-  min-width: 150px;
-  padding: 5px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--menu-bg);
-  box-shadow: var(--shadow-pop);
-}
-.chat-context-menu button {
-  display: block;
-  width: 100%;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  font-size: 12px;
-}
-.chat-context-menu button:hover { background: var(--menu-item-hover); filter: none; }
-.chat-context-menu button:disabled { opacity: .6; }
 .chat-list-empty {
   display: flex;
   flex-direction: column;
@@ -1075,7 +998,6 @@ code {
   .chat-workspace.mobile-show-conversation .chat-sidebar { display: none; }
   .chat-sidebar-heading { padding: 10px 14px 7px; }
   .chat-search-wrap { margin: 0 12px 8px; }
-  .chat-list-filters { padding-bottom: 7px; }
   .chat-list {
     display: block;
     overflow-x: hidden;
@@ -1106,7 +1028,6 @@ code {
     font-size: 11px;
   }
   .chat-list-row { padding-left: 9px; }
-  .chat-more-button { width: 36px; height: 36px; font-size: 22px; }
   .chat-message-content { max-width: 86%; }
   .chat-message-list { gap: 10px; }
   .chat-pane-header { gap: 7px; }
@@ -2491,39 +2412,6 @@ select.set-select.is-err,
 .kw-x:hover {
   color: var(--err);
   filter: none;
-}
-
-/* 逐 chat toggle */
-.chat-toggle-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 260px;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 6px;
-}
-.chat-toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px;
-  border-radius: 5px;
-  font-size: 13px;
-  cursor: pointer;
-}
-.chat-toggle-row:hover {
-  background: var(--hover-row);
-}
-.chat-toggle-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chat-toggle-reason {
-  margin-left: auto;
-  font-size: 11px;
 }
 
 /* 看板/設定主區用一般 padding（覆寫 stream 的 0）；窄螢幕看板改兩欄 */

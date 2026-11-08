@@ -92,7 +92,7 @@ export function createTopicBackground(opts: TopicBackgroundOptions): TopicBackgr
         `SELECT c.chat_id AS chatId FROM chats c
            JOIN group_topic_preferences g ON g.chat_id=c.chat_id AND g.enabled=1
            JOIN chat_todo_preferences t ON t.chat_id=c.chat_id AND t.extract_enabled=0
-          WHERE c.blocked=0 ORDER BY c.last_seen_at DESC LIMIT 200`
+          ORDER BY c.last_seen_at DESC LIMIT 200`
       ).all() as Array<{ chatId: string }>
       return rows.map((r) => r.chatId)
     } catch {

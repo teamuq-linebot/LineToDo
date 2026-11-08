@@ -145,7 +145,7 @@ const FALLBACK_CHATS_PER_ROUND = 1
  * 延遲試算「每輪聊天室數」的預設值。
  *
  * ⚠️ 這裡**不是**聊天室總數。pipeline 每輪的候選集合是
- * `WHERE processed = 0 AND blocked = 0`（main/db/messages.repo.ts
+ * `WHERE processed = 0`（main/db/messages.repo.ts
  * `getUnprocessedForPipeline`），也就是「這個輪詢間隔內剛有新訊息的聊天室」，
  * 跟你有幾個聊天室無關。舊版拿未封鎖聊天室總數當預設（本機 590），
  * 算出一輪 3.4 小時 → 觸發 hopeless → UI 勸使用者別用背景輪詢；

@@ -33,7 +33,7 @@ import { commitLineImportBatch, ensureLineImportSchema } from '../main/db/lineIm
 import { insertMessages } from '../main/db/messages.repo'
 import { ensureGroupTopicsSchema } from '../main/features/groupTopics/repository'
 import { createTopicBackground } from '../main/features/groupTopics/background'
-import { ensureChatTodoPrefsSchema, isTodoExtractEnabled, setTodoExtractEnabled } from '../main/db/chatTodoPrefs.repo'
+import { ensureChatTodoPrefsSchema, isTodoExtractEnabled, migrateIgnoredChats, setTodoExtractEnabled } from '../main/db/chatTodoPrefs.repo'
 import { createGroupTopicsService } from '../main/features/groupTopics/service'
 import { GROUP_TOPICS_BUNDLE_ENABLED } from '../main/features/groupTopics/prompts/bundle'
 
@@ -260,6 +260,8 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
     console.warn('[group-topics] additive schema unavailable; feature disabled:', error instanceof Error ? error.name : 'unknown')
   }
 
+  try { migrateIgnoredChats(database.db) } catch { console.warn('[chat-todo-prefs] legacy chat migration failed') }
+
   disposers.push(ports.line.onMessage((message) => {
     if (state !== 'running') return
     const native = { ...message }
@@ -334,7 +336,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
         count: async (chatId) => repos.messages.count(chatId)
       },
       chats: {
-        list: async (includeBlocked = false) => repos.chats.list({ includeBlocked }),
+        list: async () => repos.chats.list(),
         get: async (chatId) => repos.chats.get(chatId),
         todoExtractEnabled: async (chatId) => (typeof chatId === 'string' && chatId ? isTodoExtractEnabled(database.db, chatId) : true),
         setTodoExtractEnabled: async (chatId, enabled) => {
@@ -342,11 +344,6 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
           const result = setTodoExtractEnabled(database.db, chatId, !!enabled)
           if (result.ok) topicBackground?.kick()
           return result
-        },
-        setBlocked: async (chatId, blocked, reason) => repos.chats.setBlocked(chatId, !!blocked, reason ?? null),
-        blockAndClear: async (chatId) => {
-          repos.chats.setBlocked(chatId, true, 'manual')
-          return { ok: true, dismissed: repos.todos.dismissOpenByChat(chatId) }
         },
         addIgnoreKeyword: async (chatId, keyword) => {
           const kw = (keyword ?? '').trim().toLowerCase()

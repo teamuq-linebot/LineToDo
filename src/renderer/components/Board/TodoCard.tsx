@@ -48,8 +48,6 @@ export interface TodoCardActions {
   onMarkNotMine: (todo: TodoDTO) => Promise<unknown>
   /** 依關鍵字忽略（此對話）：加關鍵字並立即忽略命中的未完成代辦。 */
   onIgnoreByKeyword: (chatId: string, keyword: string) => Promise<number>
-  /** 封鎖這個對話：不再抽代辦 + 清掉現有未完成代辦。 */
-  onBlockChat: (chatId: string) => Promise<number>
   onSnooze: (todo: TodoDTO, hours: number) => Promise<void>
   onReopen: (todo: TodoDTO) => Promise<void>
   onOpenChat: (chatId: string) => Promise<{ ok: boolean; error?: string }>
@@ -351,17 +349,6 @@ export function TodoCard({
     if (await runCardAction('依關鍵字忽略', () => actions.onIgnoreByKeyword(todo.chatId, kw))) setKwMode(false)
   }
 
-  function blockChatConfirm(): void {
-    const label = chatName ?? todo.chatId
-    if (
-      window.confirm(
-        `封鎖「${label}」？\n之後不再從這個對話抽代辦，並會清掉它目前的未完成代辦${undoInSettingsHint(caps.settingsTab)}。`
-      )
-    ) {
-      void runCardAction('封鎖這個對話', () => actions.onBlockChat(todo.chatId))
-    }
-  }
-
   const suggested = isSuggestedDone(todo)
   const done = todo.status === 'done'
   const prio = priorityLabel(todo.priority)
@@ -643,9 +630,6 @@ export function TodoCard({
                 <button className="menu-item" onClick={startKwIgnore}>
                   🔑 依關鍵字忽略…
                 </button>
-                <button className="menu-item danger" onClick={blockChatConfirm}>
-                  ⛔ 封鎖這個對話
-                </button>
               </OverflowMenu>
             </>
           ) : (
@@ -683,9 +667,6 @@ export function TodoCard({
                 <button className="menu-item" onClick={() => void runCardAction('標記不是我的', () => actions.onMarkNotMine(todo))}>不是我的（保留來源）</button>
                 <button className="menu-item" onClick={startKwIgnore}>
                   🔑 依關鍵字忽略…
-                </button>
-                <button className="menu-item danger" onClick={blockChatConfirm}>
-                  ⛔ 封鎖這個對話
                 </button>
               </OverflowMenu>
             </>

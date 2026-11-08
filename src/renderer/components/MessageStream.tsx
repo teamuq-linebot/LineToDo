@@ -17,13 +17,11 @@ interface ConversationEntry {
   chatId: string
   name: string
   isGroup: boolean
-  blocked: boolean
   lastSeenAt: string
   latest: RawLineMessage | null
   loadedCount: number
 }
 
-type ListFilter = 'active' | 'ignored'
 type PaneView = 'messages' | 'topicsTodos' | 'aiSettings'
 
 const HISTORY_PAGE_SIZE = 100
@@ -366,21 +364,14 @@ export function MessageStream(): JSX.Element {
   const [olderLoadingChatId, setOlderLoadingChatId] = useState<string | null>(null)
   const [historyErrorByChat, setHistoryErrorByChat] = useState<Record<string, string>>({})
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
-  const [filter, setFilter] = useState<ListFilter>('active')
   const [search, setSearch] = useState('')
   const [paneView, setPaneView] = useState<PaneView>('messages')
   const [customizedChatIds, setCustomizedChatIds] = useState<ReadonlySet<string>>(new Set())
   const [mobileView, setMobileView] = useState<'list' | 'conversation'>('list')
-  const [openMenuChatId, setOpenMenuChatId] = useState<string | null>(null)
-  const [actionBusyChatId, setActionBusyChatId] = useState<string | null>(null)
-  const [actionError, setActionError] = useState('')
-  const [actionNotice, setActionNotice] = useState('')
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   const messageLogRef = useRef<HTMLDivElement | null>(null)
   const previousChatIdRef = useRef<string | null>(null)
   const pinnedToBottomRef = useRef(true)
-  const menuRootRef = useRef<HTMLLIElement | null>(null)
-  const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const historyRequestIds = useRef(new Map<string, number>())
   const persistedRefreshIds = useRef(new Map<string, number>())
   const mountedRef = useRef(true)
@@ -399,7 +390,7 @@ export function MessageStream(): JSX.Element {
     setLoadingChats(true)
     setChatLoadError('')
     setHistoryLoadError('')
-    const chatsDone = api.db.chats.list(true).then((rows) => {
+    const chatsDone = api.db.chats.list().then((rows) => {
       if (live()) setChats(rows)
     }, (loadError: unknown) => {
       if (live()) setChatLoadError(backendErrorText(loadError, '讀取聊天室清單失敗'))
@@ -478,7 +469,6 @@ export function MessageStream(): JSX.Element {
         chatId: chat.chatId,
         name: displayChatName(chatDisplayNames[chat.chatId] ?? chat.name, chat.chatId, chat.isGroup),
         isGroup: chat.isGroup,
-        blocked: chat.blocked,
         lastSeenAt: chat.lastSeenAt,
         latest: null,
         loadedCount: 0
@@ -491,7 +481,6 @@ export function MessageStream(): JSX.Element {
           chatId: message.chatId,
           name: displayChatName(message.chat, message.chatId, message.isGroup),
           isGroup: message.isGroup,
-          blocked: false,
           lastSeenAt: message.time,
           latest: null,
           loadedCount: 0
@@ -514,8 +503,7 @@ export function MessageStream(): JSX.Element {
 
   useEffect(() => {
     if (selectedChatId && conversations.some((chat) => chat.chatId === selectedChatId)) return
-    const next = conversations.find((chat) => !chat.blocked)
-    setSelectedChatId(next?.chatId ?? null)
+    setSelectedChatId(conversations[0]?.chatId ?? null)
   }, [conversations, selectedChatId])
 
   const activeConversation = conversations.find((chat) => chat.chatId === selectedChatId) ?? null
@@ -720,30 +708,6 @@ export function MessageStream(): JSX.Element {
   }, [activeChatId, activeMessages.length, latestActiveMessage])
 
   useEffect(() => {
-    if (!openMenuChatId) return
-    menuRootRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus()
-    function onPointerDown(event: PointerEvent): void {
-      if (!menuRootRef.current?.contains(event.target as Node)) setOpenMenuChatId(null)
-    }
-    function onKeyDown(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        event.preventDefault()
-        setOpenMenuChatId(null)
-        menuTriggerRef.current?.focus()
-      } else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && menuRootRef.current?.contains(event.target as Node)) {
-        event.preventDefault()
-        menuRootRef.current.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus()
-      }
-    }
-    document.addEventListener('pointerdown', onPointerDown)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [openMenuChatId])
-
-  useEffect(() => {
     if (!lightboxSrc) return
     function onKey(event: KeyboardEvent): void {
       if (event.key === 'Escape') setLightboxSrc(null)
@@ -755,81 +719,11 @@ export function MessageStream(): JSX.Element {
   const shownConversations = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase()
     return conversations.filter((chat) => {
-      if (filter === 'active' && chat.blocked) return false
-      if (filter === 'ignored' && !chat.blocked) return false
       if (!needle) return true
       const searchable = `${chat.name} ${searchableMessageTextByChat.get(chat.chatId) ?? ''}`.toLocaleLowerCase()
       return searchable.includes(needle)
     })
-  }, [conversations, filter, search, searchableMessageTextByChat])
-
-  function openMenu(chatId: string, trigger: HTMLButtonElement | null): void {
-    if (openMenuChatId === chatId) {
-      setOpenMenuChatId(null)
-      trigger?.focus()
-      return
-    }
-    menuTriggerRef.current = trigger
-    setOpenMenuChatId(chatId)
-  }
-
-  async function toggleIgnored(chat: ConversationEntry): Promise<void> {
-    if (actionBusyChatId) return
-    const nextBlocked = !chat.blocked
-    setActionBusyChatId(chat.chatId)
-    setActionError('')
-    setActionNotice('')
-    try {
-      const updated = await api.db.chats.setBlocked(chat.chatId, nextBlocked, nextBlocked ? 'manual' : undefined)
-      if (!updated || updated.chatId !== chat.chatId || updated.blocked !== nextBlocked) {
-        setActionError(`${nextBlocked ? '忽略' : '恢復'}設定沒有更新，請重試。`)
-        return
-      }
-
-      setChats((current) => {
-        const found = current.some((item) => item.chatId === updated.chatId)
-        return found
-          ? current.map((item) => item.chatId === updated.chatId ? updated : item)
-          : [...current, updated]
-      })
-
-      let nextChats = chats.map((item) => item.chatId === updated.chatId ? updated : item)
-      if (!nextChats.some((item) => item.chatId === updated.chatId)) nextChats = [...nextChats, updated]
-      try {
-        const fresh = await api.db.chats.list(true)
-        const freshTarget = fresh.find((item) => item.chatId === updated.chatId)
-        if (freshTarget?.blocked === nextBlocked) {
-          nextChats = fresh
-          setChats(fresh)
-        } else {
-          setActionNotice('狀態已更新；重新讀取清單尚未反映此變更，請稍後重新整理。')
-        }
-      } catch {
-        setActionNotice('狀態已更新；清單重新讀取失敗，畫面已依操作結果更新。')
-      }
-
-      if (nextBlocked) {
-        setFilter('active')
-        if (selectedChatId === chat.chatId) {
-          setSelectedChatId(nextChats.find((item) => !item.blocked && item.chatId !== chat.chatId)?.chatId ?? null)
-          setPaneView('messages')
-          setMobileView('list')
-        }
-        setActionNotice((current) => `${current ? `${current} ` : ''}已忽略「${chat.name}」；既有訊息與待辦保留。`)
-      } else {
-        setFilter('active')
-        setSelectedChatId(chat.chatId)
-        setPaneView('messages')
-        setMobileView('conversation')
-        setActionNotice((current) => `${current ? `${current} ` : ''}已恢復「${chat.name}」；既有訊息與待辦保留。`)
-      }
-      setOpenMenuChatId(null)
-    } catch (operationError) {
-      setActionError(backendErrorText(operationError, `${nextBlocked ? '忽略' : '恢復'}對話失敗`))
-    } finally {
-      setActionBusyChatId(null)
-    }
-  }
+  }, [conversations, search, searchableMessageTextByChat])
 
   async function loadOlderMessages(): Promise<void> {
     if (!activeChatId || olderLoadingChatId === activeChatId) return
@@ -897,22 +791,12 @@ export function MessageStream(): JSX.Element {
             />
             {search && <button type="button" className="chat-search-clear" aria-label="清除搜尋" onClick={() => setSearch('')}>×</button>}
           </label>
-          <div className="chat-list-filters" role="group" aria-label="聊天室篩選">
-            <button type="button" className={filter === 'active' ? 'selected' : ''} aria-pressed={filter === 'active'} onClick={() => setFilter('active')}>
-              聊天 <span>{conversations.filter((chat) => !chat.blocked).length}</span>
-            </button>
-            <button type="button" className={filter === 'ignored' ? 'selected' : ''} aria-pressed={filter === 'ignored'} onClick={() => setFilter('ignored')}>
-              已忽略 <span>{conversations.filter((chat) => chat.blocked).length}</span>
-            </button>
-          </div>
           {chatLoadError && (
             <div className="chat-action-error chat-load-error" role="alert">
               <span>{chatLoadError}</span>
               <button type="button" className="link-btn" onClick={retryAll}>重試</button>
             </div>
           )}
-          {actionError && <div className="chat-action-error" role="alert">{actionError}</div>}
-          {actionNotice && <div className="chat-action-notice" role="status">{actionNotice}</div>}
           <ul className="chat-list">
             {loadingChats && conversations.length === 0 && <li className="chat-list-empty muted" role="status">{phase === 'starting' ? describePhase(phase)?.text : '正在載入聊天室…'}</li>}
             {!loadingChats && !chatLoadError && conversations.length === 0 && <li className="chat-list-empty muted">目前尚無聊天資料</li>}
@@ -924,18 +808,12 @@ export function MessageStream(): JSX.Element {
             )}
             {shownConversations.map((chat) => {
               const active = chat.chatId === activeChatId
-              const menuOpen = openMenuChatId === chat.chatId
               const previewSender = chat.latest?.direction === 'out' ? '我' : chat.latest?.msgId ? (messageDisplayNames[chat.latest.msgId] ?? chat.latest.sender) : chat.latest?.sender
               return (
                 <li
                   key={chat.chatId}
                   data-avatar-chat-id={chat.chatId}
-                  ref={menuOpen ? menuRootRef : null}
-                  className={`chat-list-row${active ? ' active' : ''}${menuOpen ? ' menu-open' : ''}`}
-                  onContextMenu={(event) => {
-                    event.preventDefault()
-                    openMenu(chat.chatId, event.currentTarget.querySelector<HTMLButtonElement>('.chat-list-item'))
-                  }}
+                  className={`chat-list-row${active ? ' active' : ''}`}
                 >
                   <button
                     type="button"
@@ -944,12 +822,6 @@ export function MessageStream(): JSX.Element {
                     onClick={() => {
                       setSelectedChatId(chat.chatId)
                       setMobileView('conversation')
-                    }}
-                    onKeyDown={(event) => {
-                      if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') {
-                        event.preventDefault()
-                        openMenu(chat.chatId, event.currentTarget)
-                      }
                     }}
                   >
                     <span className={`chat-avatar${chat.isGroup ? ' group' : ''}`} aria-hidden="true">
@@ -968,32 +840,6 @@ export function MessageStream(): JSX.Element {
                     </span>
                     {active && <span className="chat-selection-marker" aria-hidden="true">✓</span>}
                   </button>
-                  <button
-                    type="button"
-                    className="chat-more-button"
-                    data-chat-more={chat.chatId}
-                    aria-label={`更多操作：${chat.name}`}
-                    aria-haspopup="menu"
-                    aria-expanded={menuOpen}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      openMenu(chat.chatId, event.currentTarget)
-                    }}
-                  >
-                    ⋯
-                  </button>
-                  {menuOpen && (
-                    <div className="chat-context-menu" role="menu" aria-label={`${chat.name}的對話操作`}>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        disabled={actionBusyChatId === chat.chatId}
-                        onClick={() => void toggleIgnored(chat)}
-                      >
-                        {actionBusyChatId === chat.chatId ? '處理中…' : chat.blocked ? '恢復對話' : '忽略對話'}
-                      </button>
-                    </div>
-                  )}
                 </li>
               )
             })}
@@ -1026,12 +872,11 @@ export function MessageStream(): JSX.Element {
               </header>
               {paneView === 'topicsTodos' ? (
                 <div className="chat-topics-todos-content" data-testid="chat-topics-todos-content" aria-label={`${activeConversation.name}的議題與待辦`}>
-                  <GroupTopicsPanel key={`topics-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} ignored={activeConversation.blocked} embedded />
+                  <GroupTopicsPanel key={`topics-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} embedded />
                   <ChatTodosPanel
                     key={`todos-${activeConversation.chatId}`}
                     chatId={activeConversation.chatId}
                     chatName={activeConversation.name}
-                    ignored={activeConversation.blocked}
                   />
                 </div>
               ) : paneView === 'aiSettings' && chatPrompts ? (

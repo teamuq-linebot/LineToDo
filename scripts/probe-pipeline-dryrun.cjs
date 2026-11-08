@@ -40,7 +40,7 @@ const MSGS = [
   { chat: '專案群', chatId: 'cproj', isGroup: true, ts: 1719381660000, time: '2026-06-26T15:41:00', direction: 'out', sender: 'me', text: '老王報價單好了嗎', contentType: 0 },
   // u-mom：明確時間 → schedule（未來）
   { chat: '媽', chatId: 'umom', isGroup: false, ts: 1719381720000, time: '2026-06-26T15:42:00', direction: 'in', sender: '媽', text: '明天晚上七點回家吃飯', contentType: 0 },
-  // 官方帳號：名稱含「官方」→ 自動黑名單，不進 LLM
+  // 官方帳號：名稱含「官方」也照常進管線（不再依名稱自動封鎖），由 mock 回噪音
   { chat: 'LINE 官方帳號', chatId: 'uofficial', isGroup: false, ts: 1719381780000, time: '2026-06-26T15:43:00', direction: 'in', sender: 'LINE', text: '限時優惠快來看', contentType: 0 }
 ]
 
@@ -104,7 +104,7 @@ function makeMockExtract(round) {
         resolved: []
       }
     }
-    // 不該被呼叫（官方帳號已黑名單）
+    // 官方帳號照常抽取，回噪音
     return { importance: 'noise', newTodos: [], resolved: [] }
   }
 }
@@ -161,9 +161,9 @@ app.whenReady().then(async () => {
       llm: r1.llmStatus, bridge: r1.lineBridge
     }))
 
-    const chats = m.listChats({ includeBlocked: true })
+    const chats = m.listChats()
     const official = chats.find((c) => c.chatId === 'uofficial')
-    console.log('[probe-pipe] official-blocked=' + (official && official.blocked) + ' reason=' + (official && official.blockReason))
+    console.log('[probe-pipe] official-listed=' + !!official)
 
     const todos1 = m.listTodos({})
     console.log('[probe-pipe] todos-after-r1=' + JSON.stringify(todos1.map((t) => ({ chat: t.chatId, bucket: t.bucket, status: t.status, title: t.title, due: t.dueAt }))))
@@ -195,10 +195,10 @@ app.whenReady().then(async () => {
     // ── 斷言 ──
     const ok =
       r1.newMsgs === 4 &&                    // 4 則全落庫
-      r1.chatsSeen === 3 &&                  // 官方帳號被黑名單排除（3 chat 進管線）
-      r1.chatsProcessed === 3 &&
+      r1.chatsSeen === 4 &&                  // 官方帳號不再被名稱封鎖（4 chat 進管線）
+      r1.chatsProcessed === 4 &&
       r1.todosCreated === 3 &&               // todo + waiting + schedule
-      official && official.blocked === true &&
+      official &&
       todoItem && todoItem.status === 'pending' &&
       waiting && waiting.status === 'waiting_reply' &&
       sched && sched.status === 'scheduled' && sched.dueAt === '2026-06-27T19:00:00' &&

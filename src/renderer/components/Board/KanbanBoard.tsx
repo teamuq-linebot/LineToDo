@@ -198,14 +198,13 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
       return result
     },
     onIgnoreByKeyword: t.ignoreByKeyword,
-    onBlockChat: t.blockChat,
     onSnooze: t.snooze,
     onReopen: t.rejectSuggested,
     onOpenChat: openChat,
     onDraftReply: (todo) => setDraftTodoId(todo.id),
     onEdit: t.update,
     onSetViewedLocal: setViewedLocal
-  }), [api, openChat, setDraftTodoId, setViewedLocal, t.blockChat, t.complete, t.completion, t.confirmDone, t.ignore, t.ignoreByKeyword, t.moveToColumn, t.refresh, t.rejectSuggested, t.snooze, t.update])
+  }), [api, openChat, setDraftTodoId, setViewedLocal, t.complete, t.completion, t.confirmDone, t.ignore, t.ignoreByKeyword, t.moveToColumn, t.refresh, t.rejectSuggested, t.snooze, t.update])
 
   return (
     <div className="board-wrap">

@@ -9,7 +9,6 @@ import type {
 import { AI_ENDPOINT_PLACEHOLDER } from '../../lib/defaultEndpoint'
 import { backendErrorText } from '../../lib/backendError'
 import { ApiKeyField } from './ApiKeyField'
-import { BlocklistEditor } from './BlocklistEditor'
 import { ProviderHealthCheck } from './ProviderHealthCheck'
 import { DriverPostSettings } from './DriverPostSettings'
 import { HostAiSettings } from './HostAiSettings'
@@ -27,7 +26,6 @@ import {
  * 區塊：
  *   - 輪詢頻率 / 並發 / 上下文則數（數值設定，存 settings.json）
  *   - AI 判斷引擎（provider 卡片選擇 + 各自的欄位 + 健檢；Batch 6）
- *   - 降噪黑名單（關鍵字 + 逐 chat toggle，BlocklistEditor）
  *   - 資料夾 / 維運
  *
  * 所有變更立即透過 api.settings.update 落檔；輪詢頻率改動會讓 main 重排排程器。
@@ -87,7 +85,7 @@ export function SettingsPanel({ initialView, initialLoadError, initialActionErro
 
   const loadChats = useCallback(async (): Promise<void> => {
     try {
-      const list = await api.db.chats.list(true) // 含黑名單
+      const list = await api.db.chats.list()
       setChats(list)
     } catch (error) {
       setActionError(backendErrorText(error, '讀取對話清單失敗'))
@@ -128,20 +126,6 @@ export function SettingsPanel({ initialView, initialLoadError, initialActionErro
     } catch (error) {
       setActionError(backendErrorText(error, '設定沒有儲存'))
     }
-  }
-
-  async function toggleChat(chatId: string, blocked: boolean): Promise<void> {
-    try {
-      const updated = await api.db.chats.setBlocked(chatId, blocked, blocked ? 'manual' : undefined)
-      if (!updated || updated.chatId !== chatId || updated.blocked !== blocked) {
-        setActionError(`${blocked ? '封鎖' : '解除封鎖'}狀態沒有更新，請重試。`)
-      } else {
-        setActionError(null)
-      }
-    } catch (error) {
-      setActionError(backendErrorText(error, blocked ? '封鎖對話失敗' : '解除封鎖失敗'))
-    }
-    await loadChats()
   }
 
   async function removeKeyword(chatId: string, kw: string): Promise<void> {
@@ -528,19 +512,6 @@ export function SettingsPanel({ initialView, initialLoadError, initialActionErro
         )}
       </div>}
       {caps.driverPost && <DriverPostSettings view={view} onPatch={(p) => void patch({ driverPost: p })} />}
-
-      {/* 黑名單 */}
-      <div className="set-section">
-        <div className="set-section-title">黑名單</div>
-        <BlocklistEditor
-          nameKeywords={view.blocklist.nameKeywords}
-          chats={chats}
-          onKeywordsChange={(next) =>
-            void patch({ blocklist: { nameKeywords: next } })
-          }
-          onToggleChat={(chatId, blocked) => void toggleChat(chatId, blocked)}
-        />
-      </div>
 
       {/* 逐對話關鍵字忽略（卡片「更多 ▾ → 依關鍵字忽略」加入的，這裡可解除） */}
       <div className="set-section">

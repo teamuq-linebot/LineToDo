@@ -11,8 +11,7 @@ export function createRepositories(db: Database) {
     chats: {
       upsert: (input: chatsRepo.UpsertChatInput) => chatsRepo.upsertChat(input, db),
       get: (chatId: string) => chatsRepo.getChat(chatId, db),
-      list: (options: { includeBlocked?: boolean } = {}) => chatsRepo.listChats(options, db),
-      setBlocked: (chatId: string, blocked: boolean, reason: string | null = null) => chatsRepo.setBlocked(chatId, blocked, reason, db)
+      list: () => chatsRepo.listChats(db)
     },
     messages: {
       insert: (message: Parameters<typeof messagesRepo.insertMessage>[0]) => messagesRepo.insertMessage(message, db),

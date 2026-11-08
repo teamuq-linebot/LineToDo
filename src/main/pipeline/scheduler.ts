@@ -16,7 +16,7 @@ import type { PipelineRunDTO } from '../db/pipeline.repo'
  *
  * - setInterval 依 pollIntervalSec 重排；可暫停/恢復（setRunning）、手動立即跑（triggerNow）。
  * - 不重入：上一輪未結束時不開新一輪（避免 qwen 並發爆掉 / DB 競爭）。
- * - AI 引擎未就緒（http 無金鑰）→ LLM 階段優雅停用：仍跑一輪（落庫/黑名單/噪音過濾照常），
+ * - AI 引擎未就緒（http 無金鑰）→ LLM 階段優雅停用：仍跑一輪（落庫/噪音過濾照常），
  *   但不抽 todo，llmStatus 標 'disabled'、UI 提示去設定頁。不崩潰、不硬寫。
  *   「就緒」的判定是 provider-aware 的（isProviderConfigured）—— CLI provider 沒有 qwen 金鑰
  *   也算就緒，見 getStatus() 的註解與 design.md §4.3。
@@ -59,7 +59,7 @@ export interface SchedulerOptions {
   /** 注入自訂 per-chat 退避表（同上）。 */
   backoff?: ChatBackoff
   /**
-   * 供料/收料模式（外掛 backend）：給了，每一輪只做落庫/黑名單/噪音過濾並把待抽取輸入交給 sink，
+   * 供料/收料模式（外掛 backend）：給了，每一輪只做落庫/噪音過濾並把待抽取輸入交給 sink，
    * 不組 provider、不呼叫 extractFn、不碰熔斷器。抽取結果之後由 sink 的 inbox 落庫，
    * 並以 recordExternalRun() 回報給 scheduler（沿用 'run' / 'status' 事件）。
    */
@@ -272,7 +272,7 @@ export class PipelineScheduler extends EventEmitter {
   private async runCycle(): Promise<RunOnceResult> {
     try {
       // 熔斷冷卻中 → 這一輪的每個 chat 都被 shouldSkipChat 擋下（連 provider 都不建構）。
-      // 落庫 / 黑名單 / 噪音判定照常，只是完全不進 LLM 階段。
+      // 落庫 / 噪音判定照常，只是完全不進 LLM 階段。
       const sink = this.options.extractSink
       const cooling = sink ? false : this.breaker.isOpen()
 

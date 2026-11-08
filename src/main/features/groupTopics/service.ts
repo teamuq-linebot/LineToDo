@@ -146,17 +146,17 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
   return {
     enable(chatId, enabled) { return { ok: setEnabled(db, chatId, enabled) } },
     pendingCount(chatId) {
-      const chat = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as {blocked:number}|undefined
-      if (!chat || chat.blocked === 1 || !isEnabled(db,chatId)) return 0
+      const chat = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
+      if (!chat || !isEnabled(db,chatId)) return 0
       return combinedActive(chatId) ? countPendingMessages(db,chatId,100,{processedFilter:'processed'}) : countPendingMessages(db,chatId)
     },
     list(chatId) {
-      const chat = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as {blocked:number}|undefined
-      if (!chat || chat.blocked === 1 || !isEnabled(db, chatId)) return { ok: false, topics: [] }
+      const chat = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
+      if (!chat || !isEnabled(db, chatId)) return { ok: false, topics: [] }
       return { ok: true, topics: listTopics(db, chatId), ...(combinedActive(chatId) ? { combined: true } : {}) }
     },
     overview() {
-      const rows = listChats({}, db).filter((chat) => chat.isGroup && !chat.blocked).map((chat): GroupTopicsOverviewRow => {
+      const rows = listChats(db).filter((chat) => chat.isGroup).map((chat): GroupTopicsOverviewRow => {
         const enabled = isEnabled(db, chat.chatId)
         const pendingCount = enabled ? countPendingMessages(db, chat.chatId) : 0
         const backlogCount = enabled ? (combinedActive(chat.chatId) ? countBacklogMessages(db, chat.chatId) : pendingCount) : 0
@@ -174,8 +174,8 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
       await previous
       try {
       if (!GROUP_TOPICS_BUNDLE_ENABLED) return { ok: false, reason: 'unavailable' }
-      const chat = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as {blocked:number}|undefined
-      if (!chat || chat.blocked === 1) return { ok: false, reason: 'unsupported_chat' }
+      const chat = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
+      if (!chat) return { ok: false, reason: 'unsupported_chat' }
       if (!isEnabled(db, chatId)) return { ok: false, reason: 'disabled' }
       const messages = combinedActive(chatId)
         ? loadPendingMessages(db, chatId, GROUP_TOPICS_BATCH_SIZE, 100, { processedFilter: 'processed' })
@@ -262,13 +262,13 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
         return {ok:false,reason:'analysis_failed',failure:{stage:failure.stage,path:null,code:failure.code}}
       }
         if (saved === 'inactive') {
-          const current = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as {blocked:number}|undefined
-          if (!current || current.blocked === 1) return { ok: false, reason: 'unsupported_chat' }
+          const current = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
+          if (!current) return { ok: false, reason: 'unsupported_chat' }
           return { ok: false, reason: 'disabled' }
         }
         if (!saved) {
-          const current=db.prepare(`SELECT c.blocked,p.enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {blocked:number;enabled:number|null}|undefined
-          if(!current||current.blocked===1) return {ok:false,reason:'unsupported_chat'}
+          const current=db.prepare(`SELECT p.enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {enabled:number|null}|undefined
+          if(!current) return {ok:false,reason:'unsupported_chat'}
           if(current.enabled!==1) return {ok:false,reason:'disabled'}
           return { ok: true, count: listTopics(db, chatId).length, analyzedCount: 0 }
         }

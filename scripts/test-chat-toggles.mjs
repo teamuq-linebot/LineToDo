@@ -6,7 +6,8 @@ import { SCHEMA_VERSION } from '../src/main/db/schema.ts'
 import { getUnprocessedForPipeline, insertMessages } from '../src/main/db/messages.repo.ts'
 import { readChatSourceState } from '../src/main/db/sourceCache.ts'
 import { createTodo } from '../src/main/db/todos.repo.ts'
-import { TODO_BACKFILL_DAYS, chatTodoPrefsReady, ensureChatTodoPrefsSchema, isTodoExtractEnabled, setTodoExtractEnabled } from '../src/main/db/chatTodoPrefs.repo.ts'
+import { listChats } from '../src/main/db/chats.repo.ts'
+import { TODO_BACKFILL_DAYS, chatTodoPrefsReady, ensureChatTodoPrefsSchema, isTodoExtractEnabled, migrateIgnoredChats, setTodoExtractEnabled } from '../src/main/db/chatTodoPrefs.repo.ts'
 import { applyChatExtract, runOnce } from '../src/main/pipeline/runOnce.ts'
 import { reviewLastDays } from '../src/main/pipeline/backfill.ts'
 import { getPipelineDefaults } from '../src/main/config/defaults.ts'
@@ -131,12 +132,10 @@ test('T6 enabling a chat without a row is a no-op (no scope change); real change
   } finally { close() }
 })
 
-test('T7 a blocked or unknown chat cannot be switched', () => {
+test('T7 an unknown chat cannot be switched', () => {
   const { db, close } = fixture()
   try {
     addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'hello']])
-    db.prepare("UPDATE chats SET blocked=1 WHERE chat_id='g1'").run()
-    assert.deepEqual(setTodoExtractEnabled(db, 'g1', false, NOW_MS), { ok: false, enabled: true, skippedOlder: 0 })
     assert.deepEqual(setTodoExtractEnabled(db, 'missing', false, NOW_MS), { ok: false, enabled: true, skippedOlder: 0 })
     assert.equal(n(db, 'SELECT COUNT(*) AS n FROM chat_todo_preferences'), 0)
   } finally { close() }
@@ -205,6 +204,126 @@ test('T9 applyChatExtract refuses a disabled chat: no todo is created and nothin
     setTodoExtractEnabled(db, 'g1', true, NOW_MS)
     applyChatExtract({ db, cfg: getPipelineDefaults(), now: new Date(NOW_MS).toISOString() }, 'g1', ids, NOISE, tally)
     assert.equal(processedOf(db, ids[0]), 1, 'the same call succeeds once the chat is enabled again')
+  } finally { close() }
+})
+
+const markIgnored = (db, chatId, reason = 'manual') => db.prepare('UPDATE chats SET blocked=1, block_reason=? WHERE chat_id=?').run(reason, chatId)
+const prefRow = (db, chatId) => db.prepare('SELECT extract_enabled AS e, updated_at AS u FROM chat_todo_preferences WHERE chat_id=?').get(chatId)
+const chatRow = (db, chatId) => db.prepare('SELECT blocked, block_reason FROM chats WHERE chat_id=?').get(chatId)
+
+test('T10 the one-time migration puts every previously ignored chat back in the list with both switches off, and leaves other chats alone', () => {
+  const { db, close } = fixture()
+  try {
+    ensureGroupTopicsSchema(db)
+    addMsgs(db, 'ign-manual', [['a1', NOW_MS - 1000, 'a']])
+    addMsgs(db, 'ign-auto', [['b1', NOW_MS - 900, 'b']])
+    addMsgs(db, 'normal', [['c1', NOW_MS - 800, 'c']])
+    for (const id of ['ign-manual', 'ign-auto', 'normal']) setEnabled(db, id, true)
+    markIgnored(db, 'ign-manual')
+    markIgnored(db, 'ign-auto', 'auto:keyword:公告')
+    assert.deepEqual(pipelineIds(db), [stored('a1'), stored('b1'), stored('c1')].sort(), 'before the migration the todo gate does not look at the ignore flag')
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 2 })
+    for (const id of ['ign-manual', 'ign-auto']) {
+      assert.deepEqual({ ...chatRow(db, id) }, { blocked: 0, block_reason: null }, id)
+      assert.equal(prefRow(db, id).e, 0, id + ' todo switch off')
+      assert.equal(isTodoExtractEnabled(db, id), false)
+      assert.equal(n(db, 'SELECT enabled AS n FROM group_topic_preferences WHERE chat_id=?', id), 0, id + ' topics switch off')
+    }
+    assert.equal(prefRow(db, 'normal'), undefined, 'a chat that was never ignored gets no row')
+    assert.equal(n(db, 'SELECT enabled AS n FROM group_topic_preferences WHERE chat_id=?', 'normal'), 1, 'its topics switch is untouched')
+    assert.deepEqual(listChats(db).map((chat) => chat.chatId).sort(), ['ign-auto', 'ign-manual', 'normal'])
+    assert.deepEqual(pipelineIds(db), [stored('c1')], 'only the never-ignored chat is still extracted')
+  } finally { close() }
+})
+
+test('T10b the migration is one transaction: a failure while clearing the flag leaves no switch written and the flag intact', () => {
+  const { db, close } = fixture()
+  try {
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'hello']])
+    markIgnored(db, 'g1')
+    db.exec("CREATE TRIGGER t_abort BEFORE UPDATE OF blocked ON chats BEGIN SELECT RAISE(ABORT, 'synthetic'); END")
+    assert.throws(() => migrateIgnoredChats(db, NOW_MS), /synthetic/)
+    assert.equal(n(db, 'SELECT COUNT(*) AS n FROM chat_todo_preferences'), 0, 'the switch write was rolled back')
+    assert.equal(chatRow(db, 'g1').blocked, 1)
+    db.exec('DROP TRIGGER t_abort')
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 1 }, 'a retry after the failure completes')
+    assert.equal(prefRow(db, 'g1').e, 0)
+  } finally { close() }
+})
+
+test('T11 the migration is idempotent and never overrides a switch the user changes afterwards', () => {
+  const { db, close } = fixture()
+  try {
+    ensureGroupTopicsSchema(db)
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'hello']])
+    setEnabled(db, 'g1', true)
+    markIgnored(db, 'g1')
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 1 })
+    const first = { ...prefRow(db, 'g1') }
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS + 5000), { migrated: 0 })
+    assert.deepEqual({ ...prefRow(db, 'g1') }, first, 'a second run changes nothing, not even updated_at')
+    assert.equal(setTodoExtractEnabled(db, 'g1', true, NOW_MS + 6000).ok, true, 'the chat is switchable like any other')
+    setEnabled(db, 'g1', true)
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS + 7000), { migrated: 0 })
+    assert.equal(isTodoExtractEnabled(db, 'g1'), true, 'the user choice survives another run')
+    assert.equal(n(db, 'SELECT enabled AS n FROM group_topic_preferences WHERE chat_id=?', 'g1'), 1)
+  } finally { close() }
+})
+
+test('T12 without the todo preference table the migration does nothing at all: the flag stays, no table is created', () => {
+  const { db, close } = fixture({ prefs: false })
+  try {
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'hello']])
+    markIgnored(db, 'g1')
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 0, skipped: 'prefs_unavailable' })
+    assert.equal(chatRow(db, 'g1').blocked, 1)
+    assert.equal(chatTodoPrefsReady(db), false)
+    assert.equal(n(db, "SELECT COUNT(*) AS n FROM sqlite_master WHERE name='chat_todo_preferences'"), 0)
+    ensureChatTodoPrefsSchema(db)
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 1 }, 'a later start with a ready table migrates')
+  } finally { close() }
+})
+
+test('T13 after the migration nothing is extracted for the chat, old and new messages stay unprocessed, and switching on backfills only the last 7 days', async () => {
+  const { db, close } = fixture()
+  try {
+    addMsgs(db, 'ign', [['old', NOW_MS - 8 * DAY, '8d'], ['mid', NOW_MS - 3 * DAY, '3d']])
+    addMsgs(db, 'ok', [['k1', NOW_MS - 1000, 'ok chat']])
+    markIgnored(db, 'ign')
+    migrateIgnoredChats(db, NOW_MS)
+    const calls = []
+    const watch = { messages: [raw('fresh', 'ign', NOW_MS - 500, '遷移後的新訊息')], bridge: 'ok' }
+    await runOnce({ db, now: () => new Date(NOW_MS).toISOString(), watchSource: async () => watch, extractFn: async (input) => { calls.push(input.chat.chatId); return NOISE } })
+    assert.deepEqual(calls, ['ok'])
+    for (const id of ['old', 'mid', 'fresh']) assert.equal(processedOf(db, stored(id)), 0, id)
+    assert.deepEqual(setTodoExtractEnabled(db, 'ign', true, NOW_MS), { ok: true, enabled: true, skippedOlder: 1 })
+    assert.equal(processedOf(db, stored('old')), 1)
+    assert.equal(processedOf(db, stored('mid')), 0)
+    assert.deepEqual(pipelineIds(db), [stored('fresh'), stored('mid')].sort())
+  } finally { close() }
+})
+
+test('T14 a database without the topic preference table migrates the todo switch and does not fail', () => {
+  const { db, close } = fixture()
+  try {
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'hello']])
+    markIgnored(db, 'g1')
+    assert.equal(n(db, "SELECT COUNT(*) AS n FROM sqlite_master WHERE name='group_topic_preferences'"), 0)
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 1 })
+    assert.equal(prefRow(db, 'g1').e, 0)
+    assert.equal(chatRow(db, 'g1').blocked, 0)
+  } finally { close() }
+})
+
+test('runOnce no longer blocks a chat by its name: a 公告 chat stays in the list and is extracted', async () => {
+  const { db, close } = fixture()
+  try {
+    const calls = []
+    const message = { ...raw('ann1', 'announce', NOW_MS - 1000, '本週六社區大會，請準時出席'), chat: '社區公告群' }
+    await runOnce({ db, now: () => new Date(NOW_MS).toISOString(), watchSource: async () => ({ messages: [message], bridge: 'ok' }), extractFn: async (input) => { calls.push(input.chat.chatId); return NOISE } })
+    assert.deepEqual({ ...chatRow(db, 'announce') }, { blocked: 0, block_reason: null })
+    assert.deepEqual(calls, ['announce'])
+    assert.equal(processedOf(db, stored('ann1')), 1)
   } finally { close() }
 })
 
@@ -412,7 +531,6 @@ function bgScenario({ isGroup = true, chats = [{ id: 'c1', pending: 6 }], analyz
     db.prepare('UPDATE chats SET last_seen_at=? WHERE chat_id=?').run(`2026-11-0${9 - index}T00:00:00.000Z`, chat.id)
     if (chat.topics !== false) setEnabled(db, chat.id, true)
     if (chat.todoOff !== false) setTodoExtractEnabled(db, chat.id, false, NOW_MS)
-    if (chat.blocked) db.prepare('UPDATE chats SET blocked=1 WHERE chat_id=?').run(chat.id)
   })
   const clock = fakeClock()
   const pendings = new Map(chats.map((chat) => [chat.id, chat.pending]))
@@ -453,12 +571,11 @@ for (const isGroup of [true, false]) {
   })
 }
 
-test('BG2 todo on, topics off and blocked chats are never driven', async () => {
+test('BG2 todo on and topics off chats are never driven', async () => {
   const s = bgScenario({ chats: [
     { id: 'drive', pending: 6 },
     { id: 'todo-on', pending: 6, todoOff: false },
-    { id: 'topics-off', pending: 6, topics: false },
-    { id: 'blocked', pending: 6, blocked: true }
+    { id: 'topics-off', pending: 6, topics: false }
   ] })
   try {
     s.bg.start()

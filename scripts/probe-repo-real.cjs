@@ -16,7 +16,7 @@ const esbuild = require('esbuild')
 
 const ENTRY = `
 export { insertMessages, listMessages, getRecentByChat, countMessages } from './src/main/db/messages.repo.ts'
-export { listChats, getChat, setBlocked } from './src/main/db/chats.repo.ts'
+export { listChats, getChat } from './src/main/db/chats.repo.ts'
 export { createTodo, listTodos, getOpenTodosByChat, updateStatus } from './src/main/db/todos.repo.ts'
 export { getDb, closeDb } from './src/main/db/database.ts'
 `
@@ -70,7 +70,7 @@ app.whenReady().then(async () => {
     console.log('[probe-repo] countMessages(u111)=' + repo.countMessages('u111'))
 
     const chats = repo.listChats()
-    console.log('[probe-repo] listChats=' + JSON.stringify(chats.map((c) => ({ chatId: c.chatId, name: c.name, isGroup: c.isGroup, blocked: c.blocked }))))
+    console.log('[probe-repo] listChats=' + JSON.stringify(chats.map((c) => ({ chatId: c.chatId, name: c.name, isGroup: c.isGroup }))))
 
     const recent = repo.getRecentByChat('u111', 10)
     console.log('[probe-repo] recentByChat(u111) order=' + JSON.stringify(recent.map((m) => m.ts)))
@@ -78,14 +78,6 @@ app.whenReady().then(async () => {
 
     const listed = repo.listMessages({ limit: 100 })
     console.log('[probe-repo] listMessages-count=' + listed.length + ' newestTs=' + listed[0].ts)
-
-    // 黑名單切換
-    const blocked = repo.setBlocked('c222', true, 'manual')
-    console.log('[probe-repo] setBlocked(c222)=' + JSON.stringify({ blocked: blocked.blocked, reason: blocked.blockReason }))
-    const visibleChats = repo.listChats() // 預設不含黑名單
-    console.log('[probe-repo] listChats(after-block)=' + JSON.stringify(visibleChats.map((c) => c.chatId)))
-    const allChats = repo.listChats({ includeBlocked: true })
-    console.log('[probe-repo] listChats(includeBlocked)=' + JSON.stringify(allChats.map((c) => c.chatId)))
 
     // todo 建立 + open-by-chat（含 source_msg_ids round-trip）
     const t = repo.createTodo({ chatId: 'c222', bucket: 'waiting', status: 'waiting_reply', title: '等老王回報價單', priority: 1, confidence: 0.8, sourceMsgIds: ['fake-msg-1'] })
@@ -104,8 +96,6 @@ app.whenReady().then(async () => {
       repo.countMessages('u111') === 2 &&
       chats.length === 2 &&
       recent.length === 2 && recent[0].ts < recent[1].ts && // 舊到新
-      blocked.blocked === true &&
-      visibleChats.length === 1 && allChats.length === 2 &&
       t.sourceMsgIds.length === 1 &&
       open.length === 1 &&
       doneT.resolvedAt !== null &&

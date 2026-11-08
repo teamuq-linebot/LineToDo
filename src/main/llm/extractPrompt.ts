@@ -123,7 +123,7 @@ export interface BuildUserPayloadInput {
   /** 本地時間 ISO8601，給相對時間推算（如「明天三點」）。 */
   now: string
   chat: PayloadChat
-  /** 本輪該 chat 的新訊息（已過黑名單 / 未處理）。 */
+  /** 本輪該 chat 的新訊息（未處理）。 */
   newMessages: MessageDTO[]
   /** 選填：最近數則歷史補上下文（不會被當新訊息抽取）。 */
   recentContext?: MessageDTO[]

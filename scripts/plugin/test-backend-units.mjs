@@ -15,6 +15,7 @@ import { DEFAULTS } from '../../src/main/config/defaults.ts'
 import { openDatabase } from '../../src/main/db/database.ts'
 import { getUnprocessedForPipeline, insertMessages } from '../../src/main/db/messages.repo.ts'
 import { getLastRun } from '../../src/main/db/pipeline.repo.ts'
+import { ensureChatTodoPrefsSchema, setTodoExtractEnabled } from '../../src/main/db/chatTodoPrefs.repo.ts'
 import { createTodo, listTodos } from '../../src/main/db/todos.repo.ts'
 import { readChatSourceState } from '../../src/main/db/sourceCache.ts'
 import { EXTRACT_SYSTEM_PROMPT, buildUserPayload } from '../../src/main/llm/extractPrompt.ts'
@@ -327,8 +328,9 @@ test('supply: re-offering the same backlog every cycle neither duplicates items 
   await cycle(db, queue, [])
   assert.equal(queue.stats().pending, 1)
   assert.equal(pendings.length, 1, 'the pending set did not change, so there is a single notification')
-  // the chat gets blocked (messages no longer returned by getUnprocessedForPipeline) -> the next cycle drops it
-  db.prepare('UPDATE chats SET blocked = 1').run()
+  // the chat's todo switch gets turned off (messages no longer returned by getUnprocessedForPipeline) -> the next cycle drops it
+  ensureChatTodoPrefsSchema(db)
+  assert.equal(setTodoExtractEnabled(db, 'u-alice', false).ok, true)
   await cycle(db, queue, [])
   assert.equal(queue.stats().pending, 0)
 })

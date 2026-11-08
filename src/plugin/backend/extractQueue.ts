@@ -5,7 +5,7 @@
  * （0.1.x 這個角色是看板 view 裡的 aiOrchestrator，經 `extract.pull`／`extract.commit` 的 RPC 來回；那條通道已移除）。
  * 本佇列自己**完全不打 LLM、不 spawn 任何東西**，只做兩件事：
  *
- *   供料（outbox）：runOnce 的步驟 1-4（落庫、黑名單、噪音過濾、取未處理訊息按 chat 分組）照跑，
+ *   供料（outbox）：runOnce 的步驟 1-4（落庫、噪音過濾、取未處理訊息按 chat 分組）照跑，
  *     但在呼叫 extractFn 之前停下，把每個 chat 的 `ChatExtractInput` 交給本佇列（`offer`）。
  *     本佇列依 `ai:chat` 的單輪輸入上限把 payload 切成 ≤ maxUserChars 的「片段」，worker 以 `pull` 領走（附租約）。
  *   收料（inbox）：worker 把 AI 回來、已 parse 的 JSON 以 `commit` 送回；本佇列**重新用 zod 驗證**
@@ -972,9 +972,9 @@ export class ExtractQueue implements ExtractSink {
     try {
       if (!tableExists(this.opts.db, 'discussion_topics') || !tableExists(this.opts.db, 'group_topic_preferences')) return false
       const row = this.opts.db.prepare(
-        'SELECT c.blocked AS blocked, p.enabled AS enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?'
-      ).get(chatId) as { blocked: number; enabled: number | null } | undefined
-      if (!row || row.blocked === 1 || row.enabled !== 1) return false
+        'SELECT p.enabled AS enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?'
+      ).get(chatId) as { enabled: number | null } | undefined
+      if (!row || row.enabled !== 1) return false
     } catch { return false }
     const degraded = this.topicDegrade.get(chatId)
     if (degraded && degraded.until > this.now()) { this.noteFallback(chatId, 'degraded'); return false }

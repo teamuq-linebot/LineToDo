@@ -204,8 +204,8 @@ export function ensureGroupTopicsSchema(db: Database): void {
 }
 
 export function setEnabled(db: Database, chatId: string, enabled: boolean): boolean {
-  const chat = db.prepare('SELECT blocked FROM chats WHERE chat_id=?').get(chatId) as { blocked: number } | undefined
-  if (!chat || chat.blocked === 1) return false
+  const chat = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
+  if (!chat) return false
   db.prepare(`INSERT INTO group_topic_preferences(chat_id,enabled,updated_at) VALUES(?,?,?)
     ON CONFLICT(chat_id) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at`).run(chatId, Number(enabled), new Date().toISOString())
   return true
@@ -315,9 +315,9 @@ export function buildTopicSave(db: Database, chatId: string, input: TopicMessage
   const wasIdentityReady=identityMetaState(db,chatId,'topic')==='ready'
   const tx = db.transaction(() => {
     if(identity&&!opts.skipSnapshotAssert) assertIdentitySnapshotCurrent(db,chatId,identity.snapshot,'topic')
-    const active = db.prepare(`SELECT c.blocked,p.enabled FROM chats c
-      LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {blocked:number;enabled:number|null}|undefined
-    if (!active || active.blocked === 1 || active.enabled !== 1) return 'inactive' as const
+    const active = db.prepare(`SELECT p.enabled FROM chats c
+      LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {enabled:number|null}|undefined
+    if (!active || active.enabled !== 1) return 'inactive' as const
     const existing = db.prepare('SELECT state FROM topic_analysis_runs WHERE chat_id=? AND input_digest=?').get(chatId,digest) as { state: string } | undefined
     if (existing?.state === 'complete') return false
     db.prepare(`INSERT INTO topic_analysis_runs(run_id,chat_id,input_digest,prompt_version,prompt_hash,schema_version,schema_hash,state,error_code,created_at)
@@ -483,9 +483,9 @@ export function listTopics(db: Database, chatId: string): TopicView[] {
 }
 
 export function todoRefs(db: Database, topicId: string): Array<{todoId:string;status:string;bucket:string;matchedMsgIds:string[]}> {
-  const topic = db.prepare(`SELECT t.chat_id,c.blocked,p.enabled FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
-    JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.topic_id=?`).get(topicId) as {chat_id:string;blocked:number;enabled:number}|undefined
-  if(!topic || topic.blocked===1 || topic.enabled!==1) return []
+  const topic = db.prepare(`SELECT t.chat_id,p.enabled FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
+    JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.topic_id=?`).get(topicId) as {chat_id:string;enabled:number}|undefined
+  if(!topic || topic.enabled!==1) return []
   const rows = db.prepare('SELECT id,status,bucket,source_msg_ids FROM todos WHERE chat_id=?').all(topic.chat_id) as Array<{id:string;status:string;bucket:string;source_msg_ids:string}>
   const sourceIds = new Set((db.prepare('SELECT msg_id FROM topic_evidence WHERE topic_id=?').all(topicId) as Array<{msg_id:string}>).map((r)=>r.msg_id))
   return rows.map((todo)=>({todo,matched: (JSON.parse(todo.source_msg_ids) as string[]).filter((id)=>sourceIds.has(id))})).filter(({matched})=>matched.length>0)

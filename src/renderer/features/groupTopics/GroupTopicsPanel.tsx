@@ -51,11 +51,9 @@ interface Props {
   embedded?: boolean
   /** 外層（總覽頁）已提供標題時，不重複顯示面板自己的 h2。 */
   hideTitle?: boolean
-  /** 聊天室被忽略時，開關一律顯示關閉且不可切換。 */
-  ignored?: boolean
 }
 
-export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, chatName, embedded = false, hideTitle = false, ignored = false }: Props = {}): JSX.Element {
+export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, chatName, embedded = false, hideTitle = false }: Props = {}): JSX.Element {
   const lineTodoApi = useLineTodoApi()
   const caps = useHostCapabilities()
   const api = lineTodoApi.groupTopics
@@ -87,9 +85,9 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   useEffect(() => {
     if (viaOverview) return undefined
     let active = true
-    void lineTodoApi.db.chats.list(false).then((rows) => {
+    void lineTodoApi.db.chats.list().then((rows) => {
       if (!active) return
-      const groups = rows.filter((chat) => chat.isGroup && !chat.blocked)
+      const groups = rows.filter((chat) => chat.isGroup)
       setChats(groups)
       setGlobalChatId((current) => current || ALL_GROUPS)
     }).catch((loadError: unknown) => {
@@ -174,7 +172,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     })
 
     return () => { if (requestVersion.current === version) requestVersion.current += 1 }
-  }, [api, chatId, selectedChatIsGroup, ignored])
+  }, [api, chatId, selectedChatIsGroup])
 
   function stillShowing(chatIdAtStart: string, versionAtStart: number): boolean {
     return requestVersion.current === versionAtStart && currentChatId.current === chatIdAtStart
@@ -223,7 +221,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   }
 
   async function toggleEnabled(value: boolean): Promise<void> {
-    if (!api || !chatId || busy || ignored) return
+    if (!api || !chatId || busy) return
     const target = chatId
     const version = requestVersion.current
     const previous = enabled
@@ -332,7 +330,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
         <summary>議題分析說明與群組設定</summary>
         <p>議題分析需逐群啟用。已開啟「議題與待辦合併整理」時，新訊息的議題會在「立即整理」與背景整理時一併產生，舊訊息可用「補分析舊訊息」手動補上；否則需手動執行分析。所有群組總覽只讀取各群既有結果，不會自動啟用或分析群組。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>
       </details>}
-      {(embedded || chatId) && <div className="group-topics-head"><h3>{topicsTitle}</h3>{chatId && api && !loading && !loadError && <ChatSwitch label={`${topicsTitle}開關`} checked={enabled && !ignored} disabled={ignored} busy={busy} onChange={(value) => void toggleEnabled(value)} testId="topics-switch" />}</div>}
+      {(embedded || chatId) && <div className="group-topics-head"><h3>{topicsTitle}</h3>{chatId && api && !loading && !loadError && <ChatSwitch label={`${topicsTitle}開關`} checked={enabled} busy={busy} onChange={(value) => void toggleEnabled(value)} testId="topics-switch" />}</div>}
       {!api && <p className="muted">此版本未提供議題分析功能。</p>}
       {!embedded && chats.length === 0 && !overviewLoading && !overviewError && <p className="muted">目前沒有可用群組。</p>}
       {embedded && !chatId && <p className="muted">目前沒有選取中的聊天室。</p>}
@@ -387,12 +385,12 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
           {notice && <p className="group-topics-notice" role="status">{notice}</p>}
           {!loading && api && (
             <>
-              {enabled && !ignored && !settling && <div className="group-topics-controls">
+              {enabled && !settling && <div className="group-topics-controls">
                 {combined
                   ? (pending > 0 || busy) && <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '補分析中…' : '補分析舊訊息'}</button>
                   : <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '分析中…' : `分析最近${chatLabel}訊息`}</button>}
               </div>}
-              {enabled && !ignored && !settling && (
+              {enabled && !settling && (
                 <div className="group-topics-results">
                   <h3>此{chatLabel}近期議題</h3>
                   {topics.length === 0 ? <p className="muted">尚無分析結果。</p> : topics.map((topic) => (

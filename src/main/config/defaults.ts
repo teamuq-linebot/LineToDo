@@ -1,16 +1,12 @@
 /**
- * defaults.ts — pipeline / 降噪黑名單預設值（IMPLEMENTATION_PLAN.md §7.1）。
+ * defaults.ts — pipeline / 降噪預設值（IMPLEMENTATION_PLAN.md §7.1）。
  *
- * 本輪（M2 抽取管線）需要：blocklist 規則（自動 block 判定）+ pollIntervalSec + concurrency
+ * 本輪（M2 抽取管線）需要：降噪規則 + pollIntervalSec + concurrency
  * + 去抖動參數。完整 settings.json 持久化 / 設定頁覆寫屬 M3；此處先以常數提供，
  * 並允許部分用環境變數覆寫，方便開發/測試。
  */
 
 export interface BlocklistRules {
-  /** chat 名稱含這些關鍵字 → 視為推播/官方/噪音，自動 block。 */
-  nameKeywords: string[]
-  /** sender 含這些字 → 噪音來源。 */
-  senderKeywords: string[]
   /** 整輪該 chat 只有這些 contentType（如貼圖 7）→ 該輪視為 noise，不送 LLM。 */
   contentTypeNoiseOnly: number[]
   /** 純符號 / 過短文字略過（長度 < 此值且非可解析內容）。 */
@@ -32,38 +28,6 @@ export interface PipelineDefaults {
 }
 
 export const DEFAULT_BLOCKLIST: BlocklistRules = {
-  nameKeywords: [
-    '官方',
-    '公告',
-    '通知',
-    '推播',
-    '客服',
-    '小幫手',
-    'Bot',
-    '機器人',
-    '新聞',
-    '快訊',
-    '優惠',
-    '促銷',
-    '折扣',
-    '活動',
-    '中獎',
-    '投資',
-    '股票',
-    '貸款',
-    '博弈',
-    '娛樂城',
-    '點數',
-    '回饋',
-    'DM',
-    // 行政通知降噪（學校 / 社區家長群等）— 對應 extractPrompt 降噪規則，2026-06-27
-    '家長群',
-    '家長會',
-    '班級群',
-    '社區公告',
-    '管委會'
-  ],
-  senderKeywords: ['官方帳號', 'LINE 官方'],
   contentTypeNoiseOnly: [7],
   minTextLenForLLM: 2
 }

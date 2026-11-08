@@ -48,7 +48,7 @@ export const SUPPORTED_API_PATHS: readonly string[] = Object.freeze([
   'messages.recent',
   'line.status', 'line.setRunning',
   'db.messages.list', 'db.messages.recentByChat', 'db.messages.byChatSince', 'db.messages.count',
-  'db.chats.list', 'db.chats.get', 'db.chats.todoExtractEnabled', 'db.chats.setTodoExtractEnabled', 'db.chats.setBlocked', 'db.chats.blockAndClear', 'db.chats.addIgnoreKeyword', 'db.chats.removeIgnoreKeyword',
+  'db.chats.list', 'db.chats.get', 'db.chats.todoExtractEnabled', 'db.chats.setTodoExtractEnabled', 'db.chats.addIgnoreKeyword', 'db.chats.removeIgnoreKeyword',
   'db.todos.list', 'db.todos.get', 'db.todos.openByChat', 'db.todos.updateStatus', 'db.todos.update', 'db.todos.moveColumn',
   'db.todos.draftReply', 'db.todos.analyzeNotMine', 'groupTopics.analyze',
   'db.todos.markNotMine', 'db.todos.listNotMine', 'db.todos.listNotMineCorrections', 'db.todos.getNotMineReview',

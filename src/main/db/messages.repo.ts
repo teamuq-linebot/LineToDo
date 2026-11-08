@@ -344,7 +344,7 @@ export function countMessages(chatId?: string, db: Database = getDb()): number {
 }
 
 /**
- * 近 N 天內有過新訊息、且未被封鎖的聊天室數（設定頁延遲試算的說明文字用）。
+ * 近 N 天內有過新訊息的聊天室數（設定頁延遲試算的說明文字用）。
  *
  * 這是「會落進 pipeline 候選集合的聊天室」的上界；聊天室總數不是——絕大多數聊天室
  * 長期沒有新訊息，永遠不會被抽取。只回一個整數，不回任何聊天室名稱或訊息內容。
@@ -359,16 +359,16 @@ export function countChatsWithRecentMessages(
     .prepare(
       `SELECT COUNT(DISTINCT m.chat_id) AS n FROM messages m
        JOIN chats c ON c.chat_id = m.chat_id
-       WHERE c.blocked = 0 AND m.ts >= ?`
+       WHERE m.ts >= ?`
     )
     .get(sinceMs) as { n: number }
   return r.n
 }
 
 /**
- * 取「未處理（processed=0）且該 chat 未被 blocked」的訊息，依 ts 由舊到新。
+ * 取「未處理（processed=0）且該 chat 待辦開關開啟」的訊息，依 ts 由舊到新。
  * pipeline runOnce 用：這是本輪要送 LLM 抽取的候選（§8 步驟 4）。
- * 黑名單 chat 的訊息仍鏡像在 messages（可追溯），但這裡 JOIN chats 過濾掉 blocked=1。
+ * 待辦開關關閉的 chat 訊息仍鏡像在 messages（可追溯），但這裡過濾掉。
  * limit 防單輪暴量（預設 2000）。
  */
 export function getUnprocessedForPipeline(
@@ -382,7 +382,7 @@ export function getUnprocessedForPipeline(
       'SELECT m.chat_id,m.msg_id FROM messages m ' +
       'JOIN chats c ON c.chat_id = m.chat_id ' +
       (todoGate ? 'LEFT JOIN chat_todo_preferences tp ON tp.chat_id = m.chat_id ' : '') +
-      'WHERE m.processed = 0 AND c.blocked = 0 ' +
+      'WHERE m.processed = 0 ' +
       (todoGate ? 'AND COALESCE(tp.extract_enabled,1) = 1 ' : '') +
       'ORDER BY m.ts ASC LIMIT ?'
     )

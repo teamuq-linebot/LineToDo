@@ -1,37 +1,13 @@
-import type { ChatDTO, MessageDTO } from '../db/dto'
+import type { MessageDTO } from '../db/dto'
 import type { BlocklistRules } from '../config/defaults'
 
 /**
- * blocklist.ts — 降噪黑名單判定（IMPLEMENTATION_PLAN.md §7.1）。
+ * blocklist.ts — 降噪判定（IMPLEMENTATION_PLAN.md §7.1）。
  *
- * 兩個層次：
- *   1) evaluateChatAutoBlock：對「新偵測到的 chat」依名稱關鍵字判是否自動 block。
- *      命中回 reason（'auto:keyword' / 'auto:sender'），由 runOnce 寫進 chats.blocked。
- *   2) isBatchNoise：對「該 chat 這輪的訊息」判是否整批噪音（只貼圖 / 全過短）→ 不送 LLM，省 token。
+ * isBatchNoise：對「該 chat 這輪的訊息」判是否整批噪音（只貼圖 / 全過短）→ 不送 LLM，省 token。
  *
  * 純函式、不碰 DB，方便測試。
  */
-
-export interface AutoBlockResult {
-  block: boolean
-  reason: string | null
-}
-
-/** 名稱 / 既有黑名單關鍵字判定（對單一 chat）。 */
-export function evaluateChatAutoBlock(
-  chat: Pick<ChatDTO, 'name' | 'isGroup'>,
-  rules: BlocklistRules
-): AutoBlockResult {
-  const name = (chat.name ?? '').trim()
-  if (!name) return { block: false, reason: null }
-
-  for (const kw of rules.nameKeywords) {
-    if (kw && name.includes(kw)) {
-      return { block: true, reason: `auto:keyword:${kw}` }
-    }
-  }
-  return { block: false, reason: null }
-}
 
 /**
  * 該 chat 本輪訊息是否整批視為 noise（不值得送 LLM）：
@@ -58,7 +34,7 @@ export function isBatchNoise(messages: MessageDTO[], rules: BlocklistRules): boo
 /**
  * 逐對話關鍵字忽略：該 chat 的 ignore 關鍵字（已小寫）若命中此 newTodo 的
  * title + detail（小寫子字串比對）→ 回 true（呼叫端跳過、不建立此代辦）。
- * 第二層 per-chat 忽略，與全域 blocklist（擋整個 chat 不送 LLM）互補。
+ * per-chat 忽略。
  */
 export function matchesChatIgnoreKeyword(
   todo: { title: string; detail?: string | null },

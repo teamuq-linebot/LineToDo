@@ -66,8 +66,6 @@ export interface UseTodos {
   ignore: (id: string) => Promise<void>
   /** 依關鍵字忽略（此對話）：加關鍵字 + 立即忽略命中的未完成代辦。回 dismissed 筆數。 */
   ignoreByKeyword: (chatId: string, keyword: string) => Promise<number>
-  /** 封鎖這個對話：不再抽代辦 + 清掉該對話現有未完成代辦。回 dismissed 筆數。 */
-  blockChat: (chatId: string) => Promise<number>
   /** 延後：把 dueAt 往後推 N 小時（無 dueAt 則設為 now+N）。 */
   snooze: (todo: TodoDTO, hours: number) => Promise<void>
   /** 手動編輯欄位（標題/備註/bucket/優先級/到期）。 */
@@ -116,8 +114,7 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
 
   const loadChats = useCallback(async (isActive: () => boolean = () => true): Promise<void> => {
     try {
-      // 含黑名單一起拉，確保黑名單 chat 產生的歷史 todo 也能顯示正確名稱。
-      const chats: ChatDTO[] = await api.db.chats.list(true)
+      const chats: ChatDTO[] = await api.db.chats.list()
       if (!isActive()) return
       setChatMap(buildChatNameMap(chats))
       setChatsError(null)
@@ -226,16 +223,6 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
     [refresh]
   )
 
-  const blockChat = useCallback(
-    async (chatId: string): Promise<number> => {
-      const res = await api.db.chats.blockAndClear(chatId)
-      if (!res.ok) throw new Error('封鎖對話失敗')
-      if (!await refresh()) throw new Error('封鎖已寫入，但看板更新失敗')
-      return res.dismissed
-    },
-    [refresh]
-  )
-
   const snooze = useCallback(
     async (todo: TodoDTO, hours: number): Promise<void> => {
       const base = todo.dueAt ? Date.parse(todo.dueAt) : Date.now()
@@ -289,7 +276,6 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
     rejectSuggested,
     ignore,
     ignoreByKeyword,
-    blockChat,
     snooze,
     update,
     moveToColumn

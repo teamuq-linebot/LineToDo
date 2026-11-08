@@ -330,12 +330,10 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
         count: (chatId) => call('db.messages.count', chatId)
       },
       chats: {
-        list: (includeBlocked) => call('db.chats.list', includeBlocked),
+        list: () => call('db.chats.list'),
         get: (chatId) => call('db.chats.get', chatId),
         todoExtractEnabled: (chatId) => call('db.chats.todoExtractEnabled', chatId),
         setTodoExtractEnabled: (chatId, enabled) => call('db.chats.setTodoExtractEnabled', chatId, enabled),
-        setBlocked: (chatId, blocked, reason) => call('db.chats.setBlocked', chatId, blocked, reason),
-        blockAndClear: (chatId) => call('db.chats.blockAndClear', chatId),
         addIgnoreKeyword: (chatId, keyword) => call('db.chats.addIgnoreKeyword', chatId, keyword),
         removeIgnoreKeyword: (chatId, keyword) => call('db.chats.removeIgnoreKeyword', chatId, keyword),
         openOriginal: (chatId) => orUnsupported(() => call('db.chats.openOriginal', chatId), (e) => ({ ok: false, error: unsupportedText(e) }))

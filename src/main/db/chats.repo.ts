@@ -4,11 +4,10 @@ import type { ChatRow } from './schema'
 import type { ChatDTO } from './dto'
 
 /**
- * chats.repo — 聊天室 upsert / 查詢 / 黑名單切換。
+ * chats.repo — 聊天室 upsert / 查詢。
  *
  * upsert 語意：第一次見到某 chat 就插入（記 first_seen_at）；之後同 chatId 進來只
- * 更新 name（顯示名可能變）與 last_seen_at，**不**動 blocked/block_reason/first_seen_at
- * （那是使用者或自動規則的決定，訊息流不該覆寫）。
+ * 更新 name（顯示名可能變）與 last_seen_at，**不**動 first_seen_at。
  */
 
 function rowToDTO(r: ChatRow): ChatDTO {
@@ -16,8 +15,6 @@ function rowToDTO(r: ChatRow): ChatDTO {
     chatId: r.chat_id,
     name: r.name,
     isGroup: r.is_group === 1,
-    blocked: r.blocked === 1,
-    blockReason: r.block_reason,
     firstSeenAt: r.first_seen_at,
     lastSeenAt: r.last_seen_at
   }
@@ -37,8 +34,8 @@ export interface UpsertChatInput {
  */
 export function upsertChat(input: UpsertChatInput, db: Database = getDb()): ChatDTO {
   db.prepare(
-    `INSERT INTO chats (chat_id, name, is_group, blocked, block_reason, first_seen_at, last_seen_at)
-     VALUES (@chatId, @name, @isGroup, 0, NULL, @seenAt, @seenAt)
+    `INSERT INTO chats (chat_id, name, is_group, first_seen_at, last_seen_at)
+     VALUES (@chatId, @name, @isGroup, @seenAt, @seenAt)
      ON CONFLICT(chat_id) DO UPDATE SET
        name         = COALESCE(excluded.name, chats.name),
        last_seen_at = excluded.last_seen_at`
@@ -60,28 +57,10 @@ export function getChat(chatId: string, db: Database = getDb()): ChatDTO | null 
   return row ? rowToDTO(row) : null
 }
 
-/** 列出聊天室；預設不含黑名單。依 last_seen_at 由新到舊。 */
-export function listChats(
-  opts: { includeBlocked?: boolean } = {},
-  db: Database = getDb()
-): ChatDTO[] {
-  const where = opts.includeBlocked ? '' : 'WHERE blocked = 0'
+/** 列出聊天室，依 last_seen_at 由新到舊。 */
+export function listChats(db: Database = getDb()): ChatDTO[] {
   const rows = db
-    .prepare(`SELECT * FROM chats ${where} ORDER BY last_seen_at DESC`)
+    .prepare('SELECT * FROM chats ORDER BY last_seen_at DESC')
     .all() as ChatRow[]
   return rows.map(rowToDTO)
-}
-
-/** 切換黑名單旗標。回傳更新後的列（查無回 null）。 */
-export function setBlocked(
-  chatId: string,
-  blocked: boolean,
-  reason: string | null = null,
-  db: Database = getDb()
-): ChatDTO | null {
-  const info = db
-    .prepare('UPDATE chats SET blocked = ?, block_reason = ? WHERE chat_id = ?')
-    .run(blocked ? 1 : 0, blocked ? reason : null, chatId)
-  if (info.changes === 0) return null
-  return getChat(chatId, db)
 }

@@ -275,8 +275,6 @@ function defaultSettings(): AppSettings {
     concurrency: DEFAULTS.concurrency,
     recentContextLimit: DEFAULTS.recentContextLimit,
     blocklist: {
-      nameKeywords: [...DEFAULTS.blocklist.nameKeywords],
-      senderKeywords: [...DEFAULTS.blocklist.senderKeywords],
       contentTypeNoiseOnly: [...DEFAULTS.blocklist.contentTypeNoiseOnly],
       minTextLenForLLM: DEFAULTS.blocklist.minTextLenForLLM
     },
@@ -361,12 +359,6 @@ function normalize(input: Partial<AppSettings>): AppSettings {
     concurrency: clampInt(input.concurrency, 1, 4, d.concurrency),
     recentContextLimit: clampInt(input.recentContextLimit, 0, 50, d.recentContextLimit),
     blocklist: {
-      nameKeywords: Array.isArray(bl.nameKeywords)
-        ? bl.nameKeywords.map(String).map((s) => s.trim()).filter(Boolean)
-        : d.blocklist.nameKeywords,
-      senderKeywords: Array.isArray(bl.senderKeywords)
-        ? bl.senderKeywords.map(String).map((s) => s.trim()).filter(Boolean)
-        : d.blocklist.senderKeywords,
       contentTypeNoiseOnly: Array.isArray(bl.contentTypeNoiseOnly)
         ? bl.contentTypeNoiseOnly
             .map((n) => Math.floor(Number(n)))

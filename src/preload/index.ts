@@ -92,9 +92,9 @@ const api = {
         ipcRenderer.invoke('messages:count', { chatId })
     },
     chats: {
-      /** 聊天室清單（預設不含黑名單）。 */
-      list: (includeBlocked?: boolean): Promise<ChatDTO[]> =>
-        ipcRenderer.invoke('chats:list', { includeBlocked }),
+      /** 聊天室清單。 */
+      list: (): Promise<ChatDTO[]> =>
+        ipcRenderer.invoke('chats:list'),
       /** 取單一聊天室。 */
       get: (chatId: string): Promise<ChatDTO | null> =>
         ipcRenderer.invoke('chats:get', { chatId }),
@@ -104,16 +104,6 @@ const api = {
       /** 切換待辦抽取開關；重新開啟補抽最近 7 天。 */
       setTodoExtractEnabled: (chatId: string, enabled: boolean): Promise<{ ok: boolean; enabled: boolean; skippedOlder: number }> =>
         ipcRenderer.invoke('chats:setTodoExtractEnabled', { chatId, enabled }),
-      /** 切換黑名單。 */
-      setBlocked: (
-        chatId: string,
-        blocked: boolean,
-        reason?: string
-      ): Promise<ChatDTO | null> =>
-        ipcRenderer.invoke('chats:setBlocked', { chatId, blocked, reason }),
-      /** 卡片「封鎖這個對話」：手動封鎖 + 清掉該對話未完成代辦。回 dismissed 筆數。 */
-      blockAndClear: (chatId: string): Promise<{ ok: boolean; dismissed: number }> =>
-        ipcRenderer.invoke('chats:blockAndClear', { chatId }),
       /** 卡片「依關鍵字忽略（此對話）」：加關鍵字 + 立即忽略命中的未完成代辦。 */
       addIgnoreKeyword: (
         chatId: string,
