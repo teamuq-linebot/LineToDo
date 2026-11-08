@@ -3394,6 +3394,37 @@ test('M8 a failing set call (rejection or ok:false) shows one error line, change
   } finally { s.dispose() }
 })
 
+test('M8b restoring an ignored chat: db.chats.setIgnored answering ok:false (or rejecting) shows the one error line and the row stays ignored; a later success restores it and clears the line', async () => {
+  let mode = 'refuse'
+  const s = listScene(three(), {
+    prefs: PREFS({ todoOff: ['m-b'] }),
+    handlers: {
+      'db.chats.setIgnored': (chatId, ignored) => {
+        if (mode === 'throw') throw Object.assign(new Error('寫入失敗'), { code: 'internal' })
+        if (mode === 'refuse') return { ok: false, ignored: true, skippedOlder: 0 }
+        return { ok: true, ignored, skippedOlder: 0 }
+      }
+    }
+  })
+  try {
+    await until(() => s.rowNames().length === 3 && hasClassName(s.rowOf('聊天乙'), 'ignored'), { message: 'rows, the middle one ignored' })
+    s.openMenu('聊天乙'); await until(() => s.menuLabels()?.[1] === '恢復', { message: 'menu with 恢復' }); s.pick('恢復')
+    await until(() => s.alertText().length === 1, { message: 'one error line for ok:false' })
+    assert.equal(s.alertText()[0], '操作失敗，請再試一次')
+    assert.deepEqual(s.callsTo('db.chats.setIgnored').map((call) => call.args), [['m-b', false]])
+    assert.equal(hasClassName(s.rowOf('聊天乙'), 'ignored'), true, 'the row did not change to "restored"')
+    mode = 'throw'
+    s.openMenu('聊天乙'); await until(() => s.menuLabels()?.[1] === '恢復', { message: 'menu again' })
+    assert.equal(s.alertText().length, 0, 'opening a menu clears the old line')
+    s.pick('恢復')
+    await until(() => s.alertText().length === 1, { message: 'error line for a rejection' })
+    assert.equal(hasClassName(s.rowOf('聊天乙'), 'ignored'), true)
+    mode = 'ok'
+    s.openMenu('聊天乙'); await until(() => s.menuLabels()?.[1] === '恢復', { message: 'menu third time' }); s.pick('恢復')
+    await until(() => !hasClassName(s.rowOf('聊天乙'), 'ignored') && s.alertText().length === 0, { message: 'success restores the row and clears the line' })
+  } finally { s.dispose() }
+})
+
 test('M9 returning from the 議題與待辦 view re-reads the list state (the switches there can ignore a chat too)', async () => {
   let prefs = PREFS()
   const s = listScene(three(), { handlers: { 'db.chats.listPrefs': () => prefs } })
@@ -3548,18 +3579,27 @@ function lazyRows() {
     ...Array.from({ length: 100 }, (_, i) => bulkRow(`d${i}`, chat(i), 'todo', 'done'))
   ]
 }
-/** a hand-driven IntersectionObserver: `reach(section)` is "that column's sentinel scrolled into its body"; a fresh observer reports nothing until then (the sentinel starts below the fold) */
+/**
+ * a hand-driven IntersectionObserver: `reach(section)` is "that column's sentinel scrolled into its body"; a fresh observer reports nothing until then (the sentinel starts below the fold).
+ * `visibleWhile = (target) => boolean` makes it behave like a real one for a viewport taller than the drawn cards: observe() of a target for which it holds is answered (asynchronously, like the real
+ * first callback) with isIntersecting:true, so a component that does not observe again after a batch is left stranded exactly as it would be in a browser.
+ */
 function installSentinelObserver() {
   const live = new Set()
   const previous = globalThis.IntersectionObserver
+  const stand = { visibleWhile: null }
   globalThis.IntersectionObserver = class {
     constructor(callback, options) { this.callback = callback; this.options = options; this.targets = new Set(); live.add(this) }
-    observe(target) { this.targets.add(target) }
+    observe(target) {
+      this.targets.add(target)
+      if (stand.visibleWhile) queueMicrotask(() => { if (live.has(this) && this.targets.has(target) && stand.visibleWhile(target)) this.callback([{ target, isIntersecting: true, intersectionRatio: 1 }]) })
+    }
     unobserve(target) { this.targets.delete(target) }
     disconnect() { live.delete(this); this.targets.clear() }
   }
   return {
     live,
+    set visibleWhile(fn) { stand.visibleWhile = fn },
     reach(section) {
       const hits = [...live].filter((observer) => [...observer.targets].some((target) => section.contains(target)))
       for (const observer of hits) observer.callback([...observer.targets].map((target) => ({ target, isIntersecting: true, intersectionRatio: 1 })))
@@ -3568,8 +3608,9 @@ function installSentinelObserver() {
     restore() { if (previous === undefined) delete globalThis.IntersectionObserver; else globalThis.IntersectionObserver = previous }
   }
 }
-function lazyScene(rows = lazyRows()) {
+function lazyScene(rows = lazyRows(), { visibleWhile = null } = {}) {
   const observer = installSentinelObserver()
+  observer.visibleWhile = visibleWhile
   const s = bulkScene(rows)
   const section = (col) => walk(s.view.container).find((element) => hasClassName(element, 'kb-column') && hasClassName(element, `col-${col}`))
   const cards = (col) => walk(section(col)).filter((element) => hasClassName(element, 'todo-card')).length
@@ -3626,6 +3667,36 @@ test('board lazy render: reaching the bottom adds 30 at a time until everything 
   } finally { s.dispose() }
 })
 
+test('board lazy render: after each batch the sentinel is watched again, so a column taller than the drawn cards fills up without any scrolling, and it stops as soon as the sentinel is out of view', async () => {
+  // the column is "tall enough for 85 cards": a sentinel reports itself in view the moment it is observed, for as long as fewer than 85 cards are drawn (a real observer's first callback after observe())
+  let s = null
+  s = lazyScene(undefined, { visibleWhile: (target) => { const section = s?.section('done'); return !!section && section.contains(target) && s.cards('done') < 85 } })
+  try {
+    await until(() => s.head('已完成')?.textContent === '已完成100', { message: 'the board' })
+    await until(() => s.cards('done') === 90, { message: '30 -> 60 -> 90 with no reach() call at all' })
+    await sleep(60)
+    assert.equal(s.cards('done'), 90, '90 fills the column, so the sentinel is out of view and nothing more is added')
+    assert.notEqual(s.sentinel('done'), null, 'the rest (10) is still behind the sentinel')
+    assert.equal(s.cards('todo'), LAZY_PAGE, 'the todo column has no reason to grow: its sentinel never came into view')
+    await s.reach('done', 100)
+  } finally { s.dispose() }
+})
+
+test('board lazy render: every observer is rooted at its own column body and looks a little way below it (rootMargin: bottom only)', async () => {
+  const s = lazyScene()
+  try {
+    await until(() => s.head('已完成')?.textContent === '已完成100', { message: 'the board' })
+    for (const col of ['todo', 'done']) {
+      const mine = [...s.observer.live].filter((observer) => [...observer.targets].some((target) => s.section(col).contains(target)))
+      assert.equal(mine.length, 1, 'one observer for the ' + col + ' column')
+      assert.equal(mine[0].options.root, s.body(col), 'rooted at the column scroll container, not the page (root: null would look at the window)')
+      const margin = /^0px 0px (\d+)px 0px$/.exec(mine[0].options.rootMargin ?? '')
+      assert.ok(margin, 'rootMargin looks only below the column: ' + mine[0].options.rootMargin)
+      assert.ok(Number(margin[1]) >= 1 && Number(margin[1]) <= 400, 'a head start of a few cards, not zero and not the whole column: ' + margin[1] + 'px')
+    }
+  } finally { s.dispose() }
+})
+
 test('board lazy render: changing the filter or the sort or the grouping puts every column back to 30 and scrolls it to the top', async () => {
   const s = lazyScene()
   try {
@@ -3637,7 +3708,7 @@ test('board lazy render: changing the filter or the sort or the grouping puts ev
     await until(() => s.head('已完成').textContent === '已完成50', { message: 'the 1:1 filter' })
     assert.equal(s.cards('done'), LAZY_PAGE, 'filter: back to the first 30')
     assert.equal(s.cards('todo'), LAZY_PAGE)
-    assert.equal(s.body('done').scrollTop, 0, 'and scrolled to the top')
+    await until(() => s.body('done').scrollTop === 0, { message: 'and scrolled to the top (a passive effect, it lands a moment after the new cards)' })
     await s.reach('done', 50)
     s.body('done').scrollTop = 400
     s.setKind('all')
@@ -3648,7 +3719,7 @@ test('board lazy render: changing the filter or the sort or the grouping puts ev
     s.setGroup(true)
     await until(() => walk(s.section('done')).some((element) => hasClassName(element, 'todo-chat-group')), { message: 'grouping' })
     assert.equal(s.cards('done'), LAZY_PAGE, 'grouping: back to the first 30')
-    assert.equal(s.body('done').scrollTop, 0)
+    await until(() => s.body('done').scrollTop === 0, { message: 'grouping: scrolled back to the top (a passive effect, it lands a moment after the new cards)' })
     const counts = walk(s.section('done')).filter((element) => hasClassName(element, 'todo-chat-group-count')).map((element) => element.textContent)
     assert.deepEqual(counts, ['50 件', '50 件'], 'a group head shows the chat total, not just the drawn part')
     await s.reach('done', 60)

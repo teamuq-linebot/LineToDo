@@ -119,10 +119,13 @@ export function applyTodoExtractEnabled(db: Database, chatId: string, enabled: b
     return { ok: true, enabled: false, skippedOlder: 0 }
   }
   if (current) return { ok: true, enabled: true, skippedOlder: 0 }
-  // 沒有偏好列卻讀成關閉＝只剩 blocked=1 的遷移失敗狀態（fail-closed）：這裡沒有東西可以打開，如實回 ok:false，不回報「已恢復」。
-  if (db.prepare('UPDATE chat_todo_preferences SET extract_enabled=1, updated_at=? WHERE chat_id=?').run(stamp, chatId).changes === 0) {
+  // 回報的是實際生效狀態（isTodoExtractEnabled）：沒有偏好列、或 blocked=1（fail-closed，即使偏好列已是 0 或被改成 1 仍視為關閉）時，
+  // 這裡沒有東西可以打開，如實回 ok:false，不改任何資料、不補抽、不回報「已恢復」。
+  if (!db.prepare('SELECT 1 AS x FROM chat_todo_preferences WHERE chat_id=?').get(chatId) || db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=? AND blocked=1').get(chatId)) {
     return { ok: false, enabled: false, skippedOlder: 0 }
   }
+  db.prepare('UPDATE chat_todo_preferences SET extract_enabled=1, updated_at=? WHERE chat_id=?').run(stamp, chatId)
+  if (!isTodoExtractEnabled(db, chatId)) return { ok: false, enabled: false, skippedOlder: 0 }
   const cutoff = nowMs - TODO_BACKFILL_DAYS * DAY_MS
   const changes = db.prepare('UPDATE messages SET processed=1 WHERE chat_id=? AND processed=0 AND ts < ?').run(chatId, cutoff).changes
   return { ok: true, enabled: true, skippedOlder: changes }

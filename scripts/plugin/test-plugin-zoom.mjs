@@ -340,6 +340,19 @@ test('css: breakpoints are @container lt-app (effective width), nothing uses vw/
   assert.match(css, /\.overview-page > \.board-wrap\s*\{[^}]*min-height: 480px/)
 })
 
+test('css: portal content (the 來源訊息 modal and its media) uses no container units: it lives under <body>, outside #root, so cqw would fall back to the window and grow with the zoom', () => {
+  const css = readFileSync(join(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+  const offenders = []
+  for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selector = rule[1].trim()
+    if (/\.chat-message-bubble\b/.test(selector)) continue // the chat stream is inside #root, where cqw resolves against the app container
+    if (/(^|[\s,>+~])\.(sm-|source-modal|draft-modal|modal)/.test(selector) && /\d(cqw|cqh|cqi|cqb|cqmin|cqmax)\b/.test(rule[2])) offenders.push(selector.replace(/\s+/g, ' '))
+  }
+  assert.deepEqual(offenders, [], 'rules reachable only from a body portal must size with % or px, never cq units')
+  assert.match(css, /\.sm-thumb\s*\{[^}]*max-width:\s*62%/)
+  assert.match(css, /\.sm-media-missing\s*\{[^}]*max-width:\s*62%/)
+})
+
 // ───────────── 整頁 button ─────────────
 
 

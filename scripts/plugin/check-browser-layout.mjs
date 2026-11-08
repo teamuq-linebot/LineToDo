@@ -7,12 +7,15 @@
 //   - no horizontal page scrollbar, no inner horizontal scroller, no text clipped without an ellipsis
 //   - no button / input / link / summary cut off by an ancestor or the viewport
 //   - popups (modals, lightbox, menus) are inside the viewport
-//   - breakpoints follow the EFFECTIVE width (window / zoom): the board is 2 columns up to 1000, chat is single column up to 760 (and 761 is two columns)
+//   - breakpoints follow the EFFECTIVE width (window / zoom): the board is 2 columns up to 1000 and 4 from 1001, chat is single column up to 760 (and 761 is two columns)
 //   - the chat title bar (status line, 重試, 診斷 opened) does not overlap itself and stays inside the viewport
 //   - the board draws 30 cards per column first and 30 more each time the column is scrolled to its bottom (scene board-lazy: 804 finished cards, scrolled to the end batch by batch)
 // Options:  --zooms=1,1.25  --widths=640,1024  --scenes=board,settings  --shots=<dir>  --shot-zooms=2  --shot-widths=640  --list
 // Browser:  LINE_TODO_BROWSER / CHROME_PATH / CHROMIUM_PATH, else the usual Edge / Chrome / Chromium install paths.
-import { spawn } from 'node:child_process'
+// Robustness: every DevTools call has a CDP_TIMEOUT_MS deadline and a closed / crashed connection rejects at once, so no call can hang the script (it used to exit 13 on an unsettled await).
+//   A run that hits one of those restarts the browser and is retried (CDP_ATTEMPTS tries in all), then FAILS with a plain message.
+//   On every way out the whole browser process tree (not just the root process) and the temp profile are removed.
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -28,6 +31,8 @@ const WIDTHS = list(args.widths, [640, 800, 1024, 1280])
 const EFF_H = 720
 const CONTAINER_BOARD_TWO = 1000
 const CONTAINER_CHAT_ONE = 760
+const CDP_TIMEOUT_MS = 30000
+const CDP_ATTEMPTS = 3
 
 function skip(reason) { console.log(`SKIP check:browser-layout — ${reason}`); process.exit(0) }
 
@@ -68,26 +73,62 @@ async function makePage(workDir) {
 
 // ───────────── DevTools protocol ─────────────
 
+/** a DevTools-level failure (no answer in time, connection closed, browser gone): the run is retried on a fresh browser; anything else is a real finding */
+class CdpError extends Error {}
+
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+/** Kills the browser's whole process tree (proc.kill() alone leaves the renderer / GPU / crashpad children running), then anything still started with this profile, then removes the profile. Synchronous and safe to call twice. */
+function teardown(proc, workDir) {
+  const profile = join(workDir, 'profile')
+  try {
+    if (proc?.pid) {
+      if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 20000 })
+      else { try { process.kill(-proc.pid, 'SIGKILL') } catch { proc.kill('SIGKILL') } }
+    }
+  } catch { /* already gone */ }
+  try {
+    if (process.platform === 'win32') {
+      const script = 'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($env:LT_PROFILE) } | ForEach-Object { taskkill /PID $_.ProcessId /T /F | Out-Null }'
+      spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { stdio: 'ignore', windowsHide: true, timeout: 30000, env: { ...process.env, LT_PROFILE: profile } })
+    } else spawnSync('pkill', ['-9', '-f', profile], { stdio: 'ignore', timeout: 10000 })
+  } catch { /* nothing left to find */ }
+  sleepSync(300)
+  try { rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }) } catch { /* the work dir removal at the end tries again */ }
+}
+
 async function launch(workDir) {
   const port = 9300 + Math.floor(Math.random() * 600)
-  const proc = spawn(browserPath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--remote-debugging-port=${port}`, `--user-data-dir=${join(workDir, 'profile')}`, '--window-size=1400,900', '--force-device-scale-factor=1', 'about:blank'], { stdio: 'ignore' })
+  const proc = spawn(browserPath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--remote-debugging-port=${port}`, `--user-data-dir=${join(workDir, 'profile')}`, '--window-size=1400,900', '--force-device-scale-factor=1', 'about:blank'], { stdio: 'ignore', detached: process.platform !== 'win32' })
+  proc.on('error', () => { /* shows up as "did not open a debugging page" */ })
   let page
   for (let i = 0; i < 120 && !page; i += 1) {
-    try { page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page') } catch { /* not up yet */ }
+    try { page = (await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) })).json()).find((t) => t.type === 'page') } catch { /* not up yet */ }
     if (!page) await sleep(250)
   }
-  if (!page) { proc.kill(); throw new Error('the browser did not open a debugging page') }
+  if (!page) { teardown(proc, workDir); throw new CdpError('the browser did not open a debugging page') }
   const ws = new WebSocket(page.webSocketDebuggerUrl)
-  await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error('websocket failed')) })
+  try { await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error('websocket failed')); setTimeout(() => j(new Error('websocket open timed out')), 10000) }) } catch (error) { teardown(proc, workDir); throw new CdpError(String(error.message)) }
   let id = 0
   const pending = new Map()
   const errors = []
+  let dead = ''
+  const failAll = (why) => { dead ||= why; for (const [i, p] of pending) { clearTimeout(p.timer); p.reject(new CdpError(dead)); pending.delete(i) } }
+  ws.onclose = () => failAll('the DevTools connection closed')
+  ws.onerror = () => failAll('the DevTools connection failed')
   ws.onmessage = (m) => {
     const d = JSON.parse(m.data)
-    if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id) }
+    if (d.id && pending.has(d.id)) { const p = pending.get(d.id); clearTimeout(p.timer); pending.delete(d.id); p.resolve(d) }
     else if (d.method === 'Runtime.exceptionThrown') errors.push(d.params.exceptionDetails.exception?.description ?? d.params.exceptionDetails.text)
+    else if (d.method === 'Inspector.targetCrashed') failAll('the page crashed')
   }
-  const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })) })
+  const send = (method, params = {}) => new Promise((resolve, reject) => {
+    if (dead) { reject(new CdpError(dead)); return }
+    const i = ++id
+    const timer = setTimeout(() => { pending.delete(i); reject(new CdpError(`no answer to ${method} within ${CDP_TIMEOUT_MS} ms`)) }, CDP_TIMEOUT_MS)
+    pending.set(i, { resolve, reject, timer })
+    try { ws.send(JSON.stringify({ id: i, method, params })) } catch (error) { clearTimeout(timer); pending.delete(i); reject(new CdpError(`could not send ${method}: ${error.message}`)) }
+  })
   const ev = async (expression) => {
     const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
     if (r.result?.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 300))
@@ -102,7 +143,7 @@ async function launch(workDir) {
   }
   const shot = async (file) => { const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(file, Buffer.from(r.result.data, 'base64')) }
   const version = (await send('Browser.getVersion')).result?.product ?? 'unknown'
-  const close = () => { try { ws.close() } catch { /* closed */ } proc.kill() }
+  const close = () => { dead ||= 'closed'; try { ws.close() } catch { /* closed */ } teardown(proc, workDir) }
   return { send, ev, click, shot, close, errors, version }
 }
 
@@ -223,8 +264,11 @@ const SCENES = [
   { id: 'header-chat', tab: 'stream', phase: 'timeout', widths: [420, 640, 1280], cols: 'chat', expect: ['.stream-status', '.stream-retry', '.stream-diag'] },
   { id: 'header-diag', tab: 'stream', phase: 'timeout', widths: [420, 640, 1280], cols: 'chat', expect: ['.stream-diag[open]', '.stream-diag-body'], run: async (h) => { await h.clickSel('.stream-diag > summary', 0); await sleep(500) } }
 ]
-// the 760 / 761 breakpoint (inclusive 760 = single column)
-const BOUNDARY = { widths: [760, 761], scenes: ['stream-list', 'stream-chat'] }
+// the breakpoints themselves, inclusive: chat 760 = single column / 761 = two; board 1000 = two columns / 1001 = four
+const BOUNDARIES = [
+  { widths: [CONTAINER_CHAT_ONE, CONTAINER_CHAT_ONE + 1], scenes: ['stream-list', 'stream-chat'] },
+  { widths: [CONTAINER_BOARD_TWO, CONTAINER_BOARD_TWO + 1], scenes: ['board'] }
+]
 
 if (args.list) { console.log(SCENES.map((s) => s.id).join('\n')); process.exit(0) }
 
@@ -265,8 +309,29 @@ const shotZooms = list(args['shot-zooms'], [1, 2])
 const shotWidths = list(args['shot-widths'], [640, 420])
 const only = typeof args.scenes === 'string' ? args.scenes.split(',') : null
 const url = await makePage(workDir)
-const h = await launch(workDir)
-const cleanup = () => { h.close(); setTimeout(() => { try { rmSync(workDir, { recursive: true, force: true }) } catch { /* the browser may still hold the profile */ } }, 800) }
+let h = null
+let cleaned = false
+/** closes the browser (whole process tree) and deletes the temp dir; runs on every way out, including a crash of this script */
+const cleanup = () => {
+  if (cleaned) return
+  cleaned = true
+  try { h?.close() } catch { /* already closed */ }
+  let lastError = null
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    try { rmSync(workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); lastError = null; break } catch (error) { lastError = error }
+    teardown(null, workDir) // something started with this profile is still alive and holds a handle: kill it again, then retry
+    sleepSync(1000)
+  }
+  if (lastError) console.log(`warning: could not remove ${workDir}: ${lastError.message}`)
+}
+process.on('exit', cleanup)
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => process.exit(130))
+process.on('uncaughtException', (error) => { console.log(`check:browser-layout crashed: ${error?.stack ?? error}`); process.exit(2) })
+process.on('unhandledRejection', (error) => { console.log(`check:browser-layout crashed: ${error?.stack ?? error}`); process.exit(2) })
+// a script-level backstop for anything the per-call deadlines miss: nothing here may run for more than 25 minutes (a full pass takes ~3)
+setTimeout(() => { console.log('check:browser-layout FAIL — overall 25 minute limit reached'); process.exit(3) }, 25 * 60 * 1000).unref()
+
+h = await launch(workDir)
 
 const supported = await h.ev("CSS.supports('container-type', 'inline-size')")
 if (!supported) { cleanup(); skip(`${h.version} has no container queries`) }
@@ -276,8 +341,13 @@ h.clickSel = async (selector, n = 0, button = 'left') => { const c = await h.cen
 
 async function waitFor(expression, ms = 8000) {
   const t0 = Date.now()
-  while (Date.now() - t0 < ms) { try { if (await h.ev(expression)) return true } catch { /* navigating */ } await sleep(60) }
+  while (Date.now() - t0 < ms) { try { if (await h.ev(expression)) return true } catch (error) { if (error instanceof CdpError) throw error /* else: navigating */ } await sleep(60) }
   return false
+}
+
+async function restartBrowser() {
+  try { h.close() } catch { /* already closed */ }
+  Object.assign(h, await launch(workDir))
 }
 
 async function openScene(scene, z, eff) {
@@ -299,30 +369,40 @@ for (const scene of SCENES) {
   if (only && !only.includes(scene.id)) continue
   for (const z of ZOOMS) for (const eff of scene.widths ?? WIDTHS) runs.push({ scene, z, eff, boundary: false })
 }
-if (!only || BOUNDARY.scenes.some((s) => only.includes(s))) {
-  for (const id of BOUNDARY.scenes) {
+for (const group of BOUNDARIES) {
+  for (const id of group.scenes) {
     const scene = SCENES.find((s) => s.id === id)
     if (only && !only.includes(id)) continue
-    for (const z of ZOOMS) for (const eff of BOUNDARY.widths) runs.push({ scene, z, eff, boundary: true })
+    for (const z of ZOOMS) for (const eff of group.widths) runs.push({ scene, z, eff, boundary: true })
   }
 }
 
-console.log(`check:browser-layout — ${h.version}, ${runs.length} runs (zooms ${ZOOMS.join('/')}, effective widths ${WIDTHS.join('/')} + header 420 + boundary 760/761)`)
+console.log(`check:browser-layout — ${h.version}, ${runs.length} runs (zooms ${ZOOMS.join('/')}, effective widths ${WIDTHS.join('/')} + header 420 + boundary chat 760/761, board 1000/1001)`)
 for (const { scene, z, eff, boundary } of runs) {
-  h.errors.length = 0
-  h.note = ''
   let bad = []
   let m = null
-  try {
-    await openScene(scene, z, eff)
-    if (scene.run) await scene.run(h)
-    await sleep(300)
-    m = await h.ev(MEASURE)
-    m.errors = h.errors.slice(0, 2)
-    bad = await judge(h, scene, z, eff, m)
-    if (shotDir && shotZooms.includes(z) && shotWidths.includes(eff) && !boundary) await h.shot(join(shotDir, `${scene.id}__zoom${z}__eff${eff}.png`))
-  } catch (error) {
-    bad = [`run failed: ${String(error).slice(0, 200)}`]
+  const label0 = `${scene.id} zoom ${z} eff ${eff}${boundary ? ' (boundary)' : ''}`
+  for (let attempt = 1; attempt <= CDP_ATTEMPTS; attempt += 1) {
+    h.errors.length = 0
+    h.note = ''
+    bad = []
+    m = null
+    try {
+      await openScene(scene, z, eff)
+      if (scene.run) await scene.run(h)
+      await sleep(300)
+      m = await h.ev(MEASURE)
+      m.errors = h.errors.slice(0, 2)
+      bad = await judge(h, scene, z, eff, m)
+      if (shotDir && shotZooms.includes(z) && shotWidths.includes(eff) && !boundary) await h.shot(join(shotDir, `${scene.id}__zoom${z}__eff${eff}.png`))
+      break
+    } catch (error) {
+      if (!(error instanceof CdpError)) { bad = [`run failed: ${String(error).slice(0, 200)}`]; break }
+      const last = attempt === CDP_ATTEMPTS
+      console.log(`${last ? 'GIVE UP' : 'RETRY'} ${label0}: ${error.message} (attempt ${attempt} of ${CDP_ATTEMPTS})`)
+      if (last) { bad = [`the browser stopped answering ${CDP_ATTEMPTS} times in a row: ${error.message}`]; break }
+      try { await restartBrowser() } catch (restartError) { bad = [`the browser could not be restarted: ${restartError.message}`]; break }
+    }
   }
   const label = `${scene.id} zoom ${z} eff ${eff}${boundary ? ' (boundary)' : ''}`
   results.push({ label, ok: bad.length === 0, bad, boardCols: m?.boardCols ?? null, wsCols: m?.wsCols ?? null })
@@ -332,5 +412,4 @@ for (const { scene, z, eff, boundary } of runs) {
 if (shotDir) writeFileSync(join(shotDir, 'results.json'), JSON.stringify(results, null, 1))
 cleanup()
 console.log(failures === 0 ? `check:browser-layout PASS — ${runs.length}/${runs.length}` : `check:browser-layout FAIL — ${failures} of ${runs.length}`)
-await sleep(900)
 process.exit(failures === 0 ? 0 : 1)

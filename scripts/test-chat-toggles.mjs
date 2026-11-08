@@ -1129,6 +1129,30 @@ test('L9b restoring a blocked=1 chat that has no preference row reports ok:false
   } finally { close() }
 })
 
+test('L9c restoring a blocked=1 chat that already has an extract_enabled=0 row also reports ok:false (the answer is the effective state, not "a row was updated")', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'old', [['m1', NOW_MS - 1000, 'a'], ['m2', NOW_MS - 30 * DAY, 'b']])
+    assert.equal(setChatIgnored(db, 'old', true, { nowMs: NOW_MS }).ok, true)
+    assert.equal(prefRow(db, 'old').e, 0, 'a preference row with the switch off exists')
+    db.prepare("UPDATE chats SET blocked=1, block_reason='legacy' WHERE chat_id='old'").run()
+    const rowBefore = prefRow(db, 'old')
+    const topicsBefore = topicRow(db, 'old')
+    const processedBefore = [processedOf(db, stored('m1')), processedOf(db, stored('m2'))]
+    assert.deepEqual(setTodoExtractEnabled(db, 'old', true, NOW_MS + 1000), { ok: false, enabled: false, skippedOlder: 0 })
+    assert.deepEqual(setChatIgnored(db, 'old', false, { nowMs: NOW_MS + 1000 }), { ok: false, ignored: true, skippedOlder: 0 })
+    assert.equal(isTodoExtractEnabled(db, 'old'), false, 'still off, and the answer says so')
+    assert.deepEqual(prefRow(db, 'old'), rowBefore, 'the failed restore did not touch the preference row')
+    assert.deepEqual(topicRow(db, 'old'), topicsBefore, 'nor the topic switch')
+    assert.deepEqual([processedOf(db, stored('m1')), processedOf(db, stored('m2'))], processedBefore, 'no backfill happened')
+    assert.deepEqual(blockedOf(db, 'old'), { blocked: 1, block_reason: 'legacy' })
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 1 })
+    const restored = setChatIgnored(db, 'old', false, { nowMs: NOW_MS })
+    assert.equal(restored.ok, true, 'after the migration cleared blocked the restore is real')
+    assert.equal(isTodoExtractEnabled(db, 'old'), true)
+  } finally { close() }
+})
+
 test('L10 listPrefs reads every flag in one call with the same meaning as the single-chat readers', () => {
   const { db, close } = listFixture()
   try {

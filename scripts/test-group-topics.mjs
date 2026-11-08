@@ -207,18 +207,23 @@ test('the topic prompt asks for noun-phrase titles and state summaries, never ac
   assert.ok(GROUP_TOPICS_PROMPT.includes('status note on what this chat has recently been talking about'))
   assert.ok(GROUP_TOPICS_PROMPT.includes('Write each title as a noun phrase, never starting with a verb or a request'))
   assert.ok(GROUP_TOPICS_PROMPT.includes('never as an action sentence'))
+  assert.ok(GROUP_TOPICS_PROMPT.includes('do not start a title with "please", "need to", "must", "remember"'))
   assert.ok(GROUP_TOPICS_PROMPT.includes('Announcements are still topics'))
 })
 
 test('a prompt hash change does not requeue analyzed messages: decided messages are never selected again', async () => {
   const db=dbFixture(); const service=createGroupTopicsService(db); service.enable('group-a',true)
   await service.analyze('group-a',()=>fakeProvider(analysisA))
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM topic_message_decisions WHERE chat_id='group-a'").get().n,2,'the per-message decisions exist: they are what keeps the messages out of the queue')
   db.prepare("UPDATE topic_analysis_runs SET prompt_hash='hash-before-the-prompt-change' WHERE chat_id='group-a'").run()
   assert.deepEqual(loadPendingMessages(db,'group-a').map((m)=>m.msgId),[])
   assert.deepEqual(selectTopicTargets(db,'group-a',['a1','a2']),[])
   let calls=0
   assert.deepEqual(await service.analyze('group-a',()=>fakeProvider(analysisA,()=>{calls++})),{ok:true,count:2,analyzedCount:0})
   assert.equal(calls,0)
+  db.prepare("DELETE FROM topic_message_decisions WHERE chat_id='group-a'").run()
+  assert.deepEqual(loadPendingMessages(db,'group-a').map((m)=>m.msgId).sort(),['a1','a2'],'positive control: with the decisions gone the same messages are selected again, so the empty selections above prove the decisions (not the runs table) decide')
+  assert.deepEqual(selectTopicTargets(db,'group-a',['a1','a2']).sort(),['a1','a2'])
   db.close()
 })
 
@@ -692,9 +697,9 @@ test('Phase 2: the existing v4/v3 bundle exports are unchanged by the combined a
   assert.equal(GROUP_TOPICS_BUNDLE_ENABLED, true)
   assert.equal(GROUP_TOPICS_PROMPT_VERSION, 'group-topics-v4')
   assert.equal(GROUP_TOPICS_SCHEMA_VERSION, 'topic-output-v3')
-  assert.equal(GROUP_TOPICS_PROMPT_HASH, '5030fe058e8af25f3266672865f99e0ba73f39771792c72eaffdc1afb7c1c6ae')
+  assert.equal(GROUP_TOPICS_PROMPT_HASH, 'bf97033e6008aac6b93746f0a42b9b27c723dd15e5f62e27081890cf57c0c025')
   assert.equal(GROUP_TOPICS_SCHEMA_HASH, '41ad5712b34c87ddec70b084e6757872e22bc73e2039e60388c6aee3673ddf9f')
-  assert.equal(createHash('sha256').update(GROUP_TOPICS_PROMPT).digest('hex'), 'b83d0f337807d3aa57af65a7fa21d673992547e2232ca546b4fb3bfc519d8cd1')
+  assert.equal(createHash('sha256').update(GROUP_TOPICS_PROMPT).digest('hex'), 'd2912ccabd0080703ac5c861ebc7785fce5e68763fe0812756b704269404b190')
   assert.equal(createHash('sha256').update(JSON.stringify(GROUP_TOPICS_JSON_SCHEMA)).digest('hex'), 'cdb0b8188f11901d9ed80ece6580ff544c1c7aaab0bdb3d5e91b63e13ea7ed33')
 })
 
