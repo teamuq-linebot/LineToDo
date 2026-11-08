@@ -1,4 +1,5 @@
 // Test-only entry for scripts/plugin/check-browser-layout.mjs: the REAL renderer (App, MessageStream, settings…) bundled for a real browser with a fake in-memory api.
+// ?many=1 adds 800 finished todos (the board's lazy column rendering);
 // ?mode=settings renders the settings view alone; ?phase=timeout makes the chat header status bar show its longest form (retry + restarts + 診斷).
 import { createRoot } from 'react-dom/client'
 import { LineTodoApiProvider } from '../../../src/renderer/platform/LineTodoApi'
@@ -26,7 +27,8 @@ const todos = [
   ...Array.from({ length: 4 }, (_, i) => row(100 + i, 'waiting', 'waiting_reply')),
   ...Array.from({ length: 3 }, (_, i) => row(200 + i, 'schedule', 'scheduled')),
   ...Array.from({ length: 4 }, (_, i) => row(300 + i, 'todo', 'done')),
-  row(400, 'todo', 'suggested_done')
+  row(400, 'todo', 'suggested_done'),
+  ...(new URLSearchParams(location.search).get('many') === '1' ? Array.from({ length: 800 }, (_, i) => row(1000 + i, 'todo', 'done')) : [])
 ]
 const svg = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200"><rect width="1600" height="1200" fill="#9ec2f5"/><text x="800" y="600" font-size="120" text-anchor="middle">IMG</text></svg>')
 const msgs = (chatId: string) => Array.from({ length: 30 }, (_, i) => ({

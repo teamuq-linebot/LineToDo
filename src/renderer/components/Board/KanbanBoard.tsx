@@ -162,6 +162,8 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
     return g
   }, [visibleTodos])
 
+  const columnResetKey = JSON.stringify([sortBy, sortDirection, chatFilter, chatKindFilter, localViewedFilter, groupByChat])
+
   const requestBulkMove = useCallback((from: ColumnId, to: ColumnId): void => {
     const ids = grouped[from].map((todo) => todo.id)
     if (ids.length === 0) return
@@ -362,6 +364,7 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
             dnd={dnd}
             onBulkMove={requestBulkMove}
             headRefs={headRefs}
+            resetKey={columnResetKey}
           />
         ))}
       </div>

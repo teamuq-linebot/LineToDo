@@ -9,6 +9,7 @@
 //   - popups (modals, lightbox, menus) are inside the viewport
 //   - breakpoints follow the EFFECTIVE width (window / zoom): the board is 2 columns up to 1000, chat is single column up to 760 (and 761 is two columns)
 //   - the chat title bar (status line, 重試, 診斷 opened) does not overlap itself and stays inside the viewport
+//   - the board draws 30 cards per column first and 30 more each time the column is scrolled to its bottom (scene board-lazy: 804 finished cards, scrolled to the end batch by batch)
 // Options:  --zooms=1,1.25  --widths=640,1024  --scenes=board,settings  --shots=<dir>  --shot-zooms=2  --shot-widths=640  --list
 // Browser:  LINE_TODO_BROWSER / CHROME_PATH / CHROMIUM_PATH, else the usual Edge / Chrome / Chromium install paths.
 import { spawn } from 'node:child_process'
@@ -170,12 +171,40 @@ const MEASURE = `(() => {
 
 // ───────────── scenes ─────────────
 
+/** 804 finished cards (4 of the base fixture + 800 from ?many=1): 30 drawn first, then every scroll to the bottom of the column adds whole batches of 30 until all 804 are there; the title keeps saying 804 throughout */
+async function runLazyBoard(h) {
+  const cards = () => h.ev("document.querySelectorAll('.col-done .todo-card').length")
+  const count = () => h.ev("(document.querySelector('.col-done .kb-col-count') || {}).textContent")
+  const first = await cards()
+  if (first !== 30) throw new Error(`first batch is ${first} cards, wanted 30`)
+  const TOTAL = 804
+  if ((await count()) !== String(TOTAL)) throw new Error(`column count is ${await count()} before scrolling, wanted ${TOTAL}`)
+  if (!(await h.ev("(() => { const b = document.querySelector('.col-done .kb-col-body'); return b.scrollHeight > b.clientHeight })()"))) throw new Error('the 30 first cards do not overflow the column')
+  const seq = [first]
+  for (let guard = 0; guard < 60 && seq[seq.length - 1] < TOTAL; guard += 1) {
+    await h.ev("(() => { const b = document.querySelector('.col-done .kb-col-body'); b.scrollTop = b.scrollHeight })()")
+    const t0 = Date.now()
+    let n = seq[seq.length - 1]
+    while (Date.now() - t0 < 4000 && n === seq[seq.length - 1]) { await sleep(40); n = await cards() }
+    if (n === seq[seq.length - 1]) throw new Error(`stuck at ${n} cards after scrolling to the bottom (sequence ${seq.join(',')})`)
+    seq.push(n)
+  }
+  await sleep(300)
+  const last = await cards()
+  if (last !== TOTAL) throw new Error(`ended at ${last} cards, wanted ${TOTAL} (sequence ${seq.join(',')})`)
+  if ((await count()) !== String(TOTAL)) throw new Error('column count changed while loading')
+  if (await h.ev("!!document.querySelector('.col-done .kb-col-sentinel')")) throw new Error('the sentinel is still there with everything drawn')
+  if (seq.some((n, i) => i > 0 && (n - seq[i - 1]) % 30 !== 0 && n !== TOTAL)) throw new Error(`a batch was not a multiple of 30: ${seq.join(',')}`)
+  h.note = `batches ${seq.length - 1}, first ${seq[0]}, second ${seq[1]}, last ${last}`
+}
+
 const textClick = (sel, text, n = 0) => `(() => { const l = Array.from(document.querySelectorAll(${JSON.stringify(sel)})).filter((e) => (e.textContent || '').includes(${JSON.stringify(text)})); return l[${n}] ? (l[${n}].click(), true) : false })()`
 const LIGHTBOX = `(() => { const d = document.createElement('div'); d.className = 'sm-lightbox'; d.innerHTML = '<img alt="x" src="data:image/svg+xml;utf8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%272400%27 height=%271800%27%3E%3Crect width=%272400%27 height=%271800%27 fill=%27%239ec2f5%27/%3E%3C/svg%3E">'; document.querySelector('.chat-stream').appendChild(d) })()`
 
 /** run(h): drives the page; expect: selectors that must be visible afterwards (a scene that silently shows nothing must not pass); cols: which layout rule applies. */
 const SCENES = [
   { id: 'board', tab: 'board', cols: 'board', expect: ['.kb-board', '.kb-column'] },
+  { id: 'board-lazy', tab: 'board', many: true, widths: [640, 1024, 1280], cols: 'board', expect: ['.kb-board', '.col-done .todo-card'], run: runLazyBoard },
   { id: 'board-cardmenu', tab: 'board', cols: 'board', expect: ['.menu-pop'], run: async (h) => { await h.clickSel('.menu-trigger', 0) } },
   { id: 'board-cardmenu-low', tab: 'board', cols: 'board', expect: ['.menu-pop'], run: async (h) => { await h.ev('document.querySelectorAll(".kb-col-body")[0].scrollTop = 1e6'); await sleep(150); const first = '.kb-column:first-child .menu-trigger'; const n = await h.ev(`document.querySelectorAll('${first}').length`); const visible = await h.ev(`(() => { const l = Array.from(document.querySelectorAll('${first}')); let k = -1; l.forEach((e, i) => { const r = e.getBoundingClientRect(); if (r.top >= 0 && r.bottom <= innerHeight) k = i }); return k })()`); await h.clickSel(first, visible >= 0 ? visible : n - 1) } },
   { id: 'board-colmenu', tab: 'board', cols: 'board', expect: ['.kb-col-menu'], run: async (h) => { const c = await h.center('.kb-col-head', 0); if (c) await h.click(c.x - 20, c.y, 'right') } },
@@ -249,7 +278,7 @@ async function waitFor(expression, ms = 8000) {
 
 async function openScene(scene, z, eff) {
   await h.send('Emulation.setDeviceMetricsOverride', { width: Math.round(eff * z), height: Math.round(EFF_H * z), deviceScaleFactor: 1, mobile: false })
-  const query = [scene.mode ? `mode=${scene.mode}` : '', scene.phase ? `phase=${scene.phase}` : ''].filter(Boolean).join('&')
+  const query = [scene.mode ? `mode=${scene.mode}` : '', scene.many ? 'many=1' : '', scene.phase ? `phase=${scene.phase}` : ''].filter(Boolean).join('&')
   await h.send('Page.navigate', { url: 'about:blank' })
   await h.send('Page.navigate', { url: url + (query ? `?${query}` : '') })
   await waitFor("document.readyState === 'complete' && location.protocol === 'file:'")
@@ -277,6 +306,7 @@ if (!only || BOUNDARY.scenes.some((s) => only.includes(s))) {
 console.log(`check:browser-layout — ${h.version}, ${runs.length} runs (zooms ${ZOOMS.join('/')}, effective widths ${WIDTHS.join('/')} + header 420 + boundary 760/761)`)
 for (const { scene, z, eff, boundary } of runs) {
   h.errors.length = 0
+  h.note = ''
   let bad = []
   let m = null
   try {
@@ -292,7 +322,7 @@ for (const { scene, z, eff, boundary } of runs) {
   }
   const label = `${scene.id} zoom ${z} eff ${eff}${boundary ? ' (boundary)' : ''}`
   results.push({ label, ok: bad.length === 0, bad, boardCols: m?.boardCols ?? null, wsCols: m?.wsCols ?? null })
-  if (bad.length) { failures += 1; console.log(`FAIL ${label}\n     ${bad.join('\n     ')}`) } else console.log(`PASS ${label}${m?.boardCols ? ` board=${m.boardCols}col` : ''}${m?.wsCols ? ` chat=${m.wsCols}col` : ''}`)
+  if (bad.length) { failures += 1; console.log(`FAIL ${label}\n     ${bad.join('\n     ')}`) } else console.log(`PASS ${label}${m?.boardCols ? ` board=${m.boardCols}col` : ''}${m?.wsCols ? ` chat=${m.wsCols}col` : ''}${h.note ? ` ${h.note}` : ''}`)
 }
 
 if (shotDir) writeFileSync(join(shotDir, 'results.json'), JSON.stringify(results, null, 1))

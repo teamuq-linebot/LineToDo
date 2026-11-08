@@ -3527,3 +3527,177 @@ test('H7 the stylesheet puts the slot and the bar into the header without boxes,
   assert.equal(css.includes('.stream-count'), false)
   assert.match(css, /\.chat-list-row\.ignored/)
 })
+
+// ── board lazy render: each column draws 30 cards first and 30 more whenever its bottom sentinel scrolls into view ──
+const LAZY_PAGE = 30
+/** rows: 70 pending (todo), 5 waiting, 100 done; chats alternate g1 / d1 so the 只看 1:1 filter keeps half of every column */
+function lazyRows() {
+  const chat = (i) => (i % 2 === 0 ? 'g1' : 'd1')
+  return [
+    ...Array.from({ length: 70 }, (_, i) => bulkRow(`t${i}`, chat(i), 'todo', 'pending')),
+    ...Array.from({ length: 5 }, (_, i) => bulkRow(`w${i}`, chat(i), 'waiting', 'waiting_reply')),
+    ...Array.from({ length: 100 }, (_, i) => bulkRow(`d${i}`, chat(i), 'todo', 'done'))
+  ]
+}
+/** a hand-driven IntersectionObserver: `reach(section)` is "that column's sentinel scrolled into its body"; a fresh observer reports nothing until then (the sentinel starts below the fold) */
+function installSentinelObserver() {
+  const live = new Set()
+  const previous = globalThis.IntersectionObserver
+  globalThis.IntersectionObserver = class {
+    constructor(callback, options) { this.callback = callback; this.options = options; this.targets = new Set(); live.add(this) }
+    observe(target) { this.targets.add(target) }
+    unobserve(target) { this.targets.delete(target) }
+    disconnect() { live.delete(this); this.targets.clear() }
+  }
+  return {
+    live,
+    reach(section) {
+      const hits = [...live].filter((observer) => [...observer.targets].some((target) => section.contains(target)))
+      for (const observer of hits) observer.callback([...observer.targets].map((target) => ({ target, isIntersecting: true, intersectionRatio: 1 })))
+      return hits.length
+    },
+    restore() { if (previous === undefined) delete globalThis.IntersectionObserver; else globalThis.IntersectionObserver = previous }
+  }
+}
+function lazyScene(rows = lazyRows()) {
+  const observer = installSentinelObserver()
+  const s = bulkScene(rows)
+  const section = (col) => walk(s.view.container).find((element) => hasClassName(element, 'kb-column') && hasClassName(element, `col-${col}`))
+  const cards = (col) => walk(section(col)).filter((element) => hasClassName(element, 'todo-card')).length
+  const sentinel = (col) => walk(section(col)).find((element) => element.getAttribute('data-testid') === 'kb-col-sentinel') ?? null
+  const body = (col) => walk(section(col)).find((element) => hasClassName(element, 'kb-col-body'))
+  const reach = async (col, expected) => {
+    await until(() => [...observer.live].filter((o) => [...o.targets].some((target) => section(col).contains(target))).length === 1, { message: `one live observer watches the ${col} sentinel` })
+    assert.equal(observer.reach(section(col)), 1, `exactly one live observer watches the ${col} sentinel`)
+    await until(() => cards(col) === expected, { message: `${col} grows to ${expected} cards` })
+  }
+  const setGroup = (checked) => reactProps(walk(s.view.container).find((element) => element.localName === 'input' && element.getAttribute('type') === 'checkbox')).onChange({ target: { checked } })
+  const setSort = (value) => reactProps(walk(s.view.container).find((element) => element.localName === 'select' && element.textContent.includes('建立時間'))).onChange({ target: { value } })
+  return { ...s, observer, section, cards, sentinel, body, reach, setGroup, setSort, dispose() { s.dispose(); observer.restore() } }
+}
+
+test('board lazy render: every column starts with at most 30 cards, the title counts stay the full totals, only a column with more has a sentinel', async () => {
+  const s = lazyScene()
+  try {
+    await until(() => s.head('已完成')?.textContent === '已完成100', { message: 'the board' })
+    assert.equal(s.head('待辦').textContent, '待辦70')
+    assert.equal(s.head('等回覆').textContent, '等回覆5')
+    assert.equal(s.cards('todo'), LAZY_PAGE)
+    assert.equal(s.cards('waiting'), 5)
+    assert.equal(s.cards('schedule'), 0)
+    assert.equal(s.cards('done'), LAZY_PAGE)
+    assert.ok(s.sentinel('todo') && s.sentinel('done'))
+    assert.equal(s.sentinel('waiting'), null, 'a column that fits has no sentinel')
+    assert.equal(s.sentinel('done').getAttribute('aria-hidden'), 'true')
+    assert.equal(s.sentinel('done').textContent, '', 'no text in the sentinel')
+    for (const observer of s.observer.live) assert.equal(hasClassName(observer.options.root, 'kb-col-body'), true, 'the observer root is the column scroll container')
+    const drawn = walk(s.section('done')).filter((element) => hasClassName(element, 'todo-card')).map((element) => element.textContent)
+    assert.equal(drawn.some((text) => text.includes('標題d0')), true, 'the first cards in order are the ones drawn')
+    assert.equal(drawn.some((text) => text.includes('標題d29')), true)
+    assert.equal(drawn.some((text) => text.includes('標題d30')), false, 'card 31 is not drawn yet')
+  } finally { s.dispose() }
+})
+
+test('board lazy render: reaching the bottom adds 30 at a time until everything is drawn, then nothing more is watched or added', async () => {
+  const s = lazyScene()
+  try {
+    await until(() => s.head('已完成')?.textContent === '已完成100', { message: 'the board' })
+    await s.reach('done', 60)
+    assert.equal(s.cards('todo'), LAZY_PAGE, 'another column is not touched')
+    await s.reach('done', 90)
+    await s.reach('done', 100)
+    assert.equal(s.sentinel('done'), null, 'everything drawn: the sentinel is gone')
+    assert.equal(s.observer.reach(s.section('done')), 0, 'and nothing watches the column any more')
+    await sleep(30)
+    assert.equal(s.cards('done'), 100)
+    assert.equal(s.head('已完成').textContent, '已完成100')
+    await s.reach('todo', 60)
+    await s.reach('todo', 70)
+    assert.equal(s.sentinel('todo'), null)
+  } finally { s.dispose() }
+})
+
+test('board lazy render: changing the filter or the sort or the grouping puts every column back to 30 and scrolls it to the top', async () => {
+  const s = lazyScene()
+  try {
+    await until(() => s.head('已完成')?.textContent === '已完成100', { message: 'the board' })
+    await s.reach('done', 60)
+    await s.reach('todo', 60)
+    s.body('done').scrollTop = 900
+    s.setKind('direct')
+    await until(() => s.head('已完成').textContent === '已完成50', { message: 'the 1:1 filter' })
+    assert.equal(s.cards('done'), LAZY_PAGE, 'filter: back to the first 30')
+    assert.equal(s.cards('todo'), LAZY_PAGE)
+    assert.equal(s.body('done').scrollTop, 0, 'and scrolled to the top')
+    await s.reach('done', 50)
+    s.body('done').scrollTop = 400
+    s.setKind('all')
+    await until(() => s.head('已完成').textContent === '已完成100', { message: 'all again' })
+    assert.equal(s.cards('done'), LAZY_PAGE)
+    await s.reach('done', 60)
+    s.body('done').scrollTop = 400
+    s.setGroup(true)
+    await until(() => walk(s.section('done')).some((element) => hasClassName(element, 'todo-chat-group')), { message: 'grouping' })
+    assert.equal(s.cards('done'), LAZY_PAGE, 'grouping: back to the first 30')
+    assert.equal(s.body('done').scrollTop, 0)
+    const counts = walk(s.section('done')).filter((element) => hasClassName(element, 'todo-chat-group-count')).map((element) => element.textContent)
+    assert.deepEqual(counts, ['50 件', '50 件'], 'a group head shows the chat total, not just the drawn part')
+    await s.reach('done', 60)
+    s.body('done').scrollTop = 400
+    s.setGroup(false)
+    await until(() => !walk(s.section('done')).some((element) => hasClassName(element, 'todo-chat-group')), { message: 'grouping off' })
+    assert.equal(s.cards('done'), LAZY_PAGE)
+    await s.reach('done', 60)
+    s.body('done').scrollTop = 400
+    s.setSort('createdAt')
+    await until(() => s.cards('done') === LAZY_PAGE && s.body('done').scrollTop === 0, { message: 'sort resets' })
+    assert.equal(s.head('已完成').textContent, '已完成100')
+  } finally { s.dispose() }
+})
+
+test('board lazy render: dragging cards in or out leaves the drawn count alone, and the totals follow the data', async () => {
+  const s = lazyScene()
+  try {
+    await until(() => s.head('已完成')?.textContent === '已完成100', { message: 'the board' })
+    await s.reach('done', 60)
+    const listsBefore = s.lists()
+    s.drop('done', 't0')
+    await until(() => s.head('已完成').textContent === '已完成101' && s.lists() > listsBefore, { message: 'a card dragged in' })
+    assert.equal(s.cards('done'), 60, 'dragged in: the expansion stays')
+    assert.equal(s.head('待辦').textContent, '待辦69')
+    const listsMid = s.lists()
+    s.drop('waiting', 'd5')
+    await until(() => s.head('已完成').textContent === '已完成100' && s.lists() > listsMid, { message: 'a card dragged out' })
+    assert.equal(s.cards('done'), 60, 'dragged out: the expansion stays')
+    assert.equal(s.head('等回覆').textContent, '等回覆6')
+    await s.reach('done', 90)
+  } finally { s.dispose() }
+})
+
+test('board lazy render: 全部移到 counts and moves every card of the column, drawn or not', async () => {
+  const s = lazyScene()
+  try {
+    await until(() => s.head('已完成')?.textContent === '已完成100', { message: 'the board' })
+    assert.equal(s.cards('done'), LAZY_PAGE)
+    await s.confirmOpen('已完成', '全部移到待辦')
+    assert.match(s.dialog().textContent, /^要把 100 張移到待辦嗎？/, 'the count is the whole column (only 30 are drawn)')
+    const listsBefore = s.lists()
+    s.click(s.okBtn())
+    await until(() => !s.dialog() && s.lists() > listsBefore, { message: 'moved and re-read' })
+    assert.equal(s.moves().length, 100)
+    assert.deepEqual(new Set(s.moves().map(([, column]) => column)), new Set(['todo']))
+    assert.equal(new Set(s.moves().map(([id]) => id)).size, 100, 'each of the 100 once')
+    assert.ok(s.moves().some(([id]) => id === 'd99'), 'including a card that was never drawn')
+    await until(() => s.head('待辦').textContent === '待辦170' && s.head('已完成').textContent === '已完成0', { message: 'the board after the move' })
+  } finally { s.dispose() }
+})
+
+test('board lazy render: without an IntersectionObserver the column draws everything (nothing is stranded behind a sentinel nobody watches)', async () => {
+  const previous = globalThis.IntersectionObserver
+  delete globalThis.IntersectionObserver
+  const s = bulkScene(lazyRows())
+  try {
+    const cards = (col) => walk(s.view.container).filter((element) => hasClassName(element, 'todo-card') && ancestors(element).some((node) => node.nodeType === 1 && hasClassName(node, `col-${col}`))).length
+    await until(() => cards('done') === 100 && cards('todo') === 70, { message: 'all cards drawn' })
+  } finally { s.dispose(); if (previous !== undefined) globalThis.IntersectionObserver = previous }
+})

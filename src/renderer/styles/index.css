@@ -1331,6 +1331,11 @@ button:disabled {
   flex: 1;
   transition: background 0.12s ease;
 }
+.kb-col-sentinel {
+  flex: none;
+  height: 1px;
+  margin-top: -10px;
+}
 .kb-col-empty {
   text-align: center;
   padding: 20px 8px;
