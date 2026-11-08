@@ -806,13 +806,10 @@ test('N2 (effects): a long-task status query that fails once does not leave the 
   })
   const delays = []
   const pollDelayMs = (failures) => { delays.push(failures); return 15 * 2 ** failures }
-  let refreshed = 0
-  const onRefresh = async () => { refreshed += 1; return true }
   const unhandled = await collectingUnhandled(async () => {
-    const view = ui.mount(ui.reviewControlsScene(api, { onRefresh, pollDelayMs }))
-    const buttons = () => walk(view.container).filter((el) => el.localName === 'button')
-    const reviewButton = () => buttons()[1]
-    const backfillButton = () => buttons()[2]
+    const view = ui.mount(ui.opsScene(api, { pollDelayMs }))
+    const reviewButton = () => byAttr(view.container, 'data-testid', 'ops-review')
+    const backfillButton = () => byAttr(view.container, 'data-testid', 'ops-backfill')
     try {
       await until(() => reviewButton() && reactProps(reviewButton()).disabled === true, { message: 'the review button disabled while the backend runs it' })
       assert.equal(reviewButton().textContent, 'R:running')
@@ -820,12 +817,11 @@ test('N2 (effects): a long-task status query that fails once does not leave the 
       // the next status query fails: the buttons are released, the user is told the state is unknown
       await until(() => statusCalls >= 3 && reactProps(reviewButton()).disabled === false, { message: 'the buttons released after a failed query' })
       assert.equal(reactProps(backfillButton()).disabled, false)
-      assert.ok(byAttr(view.container, 'data-testid', 'long-task-status-unknown'), 'the "status unknown" note')
+      assert.equal(byAttr(view.container, 'data-testid', 'long-task-status-unknown')?.textContent, '暫時查不到進度', 'the short "status unknown" note')
       // polling did not stop: it backs off (failures 1, 2) and reads the real state again
       await until(() => statusCalls >= 5, { message: 'polling to continue after failures' })
       assert.ok(delays.includes(1) && delays.includes(2), `backoff by consecutive failures: ${delays.join(',')}`)
       await until(() => view.container.textContent.includes('R:done'), { message: 'the finished review picked up' })
-      assert.equal(refreshed, 1, 'the board is reloaded once the review is seen finished')
       assert.equal(byAttr(view.container, 'data-testid', 'long-task-status-unknown'), null)
       assert.equal(reactProps(reviewButton()).disabled, false)
     } finally { view.unmount(); api.dispose() }
@@ -854,10 +850,9 @@ test('N2 (effects): after a failed query, a poll that succeeds and still says ru
   const delays = []
   const pollDelayMs = (failures) => { delays.push(failures); return 60 * 2 ** failures }
   const unhandled = await collectingUnhandled(async () => {
-    const view = ui.mount(ui.reviewControlsScene(api, { onRefresh: async () => true, pollDelayMs }))
-    const buttons = () => walk(view.container).filter((el) => el.localName === 'button')
-    const reviewButton = () => buttons()[1]
-    const backfillButton = () => buttons()[2]
+    const view = ui.mount(ui.opsScene(api, { pollDelayMs }))
+    const reviewButton = () => byAttr(view.container, 'data-testid', 'ops-review')
+    const backfillButton = () => byAttr(view.container, 'data-testid', 'ops-backfill')
     try {
       await until(() => reviewButton() && reactProps(reviewButton()).disabled === true, { message: 'disabled while running' })
       await until(() => statusCalls >= 2 && reactProps(reviewButton()).disabled === false && byAttr(view.container, 'data-testid', 'long-task-status-unknown'), { message: 'released + note after the failed query' })
@@ -2082,7 +2077,9 @@ test('overview tab: the todo board loads and does not mount the group-topics ove
     await until(() => log.some((entry) => entry.path === 'db.todos.list') && walk(view.container).some((element) => hasClassName(element, 'board-wrap')), { message: 'the overview board loads' })
     await sleep(60)
     const paths = log.map((entry) => entry.path)
-    assert.ok(walk(view.container).some((element) => hasClassName(element, 'summary')), 'the overview still includes the board summary')
+    for (const gone of ['summary', 'summary-stats', 'board-toolbar']) assert.equal(walk(view.container).some((element) => hasClassName(element, gone)), false, `the overview has no ${gone}`)
+    for (const gone of ['不是我的回查', '回顧最近', '補媒體金鑰', '立即抓取', '立即整理', 'LINE 橋接', '抽取引擎', '上次抓取', '待確認完成']) assert.equal(view.container.textContent.includes(gone), false, `the overview no longer shows ${gone}`)
+    assert.ok(walk(view.container).some((element) => hasClassName(element, 'board-filters')), 'the filter row stays')
     for (const column of ['待辦', '等回覆', '行程', '已完成']) assert.ok(view.container.textContent.includes(column), `the ${column} board column remains`)
     assert.equal(walk(view.container).some((element) => hasClassName(element, 'overview-topics-toggle')), false, 'the group topics section toggle is absent')
     assert.equal(paths.some((path) => path.startsWith('groupTopics.')), false, 'the overview does not load group topics')
@@ -2303,9 +2300,9 @@ const buttonTexts = (view) => walk(view.container).filter((element) => element.l
 test('Phase 4 wording: 立即整理 when the combined switch is on (plugin host); 立即抓取 when it is off or absent', async () => {
   for (const [flag, expected, unexpected] of [[true, '立即整理', '立即抓取'], [false, '立即抓取', '立即整理'], [undefined, '立即抓取', '立即整理']]) {
     const { api } = plugin(settingsHandlers({ 'settings.get': () => ({ ...VIEW, ...(flag === undefined ? {} : { pluginCombinedExtract: flag }) }) }))
-    const view = ui.mount(ui.todaySummaryScene(api))
+    const view = ui.mount(ui.opsScene(api))
     try {
-      await until(() => buttonTexts(view).includes(expected), { message: `the ${expected} button (flag ${flag})` })
+      await until(() => byAttr(view.container, 'data-testid', 'ops-run')?.textContent.trim() === expected, { message: `the ${expected} button (flag ${flag})` })
       assert.ok(!buttonTexts(view).includes(unexpected))
     } finally { view.unmount(); api.dispose() }
   }
@@ -2314,9 +2311,9 @@ test('Phase 4 wording: 立即整理 when the combined switch is on (plugin host)
 test('Phase 4 wording: the review button says it only produces todos when the combined switch is on', async () => {
   for (const flag of [true, false]) {
     const { api } = plugin(settingsHandlers({ 'settings.get': () => ({ ...VIEW, pluginCombinedExtract: flag }), 'pipeline.status': () => ({ hasApiKey: true }) }))
-    const view = ui.mount(ui.reviewControlsScene(api, { onRefresh: async () => true, pollDelayMs: () => 60_000 }))
+    const view = ui.mount(ui.opsScene(api, { pollDelayMs: () => 60_000 }))
     try {
-      const review = () => walk(view.container).find((element) => element.localName === 'button' && element.textContent.includes('回顧最近'))
+      const review = () => byAttr(view.container, 'data-testid', 'ops-review')
       await until(() => review() && (flag ? String(reactProps(review()).title).includes('只產出待辦') : !String(reactProps(review()).title).includes('只產出待辦') && String(reactProps(review()).title).includes('補建代辦')), { message: `review tooltip (flag ${flag})` })
     } finally { view.unmount(); api.dispose() }
   }
@@ -2667,4 +2664,130 @@ test('I4 both switches stay usable for a chat a legacy backend still marks block
     await until(() => s.callsTo('groupTopics.setEnabled').length === 1, { message: 'topics switched' })
     assert.equal(s.callsTo('db.chats.setTodoExtractEnabled').length, 1)
   } finally { s.dispose() }
+})
+
+// ───────────── overview cleanup: 整理 block in the settings tab ─────────────
+
+const opsButtons = (view) => ['ops-notmine', 'ops-review', 'ops-backfill', 'ops-run'].map((id) => byAttr(view.container, 'data-testid', id))
+const memoryStorage = (saved) => ({ getItem: (key) => saved[key] ?? null, setItem: (key, value) => { saved[key] = value }, removeItem: (key) => { delete saved[key] } })
+const notMineHandlers = { 'db.todos.listNotMine': () => [], 'db.todos.listNotMineCorrections': () => [], 'tasks.status': () => ({ review: null, mediaBackfill: null }) }
+
+test('overview cleanup: the board settings tab has a 整理 block with the four buttons and no explanatory paragraph; 不是我的回查 opens the panel only when pressed', async () => {
+  const saved = { 'lt-ui:app.tab': JSON.stringify({ v: 'settings', at: Date.now() }) }
+  const { api } = plugin(settingsHandlers({ ...notMineHandlers, 'db.todos.list': () => [] }))
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.appSceneWithState(api, memoryStorage(saved)))
+  try {
+    await until(() => byAttr(view.container, 'data-testid', 'overview-ops') && view.container.textContent.includes('輪詢頻率'), { message: 'the settings tab with the 整理 block' })
+    const ops = byAttr(view.container, 'data-testid', 'overview-ops')
+    const buttons = opsButtons(view)
+    assert.deepEqual(buttons.map((button) => button.textContent.trim()), ['不是我的回查', '🔄 回顧最近 2 天', '🖼️ 補媒體金鑰(近7天)', '立即抓取'])
+    assert.equal(ops.textContent, `整理${buttons.map((button) => button.textContent).join('')}`, 'only the title and the buttons: no explanation text, no status line while nothing is wrong')
+    assert.equal(walk(ops).filter((element) => element.localName === 'p').length, 0)
+    assert.equal(walk(ops).some((element) => hasClassName(element, 'set-msg') || hasClassName(element, 'set-hint')), false)
+    assert.equal(byAttr(view.container, 'aria-label', '不是我的待辦回查'), null, 'the recheck panel is closed until the button is pressed')
+    reactProps(buttons[0]).onClick()
+    await until(() => byAttr(view.container, 'aria-label', '不是我的待辦回查'), { message: 'the 不是我的回查 panel opens inside the block' })
+    assert.ok(view.container.textContent.includes('不是我的（0）'), 'the panel lists its (empty) recheck list')
+  } finally { view.unmount(); api.dispose() }
+})
+
+test('overview cleanup: the overview tab has no toolbar / summary / engine status; the filter row (6 controls) and the four columns stay', async () => {
+  const { api } = plugin(settingsHandlers({ 'db.todos.list': () => [] }))
+  const view = ui.mount(ui.boardScene(api))
+  try {
+    await until(() => walk(view.container).some((element) => hasClassName(element, 'kb-board')), { message: 'the board' })
+    const filters = walk(view.container).find((element) => hasClassName(element, 'board-filters'))
+    assert.ok(filters)
+    assert.equal(walk(filters).filter((element) => element.localName === 'select' || element.localName === 'input').length, 6, 'five selects and the grouping checkbox')
+    for (const column of ['待辦', '等回覆', '行程', '已完成']) assert.ok(view.container.textContent.includes(column), column)
+    assert.equal(walk(view.container).filter((element) => element.localName === 'button').length, 0, 'no button above the columns')
+    for (const gone of ['LINE 橋接', '抽取引擎', '上次抓取', '待處理', '今日到期', '已逾期']) assert.equal(view.container.textContent.includes(gone), false, gone)
+  } finally { view.unmount(); api.dispose() }
+})
+
+test('overview cleanup: the plugin standalone settings view does not mount the 整理 block', async () => {
+  const { api } = plugin(settingsHandlers())
+  const view = ui.mount(ui.settingsScene(api))
+  try {
+    await until(() => view.container.textContent.includes('輪詢頻率'), { message: 'settings' })
+    assert.equal(byAttr(view.container, 'data-testid', 'overview-ops'), null)
+    for (const gone of ['不是我的回查', '回顧最近', '補媒體金鑰', '立即抓取']) assert.equal(view.container.textContent.includes(gone), false, gone)
+  } finally { view.unmount(); api.dispose() }
+  const source = readFileSync(resolve(ROOT, 'src', 'plugin', 'ui', 'settings.tsx'), 'utf8')
+  assert.equal(/operations/.test(source), false, 'src/plugin/ui/settings.tsx does not pass `operations`')
+})
+
+test('overview cleanup: a failing 立即抓取 shows one short failure line, re-enables the button and leaves no unhandled rejection', async () => {
+  let calls = 0
+  const { api } = plugin(settingsHandlers({ ...notMineHandlers, 'pipeline.runOnce': () => { calls += 1; throw Object.assign(new Error('boom'), { code: 'internal' }) } }))
+  const unhandled = await collectingUnhandled(async () => {
+    const view = ui.mount(ui.opsScene(api))
+    try {
+      await until(() => byAttr(view.container, 'data-testid', 'ops-run'), { message: 'the run button' })
+      reactProps(byAttr(view.container, 'data-testid', 'ops-run')).onClick()
+      await until(() => byAttr(view.container, 'data-testid', 'ops-failure'), { message: 'the failure line' })
+      assert.match(byAttr(view.container, 'data-testid', 'ops-failure').textContent, /^整理失敗/)
+      assert.equal(calls, 1)
+      await until(() => reactProps(byAttr(view.container, 'data-testid', 'ops-run')).disabled === false, { message: 'the button usable again' })
+    } finally { view.unmount(); api.dispose() }
+  })
+  assert.deepEqual(unhandled, [])
+})
+
+test('overview cleanup: a run that comes back failed or busy shows its note; a clean run shows nothing', async () => {
+  for (const [result, expected] of [
+    [{ llmStatus: 'error', chatsFailed: 0, note: 'AI 逾時' }, 'AI 逾時'],
+    [{ llmStatus: 'partial', chatsFailed: 2, note: null }, '部分聊天整理失敗'],
+    [{ llmStatus: 'ok', chatsFailed: 0, note: 'busy: previous run still going' }, '上一輪還沒結束'],
+    [{ llmStatus: 'ok', chatsFailed: 0, note: null }, null]
+  ]) {
+    const { api } = plugin(settingsHandlers({ ...notMineHandlers, 'pipeline.runOnce': () => result }))
+    const view = ui.mount(ui.opsScene(api))
+    try {
+      await until(() => byAttr(view.container, 'data-testid', 'ops-run'), { message: 'the run button' })
+      reactProps(byAttr(view.container, 'data-testid', 'ops-run')).onClick()
+      if (expected) await until(() => byAttr(view.container, 'data-testid', 'ops-failure')?.textContent === expected, { message: `the line ${expected}` })
+      else {
+        await until(() => reactProps(byAttr(view.container, 'data-testid', 'ops-run')).disabled === false && !view.container.textContent.includes('抓取中'), { message: 'the run done' })
+        await sleep(30)
+        assert.equal(byAttr(view.container, 'data-testid', 'ops-failure'), null)
+      }
+    } finally { view.unmount(); api.dispose() }
+  }
+})
+
+test('overview cleanup: the engine failure line shows only for llmStatus error / partial (lastError when there is one, a fixed short sentence otherwise)', async () => {
+  for (const [llmStatus, lastError, expected] of [
+    ['error', 'AI 掛了', 'AI 掛了'], ['error', null, '整理失敗'], ['partial', null, '部分聊天整理失敗'], ['partial', '有一個聊天室逾時', '有一個聊天室逾時'],
+    ['ok', 'old', null], ['unknown', null, null], ['disabled', null, null]
+  ]) {
+    const { api } = plugin(settingsHandlers({ ...notMineHandlers, 'pipeline.status': () => ({ hasApiKey: true, busy: false, running: true, llmStatus, lastError, lineBridge: 'ok' }) }))
+    const view = ui.mount(ui.opsScene(api))
+    try {
+      if (expected) await until(() => byAttr(view.container, 'data-testid', 'ops-failure')?.textContent === expected, { message: `${llmStatus}/${lastError}` })
+      else {
+        await until(() => byAttr(view.container, 'data-testid', 'ops-run'), { message: 'rendered' })
+        await sleep(40)
+        assert.equal(byAttr(view.container, 'data-testid', 'ops-failure'), null, `${llmStatus} shows no failure line`)
+      }
+    } finally { view.unmount(); api.dispose() }
+  }
+})
+
+test('overview cleanup: reopening the settings tab while a review runs shows it in progress and keeps polling; a stopped review leaves its reason after reopening', async () => {
+  let state = { review: { running: true, state: 'running', summary: 'R:running', chatsDone: 1, chatsTotal: 4, resumableMessages: 0 }, mediaBackfill: null }
+  const { api } = plugin(settingsHandlers({ 'tasks.status': () => state }))
+  const first = ui.mount(ui.opsScene(api, { pollDelayMs: () => 15 }))
+  try {
+    const review = () => byAttr(first.container, 'data-testid', 'ops-review')
+    await until(() => review() && reactProps(review()).disabled === true && review().textContent === 'R:running', { message: 'in progress after (re)opening' })
+    state = { review: { running: false, state: 'paused', summary: 'R:paused', chatsDone: 2, chatsTotal: 4, resumableMessages: 3 }, mediaBackfill: null }
+    await until(() => reactProps(review()).disabled === false && byAttr(first.container, 'data-testid', 'ops-review-note')?.textContent === 'R:paused', { message: 'polling saw the stop' })
+  } finally { first.unmount() }
+  const second = ui.mount(ui.opsScene(api, { pollDelayMs: () => 15 }))
+  try {
+    await until(() => byAttr(second.container, 'data-testid', 'ops-review-note')?.textContent === 'R:paused', { message: 'the reason is shown again after reopening' })
+    assert.equal(reactProps(byAttr(second.container, 'data-testid', 'ops-review')).disabled, false)
+  } finally { second.unmount(); api.dispose() }
 })

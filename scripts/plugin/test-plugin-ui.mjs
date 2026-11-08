@@ -78,6 +78,19 @@ test('settings: the plugin host hides provider choice / CLI / custom endpoint / 
   assert.ok(!renderSettings(PLUGIN, cli).includes('CLI 執行檔路徑'), 'even if the stored provider is a CLI, the plugin UI shows no CLI controls')
 })
 
+test('settings: the in-app settings tab (operations) adds only the 整理 block; the plain settings view (plugin standalone view) does not have it', async () => {
+  const { renderSettings, renderSettingsOps, PLUGIN, STANDALONE } = await renderer()
+  for (const caps of [PLUGIN, STANDALONE]) {
+    const plain = renderSettings(caps, VIEW)
+    const ops = renderSettingsOps(caps, VIEW)
+    assert.equal(plain.includes('data-testid="overview-ops"'), false)
+    assert.ok(ops.includes('data-testid="overview-ops"') && ops.includes('整理'))
+    for (const label of ['不是我的回查', '回顧最近 2 天', '補媒體金鑰(近7天)']) assert.ok(ops.includes(label), label)
+    assert.ok(ops.includes('立即抓取'), 'the run button')
+  }
+  for (const gone of ['降噪', '黑名單', '已忽略', '忽略對話', '恢復對話']) assert.equal(renderSettingsOps(PLUGIN, VIEW).includes(gone), false, gone)
+})
+
 test('board: plugin and standalone both expose the five main tabs including group topics', async () => {
   const { renderApp, PLUGIN, STANDALONE } = await renderer()
   const tabs = (html) => [...html.matchAll(/<button class="tab[^"]*">([^<]+)<\/button>/g)].map((m) => m[1])

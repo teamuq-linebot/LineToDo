@@ -1,5 +1,5 @@
 /**
- * longTasks.ts — 看板上「回顧最近 N 天」「補媒體金鑰」兩個長任務的狀態判讀（G-05；外掛開發者指南 §4：
+ * longTasks.ts — 設定分頁「整理」區塊的「回顧最近 N 天」「補媒體金鑰」兩個長任務的狀態判讀（G-05；外掛開發者指南 §4：
  * 「呼叫 UI bridge 的等待結束不代表任務取消或完成…不要只用 UI 是否收到 Promise 結果判斷工作狀態」）。
  *
  * 長任務由外掛 backend 管理並寫進 dataDir（`src/plugin/backend/taskStatus.ts`、`reviewRun.ts`）；畫面用 `pipeline.longTaskStatus()` 查：
@@ -49,7 +49,7 @@ export function longTaskPollDelayMs(failures: number): number {
 }
 
 /** 查不到狀態時（`pollFailures > 0`）按鈕不再因為「上次看到的還在跑」而停用；看板上顯示的說明。 */
-export const LONG_TASK_STATUS_UNKNOWN_TEXT = '暫時查不到長任務的進度（稍後會再查）；按鈕已先開放，需要時可以直接再按一次。'
+export const LONG_TASK_STATUS_UNKNOWN_TEXT = '暫時查不到進度'
 
 type StatusSource = { pipeline: { longTaskStatus?: () => Promise<LongTaskStatusView> } }
 

@@ -14,8 +14,8 @@ import { MediaImage, mediaIndexingRetry } from '../../../src/renderer/components
 import App from '../../../src/renderer/App'
 import { useTodos } from '../../../src/renderer/store/useTodos'
 import { NotMineReviewPanel } from '../../../src/renderer/components/Board/NotMineReviewPanel'
-import { ReviewControls } from '../../../src/renderer/components/Board/KanbanBoard'
-import { TodaySummary } from '../../../src/renderer/components/TodaySummary'
+import { OverviewOps } from '../../../src/renderer/components/Settings/OverviewOps'
+import { KanbanBoard } from '../../../src/renderer/components/Board/KanbanBoard'
 import { DraftReplyDialog } from '../../../src/renderer/components/DraftReplyDialog'
 import { ResidencyNotice, ResidencyStatusBar } from '../../../src/plugin/ui/ResidencyStatus'
 import type { ResidencyViewSource } from '../../../src/plugin/ui/ResidencyStatus'
@@ -95,12 +95,14 @@ export function notMineScene(api: Api): ReactElement {
   return <NotMineReviewPanel api={api} onClose={() => undefined} onChanged={() => undefined} />
 }
 
-export function todaySummaryScene(api: Api): ReactElement {
-  return <Host api={api}><TodaySummary todos={[]} loading={false} onRefresh={() => undefined} /></Host>
+/** the settings tab's 整理 block (Settings/OverviewOps) on its own, with a poll delay the test controls */
+export function opsScene(api: Api, props: { pollDelayMs?: (failures: number) => number } = {}): ReactElement {
+  return <Host api={api}><OverviewOps pollDelayMs={props.pollDelayMs} /></Host>
 }
 
-export function reviewControlsScene(api: Api, props: { onRefresh: () => Promise<boolean>; pollDelayMs: (failures: number) => number }): ReactElement {
-  return <Host api={api}><ReviewControls api={api} onRefresh={props.onRefresh} onShowNotMine={() => undefined} pollDelayMs={props.pollDelayMs} /></Host>
+/** the overview's board on its own (filter row + four columns) */
+export function boardScene(api: Api): ReactElement {
+  return <Host api={api}><KanbanBoard /></Host>
 }
 
 /** the board's one-line background-execution status (src/plugin/ui/ResidencyStatus.tsx) over a source the test controls */

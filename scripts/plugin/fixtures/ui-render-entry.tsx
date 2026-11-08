@@ -43,6 +43,15 @@ export function renderSettings(caps: HostCapabilities, view: SettingsView): stri
   )
 }
 
+/** the in-app settings tab: SettingsPanel with the 整理 block (`operations`); the plugin's standalone settings view omits it */
+export function renderSettingsOps(caps: HostCapabilities, view: SettingsView): string {
+  return renderToStaticMarkup(
+    <LineTodoApiProvider api={stubApi()} capabilities={caps}>
+      <SettingsPanel initialView={view} operations />
+    </LineTodoApiProvider>
+  )
+}
+
 export function renderApp(caps: HostCapabilities): string {
   return renderToStaticMarkup(
     <LineTodoApiProvider api={stubApi()} capabilities={caps}>

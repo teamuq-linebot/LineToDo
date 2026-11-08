@@ -13,6 +13,7 @@ import { ProviderHealthCheck } from './ProviderHealthCheck'
 import { DriverPostSettings } from './DriverPostSettings'
 import { HostAiSettings } from './HostAiSettings'
 import { PromptSettings } from './PromptSettings'
+import { OverviewOps } from './OverviewOps'
 import {
   PROVIDERS,
   cliSettingsOf,
@@ -27,6 +28,7 @@ import {
  *   - 輪詢頻率 / 並發 / 上下文則數（數值設定，存 settings.json）
  *   - AI 判斷引擎（provider 卡片選擇 + 各自的欄位 + 健檢；Batch 6）
  *   - 資料夾 / 維運
+ *   - 整理（`operations`：回顧、補媒體金鑰、不是我的回查、立即整理；只有看板內的設定分頁掛，TeamUQ 外掛獨立設定 view 不掛）
  *
  * 所有變更立即透過 api.settings.update 落檔；輪詢頻率改動會讓 main 重排排程器。
  *
@@ -53,7 +55,7 @@ function CombinedExtractSetting({ enabled, onChange }: { enabled: boolean; onCha
   )
 }
 
-export function SettingsPanel({ initialView, initialLoadError, initialActionError }: { initialView?: SettingsView; initialLoadError?: string; initialActionError?: string } = {}): JSX.Element {
+export function SettingsPanel({ initialView, initialLoadError, initialActionError, operations = false, pollDelayMs }: { initialView?: SettingsView; initialLoadError?: string; initialActionError?: string; operations?: boolean; pollDelayMs?: (failures: number) => number } = {}): JSX.Element {
   const api = useLineTodoApi()
   const caps = useHostCapabilities()
   const [view, setView] = useState<SettingsView | null>(initialView ?? null)
@@ -205,6 +207,8 @@ export function SettingsPanel({ initialView, initialLoadError, initialActionErro
           <div className="set-notice-body">{actionError}</div>
         </div>
       )}
+
+      {operations && <OverviewOps pollDelayMs={pollDelayMs} />}
 
       {/* 抓取行為 */}
       <div className="set-section">
