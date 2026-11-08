@@ -1,4 +1,4 @@
-import { memo, useRef, useState, type KeyboardEvent } from 'react'
+import { memo, useRef, useState, type KeyboardEvent, type MutableRefObject } from 'react'
 import type { TodoDTO } from '../../types/api'
 import { COLUMNS, type ColumnDef, type ColumnId } from './buckets'
 import { TodoCard, type TodoCardActions } from './TodoCard'
@@ -20,6 +20,8 @@ interface Props {
   dnd: BoardDnd
   /** 欄標題選單選了「全部移到 X」：由看板先跳確認。 */
   onBulkMove: (from: ColumnId, to: ColumnId) => void
+  /** 看板用來在確認框關閉後把焦點還給欄標題。 */
+  headRefs: MutableRefObject<Partial<Record<ColumnId, HTMLElement | null>>>
 }
 
 interface TodoChatGroup {
@@ -51,11 +53,12 @@ function ColumnView({
   groupByChat,
   viewedLocalIds,
   dnd,
-  onBulkMove
+  onBulkMove,
+  headRefs
 }: Props): JSX.Element {
   const groups = groupByChat ? groupTodosByChat(todos) : []
   const [menuOpen, setMenuOpen] = useState(false)
-  const headRef = useRef<HTMLElement>(null)
+  const headRef = useRef<HTMLElement | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
   function openMenu(): void {
@@ -120,10 +123,15 @@ function ColumnView({
       }}
     >
       <header
-        ref={headRef}
+        ref={(el) => {
+          headRef.current = el
+          headRefs.current[def.id] = el
+        }}
         className="kb-col-head"
         tabIndex={0}
+        role="button"
         aria-haspopup="menu"
+        aria-expanded={menuOpen}
         onContextMenu={(e) => {
           e.preventDefault()
           openMenu()

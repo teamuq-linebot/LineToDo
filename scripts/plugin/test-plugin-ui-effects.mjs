@@ -2799,19 +2799,24 @@ function bulkRow(id, chatId, bucket, status, extra = {}) {
   return { id, chatId, bucket, status, title: `標題${id}`, detail: null, priority: 2, dueAt: null, sourceMsgIds: [`${id}-src`], confidence: 0.9, completionEvidence: null, createdAt: '2026-10-29T00:00:00.000Z', updatedAt: '2026-10-30T00:00:00.000Z', resolvedAt: status === 'done' ? '2026-11-01T00:00:00.000Z' : null, ...extra }
 }
 /** a stateful backend whose db.todos.moveColumn mirrors todos.repo moveTodoToColumn (including the no-op guard) */
-function bulkScene(rows, { fail = new Set() } = {}) {
+function bulkScene(rows, { fail = new Set(), nullIds = new Set() } = {}) {
   const state = rows.map((row) => ({ ...row }))
   const calls = []
+  const hold = new Map()
+  const control = { listFails: false }
   const { api } = plugin(settingsHandlers({
     'db.chats.list': () => [toggleChat('g1', '群組一', true), toggleChat('d1', '私訊一', false)],
-    'db.todos.list': (query) => { calls.push({ path: 'list', args: [query] }); return state.filter((row) => query.statuses.includes(row.status)).map((row) => ({ ...row })) },
+    'db.todos.list': (query) => { calls.push({ path: 'list', args: [query] }); if (control.listFails) throw Object.assign(new Error('boom'), { code: 'internal' }); return state.filter((row) => query.statuses.includes(row.status)).map((row) => ({ ...row })) },
     'db.todos.moveColumn': (id, column) => {
       calls.push({ path: 'move', args: [id, column] })
-      if (fail.has(id)) throw Object.assign(new Error('boom'), { code: 'internal' })
-      const cur = state.find((row) => row.id === id)
-      if (!cur) return null
-      if (column === 'done') { const wasDone = cur.status === 'done'; cur.status = 'done'; cur.resolvedAt = wasDone ? cur.resolvedAt : BULK_NOW } else { cur.bucket = column; cur.status = BULK_CANON[column]; cur.resolvedAt = null }
-      return { ...cur }
+      const apply = () => {
+        if (fail.has(id)) throw Object.assign(new Error('boom'), { code: 'internal' })
+        const cur = state.find((row) => row.id === id)
+        if (!cur || nullIds.has(id)) return null
+        if (column === 'done') { const wasDone = cur.status === 'done'; cur.status = 'done'; cur.resolvedAt = wasDone ? cur.resolvedAt : BULK_NOW } else { cur.bucket = column; cur.status = BULK_CANON[column]; cur.resolvedAt = null }
+        return { ...cur }
+      }
+      return hold.has(id) ? hold.get(id).then(apply) : apply()
     }
   }))
   const view = ui.mount(ui.boardScene(api))
@@ -2829,7 +2834,16 @@ function bulkScene(rows, { fail = new Set() } = {}) {
   const drop = (column, id) => reactProps(walk(view.container).find((element) => hasClassName(element, `col-${column}`))).onDrop({ preventDefault() {}, dataTransfer: { getData: () => id } })
   const setKind = (value) => reactProps(walk(view.container).find((element) => element.localName === 'select' && element.textContent.includes('只看群組'))).onChange({ target: { value } })
   const note = () => walk(view.container).filter((element) => element.getAttribute('role') === 'alert')
-  return { api, view, state, calls, heads, head, items, dialog, moves, lists, rightClick, key, click, item, drop, setKind, note, dispose() { view.unmount(); api.dispose() } }
+  const active = () => globalThis.document.activeElement
+  const confirmOpen = async (title, label) => {
+    rightClick(title)
+    await until(() => item(label), { message: 'the menu' })
+    click(item(label))
+    await until(() => dialog(), { message: 'the confirm' })
+  }
+  const okBtn = () => byAttr(view.container, 'data-testid', 'bulk-move-ok')
+  const cancelBtn = () => byAttr(view.container, 'data-testid', 'bulk-move-cancel')
+  return { api, view, state, calls, hold, control, active, confirmOpen, okBtn, cancelBtn, heads, head, items, dialog, moves, lists, rightClick, key, click, item, drop, setKind, note, dispose() { view.unmount(); api.dispose() } }
 }
 const BULK_ROWS = () => [
   bulkRow('t1', 'g1', 'todo', 'pending'), bulkRow('t2', 'd1', 'todo', 'pending'), bulkRow('t3', 'd1', 'todo', 'suggested_done'),
@@ -2988,5 +3002,143 @@ test('column bulk move: a column title takes focus and opens the menu from the C
     reactProps(s.dialog()).onKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {} })
     await until(() => !s.dialog(), { message: 'Esc closes the confirm' })
     assert.deepEqual(s.moves(), [])
+  } finally { s.dispose() }
+})
+
+test('column bulk move: data that changes while the confirm is open never moves a card that left the column; the confirm is asked again with the new count', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    await s.confirmOpen('待辦', '全部移到等回覆')
+    assert.match(s.dialog().textContent, /^要把 3 張移到等回覆嗎？/)
+    s.state.find((row) => row.id === 't1').status = 'done'
+    s.state.find((row) => row.id === 't1').resolvedAt = BULK_NOW
+    s.state.splice(s.state.findIndex((row) => row.id === 't2'), 1)
+    const before = s.lists()
+    for (let attempt = 0; attempt < 50 && s.lists() === before; attempt += 1) { s.drop('schedule', 'w1'); await sleep(100) }
+    await until(() => s.head('待辦').textContent === '待辦1', { message: 'the board re-read behind the open confirm' })
+    const movesBefore = s.moves().length
+    s.click(s.okBtn())
+    await until(() => /^要把 1 張移到等回覆嗎？/.test(s.dialog()?.textContent ?? ''), { message: 'asked again with the new count' })
+    assert.equal(s.moves().length, movesBefore, 'nothing moved on the mismatched confirm')
+    assert.equal(s.state.find((row) => row.id === 't1').status, 'done', 'the finished card is not reopened')
+    s.click(s.okBtn())
+    await until(() => !s.dialog(), { message: 'the second confirm runs' })
+    assert.deepEqual(s.moves().slice(movesBefore), [['t3', 'waiting']])
+  } finally { s.dispose() }
+})
+
+test('column bulk move: when every card has left the column the confirm closes with one short line and moves nothing', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    await s.confirmOpen('待辦', '全部移到等回覆')
+    s.state.splice(0, 3)
+    const before = s.lists()
+    for (let attempt = 0; attempt < 50 && s.lists() === before; attempt += 1) { s.drop('schedule', 'w1'); await sleep(100) }
+    await until(() => s.head('待辦').textContent === '待辦0', { message: 'the board re-read' })
+    const movesBefore = s.moves().length
+    s.click(s.okBtn())
+    await until(() => !s.dialog(), { message: 'the confirm closes' })
+    assert.equal(s.moves().length, movesBefore)
+    assert.deepEqual(s.note().map((element) => element.textContent), ['沒有可移的卡片'])
+  } finally { s.dispose() }
+})
+
+test('column bulk move: a moveColumn that answers null counts as not moved', async () => {
+  const s = bulkScene(BULK_ROWS(), { nullIds: new Set(['t3']) })
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    await s.confirmOpen('待辦', '全部移到已完成')
+    s.click(s.okBtn())
+    await until(() => !s.dialog(), { message: 'the batch' })
+    await until(() => s.note().length === 1, { message: 'the line' })
+    assert.equal(s.note()[0].textContent, '1 張沒移成功')
+    assert.equal(s.head('待辦').textContent, '待辦1')
+  } finally { s.dispose() }
+})
+
+test('column bulk move: when the re-read after the batch fails, one short line says it was written but the board did not update', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    await s.confirmOpen('待辦', '全部移到已完成')
+    s.control.listFails = true
+    s.click(s.okBtn())
+    await until(() => !s.dialog(), { message: 'the batch' })
+    assert.equal(s.moves().length, 3)
+    await until(() => s.note().some((element) => element.textContent === '已寫入，但看板更新失敗'), { message: 'the written-but-not-updated line' })
+  } finally { s.dispose() }
+})
+
+test('column bulk move: clicking the backdrop or blurring the title closes the menu without moving anything', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    s.rightClick('待辦')
+    await until(() => s.items().length === 3, { message: 'the menu' })
+    const backdrop = walk(s.view.container).find((element) => hasClassName(element, 'menu-backdrop'))
+    reactProps(backdrop).onMouseDown({})
+    await until(() => s.items().length === 0, { message: 'the backdrop closes it' })
+    s.rightClick('待辦')
+    await until(() => s.items().length === 3, { message: 'the menu again' })
+    reactProps(s.head('待辦')).onBlur({ currentTarget: s.head('待辦'), relatedTarget: null })
+    await until(() => s.items().length === 0, { message: 'losing focus closes it' })
+    assert.deepEqual(s.moves(), [])
+  } finally { s.dispose() }
+})
+
+test('column bulk move: the title is a button that reports whether its menu is expanded', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    assert.equal(s.head('待辦').getAttribute('role'), 'button')
+    assert.equal(s.head('待辦').getAttribute('aria-haspopup'), 'menu')
+    assert.equal(s.head('待辦').getAttribute('aria-expanded'), 'false')
+    s.rightClick('待辦')
+    await until(() => s.head('待辦').getAttribute('aria-expanded') === 'true', { message: 'expanded' })
+    s.key('待辦', 'Escape')
+    await until(() => s.head('待辦').getAttribute('aria-expanded') === 'false', { message: 'collapsed' })
+  } finally { s.dispose() }
+})
+
+test('column bulk move: Tab stays inside the confirm, and focus goes back to the column title once it closes', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    await s.confirmOpen('待辦', '全部移到已完成')
+    assert.equal(s.active(), s.cancelBtn(), '取消 has the focus')
+    const tab = (shiftKey) => { let prevented = false; reactProps(s.dialog()).onKeyDown({ key: 'Tab', shiftKey, preventDefault() { prevented = true }, stopPropagation() {} }); return prevented }
+    assert.equal(tab(false), true, 'Tab on the last button does not leave the dialog')
+    assert.equal(s.active(), s.okBtn(), 'it wraps to 確定')
+    assert.equal(tab(true), true, 'Shift+Tab on the first button does not leave the dialog')
+    assert.equal(s.active(), s.cancelBtn(), 'it wraps back to 取消')
+    s.click(s.cancelBtn())
+    await until(() => !s.dialog(), { message: 'closed' })
+    await until(() => s.active() === s.head('待辦'), { message: 'the focus is back on the column title' })
+    await s.confirmOpen('待辦', '全部移到等回覆')
+    s.click(s.okBtn())
+    await until(() => !s.dialog(), { message: 'the batch' })
+    await until(() => s.active() === s.head('待辦'), { message: 'the focus is back on the column title after a move too' })
+  } finally { s.dispose() }
+})
+
+test('column bulk move: the confirm shows 移動中 done/total while the batch runs, and Tab cannot leave it then', async () => {
+  const s = bulkScene(BULK_ROWS())
+  try {
+    await until(() => s.head('待辦')?.textContent === '待辦3', { message: 'the board' })
+    let release
+    s.hold.set('t2', new Promise((resolve) => { release = resolve }))
+    await s.confirmOpen('待辦', '全部移到已完成')
+    s.click(s.okBtn())
+    await until(() => s.dialog()?.textContent.startsWith('移動中 1/3'), { message: 'one card done, two to go' })
+    assert.equal(reactProps(s.okBtn()).disabled, true)
+    assert.equal(reactProps(s.cancelBtn()).disabled, true)
+    let prevented = false
+    reactProps(s.dialog()).onKeyDown({ key: 'Tab', shiftKey: false, preventDefault() { prevented = true }, stopPropagation() {} })
+    assert.equal(prevented, true)
+    release()
+    await until(() => !s.dialog(), { message: 'the batch ends' })
+    assert.deepEqual(s.moves(), [['t1', 'done'], ['t2', 'done'], ['t3', 'done']])
   } finally { s.dispose() }
 })

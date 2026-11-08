@@ -1,5 +1,5 @@
 import { useLineTodoApi } from '../../platform/LineTodoApi'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type {
   TodoDTO,
   TodoSortBy,
@@ -84,6 +84,18 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
   // 欄標題選單「全部移到 X」：先記下當下（篩選後）該欄的 id，確認後才搬。
   const [pendingMove, setPendingMove] = useState<{ from: ColumnId; to: ColumnId; ids: string[] } | null>(null)
   const [bulkMoving, setBulkMoving] = useState(false)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
+  const headRefs = useRef<Partial<Record<ColumnId, HTMLElement | null>>>({})
+  const returnFocusTo = useRef<ColumnId | null>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const okRef = useRef<HTMLButtonElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  // 確認框關閉後把焦點還給開選單的欄標題。
+  useEffect(() => {
+    if (pendingMove || !returnFocusTo.current) return
+    headRefs.current[returnFocusTo.current]?.focus?.()
+    returnFocusTo.current = null
+  }, [pendingMove])
 
   const dnd: BoardDnd = useMemo(
     () => ({
@@ -152,23 +164,65 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
 
   const requestBulkMove = useCallback((from: ColumnId, to: ColumnId): void => {
     const ids = grouped[from].map((todo) => todo.id)
-    if (ids.length > 0) setPendingMove({ from, to, ids })
+    if (ids.length === 0) return
+    returnFocusTo.current = from
+    setPendingMove((current) => current ?? { from, to, ids })
   }, [grouped])
 
   const confirmBulkMove = async (): Promise<void> => {
     if (!pendingMove || bulkMoving) return
-    const { to, ids } = pendingMove
+    const { from, to, ids } = pendingMove
+    // 確認框開著時資料可能又被重讀：只移「仍存在且仍在原欄」的卡，張數與確認框不同就不執行，改用新張數重新確認。
+    const byId = new Map(t.todos.map((x) => [x.id, x]))
+    const items = ids.flatMap((id) => {
+      const todo = byId.get(id)
+      return todo && columnOf(todo) === from ? [todo] : []
+    })
+    if (items.length !== ids.length) {
+      if (items.length === 0) {
+        setPendingMove(null)
+        setBoardNote('沒有可移的卡片')
+      } else {
+        setPendingMove({ from, to, ids: items.map((x) => x.id) })
+      }
+      return
+    }
     setBulkMoving(true)
+    setProgress({ done: 0, total: items.length })
+    dialogRef.current?.focus?.()
     try {
-      const byId = new Map(t.todos.map((x) => [x.id, x]))
-      const items = ids.flatMap((id) => byId.get(id) ?? [])
-      const { failed } = await t.moveManyToColumn(items, to)
-      setBoardNote(failed > 0 ? `${failed} 張沒移成功` : null)
+      const { failed, reloaded } = await t.moveManyToColumn(items, to, (done, total) => setProgress({ done, total }))
+      const lines = [failed > 0 ? `${failed} 張沒移成功` : '', reloaded ? '' : '已寫入，但看板更新失敗'].filter(Boolean)
+      setBoardNote(lines.length > 0 ? lines.join('；') : null)
     } catch (error) {
       setBoardNote(backendErrorText(error, '搬移失敗'))
     } finally {
       setBulkMoving(false)
+      setProgress(null)
       setPendingMove(null)
+    }
+  }
+
+  // 對話框內 Tab 只在「確定／取消」之間循環；搬移中停在對話框本身。
+  const onDialogKeyDown = (e: KeyboardEvent<HTMLElement>): void => {
+    if (e.key === 'Escape' && !bulkMoving) {
+      setPendingMove(null)
+      return
+    }
+    if (e.key !== 'Tab') return
+    const buttons = [okRef.current, cancelRef.current].filter((b): b is HTMLButtonElement => Boolean(b) && !b?.disabled)
+    if (buttons.length === 0) {
+      e.preventDefault()
+      dialogRef.current?.focus?.()
+      return
+    }
+    const at = buttons.indexOf(document.activeElement as HTMLButtonElement)
+    if (e.shiftKey && at <= 0) {
+      e.preventDefault()
+      buttons[buttons.length - 1].focus()
+    } else if (!e.shiftKey && (at === -1 || at === buttons.length - 1)) {
+      e.preventDefault()
+      buttons[0].focus()
     }
   }
 
@@ -307,6 +361,7 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
             viewedLocalIds={viewedLocalIds}
             dnd={dnd}
             onBulkMove={requestBulkMove}
+            headRefs={headRefs}
           />
         ))}
       </div>
@@ -314,20 +369,22 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
       {pendingMove && (
         <div className="modal-backdrop" onClick={() => { if (!bulkMoving) setPendingMove(null) }}>
           <div
+            ref={dialogRef}
+            tabIndex={-1}
             className="modal bulk-move-confirm"
             role="alertdialog"
             aria-modal="true"
             aria-label="全部移動"
             data-testid="bulk-move-confirm"
             onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape' && !bulkMoving) setPendingMove(null)
-            }}
+            onKeyDown={onDialogKeyDown}
           >
-            <div>{`要把 ${pendingMove.ids.length} 張移到${COLUMNS.find((c) => c.id === pendingMove.to)?.title ?? ''}嗎？`}</div>
+            <div>{bulkMoving && progress
+              ? `移動中 ${progress.done}/${progress.total}`
+              : `要把 ${pendingMove.ids.length} 張移到${COLUMNS.find((c) => c.id === pendingMove.to)?.title ?? ''}嗎？`}</div>
             <div className="modal-actions">
-              <button type="button" data-testid="bulk-move-ok" disabled={bulkMoving} onClick={() => void confirmBulkMove()}>確定</button>
-              <button type="button" data-testid="bulk-move-cancel" autoFocus disabled={bulkMoving} onClick={() => setPendingMove(null)}>取消</button>
+              <button type="button" ref={okRef} data-testid="bulk-move-ok" disabled={bulkMoving} onClick={() => void confirmBulkMove()}>確定</button>
+              <button type="button" ref={cancelRef} data-testid="bulk-move-cancel" autoFocus disabled={bulkMoving} onClick={() => setPendingMove(null)}>取消</button>
             </div>
           </div>
         </div>

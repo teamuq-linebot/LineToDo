@@ -72,8 +72,12 @@ export interface UseTodos {
   update: (id: string, patch: TodoUpdatePatch, onWriteConfirmed?: () => void) => Promise<CompleteTodoResult>
   /** 看板拖曳搬移到目標欄（含同欄 no-op 防抖）。 */
   moveToColumn: (todo: TodoDTO, toColumn: ColumnId) => Promise<void>
-  /** 整欄搬移：逐張走與單張拖曳相同的路徑（同樣的 no-op 防抖與 moveColumn），全部做完只重讀一次；回沒移成功的張數。 */
-  moveManyToColumn: (todos: TodoDTO[], toColumn: ColumnId) => Promise<{ failed: number }>
+  /** 整欄搬移：逐張走與單張拖曳相同的路徑（同樣的 no-op 防抖與 moveColumn），全部做完只重讀一次；回沒移成功的張數與重讀是否成功。 */
+  moveManyToColumn: (
+    todos: TodoDTO[],
+    toColumn: ColumnId,
+    onProgress?: (done: number, total: number) => void
+  ) => Promise<{ failed: number; reloaded: boolean }>
 }
 
 /** bucket → 對應的 active 狀態（suggested_done 退回時用）。 */
@@ -266,19 +270,27 @@ export function useTodos(options: TodoListOptions = {}): UseTodos {
   )
 
   const moveManyToColumn = useCallback(
-    async (items: TodoDTO[], toColumn: ColumnId): Promise<{ failed: number }> => {
+    async (
+      items: TodoDTO[],
+      toColumn: ColumnId,
+      onProgress?: (done: number, total: number) => void
+    ): Promise<{ failed: number; reloaded: boolean }> => {
       let failed = 0
+      let done = 0
       for (const todo of items) {
-        if (isNoopMove(todo, toColumn)) continue
-        try {
-          if (!await api.db.todos.moveColumn(todo.id, toColumn)) failed += 1
-        } catch (err) {
-          console.error('[useTodos] moveManyToColumn 失敗：', err)
-          failed += 1
+        if (!isNoopMove(todo, toColumn)) {
+          try {
+            if (!await api.db.todos.moveColumn(todo.id, toColumn)) failed += 1
+          } catch (err) {
+            console.error('[useTodos] moveManyToColumn 失敗：', err)
+            failed += 1
+          }
         }
+        done += 1
+        onProgress?.(done, items.length)
       }
-      await refresh()
-      return { failed }
+      const reloaded = await refresh()
+      return { failed, reloaded }
     },
     [refresh]
   )
