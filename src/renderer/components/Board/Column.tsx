@@ -1,9 +1,11 @@
-import { memo, useRef, useState, type KeyboardEvent, type MutableRefObject } from 'react'
+import { memo, useRef, useState, type MutableRefObject } from 'react'
 import type { TodoDTO } from '../../types/api'
 import { COLUMNS, type ColumnDef, type ColumnId } from './buckets'
 import { TodoCard, type TodoCardActions } from './TodoCard'
 import type { ChatNameMap } from '../../store/useTodos'
 import type { BoardDnd } from './KanbanBoard'
+import { ContextMenu, ContextMenuItem } from '../ContextMenu'
+import { focusFirstMenuItem, useContextMenuKeys } from '../../hooks/useContextMenuKeys'
 
 /**
  * Column — 看板單欄（待辦 / 等回覆 / 行程 / 已完成）。
@@ -63,7 +65,7 @@ function ColumnView({
 
   function openMenu(): void {
     setMenuOpen(true)
-    setTimeout(() => menuRef.current?.querySelector?.<HTMLElement>('button:not(:disabled)')?.focus?.(), 0)
+    focusFirstMenuItem(menuRef)
   }
 
   function closeMenu(refocus: boolean): void {
@@ -71,23 +73,7 @@ function ColumnView({
     if (refocus) headRef.current?.focus?.()
   }
 
-  function onHeadKeyDown(e: KeyboardEvent<HTMLElement>): void {
-    if (e.key === 'Escape' && menuOpen) {
-      e.preventDefault()
-      e.stopPropagation()
-      closeMenu(true)
-    } else if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
-      e.preventDefault()
-      openMenu()
-    } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && menuOpen) {
-      e.preventDefault()
-      const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled)') ?? [])
-      if (items.length === 0) return
-      const at = items.indexOf(document.activeElement as HTMLElement)
-      const step = e.key === 'ArrowDown' ? 1 : -1
-      items[(at + step + items.length) % items.length].focus()
-    }
-  }
+  const onHeadKeyDown = useContextMenuKeys({ open: menuOpen, menuRef, onOpen: openMenu, onClose: closeMenu })
 
   function renderCard(todo: TodoDTO): JSX.Element {
     return (
@@ -144,42 +130,20 @@ function ColumnView({
         <span className="kb-col-title">{def.title}</span>
         <span className="kb-col-count">{todos.length}</span>
         {menuOpen && (
-          <>
-            <div
-              className="menu-backdrop"
-              onMouseDown={() => closeMenu(false)}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-                closeMenu(false)
-              }}
-            />
-            <div
-              ref={menuRef}
-              className="menu-pop kb-col-menu"
-              role="menu"
-              onContextMenu={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-              }}
-            >
-              {COLUMNS.filter((other) => other.id !== def.id).map((other) => (
-                <button
-                  key={other.id}
-                  type="button"
-                  role="menuitem"
-                  className="menu-item"
-                  disabled={todos.length === 0}
-                  onClick={() => {
-                    closeMenu(true)
-                    onBulkMove(def.id, other.id)
-                  }}
-                >
-                  {`全部移到${other.title}`}
-                </button>
-              ))}
-            </div>
-          </>
+          <ContextMenu menuRef={menuRef} className="kb-col-menu" onDismiss={() => closeMenu(false)}>
+            {COLUMNS.filter((other) => other.id !== def.id).map((other) => (
+              <ContextMenuItem
+                key={other.id}
+                disabled={todos.length === 0}
+                onClick={() => {
+                  closeMenu(true)
+                  onBulkMove(def.id, other.id)
+                }}
+              >
+                {`全部移到${other.title}`}
+              </ContextMenuItem>
+            ))}
+          </ContextMenu>
         )}
       </header>
       <div className="kb-col-body">

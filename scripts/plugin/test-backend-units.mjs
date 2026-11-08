@@ -712,6 +712,24 @@ test('dispatcher: routes allow-listed paths, passes args, and returns in-band en
   dispose()
 })
 
+test('dispatcher: the chat-list paths (listPrefs, setPinned, setIgnored, setHidden) reach the application api with their arguments', async () => {
+  const calls = []
+  const chats = {
+    list: async () => [],
+    listPrefs: async () => ({ prefsReady: true, topicsAvailable: true, pinned: ['c1'], hidden: [], todoOff: [], topicsOn: [] }),
+    setPinned: async (...a) => { calls.push(['setPinned', ...a]); return { ok: true, pinned: a[1] } },
+    setIgnored: async (...a) => { calls.push(['setIgnored', ...a]); return { ok: true, ignored: a[1], skippedOlder: 0 } },
+    setHidden: async (...a) => { calls.push(['setHidden', ...a]); return { ok: true, hidden: a[1] } }
+  }
+  const { d, dispose } = makeDispatcher(fakeApi({ db: { chats } }))
+  assert.deepEqual((await inv(d, 'db.chats.listPrefs')).value.pinned, ['c1'])
+  assert.deepEqual(await inv(d, 'db.chats.setPinned', 'c1', true), { ok: true, value: { ok: true, pinned: true } })
+  assert.deepEqual(await inv(d, 'db.chats.setIgnored', 'c1', false), { ok: true, value: { ok: true, ignored: false, skippedOlder: 0 } })
+  assert.deepEqual(await inv(d, 'db.chats.setHidden', 'c1', true), { ok: true, value: { ok: true, hidden: true } })
+  assert.deepEqual(calls, [['setPinned', 'c1', true], ['setIgnored', 'c1', false], ['setHidden', 'c1', true]])
+  dispose()
+})
+
 test('dispatcher: avatar batches stay in the media group and return only data-scope asset paths/names', async () => {
   const calls = []
   const avatars = {

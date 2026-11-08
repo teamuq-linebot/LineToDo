@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
-  LineTodoApi, RawLineMessage, LineBridgeStatus, ChatDTO, MessageDTO, TodoDTO,
+  LineTodoApi, RawLineMessage, LineBridgeStatus, ChatDTO, ChatListPrefsDTO, MessageDTO, TodoDTO,
   TodoSortBy, TodoSortDirection, MessagesPersistedEvent, PipelineStatus,
   PipelineLoadStats, PipelineRunResult, TodosChangedEvent, BackfillProgress,
   ReconcileProgress, ReviewLastDaysResult, QwenTestResult, ProviderHealth,
@@ -104,6 +104,14 @@ const api = {
       /** 切換待辦抽取開關；重新開啟補抽最近 7 天。 */
       setTodoExtractEnabled: (chatId: string, enabled: boolean): Promise<{ ok: boolean; enabled: boolean; skippedOlder: number }> =>
         ipcRenderer.invoke('chats:setTodoExtractEnabled', { chatId, enabled }),
+      listPrefs: (): Promise<ChatListPrefsDTO> =>
+        ipcRenderer.invoke('chats:listPrefs'),
+      setPinned: (chatId: string, pinned: boolean): Promise<{ ok: boolean; pinned: boolean }> =>
+        ipcRenderer.invoke('chats:setPinned', { chatId, pinned }),
+      setIgnored: (chatId: string, ignored: boolean): Promise<{ ok: boolean; ignored: boolean; skippedOlder: number }> =>
+        ipcRenderer.invoke('chats:setIgnored', { chatId, ignored }),
+      setHidden: (chatId: string, hidden: boolean): Promise<{ ok: boolean; hidden: boolean }> =>
+        ipcRenderer.invoke('chats:setHidden', { chatId, hidden }),
       /** 卡片「依關鍵字忽略（此對話）」：加關鍵字 + 立即忽略命中的未完成代辦。 */
       addIgnoreKeyword: (
         chatId: string,

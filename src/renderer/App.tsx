@@ -3,6 +3,7 @@ import { OverviewPage } from './components/OverviewPage'
 import { SettingsPanel } from './components/Settings/SettingsPanel'
 import { GroupTopicsPanel } from './features/groupTopics/GroupTopicsPanel'
 import { PresentationToggle } from './components/PresentationToggle'
+import { HeaderStatusProvider, HeaderStatusSlot } from './components/HeaderStatusSlot'
 import { useHostCapabilities } from './platform/LineTodoApi'
 import { APP_VERSION } from './lib/appVersion'
 import { useTheme } from './lib/theme'
@@ -23,7 +24,7 @@ import { parseOneOf, usePersistentState } from './lib/uiState'
 type Tab = 'board' | 'stream' | 'topics' | 'settings'
 const parseTab = parseOneOf<Tab>(['board', 'stream', 'topics', 'settings'])
 
-function App(): JSX.Element {
+function AppShell(): JSX.Element {
   const caps = useHostCapabilities()
   const [savedTab, setTab] = usePersistentState<Tab>('app.tab', 'board', parseTab)
   // 存起來的「設定」分頁在沒有設定分頁的宿主退回看板。
@@ -36,6 +37,7 @@ function App(): JSX.Element {
       <header className="app-header">
         <h1>line-todo</h1>
         {APP_VERSION && <span className="app-version" title={`外掛版本 ${APP_VERSION}`}>v{APP_VERSION}</span>}
+        {tab === 'stream' && <HeaderStatusSlot />}
         <nav className="app-tabs">
           <button
             className={`tab ${tab === 'board' ? 'active' : ''}`}
@@ -82,6 +84,14 @@ function App(): JSX.Element {
         {tab === 'settings' && caps.settingsTab && <SettingsPanel operations />}
       </main>
     </div>
+  )
+}
+
+function App(): JSX.Element {
+  return (
+    <HeaderStatusProvider>
+      <AppShell />
+    </HeaderStatusProvider>
   )
 }
 

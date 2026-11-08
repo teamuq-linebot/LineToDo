@@ -30,6 +30,15 @@ export interface LineBridgeStatus {
 
 // ── DB 持久化層的 DTO（與 main/db/dto.ts 對齊；preload 為 renderer 的型別來源）──
 
+export interface ChatListPrefsDTO {
+  prefsReady: boolean
+  topicsAvailable: boolean
+  pinned: string[]
+  hidden: string[]
+  todoOff: string[]
+  topicsOn: string[]
+}
+
 export interface ChatDTO {
   chatId: string
   name: string | null
@@ -575,6 +584,13 @@ export interface LineTodoApi {
       todoExtractEnabled(chatId: string): Promise<boolean>
       /** 關閉期間不抽待辦；重新開啟只補抽最近 7 天，更早的標為已處理（skippedOlder 為略過的則數）。 */
       setTodoExtractEnabled(chatId: string, enabled: boolean): Promise<{ ok: boolean; enabled: boolean; skippedOlder: number }>
+      /** 聊天室列表的置頂／隱藏／忽略狀態，一次讀完（聊天頁用）。 */
+      listPrefs(): Promise<ChatListPrefsDTO>
+      setPinned(chatId: string, pinned: boolean): Promise<{ ok: boolean; pinned: boolean }>
+      /** 忽略＝待辦與議題都關；恢復＝兩個都開（待辦補抽最近 7 天）。 */
+      setIgnored(chatId: string, ignored: boolean): Promise<{ ok: boolean; ignored: boolean; skippedOlder: number }>
+      /** 隱藏＝兩個開關都關並取消置頂；取消隱藏只拿掉隱藏旗標。 */
+      setHidden(chatId: string, hidden: boolean): Promise<{ ok: boolean; hidden: boolean }>
       addIgnoreKeyword(chatId: string, keyword: string): Promise<{ ok: boolean; dismissed: number; error?: string }>
       removeIgnoreKeyword(chatId: string, keyword: string): Promise<{ ok: boolean }>
       openOriginal(chatId: string): Promise<{ ok: boolean; error?: string }>

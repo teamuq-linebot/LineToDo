@@ -196,6 +196,38 @@ test('adapter: request/response methods reach the backend and return its values 
   })
 })
 
+test('A16 adapter: the chat-list methods map to the db.chats paths with exact args; only listPrefs is replay-safe', async () => {
+  const calls = []
+  const prefs = { prefsReady: true, topicsAvailable: true, pinned: ['u-alice'], hidden: [], todoOff: [], topicsOn: [] }
+  const target = { async call(method, request) {
+    calls.push({ method, path: request.path, args: request.args })
+    const values = {
+      'db.chats.listPrefs': prefs,
+      'db.chats.setPinned': { ok: true, pinned: true },
+      'db.chats.setIgnored': { ok: true, ignored: true, skippedOlder: 0 },
+      'db.chats.setHidden': { ok: true, hidden: false }
+    }
+    return { ok: true, value: values[request.path] }
+  } }
+  const mock = makeHost({ target })
+  const api = createPluginLineTodoApi({ host: mock.host, events: { enabled: false } })
+  try {
+    assert.deepEqual(await api.db.chats.listPrefs(), prefs)
+    assert.deepEqual(await api.db.chats.setPinned('u-alice', true), { ok: true, pinned: true })
+    assert.deepEqual(await api.db.chats.setIgnored('u-alice', true), { ok: true, ignored: true, skippedOlder: 0 })
+    assert.deepEqual(await api.db.chats.setHidden('u-alice', false), { ok: true, hidden: false })
+    assert.deepEqual(calls.map((c) => [c.path, c.args]), [
+      ['db.chats.listPrefs', []],
+      ['db.chats.setPinned', ['u-alice', true]],
+      ['db.chats.setIgnored', ['u-alice', true]],
+      ['db.chats.setHidden', ['u-alice', false]]
+    ])
+    const transport = await import('../../src/renderer/platform/pluginTransport.ts')
+    assert.equal(transport.isReplaySafePath('db.chats.listPrefs'), true)
+    for (const path of ['db.chats.setPinned', 'db.chats.setIgnored', 'db.chats.setHidden']) assert.equal(transport.isReplaySafePath(path), false, path)
+  } finally { api.dispose() }
+})
+
 test('A15 adapter: hostAi.chatPrompts and prompts.saveName map to the settings method group with the exact paths and args; the read paths are replay-safe, the write paths are not',async()=>{
   const calls=[]
   const summary={chatId:'u-alice',hasPrompt:true,myName:'阿華',revision:'r1'}

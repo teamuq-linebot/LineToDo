@@ -307,7 +307,7 @@ export const RESULT_REPLAYS = 2
 const REPLAY_SAFE_PATHS: ReadonlySet<string> = new Set([
   'messages.recent', 'line.status', 'settings.get',
   'db.messages.list', 'db.messages.recentByChat', 'db.messages.byChatSince', 'db.messages.count',
-  'db.chats.list', 'db.chats.get', 'db.chats.todoExtractEnabled',
+  'db.chats.list', 'db.chats.get', 'db.chats.todoExtractEnabled', 'db.chats.listPrefs',
   'db.todos.list', 'db.todos.get', 'db.todos.openByChat', 'db.todos.listNotMine', 'db.todos.listNotMineCorrections', 'db.todos.getNotMineReview',
   'groupTopics.list', 'groupTopics.overview', 'groupTopics.todoRefs', 'groupTopics.pendingCount',
   'pipeline.status', 'pipeline.loadStats',

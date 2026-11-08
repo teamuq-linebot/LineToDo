@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { ChatDTO, MessageDTO, RawLineMessage, LineBridgeStatus } from '../../shared/api'
+import type { ChatDTO, ChatListPrefsDTO, MessageDTO, RawLineMessage, LineBridgeStatus } from '../../shared/api'
 import { useBackendPhase, useLineStream } from '../hooks/useLineStream'
 import type { BackendPhaseSource } from '../hooks/useLineStream'
 import type { BackendDiagnostics, BackendPhase } from '../platform/pluginTransport'
@@ -12,6 +12,10 @@ import { GroupTopicsPanel } from '../features/groupTopics/GroupTopicsPanel'
 import { ChatTodosPanel } from '../features/chatTodos/ChatTodosPanel'
 import { ChatPromptPanel } from '../features/chatPrompt/ChatPromptPanel'
 import { MediaFileActions, MediaImage } from './MediaView'
+import { ContextMenu, ContextMenuItem } from './ContextMenu'
+import { HeaderStatus } from './HeaderStatusSlot'
+import { focusFirstMenuItem, useContextMenuKeys } from '../hooks/useContextMenuKeys'
+import { layoutScale, placeFixedMenu, type MenuPlacement } from '../lib/zoom'
 
 interface ConversationEntry {
   chatId: string
@@ -25,6 +29,32 @@ interface ConversationEntry {
 type PaneView = 'messages' | 'topicsTodos' | 'aiSettings'
 
 const HISTORY_PAGE_SIZE = 100
+
+const EMPTY_PREFS: ChatListPrefsDTO = { prefsReady: false, topicsAvailable: false, pinned: [], hidden: [], todoOff: [], topicsOn: [] }
+const LIST_MENU_WIDTH = 168
+const LIST_ACTION_ERROR = '操作失敗，請再試一次'
+
+type ListAction = 'pin' | 'unpin' | 'ignore' | 'restore' | 'hide' | 'unhide'
+
+interface ListMenuState {
+  chatId: string
+  placement: MenuPlacement
+}
+
+const withoutId = (list: string[], id: string): string[] => list.filter((item) => item !== id)
+const withId = (list: string[], id: string): string[] => (list.includes(id) ? list : [...list, id])
+
+/** 動作成功後，在畫面上套用與後端相同的結果（後端同一個交易寫好了，不必再讀一次）。 */
+function patchPrefs(prefs: ChatListPrefsDTO, chatId: string, action: ListAction): ChatListPrefsDTO {
+  switch (action) {
+    case 'pin': return { ...prefs, pinned: withId(prefs.pinned, chatId) }
+    case 'unpin': return { ...prefs, pinned: withoutId(prefs.pinned, chatId) }
+    case 'ignore': return { ...prefs, todoOff: withId(prefs.todoOff, chatId), topicsOn: withoutId(prefs.topicsOn, chatId) }
+    case 'restore': return { ...prefs, todoOff: withoutId(prefs.todoOff, chatId), topicsOn: prefs.topicsAvailable ? withId(prefs.topicsOn, chatId) : prefs.topicsOn }
+    case 'hide': return { ...prefs, hidden: withId(prefs.hidden, chatId), pinned: withoutId(prefs.pinned, chatId), todoOff: withId(prefs.todoOff, chatId), topicsOn: withoutId(prefs.topicsOn, chatId) }
+    case 'unhide': return { ...prefs, hidden: withoutId(prefs.hidden, chatId) }
+  }
+}
 
 /**
  * 狀態列的一句話。外掛版有 phase（pluginTransport.ts）：逾時與無法連線不可隱藏（紅點＋「重試」），啟動中與連線中分開寫；
@@ -341,6 +371,24 @@ function MessageRow({
   )
 }
 
+/** 「LINE 橋接 ▶ 診斷」狀態列。聊天頁把它送到最上面的標題列（HeaderStatusSlot）；沒有標題列插槽時留在原位。 */
+function BridgeStatusBar({ st, status, phaseSource, onRetry }: {
+  st: { text: string; cls: string; retry: boolean }
+  status: LineBridgeStatus | null
+  phaseSource: BackendPhaseSource | null
+  onRetry: () => void
+}): JSX.Element {
+  return (
+    <div className="stream-bar">
+      <span className={`dot ${st.cls}`} />
+      <span className="stream-status" role={st.cls === 'err' ? 'alert' : undefined}>LINE 橋接：{st.text}</span>
+      {st.retry && <button type="button" className="link-btn stream-retry" onClick={onRetry}>重試</button>}
+      {status && status.restarts > 0 && <span className="muted">（重啟 {status.restarts} 次）</span>}
+      {phaseSource && <BackendDiagnosticsPanel source={phaseSource} />}
+    </div>
+  )
+}
+
 export function MessageStream(): JSX.Element {
   const api = useLineTodoApi()
   const { messages, status, error, retry: retryStream } = useLineStream()
@@ -369,6 +417,14 @@ export function MessageStream(): JSX.Element {
   const [customizedChatIds, setCustomizedChatIds] = useState<ReadonlySet<string>>(new Set())
   const [mobileView, setMobileView] = useState<'list' | 'conversation'>('list')
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
+  const [prefs, setPrefs] = useState<ChatListPrefsDTO>(EMPTY_PREFS)
+  const [prefsLoaded, setPrefsLoaded] = useState(false)
+  const [prefError, setPrefError] = useState('')
+  const [listMenu, setListMenu] = useState<ListMenuState | null>(null)
+  const listMenuRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement | null>(null)
+  const rowButtons = useRef(new Map<string, HTMLButtonElement>())
+  const prefsSeq = useRef(0)
   const messageLogRef = useRef<HTMLDivElement | null>(null)
   const previousChatIdRef = useRef<string | null>(null)
   const pinnedToBottomRef = useRef(true)
@@ -381,6 +437,16 @@ export function MessageStream(): JSX.Element {
     mountedRef.current = true
     return () => { mountedRef.current = false }
   }, [])
+
+  /** 置頂／隱藏／忽略狀態只是列表的修飾：讀不到就當成都沒有（不顯示錯誤、不擋聊天室清單）。 */
+  const readPrefs = useCallback((): Promise<ChatListPrefsDTO> => {
+    const read = api.db.chats.listPrefs
+    if (typeof read !== 'function') return Promise.resolve(EMPTY_PREFS)
+    return Promise.resolve().then(() => read()).then(
+      (value) => (value && Array.isArray(value.pinned) && Array.isArray(value.hidden) ? value : EMPTY_PREFS),
+      () => EMPTY_PREFS
+    )
+  }, [api])
 
   /** 讀聊天室清單與最近訊息（掛載時、以及逾時／失敗後的「重試」）。較新的一輪開始後，舊一輪的結果一律丟掉。 */
   const reload = useCallback((): Promise<void> => {
@@ -397,13 +463,19 @@ export function MessageStream(): JSX.Element {
     }).finally(() => {
       if (live()) setLoadingChats(false)
     })
+    const prefsStart = prefsSeq.current
+    const prefsDone = readPrefs().then((next) => {
+      if (live() && prefsSeq.current === prefsStart) setPrefs(next)
+    }).finally(() => {
+      if (live()) setPrefsLoaded(true)
+    })
     const rowsDone = api.db.messages.list({ limit: 1000 }).then((rows) => {
       if (live()) setRecentRows(rows)
     }, (loadError: unknown) => {
       if (live()) setHistoryLoadError(backendErrorText(loadError, '讀取最近訊息失敗；仍可查看即時訊息'))
     })
-    return Promise.all([chatsDone, rowsDone]).then(() => undefined)
-  }, [api])
+    return Promise.all([chatsDone, rowsDone, prefsDone]).then(() => undefined)
+  }, [api, readPrefs])
 
   useEffect(() => {
     void reload()
@@ -501,10 +573,23 @@ export function MessageStream(): JSX.Element {
     })
   }, [chatById, chatDisplayNames, chats, loadedMessages])
 
+  const pinnedSet = useMemo(() => new Set(prefs.pinned), [prefs.pinned])
+  const hiddenSet = useMemo(() => new Set(prefs.hidden), [prefs.hidden])
+  const ignoredSet = useMemo(() => {
+    const topicsOn = new Set(prefs.topicsOn)
+    return new Set(prefs.todoOff.filter((id) => !topicsOn.has(id)))
+  }, [prefs.todoOff, prefs.topicsOn])
+
+  const orderedConversations = useMemo(() => {
+    if (pinnedSet.size === 0) return conversations
+    return [...conversations.filter((chat) => pinnedSet.has(chat.chatId)), ...conversations.filter((chat) => !pinnedSet.has(chat.chatId))]
+  }, [conversations, pinnedSet])
+
   useEffect(() => {
+    if (!prefsLoaded) return
     if (selectedChatId && conversations.some((chat) => chat.chatId === selectedChatId)) return
-    setSelectedChatId(conversations[0]?.chatId ?? null)
-  }, [conversations, selectedChatId])
+    setSelectedChatId(orderedConversations.find((chat) => !hiddenSet.has(chat.chatId))?.chatId ?? null)
+  }, [conversations, orderedConversations, hiddenSet, prefsLoaded, selectedChatId])
 
   const activeConversation = conversations.find((chat) => chat.chatId === selectedChatId) ?? null
   const activeChatId = activeConversation?.chatId ?? null
@@ -564,7 +649,7 @@ export function MessageStream(): JSX.Element {
     for (const node of nodes) observer.observe(node)
     publish()
     return () => observer.disconnect()
-  }, [activeChatId, activeAvatarMessageIds, conversations])
+  }, [activeChatId, activeAvatarMessageIds, conversations, prefs])
 
   useEffect(() => {
     const prepare = api.media?.avatarUrls
@@ -718,12 +803,90 @@ export function MessageStream(): JSX.Element {
 
   const shownConversations = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase()
-    return conversations.filter((chat) => {
-      if (!needle) return true
+    return orderedConversations.filter((chat) => {
+      if (!needle) return !hiddenSet.has(chat.chatId)
       const searchable = `${chat.name} ${searchableMessageTextByChat.get(chat.chatId) ?? ''}`.toLocaleLowerCase()
       return searchable.includes(needle)
     })
-  }, [conversations, search, searchableMessageTextByChat])
+  }, [hiddenSet, orderedConversations, search, searchableMessageTextByChat])
+
+  /** 在聊天頁以外改了開關（議題與待辦分頁）再回到訊息時，列表上的「已忽略」要跟上：重讀一次。 */
+  const previousPaneView = useRef<PaneView>(paneView)
+  useEffect(() => {
+    const was = previousPaneView.current
+    previousPaneView.current = paneView
+    if (paneView !== 'messages' || was === 'messages') return undefined
+    const start = prefsSeq.current
+    let live = true
+    void readPrefs().then((next) => {
+      if (live && mountedRef.current && prefsSeq.current === start) setPrefs(next)
+    })
+    return () => { live = false }
+  }, [paneView, readPrefs])
+
+  function focusRowOrSearch(chatId: string | undefined): void {
+    setTimeout(() => {
+      const button = chatId ? rowButtons.current.get(chatId) : undefined
+      if (button) button.focus?.()
+      else searchRef.current?.focus?.()
+    }, 0)
+  }
+
+  function closeListMenu(refocus: boolean): void {
+    setListMenu(null)
+    if (refocus) focusRowOrSearch(listMenu?.chatId)
+  }
+
+  /** anchor：選單左緣要對齊的位置與錨點上下緣（實際像素，滑鼠位置或列的 rect）。 */
+  function openListMenu(chatId: string, anchor: { top: number; bottom: number; left: number }): void {
+    setPrefError('')
+    // 畫面縮放（lib/zoom.ts）之後 rect／clientX 是實際像素、fixed 的 left／top 是縮放前的長度 → 由 placeFixedMenu 換算（它以右緣對齊，所以右緣＝左緣＋實際寬度）；下方不夠 → 往上開
+    const scale = layoutScale()
+    const placement = placeFixedMenu({ top: anchor.top, bottom: anchor.bottom, right: anchor.left + LIST_MENU_WIDTH * scale }, { width: window.innerWidth, height: window.innerHeight }, scale, LIST_MENU_WIDTH, 2, 140)
+    setListMenu({ chatId, placement })
+    focusFirstMenuItem(listMenuRef)
+  }
+
+  const onRowKeyDown = useContextMenuKeys({
+    open: listMenu !== null,
+    menuRef: listMenuRef,
+    onOpen: (event) => {
+      const button = event.currentTarget
+      const chatId = button.getAttribute('data-chat-id')
+      if (!chatId) return
+      const rect = button.getBoundingClientRect?.() ?? { top: 0, bottom: 0, left: 0 }
+      openListMenu(chatId, { top: rect.top, bottom: rect.bottom, left: rect.left + 24 })
+    },
+    onClose: closeListMenu
+  })
+  const onListMenuKeyDown = useContextMenuKeys({ open: listMenu !== null, menuRef: listMenuRef, onOpen: () => undefined, onClose: closeListMenu })
+
+  async function runListAction(chatId: string, action: ListAction): Promise<void> {
+    const index = shownConversations.findIndex((chat) => chat.chatId === chatId)
+    const usable = (chat: ConversationEntry): boolean => chat.chatId !== chatId && !hiddenSet.has(chat.chatId)
+    const neighbor = shownConversations.slice(index + 1).find(usable) ?? shownConversations.slice(0, Math.max(0, index)).reverse().find(usable)
+    setListMenu(null)
+    setPrefError('')
+    try {
+      const result = action === 'pin' || action === 'unpin' ? await api.db.chats.setPinned(chatId, action === 'pin')
+        : action === 'ignore' || action === 'restore' ? await api.db.chats.setIgnored(chatId, action === 'ignore')
+          : await api.db.chats.setHidden(chatId, action === 'hide')
+      if (!mountedRef.current) return
+      if (!result.ok) {
+        setPrefError(LIST_ACTION_ERROR)
+        focusRowOrSearch(chatId)
+        return
+      }
+      prefsSeq.current += 1
+      setPrefs((current) => patchPrefs(current, chatId, action))
+      if (action === 'hide' && activeChatId === chatId) setSelectedChatId(neighbor?.chatId ?? null)
+      focusRowOrSearch(action === 'hide' && !search.trim() ? neighbor?.chatId : chatId)
+    } catch (actionError) {
+      if (!mountedRef.current) return
+      setPrefError(backendErrorText(actionError, LIST_ACTION_ERROR))
+      focusRowOrSearch(chatId)
+    }
+  }
 
   async function loadOlderMessages(): Promise<void> {
     if (!activeChatId || olderLoadingChatId === activeChatId) return
@@ -756,14 +919,9 @@ export function MessageStream(): JSX.Element {
 
   return (
     <section className="stream chat-stream">
-      <div className="stream-bar">
-        <span className={`dot ${st.cls}`} />
-        <span className="stream-status" role={st.cls === 'err' ? 'alert' : undefined}>LINE 橋接：{st.text}</span>
-        {st.retry && <button type="button" className="link-btn stream-retry" onClick={retryAll}>重試</button>}
-        {status && status.restarts > 0 && <span className="muted">（重啟 {status.restarts} 次）</span>}
-        {phaseSource && <BackendDiagnosticsPanel source={phaseSource} />}
-        {(status || messages.length > 0) && <span className="muted stream-count">{status?.messageCount ?? messages.length} 則</span>}
-      </div>
+      <HeaderStatus>
+        <BridgeStatusBar st={st} status={status} phaseSource={phaseSource} onRetry={retryAll} />
+      </HeaderStatus>
       {error && <div className="set-notice err stream-error" role="alert">{error}</div>}
       {historyLoadError && (
         <div className="stream-load-note" role="status">
@@ -784,6 +942,7 @@ export function MessageStream(): JSX.Element {
             <input
               type="search"
               className="chat-search"
+              ref={searchRef}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="搜尋聊天和訊息"
@@ -797,6 +956,7 @@ export function MessageStream(): JSX.Element {
               <button type="button" className="link-btn" onClick={retryAll}>重試</button>
             </div>
           )}
+          {prefError && <div className="chat-action-error" role="alert">{prefError}</div>}
           <ul className="chat-list">
             {loadingChats && conversations.length === 0 && <li className="chat-list-empty muted" role="status">{phase === 'starting' ? describePhase(phase)?.text : '正在載入聊天室…'}</li>}
             {!loadingChats && !chatLoadError && conversations.length === 0 && <li className="chat-list-empty muted">目前尚無聊天資料</li>}
@@ -808,17 +968,32 @@ export function MessageStream(): JSX.Element {
             )}
             {shownConversations.map((chat) => {
               const active = chat.chatId === activeChatId
+              const pinned = pinnedSet.has(chat.chatId)
+              const hidden = hiddenSet.has(chat.chatId)
+              const ignored = ignoredSet.has(chat.chatId)
               const previewSender = chat.latest?.direction === 'out' ? '我' : chat.latest?.msgId ? (messageDisplayNames[chat.latest.msgId] ?? chat.latest.sender) : chat.latest?.sender
               return (
                 <li
                   key={chat.chatId}
                   data-avatar-chat-id={chat.chatId}
-                  className={`chat-list-row${active ? ' active' : ''}`}
+                  className={`chat-list-row${active ? ' active' : ''}${ignored ? ' ignored' : ''}`}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    openListMenu(chat.chatId, { top: event.clientY, bottom: event.clientY, left: event.clientX })
+                  }}
                 >
                   <button
                     type="button"
                     className={`chat-list-item${active ? ' active' : ''}`}
+                    ref={(element) => {
+                      if (element) rowButtons.current.set(chat.chatId, element)
+                      else rowButtons.current.delete(chat.chatId)
+                    }}
+                    data-chat-id={chat.chatId}
                     aria-pressed={active}
+                    aria-haspopup="menu"
+                    aria-expanded={listMenu?.chatId === chat.chatId}
+                    onKeyDown={onRowKeyDown}
                     onClick={() => {
                       setSelectedChatId(chat.chatId)
                       setMobileView('conversation')
@@ -830,6 +1005,9 @@ export function MessageStream(): JSX.Element {
                     <span className="chat-list-copy">
                       <span className="chat-list-line">
                         <span className="chat-list-name" title={chat.name}>{chat.name}</span>
+                        {pinned && <><span className="chat-pin-mark" aria-hidden="true">📌</span><span className="sr-only">已置頂</span></>}
+                        {hidden && <span className="chat-list-flag">已隱藏</span>}
+                        {ignored && !hidden && <span className="sr-only">已忽略</span>}
                         <time className="chat-list-time">{chatTimeLabel(chat)}</time>
                       </span>
                       <span className="chat-list-preview">
@@ -948,6 +1126,33 @@ export function MessageStream(): JSX.Element {
           )}
         </section>
       </div>
+
+      {listMenu && (
+        <ContextMenu
+          menuRef={listMenuRef}
+          className="chat-list-menu"
+          style={{ ...listMenu.placement }}
+          onDismiss={() => closeListMenu(false)}
+          onKeyDown={(event) => {
+            if (event.key === 'Tab') closeListMenu(false)
+            else onListMenuKeyDown(event)
+          }}
+        >
+          {hiddenSet.has(listMenu.chatId) ? (
+            <ContextMenuItem onClick={() => void runListAction(listMenu.chatId, 'unhide')}>取消隱藏</ContextMenuItem>
+          ) : (
+            <>
+              <ContextMenuItem onClick={() => void runListAction(listMenu.chatId, pinnedSet.has(listMenu.chatId) ? 'unpin' : 'pin')}>
+                {pinnedSet.has(listMenu.chatId) ? '取消置頂' : '置頂'}
+              </ContextMenuItem>
+              <ContextMenuItem onClick={() => void runListAction(listMenu.chatId, ignoredSet.has(listMenu.chatId) ? 'restore' : 'ignore')}>
+                {ignoredSet.has(listMenu.chatId) ? '恢復' : '忽略'}
+              </ContextMenuItem>
+              <ContextMenuItem onClick={() => void runListAction(listMenu.chatId, 'hide')}>隱藏</ContextMenuItem>
+            </>
+          )}
+        </ContextMenu>
+      )}
 
       {lightboxSrc && (
         <div className="sm-lightbox" onClick={() => setLightboxSrc(null)}>

@@ -334,6 +334,10 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
         get: (chatId) => call('db.chats.get', chatId),
         todoExtractEnabled: (chatId) => call('db.chats.todoExtractEnabled', chatId),
         setTodoExtractEnabled: (chatId, enabled) => call('db.chats.setTodoExtractEnabled', chatId, enabled),
+        listPrefs: () => call('db.chats.listPrefs'),
+        setPinned: (chatId, pinned) => call('db.chats.setPinned', chatId, pinned),
+        setIgnored: (chatId, ignored) => call('db.chats.setIgnored', chatId, ignored),
+        setHidden: (chatId, hidden) => call('db.chats.setHidden', chatId, hidden),
         addIgnoreKeyword: (chatId, keyword) => call('db.chats.addIgnoreKeyword', chatId, keyword),
         removeIgnoreKeyword: (chatId, keyword) => call('db.chats.removeIgnoreKeyword', chatId, keyword),
         openOriginal: (chatId) => orUnsupported(() => call('db.chats.openOriginal', chatId), (e) => ({ ok: false, error: unsupportedText(e) }))

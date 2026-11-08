@@ -7,6 +7,7 @@ import { getUnprocessedForPipeline, insertMessages } from '../src/main/db/messag
 import { readChatSourceState } from '../src/main/db/sourceCache.ts'
 import { createTodo } from '../src/main/db/todos.repo.ts'
 import { listChats } from '../src/main/db/chats.repo.ts'
+import { chatListPrefsReady, ensureChatListPrefsSchema, listChatPrefs, setChatHidden, setChatIgnored, setChatPinned } from '../src/main/db/chatListPrefs.repo.ts'
 import { TODO_BACKFILL_DAYS, chatTodoPrefsReady, ensureChatTodoPrefsSchema, isTodoExtractEnabled, migrateIgnoredChats, setTodoExtractEnabled } from '../src/main/db/chatTodoPrefs.repo.ts'
 import { applyChatExtract, runOnce } from '../src/main/pipeline/runOnce.ts'
 import { reviewLastDays } from '../src/main/pipeline/backfill.ts'
@@ -922,4 +923,242 @@ test('F5b O2 one-to-one chat: the same queue commit is refused once topics are s
     assert.equal(n(s.db, 'SELECT COUNT(*) AS n FROM todo_topic_identity_relations'), 0)
     assert.equal(n(s.db, 'SELECT COUNT(*) AS n FROM messages WHERE processed=1'), 0)
   } finally { s.close() }
+})
+
+// ───────────────────────── 聊天室列表：置頂／忽略／隱藏（chat_list_preferences） ─────────────────────────
+
+function listFixture({ lists = true, topics = true } = {}) {
+  const opened = fixture()
+  if (lists) ensureChatListPrefsSchema(opened.db)
+  if (topics) ensureGroupTopicsSchema(opened.db)
+  return opened
+}
+
+const listRow = (db, chatId) => db.prepare('SELECT pinned,hidden FROM chat_list_preferences WHERE chat_id=?').get(chatId)
+const topicRow = (db, chatId) => db.prepare('SELECT enabled FROM group_topic_preferences WHERE chat_id=?').get(chatId)
+const blockedOf = (db, chatId) => db.prepare('SELECT blocked,block_reason FROM chats WHERE chat_id=?').get(chatId)
+
+test('L1 ensureChatListPrefsSchema is repeatable, user_version stays 10, the table cascades with its chat and has no cache triggers', () => {
+  const { db, close } = listFixture({ lists: false })
+  try {
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'hello']])
+    assert.equal(chatListPrefsReady(db), false)
+    ensureChatListPrefsSchema(db)
+    ensureChatListPrefsSchema(db)
+    assert.equal(chatListPrefsReady(db), true)
+    assert.equal(db.pragma('user_version', { simple: true }), 10)
+    assert.equal(n(db, "SELECT COUNT(*) AS n FROM sqlite_master WHERE name='chat_list_preferences'"), 1)
+    assert.equal(n(db, "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger' AND tbl_name='chat_list_preferences'"), 0)
+    assert.deepEqual(setChatPinned(db, 'g1', true, NOW_MS), { ok: true, pinned: true })
+    db.prepare('DELETE FROM messages WHERE chat_id=?').run('g1')
+    db.prepare('DELETE FROM chats WHERE chat_id=?').run('g1')
+    assert.equal(n(db, 'SELECT COUNT(*) AS n FROM chat_list_preferences'), 0, 'ON DELETE CASCADE')
+  } finally { close() }
+})
+
+test('L2 pin: sets and clears the flag, drops the row when nothing is set, refuses unknown chats and a missing table', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'hello']])
+    assert.deepEqual(setChatPinned(db, 'g1', true, NOW_MS), { ok: true, pinned: true })
+    assert.deepEqual(listRow(db, 'g1'), { pinned: 1, hidden: 0 })
+    assert.deepEqual(setChatPinned(db, 'g1', true, NOW_MS), { ok: true, pinned: true }, 'repeat is harmless')
+    assert.deepEqual(setChatPinned(db, 'g1', false, NOW_MS), { ok: true, pinned: false })
+    assert.equal(listRow(db, 'g1'), undefined, 'both flags 0 -> no row')
+    assert.deepEqual(setChatPinned(db, 'missing', true, NOW_MS), { ok: false, pinned: false })
+    assert.equal(isTodoExtractEnabled(db, 'g1'), true, 'pinning never touches the extraction switches')
+  } finally { close() }
+  const bare = listFixture({ lists: false })
+  try {
+    addMsgs(bare.db, 'g1', [['m1', NOW_MS - 1000, 'hello']])
+    assert.deepEqual(setChatPinned(bare.db, 'g1', true, NOW_MS), { ok: false, pinned: false })
+    assert.deepEqual(setChatHidden(bare.db, 'g1', true, { nowMs: NOW_MS }), { ok: false, hidden: false })
+  } finally { bare.close() }
+})
+
+test('L3 ignore: todo off, existing topic rows off, no topic row created, chats.blocked never written', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'a']])
+    addMsgs(db, 'g2', [['m2', NOW_MS - 1000, 'b']])
+    setEnabled(db, 'g1', true)
+    assert.deepEqual(setChatIgnored(db, 'g1', true, { nowMs: NOW_MS }), { ok: true, ignored: true, skippedOlder: 0 })
+    assert.equal(isTodoExtractEnabled(db, 'g1'), false)
+    assert.deepEqual(topicRow(db, 'g1'), { enabled: 0 })
+    assert.deepEqual(blockedOf(db, 'g1'), { blocked: 0, block_reason: null })
+    assert.equal(setChatIgnored(db, 'g2', true, { nowMs: NOW_MS }).ok, true)
+    assert.equal(topicRow(db, 'g2'), undefined, 'ignoring does not create a topic row')
+    assert.equal(listRow(db, 'g1'), undefined, 'ignore is not a list flag')
+    assert.equal(setChatIgnored(db, 'missing', true, { nowMs: NOW_MS }).ok, false)
+  } finally { close() }
+})
+
+test('L4 restore: todo back on with the 7-day backfill, topics switched on (a one-to-one chat too), blocked still untouched', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'dm', [['old', NOW_MS - 10 * DAY, 'old text'], ['new', NOW_MS - DAY, 'new text']], false)
+    assert.equal(setChatIgnored(db, 'dm', true, { nowMs: NOW_MS }).ok, true)
+    const restored = setChatIgnored(db, 'dm', false, { nowMs: NOW_MS })
+    assert.deepEqual(restored, { ok: true, ignored: false, skippedOlder: 1 })
+    assert.equal(isTodoExtractEnabled(db, 'dm'), true)
+    assert.deepEqual(topicRow(db, 'dm'), { enabled: 1 })
+    assert.equal(processedOf(db, stored('old')), 1)
+    assert.equal(processedOf(db, stored('new')), 0)
+    assert.deepEqual(blockedOf(db, 'dm'), { blocked: 0, block_reason: null })
+    assert.deepEqual(setChatIgnored(db, 'dm', false, { nowMs: NOW_MS }), { ok: true, ignored: false, skippedOlder: 0 }, 'restoring twice does not backfill again')
+  } finally { close() }
+})
+
+test('L5 hide: both switches off, hidden set, pin cleared in the same call', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'a']])
+    setEnabled(db, 'g1', true)
+    setChatPinned(db, 'g1', true, NOW_MS)
+    assert.deepEqual(setChatHidden(db, 'g1', true, { nowMs: NOW_MS }), { ok: true, hidden: true })
+    assert.deepEqual(listRow(db, 'g1'), { pinned: 0, hidden: 1 })
+    assert.equal(isTodoExtractEnabled(db, 'g1'), false)
+    assert.deepEqual(topicRow(db, 'g1'), { enabled: 0 })
+    assert.deepEqual(blockedOf(db, 'g1'), { blocked: 0, block_reason: null })
+    assert.deepEqual(pipelineIds(db), [], 'a hidden chat is not extracted')
+    assert.deepEqual(setChatHidden(db, 'missing', true, { nowMs: NOW_MS }), { ok: false, hidden: false })
+  } finally { close() }
+})
+
+test('L6 unhide only clears the flag: switches stay off, no backfill, no pin restored; restore is a separate step', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'g1', [['old', NOW_MS - 10 * DAY, 'x'], ['m1', NOW_MS - 1000, 'a']])
+    setEnabled(db, 'g1', true)
+    setChatHidden(db, 'g1', true, { nowMs: NOW_MS })
+    assert.deepEqual(setChatHidden(db, 'g1', false, { nowMs: NOW_MS }), { ok: true, hidden: false })
+    assert.equal(listRow(db, 'g1'), undefined)
+    assert.equal(isTodoExtractEnabled(db, 'g1'), false)
+    assert.deepEqual(topicRow(db, 'g1'), { enabled: 0 })
+    assert.equal(processedOf(db, stored('old')), 0, 'no backfill happened')
+    assert.deepEqual(setChatHidden(db, 'g1', false, { nowMs: NOW_MS }), { ok: true, hidden: false }, 'unhide twice is harmless')
+    assert.equal(setChatIgnored(db, 'g1', false, { nowMs: NOW_MS }).ok, true)
+    assert.equal(isTodoExtractEnabled(db, 'g1'), true)
+  } finally { close() }
+})
+
+test('L7 hide and ignore are atomic: a failure in the last step leaves every table as it was', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'a']])
+    setEnabled(db, 'g1', true)
+    setChatPinned(db, 'g1', true, NOW_MS)
+    db.exec("CREATE TRIGGER boom_topics BEFORE UPDATE ON group_topic_preferences BEGIN SELECT RAISE(ABORT, 'boom'); END;")
+    assert.throws(() => setChatHidden(db, 'g1', true, { nowMs: NOW_MS }), /boom/)
+    assert.throws(() => setChatIgnored(db, 'g1', true, { nowMs: NOW_MS }), /boom/)
+    assert.equal(isTodoExtractEnabled(db, 'g1'), true, 'todo switch rolled back')
+    assert.deepEqual(topicRow(db, 'g1'), { enabled: 1 })
+    assert.deepEqual(listRow(db, 'g1'), { pinned: 1, hidden: 0 }, 'list flags rolled back')
+    assert.equal(n(db, 'SELECT COUNT(*) AS n FROM chat_todo_preferences'), 0, 'no todo preference row was left behind')
+  } finally { close() }
+})
+
+test('L8 the operations nest inside a caller transaction (savepoint) and commit or roll back with it', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'a']])
+    const committed = db.transaction(() => {
+      assert.equal(setChatIgnored(db, 'g1', true, { nowMs: NOW_MS }).ok, true)
+      assert.equal(setChatHidden(db, 'g1', true, { nowMs: NOW_MS }).ok, true)
+      assert.equal(setChatPinned(db, 'g1', true, NOW_MS).ok, true)
+    })
+    committed()
+    assert.equal(isTodoExtractEnabled(db, 'g1'), false)
+    assert.deepEqual(listRow(db, 'g1'), { pinned: 1, hidden: 1 })
+    const rolledBack = db.transaction(() => {
+      setChatHidden(db, 'g1', false, { nowMs: NOW_MS })
+      throw new Error('outer failure')
+    })
+    assert.throws(() => rolledBack(), /outer failure/)
+    assert.deepEqual(listRow(db, 'g1'), { pinned: 1, hidden: 1 }, 'the outer rollback undid the inner change')
+  } finally { close() }
+})
+
+test('L9 fail-closed is intact: legacy blocked=1 chats still read as off before migration, migrateIgnoredChats still converts them, list operations never write blocked', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'old', [['m1', NOW_MS - 1000, 'a']])
+    addMsgs(db, 'fine', [['m2', NOW_MS - 1000, 'b']])
+    db.prepare("UPDATE chats SET blocked=1, block_reason='legacy' WHERE chat_id='old'").run()
+    setEnabled(db, 'old', true)
+    assert.equal(isTodoExtractEnabled(db, 'old'), false)
+    const snapshot = listChatPrefs(db)
+    assert.deepEqual(snapshot.todoOff, ['old'])
+    assert.deepEqual(snapshot.topicsOn, [], 'blocked=1 never counts as topics on')
+    setChatPinned(db, 'fine', true, NOW_MS)
+    setChatIgnored(db, 'fine', true, { nowMs: NOW_MS })
+    setChatHidden(db, 'fine', true, { nowMs: NOW_MS })
+    assert.deepEqual(blockedOf(db, 'old'), { blocked: 1, block_reason: 'legacy' }, 'list operations leave other chats alone')
+    assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 1 })
+    assert.deepEqual(blockedOf(db, 'old'), { blocked: 0, block_reason: null })
+    assert.equal(isTodoExtractEnabled(db, 'old'), false, 'still off after migration')
+    assert.deepEqual(topicRow(db, 'old'), { enabled: 0 })
+  } finally { close() }
+  const bare = fixture({ prefs: false })
+  try {
+    addMsgs(bare.db, 'old', [['m1', NOW_MS - 1000, 'a']])
+    bare.db.prepare('UPDATE chats SET blocked=1 WHERE chat_id=?').run('old')
+    assert.deepEqual(migrateIgnoredChats(bare.db, NOW_MS), { migrated: 0, skipped: 'prefs_unavailable' })
+    assert.equal(blockedOf(bare.db, 'old').blocked, 1, 'migration failure keeps the chat blocked')
+    assert.equal(listChatPrefs(bare.db).prefsReady, false)
+    assert.deepEqual(listChatPrefs(bare.db).todoOff, ['old'])
+  } finally { bare.close() }
+})
+
+test('L10 listPrefs reads every flag in one call with the same meaning as the single-chat readers', () => {
+  const { db, close } = listFixture()
+  try {
+    for (const id of ['a', 'b', 'c', 'd', 'e']) addMsgs(db, id, [[`m-${id}`, NOW_MS - 1000, id]])
+    setEnabled(db, 'a', true)
+    setEnabled(db, 'b', true)
+    setChatPinned(db, 'a', true, NOW_MS)
+    setChatIgnored(db, 'b', true, { nowMs: NOW_MS })
+    setChatHidden(db, 'c', true, { nowMs: NOW_MS })
+    setTodoExtractEnabled(db, 'd', false, NOW_MS)
+    const snapshot = listChatPrefs(db)
+    assert.deepEqual(snapshot, { prefsReady: true, topicsAvailable: true, pinned: ['a'], hidden: ['c'], todoOff: ['b', 'c', 'd'], topicsOn: ['a'] })
+    for (const id of ['a', 'b', 'c', 'd', 'e']) assert.equal(snapshot.todoOff.includes(id), !isTodoExtractEnabled(db, id), id)
+    assert.deepEqual(listChatPrefs(db, { topics: false }), { ...snapshot, topicsAvailable: false, topicsOn: [] })
+    const noTopics = listFixture({ topics: false })
+    try {
+      addMsgs(noTopics.db, 'x', [['m-x', NOW_MS - 1000, 'x']])
+      assert.deepEqual(listChatPrefs(noTopics.db), { prefsReady: true, topicsAvailable: false, pinned: [], hidden: [], todoOff: [], topicsOn: [] })
+      assert.equal(setChatIgnored(noTopics.db, 'x', true, { nowMs: NOW_MS }).ok, true, 'ignore works without the topics table')
+      assert.equal(setChatHidden(noTopics.db, 'x', true, { nowMs: NOW_MS }).ok, true)
+      assert.equal(setChatIgnored(noTopics.db, 'x', false, { nowMs: NOW_MS }).ok, true)
+    } finally { noTopics.close() }
+    assert.equal(setChatIgnored(db, 'e', true, { nowMs: NOW_MS, topics: false }).ok, true)
+    assert.equal(topicRow(db, 'e'), undefined, 'topics: false leaves the topic table alone')
+    assert.equal(setChatIgnored(db, 'e', false, { nowMs: NOW_MS, topics: false }).ok, true)
+    assert.equal(topicRow(db, 'e'), undefined)
+  } finally { close() }
+})
+
+test('L11 static: chat_list_preferences is not an extraction gate and nothing in it writes chats.blocked', () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8')
+  const repo = read('../src/main/db/chatListPrefs.repo.ts')
+  assert.equal(/block_reason/.test(repo), false)
+  assert.equal(/UPDATE\s+chats\b/i.test(repo), false)
+  assert.equal(/SET\s+blocked/i.test(repo), false)
+  for (const rel of [
+    '../src/main/db/chatTodoPrefs.repo.ts', '../src/main/features/groupTopics/repository.ts', '../src/main/features/groupTopics/service.ts', '../src/main/features/groupTopics/background.ts',
+    '../src/main/db/messages.repo.ts', '../src/main/pipeline/runOnce.ts', '../src/main/pipeline/backfill.ts', '../src/plugin/backend/extractQueue.ts', '../src/main/db/sourceCache.ts'
+  ]) assert.equal(read(rel).includes('chat_list_preferences'), false, rel)
+})
+
+test('L12 a pinned chat is still extracted (pin is display-only), and the adapter exposes the new paths with only the read replay-safe', () => {
+  const { db, close } = listFixture()
+  try {
+    addMsgs(db, 'g1', [['m1', NOW_MS - 1000, 'a']])
+    setChatPinned(db, 'g1', true, NOW_MS)
+    assert.deepEqual(pipelineIds(db), [stored('m1')])
+  } finally { close() }
+  for (const path of ['db.chats.listPrefs', 'db.chats.setPinned', 'db.chats.setIgnored', 'db.chats.setHidden']) assert.ok(SUPPORTED_API_PATHS.includes(path), path)
+  assert.equal(isReplaySafePath('db.chats.listPrefs'), true)
+  for (const path of ['db.chats.setPinned', 'db.chats.setIgnored', 'db.chats.setHidden']) assert.equal(isReplaySafePath(path), false, path)
 })

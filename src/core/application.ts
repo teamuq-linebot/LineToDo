@@ -34,6 +34,7 @@ import { insertMessages } from '../main/db/messages.repo'
 import { ensureGroupTopicsSchema } from '../main/features/groupTopics/repository'
 import { createTopicBackground } from '../main/features/groupTopics/background'
 import { ensureChatTodoPrefsSchema, isTodoExtractEnabled, migrateIgnoredChats, setTodoExtractEnabled } from '../main/db/chatTodoPrefs.repo'
+import { ensureChatListPrefsSchema, listChatPrefs, setChatHidden, setChatIgnored, setChatPinned } from '../main/db/chatListPrefs.repo'
 import { createGroupTopicsService } from '../main/features/groupTopics/service'
 import { GROUP_TOPICS_BUNDLE_ENABLED } from '../main/features/groupTopics/prompts/bundle'
 
@@ -148,6 +149,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   ports.onDatabase?.(database.db)
   const repos = createRepositories(database.db)
   try { ensureChatTodoPrefsSchema(database.db) } catch { console.warn('[chat-todo-prefs] schema unavailable; per-chat todo toggle disabled') }
+  try { ensureChatListPrefsSchema(database.db) } catch { console.warn('[chat-list-prefs] schema unavailable; pin/hide disabled') }
   const settings = ports.settings
   let scheduler: PipelineScheduler
   try {
@@ -342,6 +344,23 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
         setTodoExtractEnabled: async (chatId, enabled) => {
           if (typeof chatId !== 'string' || !chatId) return { ok: false, enabled: true, skippedOlder: 0 }
           const result = setTodoExtractEnabled(database.db, chatId, !!enabled)
+          if (result.ok) topicBackground?.kick()
+          return result
+        },
+        listPrefs: async () => listChatPrefs(database.db, { topics: groupTopicsService !== null }),
+        setPinned: async (chatId, pinned) => {
+          if (typeof chatId !== 'string' || !chatId) return { ok: false, pinned: false }
+          return setChatPinned(database.db, chatId, !!pinned)
+        },
+        setIgnored: async (chatId, ignored) => {
+          if (typeof chatId !== 'string' || !chatId) return { ok: false, ignored: false, skippedOlder: 0 }
+          const result = setChatIgnored(database.db, chatId, !!ignored, { topics: groupTopicsService !== null })
+          if (result.ok) topicBackground?.kick()
+          return result
+        },
+        setHidden: async (chatId, hidden) => {
+          if (typeof chatId !== 'string' || !chatId) return { ok: false, hidden: false }
+          const result = setChatHidden(database.db, chatId, !!hidden, { topics: groupTopicsService !== null })
           if (result.ok) topicBackground?.kick()
           return result
         },

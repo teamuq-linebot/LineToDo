@@ -112,6 +112,7 @@ test('message composer stays disabled in flow with active residency status and l
     'settings.chatPrompt.list': () => ({ items: [] }),
     'groupTopics.list': () => ({ ok: true, topics: [] }),
     'groupTopics.pendingCount': () => 0,
+    'db.chats.listPrefs': () => ({ prefsReady: true, topicsAvailable: true, pinned: [], hidden: [], todoOff: [], topicsOn: [] }),
     'db.chats.todoExtractEnabled': () => true, 'db.chats.setTodoExtractEnabled': (chatId, enabled) => ({ ok: true, enabled, skippedOlder: 0 }), 'db.todos.openByChat': () => []
   })
   let snapshot = { supported: true, requested: true, level: 'resident', reason: null }
@@ -1215,7 +1216,7 @@ test('WP-C timeout (non-device): a core call with no answer shows 讀取逾時 w
     const { api, backend } = plugin({
       'db.chats.list': async () => { listCalls += 1; if (listCalls === 1) await hang.promise; return [wpChat('bni', 'BNI 商會')] },
       'db.messages.list': async () => [], 'db.messages.recentByChat': async () => [], 'messages.recent': async () => [], 'line.status': async () => STOPPED,
-      'settings.chatPrompt.list': async () => ({ items: [] })
+      'settings.chatPrompt.list': async () => ({ items: [] }), 'db.chats.listPrefs': async () => ({ prefsReady: true, topicsAvailable: true, pinned: [], hidden: [], todoOff: [], topicsOn: [] })
     }, { timeouts: { coreMs: 150, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
     let scene
     try {
@@ -2628,7 +2629,7 @@ test('U8 the stylesheet defines the shared switch wrapper', () => {
 const legacyBlocked = (chat) => ({ ...chat, blocked: true, blockReason: 'manual' })
 const paneFor = (s, name) => walk(s.view.container).find((element) => element.localName === 'section' && hasClassName(element, 'chat-pane') && element.getAttribute('aria-label') === name)
 
-test('I3 the chat list has no ignore filter, no per-chat menu and no ignore wording, even for a chat a legacy backend still marks blocked', async () => {
+test('I3 the chat list has no ignore filter, no 更多操作 button, no open menu and no ignore wording until a menu is opened, even for a chat a legacy backend still marks blocked', async () => {
   const chat = legacyBlocked(toggleChat('ignore-i3', '合成群組I3', true))
   const s = toggleScene([chat])
   try {
@@ -2637,7 +2638,7 @@ test('I3 the chat list has no ignore filter, no per-chat menu and no ignore word
     const all = walk(s.view.container)
     assert.equal(all.some((element) => element.localName === 'button' && element.hasAttribute('aria-pressed') && /^(已忽略|聊天s*d)/.test(element.textContent.trim())), false, 'no filter buttons')
     assert.equal(all.some((element) => (element.getAttribute('aria-label') ?? '').startsWith('更多操作：')), false, 'no per-chat more button')
-    assert.equal(all.some((element) => element.getAttribute('role') === 'menuitem' || element.getAttribute('role') === 'menu'), false, 'no menu')
+    assert.equal(all.some((element) => element.getAttribute('role') === 'menuitem' || element.getAttribute('role') === 'menu'), false, 'no menu until one is opened')
     const text = s.view.container.textContent
     for (const gone of ['已忽略', '忽略對話', '恢復對話']) assert.equal(text.includes(gone), false, gone)
   } finally { s.dispose() }
@@ -3141,4 +3142,372 @@ test('column bulk move: the confirm shows 移動中 done/total while the batch r
     await until(() => !s.dialog(), { message: 'the batch ends' })
     assert.deepEqual(s.moves(), [['t1', 'done'], ['t2', 'done'], ['t3', 'done']])
   } finally { s.dispose() }
+})
+
+// ───────────── 聊天室列表右鍵選單（M1–M10）與標題列狀態列（H1–H7） ─────────────
+
+dom.window.innerWidth = 1280
+dom.window.innerHeight = 800
+
+const PREFS = (over = {}) => ({ prefsReady: true, topicsAvailable: true, pinned: [], hidden: [], todoOff: [], topicsOn: [], ...over })
+const noop = () => undefined
+const fakeEvent = (over = {}) => ({ preventDefault: noop, stopPropagation: noop, ...over })
+
+function listScene(chats, { prefs = PREFS(), handlers = {} } = {}) {
+  const s = toggleScene(chats, { 'db.chats.listPrefs': () => prefs, ...handlers })
+  const rowEls = () => walk(s.view.container).filter((element) => hasClassName(element, 'chat-list-row'))
+  const rowNames = () => rowEls().map((row) => walk(row).find((element) => hasClassName(element, 'chat-list-name'))?.textContent ?? '')
+  const rowOf = (name) => rowEls().find((row) => walk(row).some((element) => hasClassName(element, 'chat-list-name') && element.textContent === name))
+  const menu = () => walk(s.view.container).find((element) => element.getAttribute('role') === 'menu')
+  const menuLabels = () => (menu() ? walk(menu()).filter((element) => element.getAttribute('role') === 'menuitem').map((element) => element.textContent.trim()) : null)
+  const openMenu = (name, point = { clientX: 60, clientY: 120 }) => reactProps(rowOf(name)).onContextMenu(fakeEvent(point))
+  const pick = (label) => reactProps(walk(menu()).find((element) => element.getAttribute('role') === 'menuitem' && element.textContent.trim() === label)).onClick({})
+  const rowButton = (name) => walk(rowOf(name)).find((element) => hasClassName(element, 'chat-list-item'))
+  const searchInput = () => walk(s.view.container).find((element) => element.localName === 'input' && element.getAttribute('type') === 'search')
+  const type = (text) => reactProps(searchInput()).onChange({ target: { value: text } })
+  const alertText = () => walk(s.view.container).filter((element) => element.getAttribute('role') === 'alert' && hasClassName(element, 'chat-action-error')).map((element) => element.textContent)
+  return { ...s, rowEls, rowNames, rowOf, menu, menuLabels, openMenu, pick, rowButton, searchInput, type, alertText }
+}
+
+const three = () => [toggleChat('m-a', '聊天甲', false), toggleChat('m-b', '聊天乙', true), toggleChat('m-c', '聊天丙', false)]
+
+test('M1 right-clicking a chat row opens a menu: 置頂／忽略／隱藏, or 取消置頂／恢復／隱藏 for a pinned, ignored chat; nothing is open before', async () => {
+  const s = listScene(three(), { prefs: PREFS({ pinned: ['m-b'], todoOff: ['m-b'] }) })
+  try {
+    await until(() => s.rowNames().length === 3, { message: 'three rows' })
+    assert.equal(s.menu(), undefined, 'no menu until one is opened')
+    s.openMenu('聊天甲')
+    await until(() => s.menu(), { message: 'menu opens' })
+    assert.deepEqual(s.menuLabels(), ['置頂', '忽略', '隱藏'])
+    assert.equal(walk(s.view.container).filter((element) => element.getAttribute('role') === 'menu').length, 1)
+    s.openMenu('聊天乙')
+    await until(() => s.menuLabels()?.[0] === '取消置頂', { message: 'menu for the pinned, ignored chat' })
+    assert.deepEqual(s.menuLabels(), ['取消置頂', '恢復', '隱藏'])
+    assert.equal(walk(s.view.container).filter((element) => element.getAttribute('role') === 'menu').length, 1, 'a single menu state')
+    const style = reactProps(s.menu()).style
+    assert.ok(Number.isFinite(style.left) && (Number.isFinite(style.top) || Number.isFinite(style.bottom)), 'placed by placeFixedMenu with finite numbers')
+  } finally { s.dispose() }
+})
+
+test('M2 each menu item calls exactly one set API with its arguments (never the two old switches), then the row shows the result', async () => {
+  const s = listScene(three(), {
+    handlers: {
+      'db.chats.setPinned': (chatId, pinned) => ({ ok: true, pinned }),
+      'db.chats.setIgnored': (chatId, ignored) => ({ ok: true, ignored, skippedOlder: 0 }),
+      'db.chats.setHidden': (chatId, hidden) => ({ ok: true, hidden }),
+      'db.chats.setTodoExtractEnabled': () => ({ ok: true, enabled: true, skippedOlder: 0 }),
+      'groupTopics.setEnabled': () => ({ ok: true })
+    }
+  })
+  try {
+    await until(() => s.rowNames().length === 3, { message: 'rows' })
+    s.openMenu('聊天乙')
+    await until(() => s.menu(), { message: 'menu' })
+    s.pick('置頂')
+    await until(() => s.callsTo('db.chats.setPinned').length === 1, { message: 'pin call' })
+    assert.deepEqual(s.callsTo('db.chats.setPinned')[0].args, ['m-b', true])
+    await until(() => s.rowNames()[0] === '聊天乙', { message: 'pinned row first' })
+    assert.equal(s.menu(), undefined, 'the menu closed')
+    assert.ok(s.rowOf('聊天乙').textContent.includes('已置頂'), 'sr-only pin text')
+
+    s.openMenu('聊天丙')
+    await until(() => s.menu(), { message: 'menu 2' })
+    s.pick('忽略')
+    await until(() => s.callsTo('db.chats.setIgnored').length === 1, { message: 'ignore call' })
+    assert.deepEqual(s.callsTo('db.chats.setIgnored')[0].args, ['m-c', true])
+    await until(() => hasClassName(s.rowOf('聊天丙'), 'ignored'), { message: 'ignored row faded' })
+    assert.ok(s.rowOf('聊天丙').textContent.includes('已忽略'))
+    assert.equal(s.rowOf('聊天丙').textContent.includes('已隱藏'), false)
+    s.openMenu('聊天丙')
+    await until(() => s.menuLabels()?.[1] === '恢復', { message: 'now offers 恢復' })
+    s.pick('恢復')
+    await until(() => s.callsTo('db.chats.setIgnored').length === 2, { message: 'restore call' })
+    assert.deepEqual(s.callsTo('db.chats.setIgnored')[1].args, ['m-c', false])
+    await until(() => !hasClassName(s.rowOf('聊天丙'), 'ignored'), { message: 'row back to normal' })
+
+    s.openMenu('聊天甲')
+    await until(() => s.menu(), { message: 'menu 3' })
+    s.pick('隱藏')
+    await until(() => s.callsTo('db.chats.setHidden').length === 1, { message: 'hide call' })
+    assert.deepEqual(s.callsTo('db.chats.setHidden')[0].args, ['m-a', true])
+    await until(() => s.rowOf('聊天甲') === undefined, { message: 'hidden row leaves the list' })
+    assert.equal(s.callsTo('db.chats.setTodoExtractEnabled').length, 0)
+    assert.equal(s.callsTo('groupTopics.setEnabled').length, 0)
+  } finally { s.dispose() }
+})
+
+test('M3 hidden chats are not listed; searching lists them with 已隱藏 and a menu that only offers 取消隱藏; unhiding keeps them listed', async () => {
+  const s = listScene(three(), {
+    prefs: PREFS({ hidden: ['m-b'], todoOff: ['m-b'] }),
+    handlers: { 'db.chats.setHidden': (chatId, hidden) => ({ ok: true, hidden }) }
+  })
+  try {
+    await until(() => s.rowNames().length === 2, { message: 'two visible rows' })
+    assert.equal(s.rowOf('聊天乙'), undefined)
+    s.type('聊天')
+    await until(() => s.rowNames().length === 3, { message: 'search lists the hidden chat too' })
+    assert.ok(s.rowOf('聊天乙').textContent.includes('已隱藏'))
+    assert.equal(s.rowOf('聊天甲').textContent.includes('已隱藏'), false)
+    s.openMenu('聊天乙')
+    await until(() => s.menu(), { message: 'menu on the hidden row' })
+    assert.deepEqual(s.menuLabels(), ['取消隱藏'])
+    s.pick('取消隱藏')
+    await until(() => s.callsTo('db.chats.setHidden').length === 1, { message: 'unhide call' })
+    assert.deepEqual(s.callsTo('db.chats.setHidden')[0].args, ['m-b', false])
+    await until(() => !s.rowOf('聊天乙').textContent.includes('已隱藏'), { message: 'flag gone' })
+    s.type('')
+    await until(() => s.rowNames().length === 3, { message: 'unhidden chat stays in the normal list' })
+    assert.ok(hasClassName(s.rowOf('聊天乙'), 'ignored'), 'still ignored: unhide does not restore')
+  } finally { s.dispose() }
+})
+
+test('M4 pinned chats come first (in the original order among themselves) and fall back when unpinned', async () => {
+  const s = listScene(three(), {
+    prefs: PREFS({ pinned: ['m-c'] }),
+    handlers: { 'db.chats.setPinned': (chatId, pinned) => ({ ok: true, pinned }) }
+  })
+  try {
+    await until(() => s.rowNames().length === 3, { message: 'rows' })
+    const original = ['聊天甲', '聊天乙', '聊天丙']
+    assert.equal(s.rowNames()[0], '聊天丙')
+    assert.deepEqual(s.rowNames().slice(1), original.filter((name) => name !== '聊天丙').sort((a, b) => s.rowNames().indexOf(a) - s.rowNames().indexOf(b)))
+    s.openMenu('聊天丙')
+    await until(() => s.menu(), { message: 'menu' })
+    s.pick('取消置頂')
+    await until(() => s.callsTo('db.chats.setPinned').length === 1 && s.rowNames()[0] !== '聊天丙', { message: 'unpinned row goes back' })
+    assert.deepEqual(s.callsTo('db.chats.setPinned')[0].args, ['m-c', false])
+  } finally { s.dispose() }
+})
+
+test('M5 keyboard: the ContextMenu key and Shift+F10 on a row open the menu, Escape closes it and the focus is back on that row; the backdrop closes it without a call', async () => {
+  const s = listScene(three())
+  try {
+    await until(() => s.rowNames().length === 3, { message: 'rows' })
+    const button = s.rowButton('聊天乙')
+    const hook = () => reactProps(button).onKeyDown
+    hook()(fakeEvent({ key: 'ContextMenu', currentTarget: button }))
+    await until(() => s.menu(), { message: 'ContextMenu key opens' })
+    assert.deepEqual(s.menuLabels(), ['置頂', '忽略', '隱藏'])
+    const items = walk(s.menu()).filter((element) => element.getAttribute('role') === 'menuitem')
+    s.menu().querySelectorAll = () => items
+    dom.document.activeElement = items[0]
+    reactProps(s.menu()).onKeyDown(fakeEvent({ key: 'ArrowDown' }))
+    assert.equal(dom.document.activeElement, items[1], 'ArrowDown moves to the next item')
+    reactProps(s.menu()).onKeyDown(fakeEvent({ key: 'ArrowUp' }))
+    reactProps(s.menu()).onKeyDown(fakeEvent({ key: 'ArrowUp' }))
+    assert.equal(dom.document.activeElement, items[2], 'ArrowUp wraps around')
+    reactProps(s.menu()).onKeyDown(fakeEvent({ key: 'Escape' }))
+    await until(() => s.menu() === undefined, { message: 'Escape closes' })
+    await until(() => dom.document.activeElement === button, { message: 'focus returns to the row' })
+
+    hook()(fakeEvent({ key: 'F10', shiftKey: true, currentTarget: button }))
+    await until(() => s.menu(), { message: 'Shift+F10 opens' })
+    const backdrop = walk(s.view.container).find((element) => hasClassName(element, 'menu-backdrop'))
+    reactProps(backdrop).onMouseDown({})
+    await until(() => s.menu() === undefined, { message: 'backdrop closes' })
+    for (const path of ['db.chats.setPinned', 'db.chats.setIgnored', 'db.chats.setHidden']) assert.equal(s.callsTo(path).length, 0, path)
+  } finally { s.dispose() }
+})
+
+test('M6 hiding the selected chat selects the next visible chat; the default selection skips hidden chats from the start', async () => {
+  const s = listScene(three(), {
+    prefs: PREFS({ hidden: ['m-a'] }),
+    handlers: { 'db.chats.setHidden': (chatId, hidden) => ({ ok: true, hidden }) }
+  })
+  try {
+    await until(() => s.rowNames().length === 2, { message: 'rows' })
+    const first = s.rowNames()[0]
+    await until(() => paneFor(s, first), { message: 'the first visible chat is selected, not the hidden one' })
+    assert.equal(paneFor(s, '聊天甲'), undefined)
+    s.openMenu(first)
+    await until(() => s.menu(), { message: 'menu' })
+    s.pick('隱藏')
+    const second = s.rowNames().find((name) => name !== first)
+    await until(() => paneFor(s, second), { message: 'the next visible chat is selected' })
+    assert.equal(s.rowOf(first), undefined)
+  } finally { s.dispose() }
+})
+
+test('M7 if db.chats.listPrefs fails the list still renders normally, shows no error, and the menu still opens', async () => {
+  const s = listScene(three(), { handlers: { 'db.chats.listPrefs': () => { throw Object.assign(new Error('boom'), { code: 'internal' }) } } })
+  try {
+    await until(() => s.rowNames().length === 3, { message: 'rows without prefs' })
+    assert.deepEqual(s.alertText(), [])
+    assert.equal(s.view.container.textContent.includes('boom'), false)
+    s.openMenu('聊天甲')
+    await until(() => s.menu(), { message: 'menu' })
+    assert.deepEqual(s.menuLabels(), ['置頂', '忽略', '隱藏'])
+  } finally { s.dispose() }
+})
+
+test('M8 a failing set call (rejection or ok:false) shows one error line, changes nothing on screen, and a later success clears it', async () => {
+  let mode = 'throw'
+  const s = listScene(three(), {
+    handlers: {
+      'db.chats.setPinned': (chatId, pinned) => {
+        if (mode === 'throw') throw Object.assign(new Error('寫入失敗'), { code: 'internal' })
+        if (mode === 'refuse') return { ok: false, pinned: false }
+        return { ok: true, pinned }
+      }
+    }
+  })
+  try {
+    await until(() => s.rowNames().length === 3, { message: 'rows' })
+    const before = s.rowNames()
+    s.openMenu('聊天乙'); await until(() => s.menu(), { message: 'menu' }); s.pick('置頂')
+    await until(() => s.alertText().length === 1, { message: 'one error line' })
+    assert.deepEqual(s.rowNames(), before, 'the order did not change')
+    assert.equal(s.rowOf('聊天乙').textContent.includes('已置頂'), false)
+    mode = 'refuse'
+    s.openMenu('聊天乙'); await until(() => s.menu(), { message: 'menu again' })
+    assert.equal(s.alertText().length, 0, 'opening a menu clears the old line')
+    s.pick('置頂')
+    await until(() => s.alertText().length === 1, { message: 'error line for ok:false' })
+    mode = 'ok'
+    s.openMenu('聊天乙'); await until(() => s.menu(), { message: 'menu third time' }); s.pick('置頂')
+    await until(() => s.rowNames()[0] === '聊天乙' && s.alertText().length === 0, { message: 'success clears the line' })
+  } finally { s.dispose() }
+})
+
+test('M9 returning from the 議題與待辦 view re-reads the list state (the switches there can ignore a chat too)', async () => {
+  let prefs = PREFS()
+  const s = listScene(three(), { handlers: { 'db.chats.listPrefs': () => prefs } })
+  try {
+    await until(() => s.rowNames().length === 3, { message: 'rows' })
+    await until(() => paneFor(s, s.rowNames()[0]), { message: 'a chat is selected' })
+    s.click(s.paneButton('議題與待辦'))
+    await until(() => byAttr(s.view.container, 'data-testid', 'chat-topics-todos-content'), { message: 'the combined view is showing' })
+    await until(() => s.callsTo('db.chats.listPrefs').length >= 1, { message: 'initial read counted' })
+    const reads = s.callsTo('db.chats.listPrefs').length
+    prefs = PREFS({ todoOff: ['m-a', 'm-b', 'm-c'] })
+    s.click(s.paneButton('訊息'))
+    await until(() => s.callsTo('db.chats.listPrefs').length === reads + 1, { message: 'one more read' })
+    await until(() => s.rowEls().every((row) => hasClassName(row, 'ignored')), { message: 'rows show the new state' })
+  } finally { s.dispose() }
+})
+
+test('M10 the menu uses the shared ContextMenu and the board column header still uses it too (same markup: backdrop + menu-pop role=menu)', () => {
+  const read = (...parts) => readFileSync(resolve(ROOT, 'src', 'renderer', ...parts), 'utf8')
+  assert.match(read('components', 'MessageStream.tsx'), /<ContextMenu\b/)
+  assert.match(read('components', 'Board', 'Column.tsx'), /<ContextMenu\b/)
+  assert.match(read('components', 'Board', 'Column.tsx'), /useContextMenuKeys/)
+  const shell = read('components', 'ContextMenu.tsx')
+  assert.ok(shell.includes('menu-backdrop') && shell.includes('menu-pop') && shell.includes('role="menu"'))
+  assert.equal(/menu-backdrop/.test(read('components', 'Board', 'Column.tsx')), false, 'the backdrop markup lives only in the shared component')
+})
+
+const STREAM_TAB = () => ({ 'lt-ui:app.tab': JSON.stringify({ v: 'stream', at: Date.now() }) })
+const ancestors = (element) => { const out = []; for (let n = element.parentNode; n; n = n.parentNode) out.push(n); return out }
+const inHeader = (element) => ancestors(element).some((node) => node.nodeType === 1 && hasClassName(node, 'app-header'))
+const headerOf = (view) => walk(view.container).find((element) => element.localName === 'header' && hasClassName(element, 'app-header'))
+const appStreamScene = (handlers, apiOptions, tab = STREAM_TAB()) => {
+  const { api } = plugin({
+    'db.chats.list': () => [], 'db.messages.list': () => [], 'db.messages.recentByChat': () => [], 'messages.recent': () => [],
+    'db.chats.listPrefs': () => PREFS(), 'settings.chatPrompt.list': () => ({ items: [] }),
+    'line.status': () => ({ state: 'running', lastMessageAt: null, messageCount: 2, lastError: null, restarts: 0 }),
+    ...handlers
+  }, apiOptions)
+  const view = ui.mount(ui.appSceneWithState(api, memoryStorage(tab)))
+  return { api, view, dispose() { view.unmount(); api.dispose() } }
+}
+
+test('H1 on the chat tab the 「LINE 橋接」 status bar is inside the top header, not in the page body', async () => {
+  const s = appStreamScene({})
+  try {
+    await until(() => walk(s.view.container).some((element) => hasClassName(element, 'stream-status') && element.textContent.includes('運行中')), { message: 'status text' })
+    const bar = walk(s.view.container).find((element) => hasClassName(element, 'stream-bar'))
+    assert.ok(bar && inHeader(bar), 'the bar is a descendant of header.app-header')
+    const main = walk(s.view.container).find((element) => element.localName === 'main')
+    assert.equal(walk(main).some((element) => hasClassName(element, 'stream-bar') || hasClassName(element, 'stream-status')), false, 'nothing of it is left in the page body')
+    const slot = byAttr(s.view.container, 'data-testid', 'header-status-slot')
+    assert.ok(slot && slot.contains(bar) && inHeader(slot))
+    const kids = headerOf(s.view).childNodes.filter((node) => node.nodeType === 1)
+    const at = (predicate) => kids.findIndex(predicate)
+    assert.ok(at((node) => node === slot) > at((node) => node.localName === 'h1') && at((node) => node === slot) < at((node) => node.localName === 'nav'), 'between the title and the tabs')
+  } finally { s.dispose() }
+})
+
+test('H2 the duplicate 「N 則」 counter is gone; the count appears once, inside the status sentence', async () => {
+  const s = appStreamScene({})
+  try {
+    await until(() => streamStatusText(s.view).includes('已收 2 則'), { message: 'status with the count' })
+    assert.equal(walk(s.view.container).some((element) => hasClassName(element, 'stream-count')), false)
+    assert.equal((s.view.container.textContent.match(/2 則/g) ?? []).length, 1)
+  } finally { s.dispose() }
+})
+
+test('H3 a read timeout shows the red dot, the alert wording and 重試 in the header; the retry (called through the portal) resends and recovers', async () => {
+  const hang = deferred()
+  let listCalls = 0
+  const s = appStreamScene({
+    'db.chats.list': async () => { listCalls += 1; if (listCalls === 1) await hang.promise; return [wpChat('bni', 'BNI 商會')] },
+    'line.status': async () => STOPPED
+  }, { timeouts: { coreMs: 150, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
+  try {
+    await until(() => streamStatusText(s.view).includes('讀取逾時'), { timeout: 3000, message: 'timeout wording' })
+    const status = walk(s.view.container).find((element) => hasClassName(element, 'stream-status'))
+    assert.equal(status.getAttribute('role'), 'alert')
+    assert.ok(inHeader(status))
+    const bar = walk(s.view.container).find((element) => hasClassName(element, 'stream-bar'))
+    assert.ok(walk(bar).some((element) => hasClassName(element, 'dot') && hasClassName(element, 'err')), 'red dot')
+    const retry = walk(bar).find((element) => element.localName === 'button' && element.textContent.trim() === '重試')
+    assert.ok(retry, 'retry button in the header')
+    hang.resolve()
+    reactProps(retry).onClick({})
+    await until(() => walk(s.view.container).some((element) => hasClassName(element, 'chat-list-item') && element.textContent.includes('BNI 商會')), { message: 'list recovers' })
+    await until(() => !streamStatusText(s.view).includes('讀取逾時'), { message: 'timeout wording clears' })
+  } finally { hang.resolve(); s.dispose() }
+})
+
+test('H4 診斷 stays a collapsed <details> inside the header and still opens with the diagnostic fields', async () => {
+  const s = appStreamScene({ 'backend.info': async () => ({ pid: 4242, uptimeMs: 125_000 }) })
+  try {
+    const details = () => walk(s.view.container).find((element) => element.localName === 'details' && element.getAttribute('data-testid') === 'backend-diagnostics')
+    await until(() => details(), { message: 'details' })
+    assert.ok(inHeader(details()))
+    assert.equal(details().hasAttribute('open'), false)
+    reactProps(details()).onToggle({ currentTarget: { open: true } })
+    const field = (name) => walk(details()).find((element) => element.getAttribute('data-diag') === name)?.textContent ?? ''
+    await until(() => field('backend').includes('pid 4242'), { message: 'diagnostic fields' })
+    assert.equal(field('error'), '無')
+  } finally { s.dispose() }
+})
+
+test('H5 other tabs render no status slot and no status bar; coming back to the chat tab puts it back in the header', async () => {
+  const s = appStreamScene({ 'db.todos.list': () => [], 'groupTopics.overview': () => [] })
+  try {
+    await until(() => byAttr(s.view.container, 'data-testid', 'header-status-slot'), { message: 'slot on the chat tab' })
+    const tab = (label) => walk(s.view.container).find((element) => element.localName === 'button' && hasClassName(element, 'tab') && element.textContent.trim() === label)
+    for (const label of ['總覽', '群組議題']) {
+      reactProps(tab(label)).onClick({})
+      await until(() => byAttr(s.view.container, 'data-testid', 'header-status-slot') === null, { message: `no slot on ${label}` })
+      assert.equal(walk(s.view.container).some((element) => hasClassName(element, 'stream-bar')), false, `no status bar on ${label}`)
+    }
+    reactProps(tab('聊天')).onClick({})
+    await until(() => walk(s.view.container).some((element) => hasClassName(element, 'stream-bar') && inHeader(element)), { message: 'bar back in the header' })
+  } finally { s.dispose() }
+})
+
+test('H6 without an App header (MessageStream mounted alone) the status bar stays in place, exactly as before', async () => {
+  const { api } = plugin({
+    'db.chats.list': () => [], 'db.messages.list': () => [], 'db.messages.recentByChat': () => [], 'messages.recent': () => [],
+    'db.chats.listPrefs': () => PREFS(), 'line.status': () => ({ state: 'running', lastMessageAt: null, messageCount: 2, lastError: null, restarts: 0 })
+  })
+  const scene = ui.mount(ui.messageStreamScene(api))
+  try {
+    await until(() => streamStatusText(scene).includes('運行中'), { message: 'status' })
+    const bar = walk(scene.container).find((element) => hasClassName(element, 'stream-bar'))
+    assert.ok(bar)
+    assert.ok(ancestors(bar).some((node) => node.nodeType === 1 && hasClassName(node, 'stream')), 'inside the stream section')
+  } finally { scene.unmount(); api.dispose() }
+})
+
+test('H7 the stylesheet puts the slot and the bar into the header without boxes, wraps the header, lets 診斷 take its own row, and no longer has .stream-count', () => {
+  const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
+  assert.match(css, /\.app-header-status\s*\{\s*display:\s*contents;\s*\}/)
+  assert.match(css, /\.app-header \.stream-bar\s*\{\s*display:\s*contents;\s*\}/)
+  assert.match(css, /\.app-header\s*\{[^}]*flex-wrap:\s*wrap;/)
+  assert.match(css, /\.stream-diag\[open\]\s*\{[^}]*flex:\s*1 0 100%/)
+  assert.equal(css.includes('.stream-count'), false)
+  assert.match(css, /\.chat-list-row\.ignored/)
 })

@@ -105,25 +105,28 @@ export interface SetTodoExtractResult {
   skippedOlder: number
 }
 
+/** 不開交易：由呼叫端（單獨的 setTodoExtractEnabled 或組合操作）持有同一個交易。 */
+export function applyTodoExtractEnabled(db: Database, chatId: string, enabled: boolean, nowMs = Date.now()): SetTodoExtractResult {
+  const chat = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
+  const current = isTodoExtractEnabled(db, chatId)
+  if (!chat) return { ok: false, enabled: current, skippedOlder: 0 }
+  const stamp = new Date(nowMs).toISOString()
+  if (!enabled) {
+    db.prepare(
+      'INSERT INTO chat_todo_preferences(chat_id,extract_enabled,updated_at) VALUES (?,0,?) ' +
+      'ON CONFLICT(chat_id) DO UPDATE SET extract_enabled=0, updated_at=excluded.updated_at'
+    ).run(chatId, stamp)
+    return { ok: true, enabled: false, skippedOlder: 0 }
+  }
+  if (current) return { ok: true, enabled: true, skippedOlder: 0 }
+  db.prepare('UPDATE chat_todo_preferences SET extract_enabled=1, updated_at=? WHERE chat_id=?').run(stamp, chatId)
+  const cutoff = nowMs - TODO_BACKFILL_DAYS * DAY_MS
+  const changes = db.prepare('UPDATE messages SET processed=1 WHERE chat_id=? AND processed=0 AND ts < ?').run(chatId, cutoff).changes
+  return { ok: true, enabled: true, skippedOlder: changes }
+}
+
 export function setTodoExtractEnabled(db: Database, chatId: string, enabled: boolean, nowMs = Date.now()): SetTodoExtractResult {
   if (!chatTodoPrefsReady(db)) return { ok: false, enabled: true, skippedOlder: 0 }
-  const tx = db.transaction((): SetTodoExtractResult => {
-    const chat = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
-    const current = isTodoExtractEnabled(db, chatId)
-    if (!chat) return { ok: false, enabled: current, skippedOlder: 0 }
-    const stamp = new Date(nowMs).toISOString()
-    if (!enabled) {
-      db.prepare(
-        'INSERT INTO chat_todo_preferences(chat_id,extract_enabled,updated_at) VALUES (?,0,?) ' +
-        'ON CONFLICT(chat_id) DO UPDATE SET extract_enabled=0, updated_at=excluded.updated_at'
-      ).run(chatId, stamp)
-      return { ok: true, enabled: false, skippedOlder: 0 }
-    }
-    if (current) return { ok: true, enabled: true, skippedOlder: 0 }
-    db.prepare('UPDATE chat_todo_preferences SET extract_enabled=1, updated_at=? WHERE chat_id=?').run(stamp, chatId)
-    const cutoff = nowMs - TODO_BACKFILL_DAYS * DAY_MS
-    const changes = db.prepare('UPDATE messages SET processed=1 WHERE chat_id=? AND processed=0 AND ts < ?').run(chatId, cutoff).changes
-    return { ok: true, enabled: true, skippedOlder: changes }
-  })
+  const tx = db.transaction((): SetTodoExtractResult => applyTodoExtractEnabled(db, chatId, enabled, nowMs))
   return runImmediateTransaction(tx)
 }

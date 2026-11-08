@@ -186,8 +186,9 @@ body {
 
 .app-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 6px 12px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
@@ -316,11 +317,6 @@ code {
   line-height: 1.7;
 }
 
-.stream-count {
-  margin-left: auto;
-  white-space: nowrap;
-}
-
 /* 狀態列可以換行（窄寬時「重試」與「診斷」不會被截斷）；診斷展開時佔滿一整行，內容垂直堆疊。 */
 .stream-bar { flex-wrap: wrap; }
 .stream-retry { flex: 0 0 auto; white-space: nowrap; }
@@ -332,6 +328,12 @@ code {
 .stream-diag-body dt { color: var(--muted); }
 .stream-diag-body dd { margin: 0; overflow-wrap: anywhere; }
 .chat-load-error { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+
+/* 聊天頁的橋接狀態列在最上面的標題列：插槽與狀態列本身都不產生外框（點、文字、重試、診斷直接排在標題列裡）；診斷展開時獨占下一行。 */
+.app-header-status { display: contents; }
+.app-header .stream-bar { display: contents; }
+.app-header .stream-status { min-width: 0; overflow-wrap: anywhere; }
+.app-header .stream-diag[open] { padding: 2px 0 4px; }
 
 .stream-error {
   flex: 0 0 auto;
@@ -463,6 +465,7 @@ code {
   border-bottom: 1px solid var(--row-border);
 }
 .chat-list-row.active { background: var(--chat-selected-bg); }
+.chat-list-row.ignored .chat-list-item { opacity: 0.55; }
 .chat-list-row:hover { background: var(--hover-row); }
 
 .chat-list-item {
@@ -573,6 +576,17 @@ code {
   font-size: 12.5px;
   font-weight: 600;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-list-name { margin-right: auto; }
+.chat-pin-mark,
+.chat-list-flag { flex: 0 0 auto; font-size: 10.5px; line-height: 1; }
+.chat-list-flag {
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-weight: 400;
   white-space: nowrap;
 }
 .chat-list-time {
