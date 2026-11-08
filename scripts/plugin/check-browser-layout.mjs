@@ -213,10 +213,10 @@ const SCENES = [
   { id: 'stream-list', tab: 'stream', cols: 'chat', expect: ['.chat-workspace', '.chat-list-row'] },
   { id: 'stream-listmenu', tab: 'stream', cols: 'chat', expect: ['[role=menu]'], run: async (h) => { const c = await h.center('.chat-list-row', 2); if (c) await h.click(c.x, c.y, 'right') } },
   { id: 'stream-chat', tab: 'stream', cols: 'chat', expect: ['.chat-message'], run: async (h) => { await h.ev(`document.querySelector('.chat-list-item')?.click()`); await sleep(500) } },
-  { id: 'stream-topicsTodos', tab: 'stream', cols: 'chat', expect: ['.chat-topics-todos-content'], run: async (h) => { await h.ev(`document.querySelector('.chat-list-item')?.click()`); await sleep(400); await h.ev(textClick('.chat-pane-view-toggle button', '議題與待辦')); await sleep(500) } },
+  { id: 'stream-topicsTodos', tab: 'stream', cols: 'chat', expect: ['.chat-topics-todos-content', '.group-topic-card', '.chat-todo-card'], run: async (h) => { await h.ev(`document.querySelector('.chat-list-item')?.click()`); await sleep(400); await h.ev(textClick('.chat-pane-view-toggle button', '議題與待辦')); await waitVisible(h, '.group-topic-card') } },
   { id: 'stream-aiSettings', tab: 'stream', cols: 'chat', expect: ['.chat-pane-view-toggle'], run: async (h) => { await h.ev(`document.querySelector('.chat-list-item')?.click()`); await sleep(400); await h.ev(textClick('.chat-pane-view-toggle button', 'AI')); await sleep(500) } },
   { id: 'stream-lightbox', tab: 'stream', cols: 'chat', expect: ['.sm-lightbox img'], run: async (h) => { await h.ev(LIGHTBOX); await sleep(300) } },
-  { id: 'topics', tab: 'topics', expect: ['.group-topics-panel'], run: async () => { await sleep(300) } },
+  { id: 'topics', tab: 'topics', expect: ['.group-topics-panel', '.group-topic-card'], run: async (h) => { await waitVisible(h, '.group-topic-card') } },
   { id: 'settings', tab: 'settings', expect: ['.settings-wrap'], run: async () => { await sleep(400) } },
   { id: 'settings-view', tab: 'settings', mode: 'settings', expect: ['.settings-wrap'], run: async () => { await sleep(400) } },
   // chat title bar: the bridge status line (dot, text, 重試, 重啟 N 次, 診斷) lives in the header; F5 of the chat-menu review
@@ -229,6 +229,10 @@ const BOUNDARY = { widths: [760, 761], scenes: ['stream-list', 'stream-chat'] }
 if (args.list) { console.log(SCENES.map((s) => s.id).join('\n')); process.exit(0) }
 
 // ───────────── judging ─────────────
+
+async function waitVisible(h, selector, ms = 20000) {
+  for (let waited = 0; waited < ms; waited += 100) { if ((await visibleCount(h, selector)) > 0) return; await sleep(100) }
+}
 
 async function visibleCount(h, selector) {
   return h.ev(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden' }).length`)

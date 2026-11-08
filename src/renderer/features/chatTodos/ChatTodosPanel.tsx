@@ -111,7 +111,7 @@ export function ChatTodosPanel({ chatId, chatName }: Props): JSX.Element {
   return (
     <section className="chat-todos-content" aria-label={`${chatName}的待辦`}>
       <header className="chat-todos-heading">
-        <h3>此聊天室待辦</h3>
+        <h3>我的事項</h3>
         {todoEnabled !== null && <ChatSwitch label="此聊天室待辦開關" checked={todoEnabled} busy={switching} onChange={(value) => void toggleTodo(value)} testId="todos-switch" />}
       </header>
       {switchError && <p className="chat-todos-error" role="alert">{switchError}</p>}

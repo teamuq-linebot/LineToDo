@@ -165,6 +165,15 @@ test('topic section declares the wrapper and the per-field scope', () => {
   assert.ok(!COMBINED_TOPIC_SECTION.startsWith('<!--'))
 })
 
+test('topic section tells the model a topic is a status note: noun-phrase title, no action-sentence summary, announcements still kept', () => {
+  assert.ok(COMBINED_TOPIC_SECTION.includes('不是待辦'))
+  assert.ok(COMBINED_TOPIC_SECTION.includes('title 用名詞片語'))
+  assert.ok(COMBINED_TOPIC_SECTION.includes('不要以「請」「需要」「要」「記得」開頭'))
+  assert.ok(COMBINED_TOPIC_SECTION.includes('不要寫「請…」「需要…」「要做…」這類行動句，也不要寫成待辦'))
+  assert.ok(COMBINED_TOPIC_SECTION.includes('進展到哪、有什麼決議'))
+  assert.ok(COMBINED_TOPIC_SECTION.includes('公告類訊息照常歸入議題'))
+})
+
 test('promptService without opts is byte-identical to the previous release; opts.topics appends the section and the combined contract', () => {
   const f = promptFixture()
   try {
@@ -201,11 +210,11 @@ test('measured length: the default topics system fits the host systemChars defau
     const plain = f.service.extractSystem('chat-1')
     const withTopics = f.service.extractSystem('chat-1', { topics: true })
     assert.equal(plain.length, 8436, 'plain system length is unchanged from the 0.2.10 baseline')
-    assert.equal(withTopics.length, 11784, 'measured default length of extractSystem(chatId,{topics:true})')
+    assert.equal(withTopics.length, 11972, 'measured default length of extractSystem(chatId,{topics:true})')
     assert.ok(withTopics.length <= AI_CHAT_REFERENCE.systemChars, `${withTopics.length} must be <= ${AI_CHAT_REFERENCE.systemChars}`)
     assert.equal(AI_CHAT_REFERENCE.systemChars, 16000)
     const overhead = withTopics.length - plain.length
-    assert.equal(overhead, 3348)
+    assert.equal(overhead, 3536)
   } finally { f.cleanup() }
 })
 
@@ -226,9 +235,9 @@ test('measured worst case: a max-length custom prompt with the worst name EXCEED
     assert.equal(actualCombined.length, combinedFormula, 'combined worst case = prompt + identity + topic section + combined output contract (every "\\n\\n" separator counted)')
     assert.equal(EXTRACT_OUTPUT_CONTRACT.length, 2584)
     assert.equal(COMBINED_OUTPUT_CONTRACT.length, 4631)
-    assert.equal(COMBINED_TOPIC_SECTION.length, 1299, 'LF-normalized section length')
+    assert.equal(COMBINED_TOPIC_SECTION.length, 1487, 'LF-normalized section length')
     assert.equal(worstIdentity, 377)
-    assert.equal(actualCombined.length, 18313)
+    assert.equal(actualCombined.length, 18501)
     assert.ok(actualPlain.length <= AI_CHAT_REFERENCE.systemChars, `${actualPlain.length}: the plain system still fits, so falling back to plain is always possible`)
     assert.ok(actualCombined.length > AI_CHAT_REFERENCE.systemChars, `${actualCombined.length} exceeds ${AI_CHAT_REFERENCE.systemChars} by ${actualCombined.length - AI_CHAT_REFERENCE.systemChars}: the boundary is crossed`)
     const budget = AI_CHAT_REFERENCE.systemChars - (2 + worstIdentity + 2 + COMBINED_TOPIC_SECTION.length + 2 + COMBINED_OUTPUT_CONTRACT.length)

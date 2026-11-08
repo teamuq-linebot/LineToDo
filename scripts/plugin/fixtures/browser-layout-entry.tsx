@@ -57,8 +57,12 @@ const table: Record<string, (...a: unknown[]) => unknown> = {
   'groupTopics.overview': () => overview, 'groupTopics.list': (id) => ({ ok: true, topics: [topic(1, String(id)), topic(2, String(id))] }), 'groupTopics.pendingCount': () => 0, 'groupTopics.todoRefs': () => [],
   'media.assetUrl': () => svg, 'media.assetLookup': () => ({ url: svg, indexing: false }), 'media.avatarUrls': () => ({ urls: {}, names: {} }), 'media.messageAvatarUrls': () => ({ urls: {}, names: {} })
 }
+// One stable proxy per path: panels list api objects in effect deps, a fresh proxy on every read would restart their effects forever.
+const proxies = new Map<string, unknown>()
 function mk(path: string): unknown {
-  return new Proxy(function () { /* */ }, {
+  const cached = proxies.get(path)
+  if (cached) return cached
+  const proxy = new Proxy(function () { /* */ }, {
     get(_t, prop: string) { return prop === 'then' ? undefined : mk(path ? `${path}.${prop}` : prop) },
     apply(_t, _this, args) {
       const last = path.split('.').pop() as string
@@ -67,6 +71,8 @@ function mk(path: string): unknown {
       return Promise.resolve(fn ? fn(...args) : { ok: true })
     }
   })
+  proxies.set(path, proxy)
+  return proxy
 }
 const promptState = { initialPrompt: '預設提示 '.repeat(60), activePrompt: '預設提示 '.repeat(60), customized: false, revision: 'r1', maxChars: 12000, outputFormat: '{"todos":[{"title":"...","detail":"..."}]}', topicAppendix: '已啟用議題的群組，系統會另外附加固定段落。', myName: '小明', nameRevision: 'n1', maxNameChars: 40 }
 const chatState = (chatId: string) => ({ chatId, revision: 'c1', overridePrompt: null, overrideName: null, effectivePrompt: '預設提示 '.repeat(40), effectiveName: '小明', promptSource: 'default', nameSource: 'default', defaultName: '小明', maxChars: 12000, maxNameChars: 40, corrupt: false })

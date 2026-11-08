@@ -936,6 +936,9 @@ code {
 }
 .chat-topics-todos-content > .group-topics-panel.embedded {
   min-height: auto;
+  padding: 14px clamp(12px, 2cqw, 20px) 16px;
+  border-radius: 12px;
+  background: var(--panel);
 }
 .chat-topics-todos-content > .chat-todos-content {
   margin-top: 22px;
@@ -994,6 +997,18 @@ code {
 .group-topics-load-error { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .group-topics-load-error > span { min-width: 0; overflow-wrap: anywhere; }
 .group-topic-card > button { margin: 6px 6px 0 0; padding: 6px 9px; font-size: 11px; }
+.group-topics-panel.topics-recap .group-topics-head h3 { color: var(--accent); }
+.group-topics-panel.topics-recap .group-topic-card {
+  padding: 2px 0 2px 12px;
+  border: 0;
+  border-left: 3px solid var(--accent);
+  border-radius: 0;
+  background: transparent;
+}
+.group-topics-panel.topics-recap .group-topic-card > strong { display: block; font-size: 13px; }
+.group-topics-panel.topics-recap .group-topic-card-overview > .group-topic-group-label { display: none; }
+.group-topics-panel.topics-recap .group-topic-card > p { color: var(--card-detail-text); }
+.group-topics-panel.topics-recap .group-topic-card > .group-topic-meta { margin: 4px 0; }
 .group-topics-error { color: var(--err); font-size: 12px; }
 .group-topics-notice { color: var(--muted); font-size: 11px; }
 .group-topics-group-select { display: flex; align-items: center; gap: 8px; margin: 10px 0; }

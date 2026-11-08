@@ -971,7 +971,7 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
 
       click(paneButton('議題與待辦'))
       await until(() => topicListQueries.includes(direct.chatId) && hasSwitch(view, '此聊天室的議題開關') && view.container.textContent.includes(directTodo.title), { message: 'the combined pane independently loads direct topics and todos from the selected chat' })
-      assert.ok(view.container.textContent.includes('此聊天室的議題'))
+      assert.ok(view.container.textContent.includes('聊天室近況') && view.container.textContent.includes('我的事項'), 'the combined pane names its two areas in plain words')
       assert.equal(view.container.textContent.includes('跨群語意候選'), false, 'direct topics do not expose cross-group controls')
       assert.ok(view.container.textContent.includes(directTodo.title), 'the todo remains visible beside the topic controls')
       assert.deepEqual(topicAnalyzeQueries, [], 'opening the topic pane does not auto-analyze')
@@ -1046,7 +1046,7 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
 
 test('chat topics and todos (effects): a topic read failure does not hide selected-chat todos, and both recover independently', async () => {
   const chat = { chatId: 'synthetic-independent', name: '合成隔離聊天室', isGroup: false, firstSeenAt: '2026-10-29T00:00:00.000Z', lastSeenAt: '2026-10-30T00:00:00.000Z' }
-  const topic = { topicId: 'independent-topic', chatId: chat.chatId, title: '合成議題', summary: '只屬於目前聊天室的議題。', evidenceCount: 1, evidenceMsgIds: ['synthetic-independent-source'], userParticipation: 'unknown', relevance: 'unknown', relevanceEvidence: [], participantLowerBound: null, observation: 'unknown', heat: 'unvalidated', trend: 'unknown' }
+  const topic = { topicId: 'independent-topic', chatId: chat.chatId, title: '合成議題', summary: '只屬於目前聊天室的議題。', lastSourceTs: new Date(2026, 9, 30, 8, 5).getTime(), evidenceCount: 1, evidenceMsgIds: ['synthetic-independent-source'], userParticipation: 'unknown', relevance: 'unknown', relevanceEvidence: [], participantLowerBound: null, observation: 'unknown', heat: 'unvalidated', trend: 'unknown' }
   const todo = { id: 'independent-todo', chatId: chat.chatId, bucket: 'todo', status: 'pending', title: '合成待辦', detail: null, priority: 1, dueAt: null, sourceMsgIds: ['synthetic-independent-source'], confidence: 0.9, completionEvidence: null, createdAt: '2026-10-29T00:00:00.000Z', updatedAt: '2026-10-30T00:00:00.000Z', resolvedAt: null }
   let failTopics = true
   let topicReads = 0
@@ -1085,13 +1085,22 @@ test('chat topics and todos (effects): a topic read failure does not hide select
     assert.equal(view.container.textContent.includes('正在載入「合成隔離聊天室」的待辦'), false, 'topic retry does not put the healthy todo panel into loading')
 
     const topicCard = walk(view.container).find((element) => element.localName === 'article' && element.textContent.includes(topic.title))
-    const compactStatus = byAttr(topicCard, 'data-testid', 'group-topic-status')
-    assert.ok(compactStatus, 'the default topic card keeps its compact status line')
-    assert.match(compactStatus.textContent, /參與不確定/)
-    assert.match(compactStatus.textContent, /關聯未驗證/)
-    assert.match(compactStatus.textContent, /熱度未校準/)
-    assert.match(compactStatus.textContent, /趨勢不確定/)
-    assert.equal(compactStatus.textContent.includes('已知參與者下界'), false, 'the detailed participant metric is on demand')
+    assert.ok(!byAttr(topicCard, 'data-testid', 'group-topic-status'), 'the old participation / relevance / heat / trend status line is gone')
+    const detailNodes = new Set(walk(byAttr(topicCard, 'data-testid', 'group-topic-details')))
+    const visibleSmall = walk(topicCard).filter((element) => element.localName === 'small' && !detailNodes.has(element)).map((element) => element.textContent).join(' ')
+    for (const old of ['參與不確定', '參與已確認', '關聯未驗證', '熱度未校準', '趨勢不確定']) assert.equal(visibleSmall.includes(old), false, `the topic card face no longer says ${old}`)
+    const meta = byAttr(topicCard, 'data-testid', 'group-topic-meta')
+    assert.ok(meta, 'the topic card shows its last-update time and message count instead')
+    assert.equal(meta.textContent, '最後更新 10/30 08:05 · 1 則訊息')
+    assert.equal(meta.textContent.includes('已知參與者下界'), false, 'the detailed participant metric is on demand')
+    assert.equal(hasClassName(topicCard, 'todo-card'), false, 'a topic card is not styled as a todo card')
+    const pane = walk(view.container).find((element) => hasClassName(element, 'chat-topics-todos-content'))
+    const headings = walk(pane).filter((element) => element.localName === 'h3').map((element) => element.textContent.trim())
+    assert.deepEqual(headings, ['聊天室近況', '我的事項'], 'the two areas carry the plain-language headings and nothing else')
+    assert.equal(walk(pane).some((element) => element.localName === 'details' && hasClassName(element, 'group-topics-help')), false, 'the combined pane adds no explanatory block')
+    assert.equal(walk(pane).filter((element) => element.localName === 'section' && (hasClassName(element, 'group-topics-panel') || hasClassName(element, 'chat-todos-content'))).length, 2, 'the pane holds exactly the two areas')
+    assert.ok(walk(pane).some((element) => hasClassName(element, 'todo-card')), 'the todo area keeps task-style cards')
+    assert.equal(walk(topicCard).some((element) => element.localName === 'input'), false, 'a topic card has no checkbox or task control')
     const qualityDetails = byAttr(topicCard, 'data-testid', 'group-topic-details')
     assert.ok(qualityDetails, 'quality and source details remain available')
     assert.equal(qualityDetails.hasAttribute('open'), false, 'the quality details are collapsed by default')
@@ -2114,10 +2123,10 @@ test('group-topics root tab: an old saved topics value opens the all-groups over
     const groupSelect = walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
     assert.ok(groupSelect, 'the existing group selector stays available')
     reactProps(groupSelect).onChange({ target: { value: 'ov-group-1' } })
-    await until(() => log.some((entry) => entry.path === 'groupTopics.list' && entry.args[0] === 'ov-group-1') && view.container.textContent.includes('此群組近期議題'), { message: 'choosing a group opens its existing topic controls' })
+    await until(() => log.some((entry) => entry.path === 'groupTopics.list' && entry.args[0] === 'ov-group-1') && view.container.textContent.includes('聊天室近況'), { message: 'choosing a group opens its existing topic controls' })
     const groupSwitch = switchByLabel(view, '此群組的議題開關')
     assert.ok(groupSwitch, 'the per-group start/stop switch renders next to the heading')
-    assert.ok(view.container.textContent.includes('此群組的議題'), 'the heading names the group topics')
+    assert.ok(view.container.textContent.includes('聊天室近況'), 'the heading is the plain-language recap heading')
     reactProps(tab('總覽')).onClick()
     await until(() => walk(view.container).some((element) => hasClassName(element, 'board-wrap')), { message: 'the existing overview board opens' })
     reactProps(tab('群組議題')).onClick()
@@ -2587,7 +2596,7 @@ test('U5 with the todo switch off the existing todos are still listed', async ()
   } finally { s.dispose() }
 })
 
-test('U6 the topic heading says group or chat according to the chat type', async () => {
+test('U6 the topic switch label says group or chat according to the chat type, under one plain heading', async () => {
   const group = toggleChat('toggle-u6g', '合成群組U6', true)
   const direct = toggleChat('toggle-u6d', '合成單人U6', false)
   const s = toggleScene([group, direct], {})
@@ -2595,10 +2604,10 @@ test('U6 the topic heading says group or chat according to the chat type', async
     await openCombinedPane(s)
     s.click(s.chatButton(group.name))
     await until(() => s.topicSwitch('此群組的議題開關'), { message: 'group switch label' })
-    assert.ok(s.view.container.textContent.includes('此群組的議題'))
+    assert.ok(s.view.container.textContent.includes('聊天室近況'))
     s.click(s.chatButton(direct.name))
     await until(() => s.topicSwitch('此聊天室的議題開關'), { message: 'direct switch label' })
-    assert.ok(s.view.container.textContent.includes('此聊天室的議題'))
+    assert.ok(s.view.container.textContent.includes('聊天室近況'))
     assert.equal(s.topicSwitch('此群組的議題開關'), undefined)
   } finally { s.dispose() }
 })

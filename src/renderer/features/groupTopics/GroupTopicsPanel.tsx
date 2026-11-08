@@ -36,6 +36,14 @@ function safeFailureNotice(failure: { stage: string; path: string | null; code: 
   return `AI 輸出契約未通過：${pathLabels[failure.path ?? '$'] ?? '輸出欄位'}，${failureCodeText[failure.code] ?? '格式不符'}；訊息仍待處理，可重試`
 }
 
+function topicMetaText(topic: GroupTopicDTO): string {
+  const count = `${topic.evidenceCount} 則訊息`
+  const date = new Date(topic.lastSourceTs)
+  if (!Number.isFinite(date.getTime())) return count
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `最後更新 ${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())} · ${count}`
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? `${fallback}：${error.message}` : fallback
 }
@@ -324,13 +332,13 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   const currentChatName = chatName ?? chats.find((chat) => chat.chatId === chatId)?.name ?? chatId
 
   return (
-    <section className={`settings-section group-topics-panel${embedded ? ' embedded' : ''}`} aria-label={heading}>
+    <section className={`settings-section group-topics-panel topics-recap${embedded ? ' embedded' : ''}`} aria-label={heading}>
       {!embedded && !hideTitle && <h2>{heading}</h2>}
       {!embedded && <details className="group-topics-help">
         <summary>議題分析說明與群組設定</summary>
         <p>議題分析需逐群啟用。已開啟「議題與待辦合併整理」時，新訊息的議題會在「立即整理」與背景整理時一併產生，舊訊息可用「補分析舊訊息」手動補上；否則需手動執行分析。所有群組總覽只讀取各群既有結果，不會自動啟用或分析群組。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>
       </details>}
-      {(embedded || chatId) && <div className="group-topics-head"><h3>{topicsTitle}</h3>{chatId && api && !loading && !loadError && <ChatSwitch label={`${topicsTitle}開關`} checked={enabled} busy={busy} onChange={(value) => void toggleEnabled(value)} testId="topics-switch" />}</div>}
+      {(embedded || chatId) && <div className="group-topics-head"><h3>聊天室近況</h3>{chatId && api && !loading && !loadError && <ChatSwitch label={`${topicsTitle}開關`} checked={enabled} busy={busy} onChange={(value) => void toggleEnabled(value)} testId="topics-switch" />}</div>}
       {!api && <p className="muted">此版本未提供議題分析功能。</p>}
       {!embedded && chats.length === 0 && !overviewLoading && !overviewError && <p className="muted">目前沒有可用群組。</p>}
       {embedded && !chatId && <p className="muted">目前沒有選取中的聊天室。</p>}
@@ -365,7 +373,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
                   <span className="group-topic-group-label">{group.chat.name ?? '未命名群組'}</span>
                   <strong>{topic.title}</strong>
                   <p>{topic.summary}</p>
-                  <small>已連結訊息 {topic.evidenceCount} 則；已知參與者下界 {topic.participantLowerBound ?? '不明'}。熱度：未校準；趨勢：不確定。</small>
+                  <small className="group-topic-meta" data-testid="group-topic-meta">{topicMetaText(topic)}</small>
                   <details>
                     <summary>議題細節與來源（{group.compacted ? topic.evidenceCount : topic.evidenceMsgIds.length}）</summary>
                     <small>本人參與：{topic.userParticipation === 'i_participated' ? '來源含本人送出的訊息' : '不確定'}。模型相關性描述（未驗證）：{topic.relevanceEvidence.length ? topic.relevanceEvidence.map((item) => `${relevanceText[item.relevance]}${group.compacted ? '' : `（參照 ${item.evidenceMsgIds.length} 則）`}`).join('、') : relevanceText[topic.relevance]}。觀測完整性未校準。</small>
@@ -392,12 +400,11 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
               </div>}
               {enabled && !settling && (
                 <div className="group-topics-results">
-                  <h3>此{chatLabel}近期議題</h3>
                   {topics.length === 0 ? <p className="muted">尚無分析結果。</p> : topics.map((topic) => (
                     <article key={topic.topicId} className="group-topic-card">
                       <strong>{topic.title}</strong>
                       <p>{topic.summary}</p>
-                      <small data-testid="group-topic-status">參與{topic.userParticipation === 'i_participated' ? '已確認' : '不確定'} · 關聯未驗證 · 熱度未校準 · 趨勢不確定</small>
+                      <small className="group-topic-meta" data-testid="group-topic-meta">{topicMetaText(topic)}</small>
                       <details data-testid="group-topic-details">
                         <summary>品質與來源細節（來源 {topic.evidenceCount} 則）</summary>
                         <small>本人參與：{topic.userParticipation === 'i_participated' ? '來源含本人送出的訊息' : '不確定'}。模型相關性描述（未驗證）：{topic.relevanceEvidence.length ? topic.relevanceEvidence.map((item) => `${relevanceText[item.relevance]}（參照 ${item.evidenceMsgIds.length} 則）`).join('、') : relevanceText[topic.relevance]}。已連結訊息 {topic.evidenceCount} 則（可能含重貼）；已知參與者下界 {topic.participantLowerBound ?? '不明'}。觀測完整性未校準；熱度未校準；趨勢不確定。</small>

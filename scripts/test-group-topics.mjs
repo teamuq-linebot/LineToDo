@@ -203,6 +203,25 @@ test('authorized message reclassification atomically replaces old evidence and e
   db.close()
 })
 
+test('the topic prompt asks for noun-phrase titles and state summaries, never action sentences or to-dos', () => {
+  assert.ok(GROUP_TOPICS_PROMPT.includes('status note on what this chat has recently been talking about'))
+  assert.ok(GROUP_TOPICS_PROMPT.includes('Write each title as a noun phrase, never starting with a verb or a request'))
+  assert.ok(GROUP_TOPICS_PROMPT.includes('never as an action sentence'))
+  assert.ok(GROUP_TOPICS_PROMPT.includes('Announcements are still topics'))
+})
+
+test('a prompt hash change does not requeue analyzed messages: decided messages are never selected again', async () => {
+  const db=dbFixture(); const service=createGroupTopicsService(db); service.enable('group-a',true)
+  await service.analyze('group-a',()=>fakeProvider(analysisA))
+  db.prepare("UPDATE topic_analysis_runs SET prompt_hash='hash-before-the-prompt-change' WHERE chat_id='group-a'").run()
+  assert.deepEqual(loadPendingMessages(db,'group-a').map((m)=>m.msgId),[])
+  assert.deepEqual(selectTopicTargets(db,'group-a',['a1','a2']),[])
+  let calls=0
+  assert.deepEqual(await service.analyze('group-a',()=>fakeProvider(analysisA,()=>{calls++})),{ok:true,count:2,analyzedCount:0})
+  assert.equal(calls,0)
+  db.close()
+})
+
 test('completion key changes when prompt or schema contract versions change', async () => {
   const db=dbFixture(); const service=createGroupTopicsService(db); service.enable('group-a',true)
   await service.analyze('group-a',()=>fakeProvider(analysisA))
@@ -673,9 +692,9 @@ test('Phase 2: the existing v4/v3 bundle exports are unchanged by the combined a
   assert.equal(GROUP_TOPICS_BUNDLE_ENABLED, true)
   assert.equal(GROUP_TOPICS_PROMPT_VERSION, 'group-topics-v4')
   assert.equal(GROUP_TOPICS_SCHEMA_VERSION, 'topic-output-v3')
-  assert.equal(GROUP_TOPICS_PROMPT_HASH, 'a2159b4d35e24f4c78d8cef19394a8d51e99fe2b875ef8cf18092b84cb88d3d5')
+  assert.equal(GROUP_TOPICS_PROMPT_HASH, '5030fe058e8af25f3266672865f99e0ba73f39771792c72eaffdc1afb7c1c6ae')
   assert.equal(GROUP_TOPICS_SCHEMA_HASH, '41ad5712b34c87ddec70b084e6757872e22bc73e2039e60388c6aee3673ddf9f')
-  assert.equal(createHash('sha256').update(GROUP_TOPICS_PROMPT).digest('hex'), '30e31c41f44342ba8c95a5c895e6ec70b6dafe6b2a70ecb797d8c8b14b426d2e')
+  assert.equal(createHash('sha256').update(GROUP_TOPICS_PROMPT).digest('hex'), 'b83d0f337807d3aa57af65a7fa21d673992547e2232ca546b4fb3bfc519d8cd1')
   assert.equal(createHash('sha256').update(JSON.stringify(GROUP_TOPICS_JSON_SCHEMA)).digest('hex'), 'cdb0b8188f11901d9ed80ece6580ff544c1c7aaab0bdb3d5e91b63e13ea7ed33')
 })
 
