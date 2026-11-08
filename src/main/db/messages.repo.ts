@@ -369,6 +369,7 @@ export function countChatsWithRecentMessages(
  * 取「未處理（processed=0）且該 chat 待辦開關開啟」的訊息，依 ts 由舊到新。
  * pipeline runOnce 用：這是本輪要送 LLM 抽取的候選（§8 步驟 4）。
  * 待辦開關關閉的 chat 訊息仍鏡像在 messages（可追溯），但這裡過濾掉。
+ * 另保留 blocked=0：一次性遷移尚未完成（或失敗）時，舊的忽略聊天室不得被送 AI；遷移成功後 blocked 全為 0，無害。
  * limit 防單輪暴量（預設 2000）。
  */
 export function getUnprocessedForPipeline(
@@ -382,7 +383,7 @@ export function getUnprocessedForPipeline(
       'SELECT m.chat_id,m.msg_id FROM messages m ' +
       'JOIN chats c ON c.chat_id = m.chat_id ' +
       (todoGate ? 'LEFT JOIN chat_todo_preferences tp ON tp.chat_id = m.chat_id ' : '') +
-      'WHERE m.processed = 0 ' +
+      'WHERE m.processed = 0 AND c.blocked = 0 ' +
       (todoGate ? 'AND COALESCE(tp.extract_enabled,1) = 1 ' : '') +
       'ORDER BY m.ts ASC LIMIT ?'
     )

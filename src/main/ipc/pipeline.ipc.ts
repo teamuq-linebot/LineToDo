@@ -54,7 +54,7 @@ export interface PipelineLoadStats {
   chatsSeenMax: number
   /** `chatsWithRecentMessages` 的視窗天數。 */
   recentDays: number
-  /** 近 recentDays 天有過新訊息、且未被封鎖的聊天室數。 */
+  /** 近 recentDays 天有過新訊息的聊天室數。 */
   chatsWithRecentMessages: number
 }
 

@@ -196,27 +196,23 @@ export function getOpenTodosByChat(chatId: string, db: Database = getDb()): Todo
 
 /**
  * 把某 chat 目前「未完成」的代辦整批設為 dismissed（忽略）。
- * - 不帶 keyword：整個對話的未完成代辦全部 dismissed（封鎖對話時清空看板用）。
- * - 帶 keyword（已小寫）：只 dismissed 標題 / 備註含該關鍵字者（依關鍵字忽略時用）。
+ * 只 dismissed 標題 / 備註含 keyword（會 trim 並轉小寫）者（依關鍵字忽略時用）；keyword 為空則不動任何資料。
  * 回傳實際異動筆數。
  */
 export function dismissOpenTodosByChat(
   chatId: string,
-  keyword?: string,
+  keyword: string,
   db: Database = getDb()
 ): number {
+  const kw = keyword.trim().toLowerCase()
+  if (!kw) return 0
   const now = new Date().toISOString()
-  const params: Record<string, unknown> = { chatId, now }
-  let sql =
+  return db.prepare(
     `UPDATE todos SET status = 'dismissed', updated_at = @now, resolved_at = @now
      WHERE chat_id = @chatId
-       AND status IN ('pending','waiting_reply','scheduled','suggested_done')`
-  const kw = keyword?.trim().toLowerCase()
-  if (kw) {
-    sql += ` AND (lower(title) LIKE @kw OR lower(IFNULL(detail, '')) LIKE @kw)`
-    params.kw = `%${kw}%`
-  }
-  return db.prepare(sql).run(params).changes
+       AND status IN ('pending','waiting_reply','scheduled','suggested_done')
+       AND (lower(title) LIKE @kw OR lower(IFNULL(detail, '')) LIKE @kw)`
+  ).run({ chatId, now, kw: `%${kw}%` }).changes
 }
 
 /** 狀態轉移。進入 done/dismissed 會填 resolved_at；離開則清掉。回傳更新後 DTO（查無回 null）。 */

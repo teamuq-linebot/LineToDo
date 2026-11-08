@@ -972,7 +972,7 @@ export class ExtractQueue implements ExtractSink {
     try {
       if (!tableExists(this.opts.db, 'discussion_topics') || !tableExists(this.opts.db, 'group_topic_preferences')) return false
       const row = this.opts.db.prepare(
-        'SELECT p.enabled AS enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?'
+        'SELECT p.enabled AS enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=? AND c.blocked=0'
       ).get(chatId) as { enabled: number | null } | undefined
       if (!row || row.enabled !== 1) return false
     } catch { return false }

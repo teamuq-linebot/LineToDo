@@ -212,7 +212,8 @@ export function setEnabled(db: Database, chatId: string, enabled: boolean): bool
 }
 
 export function isEnabled(db: Database, chatId: string): boolean {
-  return (db.prepare('SELECT enabled FROM group_topic_preferences WHERE chat_id=?').get(chatId) as { enabled: number } | undefined)?.enabled === 1
+  // blocked=1 為遷移前舊資料：fail-closed 視為關閉（遷移成功後 blocked 全為 0）。
+  return (db.prepare('SELECT p.enabled AS enabled FROM group_topic_preferences p WHERE p.chat_id=? AND NOT EXISTS (SELECT 1 FROM chats c WHERE c.chat_id=p.chat_id AND c.blocked=1)').get(chatId) as { enabled: number } | undefined)?.enabled === 1
 }
 
 export function loadMessages(db: Database, chatId: string, limit = 100): TopicMessageInput[] {
@@ -316,7 +317,7 @@ export function buildTopicSave(db: Database, chatId: string, input: TopicMessage
   const tx = db.transaction(() => {
     if(identity&&!opts.skipSnapshotAssert) assertIdentitySnapshotCurrent(db,chatId,identity.snapshot,'topic')
     const active = db.prepare(`SELECT p.enabled FROM chats c
-      LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {enabled:number|null}|undefined
+      LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=? AND c.blocked=0`).get(chatId) as {enabled:number|null}|undefined
     if (!active || active.enabled !== 1) return 'inactive' as const
     const existing = db.prepare('SELECT state FROM topic_analysis_runs WHERE chat_id=? AND input_digest=?').get(chatId,digest) as { state: string } | undefined
     if (existing?.state === 'complete') return false
@@ -484,7 +485,7 @@ export function listTopics(db: Database, chatId: string): TopicView[] {
 
 export function todoRefs(db: Database, topicId: string): Array<{todoId:string;status:string;bucket:string;matchedMsgIds:string[]}> {
   const topic = db.prepare(`SELECT t.chat_id,p.enabled FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
-    JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.topic_id=?`).get(topicId) as {chat_id:string;enabled:number}|undefined
+    JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.topic_id=? AND c.blocked=0`).get(topicId) as {chat_id:string;enabled:number}|undefined
   if(!topic || topic.enabled!==1) return []
   const rows = db.prepare('SELECT id,status,bucket,source_msg_ids FROM todos WHERE chat_id=?').all(topic.chat_id) as Array<{id:string;status:string;bucket:string;source_msg_ids:string}>
   const sourceIds = new Set((db.prepare('SELECT msg_id FROM topic_evidence WHERE topic_id=?').all(topicId) as Array<{msg_id:string}>).map((r)=>r.msg_id))

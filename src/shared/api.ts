@@ -133,7 +133,7 @@ export interface PipelineLoadStats {
   /** 歷來單輪最多處理過的聊天室數（多半來自開機自我對帳的一次性回補）。 */
   chatsSeenMax: number
   recentDays: number
-  /** 近 recentDays 天有過新訊息、且未被封鎖的聊天室數。 */
+  /** 近 recentDays 天有過新訊息的聊天室數。 */
   chatsWithRecentMessages: number
 }
 
@@ -640,7 +640,7 @@ export interface LineTodoApi {
     pendingCount(chatId: string): Promise<number>
     /** `combined: true`＝待辦與議題合併整理正在背景運作：新訊息的議題會隨「立即整理」產生，手動分析只補舊訊息。 */
     list(chatId: string): Promise<{ ok: boolean; topics: GroupTopicDTO[]; combined?: boolean }>
-    /** 一次回傳所有未封鎖群組的議題總覽（取代逐群 list）。選填：沒有的宿主，view 退回逐群 list。 */
+    /** 一次回傳所有群組的議題總覽（取代逐群 list）。選填：沒有的宿主，view 退回逐群 list。 */
     overview?(): Promise<GroupTopicsOverviewDTO[]>
     analyze(chatId: string): Promise<{ ok: boolean; reason?: string; failure?: { stage: 'provider_resolve'|'provider_complete'|'response_decode'|'domain_validate'|'persist'; path: string|null; code: string }; count?: number; analyzedCount?: number }>
     todoRefs(topicId: string): Promise<Array<{ todoId: string; status: string; bucket: string; matchedMsgIds: string[] }>>

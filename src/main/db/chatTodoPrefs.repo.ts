@@ -57,6 +57,12 @@ export function chatTodoPrefsReady(db: Database): boolean {
 }
 
 export function isTodoExtractEnabled(db: Database, chatId: string): boolean {
+  // fail-closed：遷移尚未完成（開關表缺、或遷移拋錯）時，blocked=1 的聊天室視為關閉；遷移成功後 blocked 全為 0，此檢查無害。
+  try {
+    if (db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=? AND blocked=1').get(chatId)) return false
+  } catch {
+    return false
+  }
   if (!chatTodoPrefsReady(db)) return true
   try {
     const row = db.prepare('SELECT extract_enabled FROM chat_todo_preferences WHERE chat_id=?').get(chatId) as { extract_enabled: number } | undefined

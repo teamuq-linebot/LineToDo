@@ -221,7 +221,7 @@ test('T10 the one-time migration puts every previously ignored chat back in the 
     for (const id of ['ign-manual', 'ign-auto', 'normal']) setEnabled(db, id, true)
     markIgnored(db, 'ign-manual')
     markIgnored(db, 'ign-auto', 'auto:keyword:公告')
-    assert.deepEqual(pipelineIds(db), [stored('a1'), stored('b1'), stored('c1')].sort(), 'before the migration the todo gate does not look at the ignore flag')
+    assert.deepEqual(pipelineIds(db), [stored('c1')], 'before the migration the still-ignored chats are not candidates (fail-closed)')
     assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 2 })
     for (const id of ['ign-manual', 'ign-auto']) {
       assert.deepEqual({ ...chatRow(db, id) }, { blocked: 0, block_reason: null }, id)
@@ -314,6 +314,57 @@ test('T14 a database without the topic preference table migrates the todo switch
     assert.equal(chatRow(db, 'g1').blocked, 0)
   } finally { close() }
 })
+
+// 遷移尚未完成（開關表缺、或遷移拋錯）時，舊的忽略聊天室不得被送 AI（fail-closed）。
+for (const mode of ['prefs-missing', 'migration-throws']) {
+  test(`F1 (${mode}) a still-ignored chat is never sent to AI by runOnce, review, topic analysis or the extract queue`, async () => {
+    const { db, close } = fixture({ prefs: mode === 'migration-throws' })
+    let queue = null
+    try {
+      ensureGroupTopicsSchema(db)
+      const ids = addMsgs(db, 'ign', [['i1', NOW_MS - 3000, 'Project Orion launch meeting'], ['i2', NOW_MS - 2000, 'I will prepare the Orion launch deck'], ['i3', NOW_MS - 1000, 'Orion deck review tomorrow']])
+      setEnabled(db, 'ign', true)
+      addMsgs(db, 'ok', [['k1', NOW_MS - 900, '正常聊天室']])
+      markIgnored(db, 'ign')
+      if (mode === 'migration-throws') {
+        db.exec("CREATE TRIGGER t_abort BEFORE UPDATE OF blocked ON chats BEGIN SELECT RAISE(ABORT, 'synthetic'); END")
+        assert.throws(() => migrateIgnoredChats(db, NOW_MS), /synthetic/)
+      } else {
+        assert.equal(chatTodoPrefsReady(db), false)
+        assert.deepEqual(migrateIgnoredChats(db, NOW_MS), { migrated: 0, skipped: 'prefs_unavailable' })
+      }
+      assert.equal(chatRow(db, 'ign').blocked, 1, 'the flag survives the failed or skipped migration')
+      assert.equal(isTodoExtractEnabled(db, 'ign'), false)
+      assert.equal(isTodoExtractEnabled(db, 'ok'), true)
+      assert.deepEqual(pipelineIds(db), [stored('k1')])
+
+      const calls = []
+      const extractFn = async (input) => { calls.push(input.chat.chatId); return NOISE }
+      await runOnce({ db, now: () => new Date(NOW_MS).toISOString(), watchSource: async () => ({ messages: [], bridge: 'ok' }), extractFn })
+      assert.deepEqual(calls, ['ok'], 'runOnce')
+      assert.equal(processedOf(db, ids[0]), 0)
+
+      const window = [raw('r-ign', 'ign', NOW_MS - 800, '被忽略的聊天室'), raw('r-ok', 'ok', NOW_MS - 700, '正常聊天室')]
+      calls.length = 0
+      await reviewLastDays(1, { db, now: () => NOW_MS, fetchWindow: async () => ({ messages: window }), extractFn })
+      assert.deepEqual(calls, ['ok'], 'review')
+
+      const service = createGroupTopicsService(db, { isCombinedActive: () => true })
+      let providerCalls = 0
+      const result = await service.analyze('ign', () => topicProvider(() => analysisFor(ids), () => { providerCalls += 1 }))
+      assert.equal(result.ok, false, 'topic analysis refuses')
+      assert.equal(providerCalls, 0, 'topic analysis never reaches the provider')
+      assert.equal(service.pendingCount('ign'), 0)
+      assert.deepEqual(service.list('ign'), { ok: false, topics: [] })
+
+      drainIndexes(db, 'ign')
+      queue = new ExtractQueue({ db, getConfig: getPipelineDefaults, now: () => NOW_MS, combined: { enabled: () => true, systemFits: () => true } })
+      await feedQueue(db, queue)
+      const pulled = queue.pull({ max: 8 }).items
+      assert.ok(pulled.every((item) => !String(item.user).includes('Orion')), 'queue (combined) never leases the ignored chat')
+    } finally { queue?.dispose(); close() }
+  })
+}
 
 test('runOnce no longer blocks a chat by its name: a 公告 chat stays in the list and is extracted', async () => {
   const { db, close } = fixture()

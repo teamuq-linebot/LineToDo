@@ -30,7 +30,7 @@ export function createRepositories(db: Database) {
       get: (id: string) => todosRepo.getTodo(id, db),
       list: (query: todosRepo.ListTodosQuery = {}) => todosRepo.listTodos(query, db),
       openByChat: (chatId: string) => todosRepo.getOpenTodosByChat(chatId, db),
-      dismissOpenByChat: (chatId: string, keyword?: string) => todosRepo.dismissOpenTodosByChat(chatId, keyword, db),
+      dismissOpenByChat: (chatId: string, keyword: string) => todosRepo.dismissOpenTodosByChat(chatId, keyword, db),
       updateStatus: (id: string, status: Parameters<typeof todosRepo.updateStatus>[1]) => todosRepo.updateStatus(id, status, db),
       update: (id: string, patch: todosRepo.UpdateTodoPatch) => todosRepo.updateTodo(id, patch, db),
       reclassify: (id: string, patch: todosRepo.ReclassifyTodoPatch) => todosRepo.reclassifyTodo(id, patch, db),

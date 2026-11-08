@@ -39,8 +39,8 @@ function todoRowToDTO(r) {
 }
 function chatRowToDTO(r) {
   return {
-    chatId: r.chat_id, name: r.name, isGroup: r.is_group === 1, blocked: r.blocked === 1,
-    blockReason: r.block_reason, firstSeenAt: r.first_seen_at, lastSeenAt: r.last_seen_at
+    chatId: r.chat_id, name: r.name, isGroup: r.is_group === 1,
+    firstSeenAt: r.first_seen_at, lastSeenAt: r.last_seen_at
   }
 }
 function msgRowToDTO(r) {
@@ -63,15 +63,8 @@ ipcMain.handle('todos:list', (_e, q = {}) => {
   sql += ' ORDER BY priority ASC, updated_at DESC'
   return db.prepare(sql).all(...params).map(todoRowToDTO)
 })
-ipcMain.handle('chats:list', (_e, a = {}) => {
-  const where = a && a.includeBlocked ? '' : 'WHERE blocked = 0'
-  return db.prepare(`SELECT * FROM chats ${where} ORDER BY last_seen_at DESC`).all().map(chatRowToDTO)
-})
-ipcMain.handle('chats:setBlocked', (_e, a) => {
-  db.prepare('UPDATE chats SET blocked=?, block_reason=? WHERE chat_id=?')
-    .run(a.blocked ? 1 : 0, a.blocked ? (a.reason || 'manual') : null, a.chatId)
-  const r = db.prepare('SELECT * FROM chats WHERE chat_id=?').get(a.chatId)
-  return r ? chatRowToDTO(r) : null
+ipcMain.handle('chats:list', () => {
+  return db.prepare('SELECT * FROM chats ORDER BY last_seen_at DESC').all().map(chatRowToDTO)
 })
 ipcMain.handle('messages:list', (_e, q = {}) => {
   let sql = 'SELECT * FROM messages'

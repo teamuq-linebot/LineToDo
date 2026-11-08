@@ -91,7 +91,7 @@ export interface RunOnceDeps {
 /**
  * 抽取輸入的接收端（外掛 backend 的 ExtractQueue）。runOnce 每輪呼叫：
  * `beginCycle()` → 對每個要抽取的 chat 呼叫 `offer()` → `endCycle()`。
- * sink 以此判斷「本輪沒再被提供的 chat」（訊息已被處理、chat 被封鎖…）並丟棄過期的待抽取項。
+ * sink 以此判斷「本輪沒再被提供的 chat」（訊息已被處理、待辦開關關閉…）並丟棄過期的待抽取項。
  */
 export interface ExtractSink {
   beginCycle(): void
@@ -407,7 +407,7 @@ export function applyChatExtract(
 
 function isTopicRelationAllowed(db:Database,chatId:string,topicId:string):boolean {
   const row=db.prepare(`SELECT t.topic_id FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
-    LEFT JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.chat_id=? AND t.topic_id=? AND p.enabled=1`).get(chatId,topicId)
+    LEFT JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.chat_id=? AND t.topic_id=? AND p.enabled=1 AND c.blocked=0`).get(chatId,topicId)
   return !!row
 }
 
