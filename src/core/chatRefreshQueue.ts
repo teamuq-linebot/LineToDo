@@ -1,4 +1,5 @@
-import type { ChatRefreshQueueStatus } from '../shared/api'
+import type { ChatRefreshLastResult, ChatRefreshQueueStatus } from '../shared/api'
+import { emptyResult, parseChatRefreshDays, type ChatRefreshResult } from '../main/pipeline/chatRefresh'
 
 /**
  * 「重新整理最近 N 天」的排隊：不同聊天室依 FIFO 一個接一個跑；同一聊天室已在排隊或執行中就不重複加入。
@@ -72,5 +73,50 @@ export class ChatRefreshQueue {
       this.timer = null
       this.pump()
     }, this.opts.pollMs ?? 1000)
+  }
+}
+
+export interface ChatRefreshServiceDeps {
+  queue?: ChatRefreshQueue
+  /** 守門（參數、聊天室、開關、AI）；回傳非 null 就是立即結果，不排隊。 */
+  precheck(chatId: string, days: unknown): Promise<ChatRefreshResult | null>
+  /** 排隊後真正執行的重新整理。 */
+  run(chatId: string, days: unknown): Promise<ChatRefreshResult>
+  now?(): number
+}
+
+export interface ChatRefreshService {
+  refreshChat(chatId: string, days: unknown): Promise<ChatRefreshResult>
+  refreshChatStatus(chatId: string): ChatRefreshQueueStatus
+}
+
+/**
+ * pipeline.refreshChat 的組裝。守門通過後一律立即回應：排到後面回 reason `queued`（附 ahead），
+ * 馬上開始也回 `queued`（ahead 0）；同一聊天室已在排隊或執行中回 already_*。實際執行在背景依序進行，
+ * 結果存進每個聊天室的 last，由 refreshChatStatus 取得。呼叫端不會因此變成長時間的 pending job。
+ */
+export function createChatRefreshService(deps: ChatRefreshServiceDeps): ChatRefreshService {
+  const queue = deps.queue ?? new ChatRefreshQueue()
+  const now = deps.now ?? (() => Date.now())
+  const last = new Map<string, ChatRefreshLastResult>()
+  return {
+    async refreshChat(chatId, days) {
+      const early = await deps.precheck(chatId, days)
+      if (early) return early
+      const parsed = parseChatRefreshDays(days)
+      const job = queue.enqueue(chatId, () => deps.run(chatId, days))
+      if (!job) return emptyResult(parsed, null, queue.status(chatId).state === 'running' ? 'already_running' : 'already_queued')
+      const { ahead } = queue.status(chatId)
+      void job.then(
+        (result) => { last.set(chatId, { ok: result.ok, finishedAtMs: now(), result }) },
+        () => { last.set(chatId, { ok: false, finishedAtMs: now(), result: emptyResult(parsed, null, 'internal_error') }) }
+      )
+      return { ...emptyResult(parsed, null, 'queued'), ahead }
+    },
+    refreshChatStatus(chatId) {
+      const status = queue.status(chatId)
+      const finished = last.get(chatId)
+      return finished ? { ...status, last: finished } : status
+    }
   }
 }

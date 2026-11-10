@@ -22,8 +22,8 @@ import { draftReply } from '../main/llm/draftReply'
 import type { PipelineDefaults } from '../main/config/defaults'
 import type { QwenConfig } from '../main/config/qwen'
 import { reviewLastDays, backfillMediaKeys } from '../main/pipeline/backfill'
-import { emptyResult, parseChatRefreshDays, precheckChatRefresh, refreshChatLastDays, topicRefreshOutcome, type ChatRefreshDeps, type ChatRefreshResult } from '../main/pipeline/chatRefresh'
-import { ChatRefreshQueue } from './chatRefreshQueue'
+import { precheckChatRefresh, refreshChatLastDays, topicRefreshOutcome, type ChatRefreshDeps, type ChatRefreshResult } from '../main/pipeline/chatRefresh'
+import { ChatRefreshQueue, createChatRefreshService } from './chatRefreshQueue'
 import type { ChatExtractInput } from '../main/pipeline/runOnce'
 import type { ExtractResult } from '../main/llm/schema'
 import { deriveMsgId } from '../main/db/schema'
@@ -175,8 +175,6 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   let lineImportSchemaReady = false
   let groupTopicsService: ReturnType<typeof createGroupTopicsService> | null = null
   let topicBackground: ReturnType<typeof createTopicBackground> | null = null
-  // 重新整理：不同聊天室依序跑（FIFO），同一聊天室不重複加入；守門（precheck）在排隊前做，AI 未就緒等情況不必排隊等待。
-  const refreshQueue = new ChatRefreshQueue({ isBlocked: () => ports.refreshBlocked?.() === true })
   const refreshDeps = (): ChatRefreshDeps => {
     const refreshExtract = ports.makeRefreshExtract ? ports.makeRefreshExtract() : ports.makeExtract()
     return {
@@ -192,6 +190,13 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
         : undefined
     }
   }
+  // 重新整理：不同聊天室依序在背景跑（FIFO），同一聊天室不重複加入；呼叫端立即拿到 queued／already_*，進度與結果由 refreshChatStatus 取得。
+  // 守門（precheck）在排隊前做，AI 未就緒等情況不必排隊等待。
+  const refreshService = createChatRefreshService({
+    queue: new ChatRefreshQueue({ isBlocked: () => ports.refreshBlocked?.() === true }),
+    precheck: (chatId, days) => precheckChatRefresh(chatId, days, refreshDeps()),
+    run: (chatId, days) => refreshChatLastDays(chatId, days, refreshDeps())
+  })
   const unknownIdentity: ParticipantIdentityProvider = {
     resolve: () => ({ participantKey: null, scope: 'unknown', keyVersion: null, status: 'unknown', reason: 'safe_storage_unavailable' }),
     epoch: () => null,
@@ -495,15 +500,8 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
         onCorrectionsPayloadBuilt: (chatId,messageIds,rules) => rules.forEach(rule=>repos.notMine.effect(rule,chatId,messageIds,'reviewLastDays')),
         onProgress: (progress: BackfillProgress) => { if (state === 'running') events.emit('backfill-progress', progress) }
       }),
-      refreshChat: async (chatId: string, days: unknown): Promise<ChatRefreshResult> => {
-        const early = await precheckChatRefresh(chatId, days, refreshDeps())
-        if (early) return early
-        const queued = refreshQueue.enqueue(chatId, () => refreshChatLastDays(chatId, days, refreshDeps()))
-        if (queued) return queued
-        const state = refreshQueue.status(chatId).state
-        return emptyResult(parseChatRefreshDays(days), null, state === 'running' ? 'already_running' : 'already_queued')
-      },
-      refreshChatStatus: async (chatId: string) => refreshQueue.status(chatId),
+      refreshChat: (chatId: string, days: unknown): Promise<ChatRefreshResult> => refreshService.refreshChat(chatId, days),
+      refreshChatStatus: async (chatId: string) => refreshService.refreshChatStatus(chatId),
       backfillMediaKeys: async (days = 7) => {
         try {
           const result = await backfillMediaKeys(Number.isFinite(days) && days > 0 ? Math.floor(days) : 7, {

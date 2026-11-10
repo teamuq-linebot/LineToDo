@@ -212,12 +212,22 @@ export interface ReviewLastDaysResult {
 export interface ChatRefreshQueueStatus {
   state: 'idle' | 'queued' | 'running'
   ahead: number
+  /** 這個聊天室最近一次排隊執行的結果（後端程序存活期間保留；畫面在 idle 時顯示）。 */
+  last?: ChatRefreshLastResult
+}
+
+/** 最近一次排隊執行的結果；finishedAtMs 是後端完成時間。 */
+export interface ChatRefreshLastResult {
+  ok: boolean
+  finishedAtMs: number
+  result: ChatRefreshResultView
 }
 
 /** pipeline.refreshChat 結果（與 main/pipeline/chatRefresh.ts ChatRefreshResult 對齊）：只針對一個聊天室的「重新整理最近 N 天」。 */
 export interface ChatRefreshResultView {
   ok: boolean
-  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'ai_unavailable' | 'already_queued' | 'already_running'
+  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'ai_unavailable' | 'already_queued' | 'already_running' | 'queued' | 'internal_error'
+  ahead?: number
   days: number | null
   sinceMs: number | null
   todo: { ran: boolean; messages: number; aiCalls: number; todosCreated: number; todosMerged: number; todosResolvedDone: number; failed: boolean; reason?: string }

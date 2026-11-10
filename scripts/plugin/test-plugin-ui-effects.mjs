@@ -2186,6 +2186,26 @@ test('overview tab: the todo board loads and does not mount the group-topics ove
   } finally { view.unmount(); api.dispose() }
 })
 
+test('board loading: while the first todo read is pending the board shows 載入中…, never zero counts or empty-column hints; then the columns appear', async () => {
+  const log = []
+  let release = () => {}
+  const { api } = plugin(overviewHandlers(log, {
+    'db.todos.list': () => new Promise((resolve) => { release = () => resolve([]) })
+  }))
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.appScene(api))
+  try {
+    await until(() => log.some((entry) => entry.path === 'db.todos.list') && view.container.textContent.includes('載入中…'), { message: 'the pending board shows loading' })
+    await sleep(40)
+    assert.equal(walk(view.container).some((element) => hasClassName(element, 'kb-column')), false, 'no columns while loading')
+    assert.equal(walk(view.container).some((element) => hasClassName(element, 'kb-col-count')), false, 'no zero counts while loading')
+    for (const hint of ['目前沒有待辦事項', '沒有在等的回覆', '沒有排定的行程', '尚無已完成項目']) assert.equal(view.container.textContent.includes(hint), false, `no empty hint "${hint}" while loading`)
+    release()
+    await until(() => walk(view.container).filter((element) => hasClassName(element, 'kb-column')).length === 4, { message: 'the four columns appear after the first load' })
+    assert.equal(view.container.textContent.includes('載入中…'), false, 'loading line is gone after the first load')
+  } finally { view.unmount(); api.dispose() }
+})
+
 test('group-topics root tab: an old saved topics value opens the all-groups overview directly and remains selectable', async () => {
   const log = []
   const saved = { 'lt-ui:app.tab': JSON.stringify({ v: 'topics', at: Date.now() }) }

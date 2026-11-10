@@ -351,6 +351,9 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
         </label>
       </div>
 
+      {t.loading ? (
+        <div className="kb-board-loading muted" role="status" data-testid="board-loading">載入中…</div>
+      ) : (
       <div className="kb-board">
         {COLUMNS.map((def) => (
           <Column
@@ -368,6 +371,7 @@ export function KanbanBoard({ onFirstLoaded }: { onFirstLoaded?: () => void } = 
           />
         ))}
       </div>
+      )}
 
       {pendingMove && (
         <div className="modal-backdrop" onClick={() => { if (!bulkMoving) setPendingMove(null) }}>

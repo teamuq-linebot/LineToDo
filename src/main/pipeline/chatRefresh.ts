@@ -62,7 +62,9 @@ export interface ChatRefreshDeps {
 export interface ChatRefreshResult {
   ok: boolean
   /** already_queued／already_running：同一聊天室已在排隊或執行中，這次不重複加入（外掛的排隊層產生）。 */
-  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'ai_unavailable' | 'already_queued' | 'already_running'
+  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'ai_unavailable' | 'already_queued' | 'already_running' | 'queued' | 'internal_error'
+  /** reason 為 queued 時：前面還有幾個（含執行中的）；0＝馬上開始。 */
+  ahead?: number
   days: number | null
   sinceMs: number | null
   /** failed 時 reason 是底層失敗原因碼（如 extract_await_timeout、transport），不再吞掉。 */
