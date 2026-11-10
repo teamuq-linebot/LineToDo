@@ -36,6 +36,7 @@ import { createBetterSqlite3AppEngine } from '../../main/db/appDbEngine'
 import { getLastRun } from '../../main/db/pipeline.repo'
 import { commitLineImportBatch, isLineImportSchemaReady } from '../../main/db/lineImport.repo'
 import { ensureLineAvatarSchema } from '../../main/db/lineAvatar.repo'
+import { ensureLineEntitySchema, isLineEntitySchemaReady } from '../../main/db/lineEntity.repo'
 import { ensureMediaIndexSchema } from '../../main/db/mediaIndex.repo'
 import type { Database as BetterSqlite3Database } from 'better-sqlite3'
 import { configureLineEnginePorts, getLineEnginePorts } from '../../main/line/engine/enginePorts'
@@ -44,7 +45,8 @@ import { createLineAccess } from '../../main/line/engine/lineAccess'
 import { LineSnapshotStore } from '../../main/line/engine/lineSnapshot'
 import { RecoverGuard } from '../../main/line/engine/linekey'
 import type { GetKeyOptions, RecoverGuardOptions } from '../../main/line/engine/linekey'
-import { getAvatarMetadata, getLineImportBatch, getMessagesSince } from '../../main/line/engine/watchEngine'
+import { getAvatarMetadata, getLineImportBatch, getMessagesSince, walSig } from '../../main/line/engine/watchEngine'
+import { findDbPath } from '../../main/line/engine/fsPort'
 import type { LineImportBatch } from '../../main/line/importTypes'
 import type { ParticipantIdentityProvider } from '../../main/line/identity'
 import type { LineFsPort } from '../../main/line/engine/fsPort'
@@ -87,6 +89,8 @@ import type { AvatarDb, AvatarMetadataReader } from './avatar'
 import { createLayeredAvatarReader } from './avatarReader'
 import { createAvatarBackfill, OFF_STATUS } from './avatarBackfill'
 import type { AvatarBackfillBudget } from './avatarBackfill'
+import { CONTACT_SYNC_OFF_STATUS, createContactSync, normalizeSourceSig } from './contactSync'
+import type { ContactSyncBudget } from './contactSync'
 import { ReviewCoordinator, ReviewLedger } from './reviewRun'
 import { LongTaskTracker } from './taskStatus'
 import type { BackendDiagnostics, JsonValue, PluginBackendHandler, SessionChannel, SessionInfo } from './types'
@@ -141,7 +145,16 @@ export interface PluginBackendOptions {
    * 發話者頭像存本地 DB（lineAvatar.repo.ts）：匯入時順便寫入、讀取先看本地、背景回填既有訊息。
    * `enabled:false`＝回到「每次從 LINE DB 讀」的舊行為：不建表、不寫入、不回填。
    */
-  avatarStore?: { enabled?: boolean; now?(): number; backfill?: { enabled?: boolean } & AvatarBackfillBudget }
+  avatarStore?: {
+    enabled?: boolean
+    now?(): number
+    backfill?: { enabled?: boolean } & AvatarBackfillBudget
+    /**
+     * LINE 通訊錄（聯絡人、群組、Square 聊天室）的背景同步與讀取層。預設開；`enabled:false`＝worker 不啟動、不建表，reader 也忽略已存在的通訊錄列（回退開關）。
+     * 只在有持久 snapshot 時才跑（只用 `any`，絕不複製、不掃金鑰）。
+     */
+    contactSync?: { enabled?: boolean } & ContactSyncBudget
+  }
   /** app DB 引擎；預設 standalone 的 better-sqlite3（外掛 build 會把它指到 13.0.2）。 */
   appDbEngine?: AppDbEngine
   /**
@@ -268,6 +281,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   const keyOpts: GetKeyOptions = { cacheFile: join(dataDir, '.linekey'), recoverGuard: keyGuard, ...(options.keyRecovery?.scanner ? { scanner: options.keyRecovery.scanner } : {}) }
   const avatarStoreOn = options.avatarStore?.enabled !== false
   let avatarSchemaReady = false
+  let entitySchemaReady = false
   let avatarDb: BetterSqlite3Database | null = null
   const avatarReads = { local: 0, fallback: 0, miss: 0, write: 0 }
   const engineOptions = { stateFile: join(dataDir, '.watch_json_state'), keyOpts, ...(avatarStoreOn ? { avatarMeta: true } : {}) }
@@ -320,11 +334,31 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       budget: backfillBudget
     })
     : null
+  // 通訊錄同步：和回填同一套骨架，只用 `any` snapshot。簽章閘看 LINE 來源的 edb／-wal（walSig），和 snapshot 的 lease.source 走同一個正規化。
+  const { enabled: contactSyncFlag, ...contactSyncBudget } = options.avatarStore?.contactSync ?? {}
+  const contactSyncOn = avatarStoreOn && contactSyncFlag !== false
+  const contactSync = contactSyncOn && lineAccess
+    ? createContactSync({
+      getDb: () => (avatarSchemaReady && entitySchemaReady ? avatarDb : null),
+      openSource: () => lineAccess.open({ dbPath: null, policy: 'any', keyOpts }),
+      currentSig: () => {
+        try {
+          const ports = getLineEnginePorts()
+          const path = findDbPath(ports.fs, ports.dbDir)
+          return path ? normalizeSourceSig(walSig(path)) : null
+        } catch { return null }
+      },
+      trace: (phase, ms) => trace?.event('bg', { p: phase, ms }),
+      log: (line) => log(line),
+      budget: contactSyncBudget
+    })
+    : null
   // 頭像：本地 DB → `any` snapshot（結果寫回本地）→ 文字頭像。功能關閉時只走 LINE DB（舊行為）。
   const avatarFallback: AvatarMetadataReader = { read: (input) => getAvatarMetadata(input, engineOptions) }
   const avatarReader: AvatarMetadataReader = avatarStoreOn
     ? createLayeredAvatarReader({
       getDb: () => avatarDb,
+      entityOn: () => contactSyncOn && entitySchemaReady,
       fallback: avatarFallback,
       ...(options.avatarStore?.now ? { now: options.avatarStore.now } : {}),
       onStat: (kind, n) => { avatarReads[kind] += n }
@@ -477,6 +511,10 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
         // 附屬表，不動 user_version；建不起來只是頭像退回舊流程（匯入端用 isLineAvatarSchemaReady 判斷，沒有表就跳過）。
         if (avatarStoreOn) {
           try { ensureLineAvatarSchema(db); avatarSchemaReady = true } catch { log('[avatar-store] schema_unavailable') }
+        }
+        // 通訊錄表獨立於上面的四張表（自己的旗標）：建不起來只是通訊錄層關閉，頭像功能照常。
+        if (contactSyncOn) {
+          try { ensureLineEntitySchema(db); entitySchemaReady = true } catch { log('[contact-sync] schema_unavailable') }
         }
         if (mediaIndex) {
           try { ensureMediaIndexSchema(db); mediaIndexDb = db } catch { log('[media-index] schema_unavailable') }
@@ -657,7 +695,13 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
         enabled: avatarStoreOn, schemaReady: avatarSchemaReady,
         reads: { local: avatarReads.local, fallback: avatarReads.fallback, miss: avatarReads.miss },
         writeThrough: avatarReads.write,
-        backfill: backfill ? backfill.status() as unknown as JsonValue : OFF_STATUS as unknown as JsonValue
+        backfill: backfill ? backfill.status() as unknown as JsonValue : OFF_STATUS as unknown as JsonValue,
+        // 只有計數與旗標；任何地方都不輸出 MID、locator 或顯示名。
+        contactSync: {
+          enabled: contactSyncOn,
+          schemaReady: contactSyncOn && entitySchemaReady && avatarDb !== null && isLineEntitySchemaReady(avatarDb),
+          ...(contactSync ? contactSync.status() : CONTACT_SYNC_OFF_STATUS)
+        } as unknown as JsonValue
       },
       appDb: appDbInfo(appDb),
       extract: { ...queue.stats(), combined: queue.combinedStats() },
@@ -675,6 +719,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     if (options.autoStart !== false) {
       await runtime.start()
       backfill?.start()
+      contactSync?.start()
       mediaIndex?.start()
       // 背景抽取：backend 啟動後就開始（不等看板）。沒有 host.ai（單元測試）就不啟動，項目留在佇列。
       // 真實 LINE 來源時與第一輪 poll 一樣延後到 activate() 回傳之後（boot-ack 先送出，host 才收得到我們對 host.ai 的第一個呼叫）。
@@ -689,6 +734,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     disposed = true
     keyGuard.cancel()
     await backfill?.dispose()
+    await contactSync?.dispose()
     await mediaIndex?.dispose()
     void snapshotStore?.close(0)
     lineAccess?.forgetKey()
@@ -735,7 +781,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       try {
         // 回填先停（它用 app DB 與 snapshot）：進行中的切片收尾、放掉 lease，之後不再存取任何 DB。最多等 DISPOSE_IDLE_WAIT_MS（它可能正等 snapshot 更新）。
         // 圖片索引同理：用 app DB 的切片收尾後才關 runtime（dispose 之後不再列任何目錄、不再存取任何 DB）。
-        await Promise.race([Promise.all([backfill?.dispose(), mediaIndex?.dispose()]), new Promise<void>((resolve) => { setTimeout(resolve, DISPOSE_IDLE_WAIT_MS).unref?.() })])
+        await Promise.race([Promise.all([backfill?.dispose(), contactSync?.dispose(), mediaIndex?.dispose()]), new Promise<void>((resolve) => { setTimeout(resolve, DISPOSE_IDLE_WAIT_MS).unref?.() })])
         await runtime.dispose()
         // 讓 snapshot store 靜止：不再發 lease、不再換檔、不再寫 meta（進行中的複製無法中止，複製完會發現已關閉而放棄換檔）；記憶體裡的金鑰一併忘掉。
         const closing = snapshotStore?.close(DISPOSE_IDLE_WAIT_MS)

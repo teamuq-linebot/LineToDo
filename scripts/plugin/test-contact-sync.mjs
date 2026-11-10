@@ -3,16 +3,22 @@
 // The LINE side is synthetic: a plain SQLite file with the LINE table shapes behind a fake connection; time is injected (now, wallClock, sleep, yieldLoop),
 // there is no wall-clock threshold anywhere, no real LINE, key or network is touched.
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
+
+import Database from 'better-sqlite3'
 
 import * as linedb from '../../src/main/line/engine/linedb.ts'
 import { configureLineEnginePorts, resetLineEnginePorts } from '../../src/main/line/engine/enginePorts.ts'
 import { createNodeLineFsPort } from '../../src/main/line/engine/nodeLineFsPort.ts'
 import { walSig } from '../../src/main/line/engine/watchEngine.ts'
+import { createLineAccess } from '../../src/main/line/engine/lineAccess.ts'
+import { avatarCacheKey } from '../../src/plugin/backend/avatarCache.ts'
+import { createPluginBackend } from '../../src/plugin/backend/assemble.ts'
 import { createContactSync, normalizeSourceSig } from '../../src/plugin/backend/contactSync.ts'
 import { openDatabase } from '../../src/main/db/database.ts'
 import { createLayeredAvatarReader } from '../../src/plugin/backend/avatarReader.ts'
@@ -186,10 +192,13 @@ function makeLine(path, spec = {}) {
   if (!spec.noDetailColumn) contactCols.push('_targetProfileDetail TEXT')
   if (!spec.noPictureColumn) contactCols.push('_picturePath TEXT')
   db.exec(`CREATE TABLE _profile(_mid TEXT, _picturePath TEXT); CREATE TABLE _contact(${contactCols.join(', ')})${without};`)
+  db.exec('CREATE TABLE _chat(_id TEXT PRIMARY KEY, _lastUpdatedTime INTEGER, _lastMessage TEXT); CREATE TABLE _message(_id TEXT, _chatId TEXT, _createdTime INTEGER, _from TEXT, _text TEXT, _contentType INTEGER, _contentMetadata TEXT, _contentInfo TEXT, _attribute INTEGER)')
   if (!spec.noGroupTable) db.exec('CREATE TABLE _groupChat(_chatMid TEXT PRIMARY KEY, _chatName TEXT, _picturePath TEXT)')
   if (!spec.noSquareTable) db.exec('CREATE TABLE _squareChat(_squareChatMid TEXT PRIMARY KEY, _name TEXT, _chatImageObsHash TEXT)')
   if (!spec.noProfile) db.prepare('INSERT INTO _profile(_mid,_picturePath) VALUES (?,?)').run(spec.me ?? ME, '/p/me')
   populateLine(db, spec)
+  for (const chat of spec.chats ?? []) db.prepare('INSERT INTO _chat(_id,_lastUpdatedTime) VALUES (?,1)').run(chat)
+  ;(spec.messages ?? []).forEach((m, i) => db.prepare('INSERT INTO _message(_id,_chatId,_createdTime,_from,_text,_contentType,_contentMetadata,_contentInfo,_attribute) VALUES (?,?,?,?,?,0,NULL,NULL,0)').run(String(1_000_001 + i), m.chat, 1_700_000_000_000 + i * 1000, m.from, `text ${i}`))
   db.close()
 }
 
@@ -567,6 +576,11 @@ test('Y-7 defensive: a WITHOUT ROWID _contact, a missing _targetProfileDetail co
         else assert.equal(row.gone_at, W0, `${label}: ${kind} table is there and the row vanished, so it is marked`)
       }
       if (missingKinds) assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE kind IN ('group','square_chat')").get().n, 2, `${label}: nothing was added for the missing kinds`)
+      assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE kind='contact' AND gone_at IS NOT NULL").get().n, 0, `${label}: every contact the scan saw is alive`)
+      if (!missingKinds) {
+        assert.equal(byMid(h.db, 'group', 'c-1').gone_at, null, `${label}: the group the scan saw is alive`)
+        assert.equal(byMid(h.db, 'square_chat', 's-1').gone_at, null, `${label}: the Square chat the scan saw is alive`)
+      }
     } finally { await h.stop() }
   }
 })
@@ -899,4 +913,246 @@ test('R-5 broken entity layer: with the table gone (or the flag off) the reader 
     const flagOff = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read } })
     assert.equal((await flagOff.read({ chatIds: ['c-room-0'], chatId: null, msgIds: [] })).chats['c-room-0'].locator, '/legacy/0')
   } finally { db.close() }
+})
+
+const holders = (db, needle) => db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()
+  .filter(({ name }) => JSON.stringify(db.prepare(`SELECT * FROM "${name}"`).all()).includes(needle)).map(({ name }) => name)
+
+// ───────────── C6: the production wiring (createPluginBackend) ─────────────
+
+/** A directory with a synthetic LINE database (with messages), a counting fs port and a fake SQLite engine over plain files. */
+function stage(spec) {
+  const root = mkdtempSync(join(tmpdir(), 'contact-sync-wire-'))
+  const lineDir = join(root, 'LINE', 'Data', 'db')
+  const dataDir = join(root, 'data')
+  mkdirSync(lineDir, { recursive: true })
+  mkdirSync(join(dataDir, 'line-engine'), { recursive: true })
+  const src = join(lineDir, 'qw0001.edb')
+  makeLine(src, spec)
+  const base = createNodeLineFsPort({ tempRoot: join(dataDir, 'line-engine') })
+  const fs = {
+    readDir: (d) => base.readDir(d), stat: (p) => base.stat(p), exists: (p) => base.exists(p), readFile: (p) => base.readFile(p),
+    copyFile: (s, d) => base.copyFile(s, d), copyFileAsync: (s, d) => base.copyFileAsync(s, d),
+    readHead: (p, n) => base.readHead(p, n), makeTempDir: (p) => base.makeTempDir(p), removeDir: (d) => base.removeDir(d), ensureDir: (d) => base.ensureDir(d),
+    readTextFile: (p) => base.readTextFile(p), writeTextFile: (p, t) => base.writeTextFile(p, t), renameFile: (a, b) => base.renameFile(a, b),
+    listProcessIds: () => []
+  }
+  const sqlite = {
+    name: 'fake-plain-sqlite',
+    open(path) {
+      const db = new DatabaseSync(path, { readOnly: true })
+      return { pragma: () => [], prepare: (sql) => ({ get: (...params) => db.prepare(sql).get(...params), all: (...params) => db.prepare(sql).all(...params) }), close: () => db.close() }
+    }
+  }
+  writeFileSync(join(dataDir, '.linekey'), GOOD_KEY)
+  return {
+    root, lineDir, dataDir, src, fs, sqlite, keyOpts: { cacheFile: join(dataDir, '.linekey') },
+    cleanup: () => { resetLineEnginePorts(); rmSync(root, { recursive: true, force: true }) }
+  }
+}
+
+const GOOD_KEY = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+const info = async (backend) => (await backend.call('backend', { path: 'backend.info', args: [] })).value
+const lineStatus = async (backend) => (await backend.call('line', { path: 'line.status', args: [] })).value
+
+async function startBackend(s, extra = {}) {
+  writeFileSync(join(s.dataDir, 'settings.json'), JSON.stringify({ version: 1, reconcile: { enabled: false, scopeMonths: 0 } }))
+  return createPluginBackend({
+    pluginId: 'tuqdev.line-todo', version: 'test', dataDir: s.dataDir,
+    linePorts: { fs: s.fs, sqlite: s.sqlite, dbDir: s.lineDir },
+    watcher: { intervalSec: 1, startupDelayMs: 20 },
+    snapshot: { walOnly: true },
+    trace: { eventMinMs: 0 },
+    ...extra,
+    avatarStore: { backfill: { enabled: false }, ...extra.avatarStore }
+  })
+}
+
+const FAST_SYNC = { startDelayMs: 0, pollMs: 25, minIntervalMs: 0, sourceRetryMs: 25, errorBackoffMs: 25, minSleepMs: 1 }
+const appDbPath = (s) => join(s.dataDir, 'line-todo.db')
+const appRead = (s) => new Database(appDbPath(s), { readonly: true })
+
+/** Pre-seeds the avatar image cache the way a previous download would have (so no download, and no network, is needed). */
+function seedAvatarCache(dataDir, identity, locator) {
+  const jpeg = Buffer.from([0xff, 0xd8, 9, 9, 9, 0xff, 0xd9])
+  const dir = join(dataDir, 'avatar-cache')
+  mkdirSync(dir, { recursive: true })
+  const name = `${avatarCacheKey(identity, locator)}.jpg`
+  writeFileSync(join(dir, name), jpeg)
+  writeFileSync(join(dir, `${name}.sha256`), createHash('sha256').update(jpeg).digest('hex'))
+  return `avatar-cache/${name}`
+}
+
+const wireSpec = () => {
+  const contacts = Array.from({ length: 4 }, (_, i) => ({ mid: `u-sender-00${i}`, name: `Sender ${i}`, picture: `/p/pic-${i}` }))
+  return {
+    contacts,
+    groups: [{ mid: 'c-room-0', name: 'Room 0', picture: '/p/room-0' }],
+    squares: [{ mid: 's-square-0', name: 'Square 0', hash: HASH_OK }],
+    chats: ['c-room-0'],
+    messages: Array.from({ length: 20 }, (_, i) => ({ chat: 'c-room-0', from: i % 5 === 0 ? ME : contacts[i % 4].mid }))
+  }
+}
+
+test('R-4 end to end: a picture changed at the source is picked up by the sync and prepareMessages / prepareChats answer with the new path (a different avatarCache key); no fixture MID is in backend.info or the trace log (P-2), and the account MID is in no table', { timeout: 90_000 }, async () => {
+  const s = stage(wireSpec())
+  let backend
+  try {
+    const oldMsg = seedAvatarCache(s.dataDir, 'u-sender-001', '/p/pic-1')
+    const newMsg = seedAvatarCache(s.dataDir, 'u-sender-001', '/p/new-1')
+    const oldChat = seedAvatarCache(s.dataDir, 'c-room-0', '/p/room-0')
+    const newChat = seedAvatarCache(s.dataDir, 'c-room-0', '/p/room-new')
+    assert.notEqual(oldMsg, newMsg)
+    backend = await startBackend(s, { avatarStore: { contactSync: FAST_SYNC } })
+    await until(async () => (await lineStatus(backend)).state === 'running', { message: 'the first import' })
+    await until(async () => (await info(backend)).avatarStore.contactSync.scans >= 1, { message: 'the first sync' })
+    const db = appRead(s)
+    try {
+      await until(() => db.prepare('SELECT COUNT(*) AS n FROM messages').get().n === 20, { message: 'all 20 messages imported' })
+      const ids = db.prepare("SELECT msg_id FROM messages WHERE sender IS NOT NULL ORDER BY msg_id").all().map((r) => r.msg_id)
+      const msgOf = db.prepare("SELECT ms.msg_id AS id FROM line_message_sender ms JOIN line_sender_profile sp ON sp.sender_id=ms.sender_id WHERE sp.sender_mid='u-sender-001' LIMIT 1").get().id
+      assert.ok(ids.length > 0)
+      const before = (await backend.call('media', { path: 'media.avatar.prepareMessages', args: ['c-room-0', [msgOf]] })).value
+      assert.equal(before.paths[msgOf], oldMsg)
+      assert.equal((await backend.call('media', { path: 'media.avatar.prepareChats', args: [['c-room-0']] })).value.paths['c-room-0'], oldChat)
+
+      const scansBefore = (await info(backend)).avatarStore.contactSync.scans
+      const w = new DatabaseSync(s.src)
+      w.prepare("UPDATE _contact SET _picturePath='/p/new-1' WHERE _mid='u-sender-001'").run()
+      w.prepare("UPDATE _groupChat SET _picturePath='/p/room-new' WHERE _chatMid='c-room-0'").run()
+      w.close()
+      await until(() => db.prepare("SELECT locator FROM line_entity WHERE kind='contact' AND entity_mid='u-sender-001'").get()?.locator === '/p/new-1', { message: 'the entity row follows the source' })
+      assert.ok((await info(backend)).avatarStore.contactSync.scans > scansBefore)
+      const after = (await backend.call('media', { path: 'media.avatar.prepareMessages', args: ['c-room-0', [msgOf]] })).value
+      assert.equal(after.paths[msgOf], newMsg, 'the message avatar points at the new picture')
+      assert.notEqual(after.paths[msgOf], before.paths[msgOf])
+      assert.equal((await backend.call('media', { path: 'media.avatar.prepareChats', args: [['c-room-0']] })).value.paths['c-room-0'], newChat, 'and so does the group avatar')
+
+      // P-2: no fixture MID or picture path in the state or the trace, and our own MID in no table
+      const state = JSON.stringify(await info(backend))
+      const trace = readFileSync(join(s.dataDir, 'logs', 'invoke-trace.log'), 'utf8')
+      for (const needle of [ME, 's-square-0', '/p/', HASH_OK, 'Sender ', 'Square 0']) {
+        assert.equal((state + trace).includes(needle), false, `${needle} is nowhere in the state or the trace`)
+      }
+      assert.equal(/u-sender-d{3}|u-account/.test(state + trace), false, 'no sender MID in backend.info or the trace')
+      assert.equal(JSON.stringify((await info(backend)).avatarStore.contactSync).includes('c-room-0'), false, 'and no group MID in the sync state')
+      assert.deepEqual(holders(db, ME), [], 'the account MID is in no table')
+    } finally { db.close() }
+  } finally {
+    await backend?.dispose()
+    s.cleanup()
+  }
+})
+
+test('K-1 switch off: with avatarStore.contactSync.enabled=false the worker never starts, the reader ignores entity rows that already exist, and the state says off; switched on again it uses them', { timeout: 90_000 }, async () => {
+  const s = stage(wireSpec())
+  let backend
+  try {
+    const legacyChat = seedAvatarCache(s.dataDir, 'c-room-0', '/p/room-0')
+    const entityChat = seedAvatarCache(s.dataDir, 'c-room-0', '/p/entity-only')
+    backend = await startBackend(s, { avatarStore: { contactSync: FAST_SYNC } })
+    await until(async () => (await info(backend)).avatarStore.contactSync.scans >= 1, { message: 'the first sync' })
+    await backend.dispose()
+    backend = null
+    const w = new Database(appDbPath(s))
+    w.prepare("UPDATE line_entity SET locator='/p/entity-only' WHERE kind='group' AND entity_mid='c-room-0'").run()
+    w.close()
+
+    backend = await startBackend(s, { avatarStore: { contactSync: { ...FAST_SYNC, enabled: false } } })
+    await until(async () => (await lineStatus(backend)).state === 'running', { message: 'the import' })
+    const state = (await info(backend)).avatarStore.contactSync
+    assert.equal(state.enabled, false)
+    assert.equal(state.phase, 'off')
+    assert.equal(state.schemaReady, false)
+    assert.equal((await backend.call('media', { path: 'media.avatar.prepareChats', args: [['c-room-0']] })).value.paths['c-room-0'], legacyChat, 'the entity row is ignored')
+    await sleepMs(300)
+    assert.equal((await info(backend)).avatarStore.contactSync.scans, 0, 'no worker ran')
+    await backend.dispose()
+    backend = null
+
+    backend = await startBackend(s, { avatarStore: { contactSync: { ...FAST_SYNC, minIntervalMs: 3_600_000 } } })
+    await until(async () => (await lineStatus(backend)).state === 'running', { message: 'the import' })
+    assert.equal((await backend.call('media', { path: 'media.avatar.prepareChats', args: [['c-room-0']] })).value.paths['c-room-0'], entityChat, 'switched on, the entity row is used')
+  } finally {
+    await backend?.dispose()
+    s.cleanup()
+  }
+})
+
+test('K-2 table dropped at run time: the reader keeps answering from the old tables, the worker does not throw, and the state shows the schema as not ready', { timeout: 90_000 }, async () => {
+  const s = stage(wireSpec())
+  let backend
+  try {
+    const legacyChat = seedAvatarCache(s.dataDir, 'c-room-0', '/p/room-0')
+    backend = await startBackend(s, { avatarStore: { contactSync: FAST_SYNC } })
+    await until(async () => (await info(backend)).avatarStore.contactSync.scans >= 1, { message: 'the first sync' })
+    assert.equal((await info(backend)).avatarStore.contactSync.schemaReady, true)
+    const w = new Database(appDbPath(s))
+    w.exec('DROP TABLE line_entity')
+    w.close()
+    await until(async () => { const c = (await info(backend)).avatarStore.contactSync; return c.schemaReady === false && c.phase === 'schema_unavailable' }, { message: 'the state shows the missing schema' })
+    const answer = await backend.call('media', { path: 'media.avatar.prepareChats', args: [['c-room-0']] })
+    assert.equal(answer.ok, true)
+    assert.equal(answer.value.paths['c-room-0'], legacyChat)
+    assert.equal((await info(backend)).avatarStore.schemaReady, true, 'the avatar feature itself is untouched')
+  } finally {
+    await backend?.dispose()
+    s.cleanup()
+  }
+})
+
+test('T-2 any only: the worker opens the LINE source with policy any — the snapshot store is never asked for fresh — and the wiring names no other policy', async () => {
+  const s = stage(wireSpec())
+  const db = appDbWith({ entity: true })
+  try {
+    const calls = []
+    const store = {
+      acquire: async (_src, policy) => { calls.push(policy); return { path: s.src, source: { edb: [1, 2], wal: null }, release: () => undefined, shouldYield: () => false } },
+      invalidate: () => undefined,
+      stats: () => ({ fullCopies: 0 })
+    }
+    configureLineEnginePorts({ fs: s.fs, sqlite: s.sqlite, dbDir: s.lineDir })
+    const access = createLineAccess({ store })
+    configureLineEnginePorts({ access })
+    ;(await access.open({ dbPath: s.src, policy: 'fresh', keyOpts: s.keyOpts })).cleanup()
+    assert.deepEqual(calls, ['fresh'], 'the key is held after one fresh open (set-up)')
+    calls.length = 0
+    const { sync } = syncOver(s.src, db, { options: { openSource: () => access.open({ dbPath: null, policy: 'any', keyOpts: s.keyOpts }) } })
+    sync.start()
+    await until(() => sync.status().scans >= 1, { message: 'a scan through the real access' })
+    await sync.dispose()
+    assert.ok(calls.length >= 1)
+    assert.deepEqual([...new Set(calls)], ['any'])
+    assert.equal(calls.filter((policy) => policy === 'fresh').length, 0)
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE kind='contact'").get().n, 4)
+
+    const assemble = readFileSync(join(srcRoot, 'plugin', 'backend', 'assemble.ts'), 'utf8')
+    const block = assemble.slice(assemble.indexOf('createContactSync({'), assemble.indexOf('budget: contactSyncBudget'))
+    assert.ok(block.length > 100, 'found the wiring block')
+    assert.match(block, /policy: 'any'/)
+    assert.equal(/fresh/.test(block), false)
+    assert.equal(/fresh/.test(readFileSync(join(srcRoot, 'plugin', 'backend', 'contactSync.ts'), 'utf8')), false, 'contactSync.ts knows nothing about fresh')
+  } finally {
+    db.close()
+    s.cleanup()
+  }
+})
+
+// ───────────── P: privacy (static) ─────────────
+
+const srcRoot = resolve(import.meta.dirname, '..', '..', 'src')
+
+test('P-1 static: the table and its MID column are named only in lineEntity.repo.ts; lineAvatar.repo.ts never names the entity MID column; contactSync.ts has no MID, locator or name near a log, trace or status line', () => {
+  const files = readdirSync(srcRoot, { recursive: true }).map(String).filter((f) => /\.(ts|tsx)$/.test(f))
+  assert.ok(files.length > 100, 'the whole src tree was scanned')
+  const holdersOf = (pattern) => files.filter((f) => pattern.test(readFileSync(join(srcRoot, f), 'utf8'))).map((f) => f.split(/[\\/]/).pop())
+  assert.deepEqual(holdersOf(/line_entity|entity_mid/), ['lineEntity.repo.ts'])
+  assert.equal(/entity_mid|line_entity/.test(readFileSync(join(srcRoot, 'main', 'db', 'lineAvatar.repo.ts'), 'utf8')), false)
+  for (const f of ['plugin/backend/assemble.ts', 'plugin/backend/invokeTrace.ts']) {
+    assert.equal(/line_entity|entity_mid/.test(readFileSync(join(srcRoot, f), 'utf8')), false, `${f} never names the entity table`)
+  }
+  const text = readFileSync(join(srcRoot, 'plugin', 'backend', 'contactSync.ts'), 'utf8')
+  const lines = text.split(/\r?\n/).filter((line) => /\blog\(|options\.log|options\.trace|trace\?\.|options\.onStat|stat\(|onSlice/.test(line))
+  assert.ok(lines.length >= 5, 'contactSync.ts has observation calls')
+  for (const line of lines) assert.equal(/mid|identity|locator|displayName|\.from\b|msgId/i.test(line), false, line.trim())
 })
