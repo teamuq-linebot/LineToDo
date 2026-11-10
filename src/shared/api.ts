@@ -208,6 +208,16 @@ export interface ReviewLastDaysResult {
   note: string | null
 }
 
+/** pipeline.refreshChat 結果（與 main/pipeline/chatRefresh.ts ChatRefreshResult 對齊）：只針對一個聊天室的「重新整理最近 N 天」。 */
+export interface ChatRefreshResultView {
+  ok: boolean
+  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'no_ai'
+  days: number | null
+  sinceMs: number | null
+  todo: { ran: boolean; messages: number; aiCalls: number; todosCreated: number; todosMerged: number; todosResolvedDone: number; failed: boolean }
+  topics: { ran: boolean; aiCalls: number; analyzed: number; batches: number; failed: boolean; reason?: string }
+}
+
 /**
  * 外掛版長任務（回顧、補媒體金鑰）的狀態（G-05）。由 backend 管理並寫進 dataDir，畫面重新載入或 backend 重新啟動後仍查得到；
  * `state:'interrupted'`＝上次執行到一半 backend 就重新啟動了。standalone 沒有這個查詢（`pipeline.longTaskStatus` 為 undefined）。
@@ -616,6 +626,8 @@ export interface LineTodoApi {
   pipeline: {
     status(): Promise<PipelineStatus>; loadStats(): Promise<PipelineLoadStats>
     runOnce(): Promise<PipelineRunResult>; reviewLastDays(days?: number): Promise<ReviewLastDaysResult>
+    /** 重新整理一個聊天室最近 N 天（1–365 的整數）：待辦與議題依該聊天室目前的開關處理，兩者皆關回 disabled。 */
+    refreshChat(chatId: string, days: number): Promise<ChatRefreshResultView>
     backfillMediaKeys(days?: number): Promise<{ ok: boolean; scanned?: number; mediaBackfilled?: number; error?: string }>
     /** 外掛版：長任務的狀態（G-05）；standalone 不提供。 */
     longTaskStatus?(): Promise<LongTaskStatusView>

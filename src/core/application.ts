@@ -22,6 +22,7 @@ import { draftReply } from '../main/llm/draftReply'
 import type { PipelineDefaults } from '../main/config/defaults'
 import type { QwenConfig } from '../main/config/qwen'
 import { reviewLastDays, backfillMediaKeys } from '../main/pipeline/backfill'
+import { refreshChatLastDays, type ChatRefreshResult } from '../main/pipeline/chatRefresh'
 import type { ChatExtractInput } from '../main/pipeline/runOnce'
 import type { ExtractResult } from '../main/llm/schema'
 import { deriveMsgId } from '../main/db/schema'
@@ -65,6 +66,8 @@ export interface LineTodoApplicationPorts {
   /** 議題背景分析的診斷事件（不含訊息內容）。 */
   topicBackgroundLog?(event: string, detail?: Record<string, unknown>): void
   makeExtract(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null
+  /** 「重新整理最近 N 天」專用的抽取函式（外掛：直接用 ExtractQueue，不經回顧帳本）；省略＝沿用 makeExtract。 */
+  makeRefreshExtract?(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null
   media: {
     open(msgId: string, db: Database): Promise<{ ok: boolean; error?: string }>
     saveAs(msgId: string, db: Database): Promise<{ ok: boolean; canceled?: boolean; error?: string }>
@@ -470,6 +473,23 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
         onCorrectionsPayloadBuilt: (chatId,messageIds,rules) => rules.forEach(rule=>repos.notMine.effect(rule,chatId,messageIds,'reviewLastDays')),
         onProgress: (progress: BackfillProgress) => { if (state === 'running') events.emit('backfill-progress', progress) }
       }),
+      refreshChat: async (chatId: string, days: unknown): Promise<ChatRefreshResult> => {
+        const refreshExtract = ports.makeRefreshExtract ? ports.makeRefreshExtract() : ports.makeExtract()
+        return refreshChatLastDays(chatId, days, {
+          db: database.db,
+          config: ports.pipelineConfig.getDefaults(),
+          extractFn: refreshExtract,
+          identityAttemptManagedByQueue: (refreshExtract as ((input: ChatExtractInput) => Promise<ExtractResult>) & { identityAttemptManagedByQueue?: boolean } | null)?.identityAttemptManagedByQueue === true,
+          correctionsForChat: (id) => repos.notMine.corrections(id),
+          onCorrectionsPayloadBuilt: (id, messageIds, rules) => rules.forEach((rule) => repos.notMine.effect(rule, id, messageIds, 'reviewLastDays')),
+          topicRefresh: groupTopicsService
+            ? async (id, sinceMs) => {
+              const r = await groupTopicsService!.refreshWindow(id, sinceMs, () => ports.providers.resolveProvider())
+              return { ok: r.ok, reason: r.reason ?? r.failure?.code, analyzedCount: r.analyzedCount, batches: r.batches }
+            }
+            : undefined
+        })
+      },
       backfillMediaKeys: async (days = 7) => {
         try {
           const result = await backfillMediaKeys(Number.isFinite(days) && days > 0 ? Math.floor(days) : 7, {

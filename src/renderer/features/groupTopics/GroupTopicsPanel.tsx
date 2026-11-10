@@ -413,8 +413,8 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
             <>
               {enabled && !settling && <div className="group-topics-controls">
                 {combined
-                  ? (pending > 0 || busy) && <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '補分析中…' : '補分析舊訊息'}</button>
-                  : <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '分析中…' : `分析最近${chatLabel}訊息`}</button>}
+                  ? (!embedded && (pending > 0 || busy)) && <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '補分析中…' : '補分析舊訊息'}</button>
+                  : !embedded && <button type="button" disabled={!api || !enabled || busy} onClick={() => void runAnalysis()}>{busy ? '分析中…' : `分析最近${chatLabel}訊息`}</button>}
               </div>}
               {enabled && !settling && !globalMode && (
                 <div className="group-topics-results">

@@ -133,6 +133,11 @@ export interface ChatIdentityApplyContext extends IdentityValidationContext {
   snapshot: TrustedIdentitySnapshot
   sourceLease?: ChatSourceLease
   allowedTodoIds: string[]
+  /**
+   * 重新整理（聊天室最近 N 天）：草稿若對應到已完成／已忽略的待辦，或其來源訊息已屬於既有待辦，一律不建卡、不改回未完成。
+   * 只由 chatRefresh.ts 設定；一般抽取與回顧不受影響。
+   */
+  refreshOnly?: boolean
 }
 
 export interface RunOnceResult {
@@ -225,7 +230,11 @@ export function buildTodoApply(
       if (ctx.identity.sourceLease && (ctx.identity.sourceLease.chatId!==chatId || ctx.identity.sourceLease.sourceEpoch!==ctx.identity.snapshot.sourceEpoch)) throw new Error('todo_identity_lease_mismatch')
     }
     const openTodos = getOpenTodosByChat(chatId, db)
-    const strict = ctx.identity ? validateExtractResult(extract,{
+    // 重新整理：resolved 指向非 open 的待辦時直接過濾掉，避免 validateExtractResult 整批拋錯、拖垮同一切片的其他結果。
+    const refreshExtract:ExtractResult = ctx.identity?.refreshOnly
+      ? {...extract,resolved:extract.resolved.filter((item)=>ctx.identity!.allowedTodoIds.includes(item.todoId))}
+      : extract
+    const strict = ctx.identity ? validateExtractResult(refreshExtract,{
       candidates:ctx.identity.candidates,candidatesTruncated:ctx.identity.candidatesTruncated,
       selectedMessageIds:msgIds,targetType:'todo',allowedTodoIds:ctx.identity.allowedTodoIds
     }) : extract
@@ -287,6 +296,13 @@ export function buildTodoApply(
         if(matchesChatIgnoreKeyword(nt,cfg.chatIgnoreKeywords[chatId]??[])) continue
         const candidate=decision.candidateType==='todo'&&decision.candidateId?todoCandidates.get(decision.candidateId):undefined
         const terminalCandidate=candidate&&(candidate.status==='done'||candidate.status==='dismissed')?candidate:undefined
+        if(ctx.identity?.refreshOnly) {
+          if(terminalCandidate) continue
+          // 草稿只要有任一來源屬於已完成／已忽略的待辦，整張草稿跳過（不重建、不改回）。
+          if(nt.sourceMsgIds.some((id)=>todoSourceTerminal(db,chatId,id))) continue
+          const sourcesAlreadyTracked=nt.sourceMsgIds.length>0&&nt.sourceMsgIds.every((id)=>todoSourceTracked(db,chatId,id))
+          if(sourcesAlreadyTracked&&decision.outcome!=='update_existing') continue
+        }
         if(terminalCandidate&&decision.outcome==='update_existing'&&(decision.reasonCode!=='same_completed_action'||!canUpdateTerminal(terminalCandidate,nt.sourceMsgIds))){
           createNewTodo(nt,decision,[terminalCandidate.entityId],'R1')
           continue
@@ -312,7 +328,8 @@ export function buildTodoApply(
             continue
           }
           const existingSourceIds=parseSourceIdJson(current.source_msg_ids)
-          if(isTerminal) {
+          // 重新整理：未完成待辦只合併來源訊息，不覆寫標題、內容、優先級、bucket、due。一般抽取路徑不變。
+          if(isTerminal||ctx.identity?.refreshOnly) {
             if(existingSourceIds) db.prepare('UPDATE todos SET source_msg_ids=?,updated_at=? WHERE chat_id=? AND id=?').run(JSON.stringify([...new Set([...existingSourceIds,...nt.sourceMsgIds])]),now,chatId,current.id)
           } else {
             updateTodo(current.id,{title:nt.title,detail:nt.detail,priority:nt.priority,dueAt:nt.dueAt??current.due_at,bucket:nt.bucket,...(existingSourceIds?{sourceMsgIds:[...new Set([...existingSourceIds,...nt.sourceMsgIds])]}:{})},db)
@@ -411,6 +428,17 @@ export function applyChatExtract(
   }
   const tx=db.transaction(apply)
   runImmediateTransaction(tx)
+}
+
+/** 重新整理用：這則訊息是否已經是某張待辦（任何狀態）的來源。 */
+function todoSourceTracked(db:Database,chatId:string,msgId:string):boolean {
+  return !!db.prepare('SELECT 1 AS yes FROM todo_identity_sources WHERE chat_id=? AND msg_id=? LIMIT 1').get(chatId,msgId)
+}
+
+/** 重新整理用：這則訊息是否是某張已完成／已忽略待辦的來源。 */
+function todoSourceTerminal(db:Database,chatId:string,msgId:string):boolean {
+  return !!db.prepare(`SELECT 1 AS yes FROM todo_identity_sources s JOIN todos t ON t.chat_id=s.chat_id AND t.id=s.todo_id
+    WHERE s.chat_id=? AND s.msg_id=? AND t.status IN ('done','dismissed') LIMIT 1`).get(chatId,msgId)
 }
 
 function isTopicRelationAllowed(db:Database,chatId:string,topicId:string):boolean {

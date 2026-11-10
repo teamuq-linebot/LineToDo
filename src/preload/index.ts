@@ -3,7 +3,7 @@ import type {
   LineTodoApi, RawLineMessage, LineBridgeStatus, ChatDTO, ChatListPrefsDTO, MessageDTO, TodoDTO,
   TodoSortBy, TodoSortDirection, MessagesPersistedEvent, PipelineStatus,
   PipelineLoadStats, PipelineRunResult, TodosChangedEvent, BackfillProgress,
-  ReconcileProgress, ReviewLastDaysResult, QwenTestResult, ProviderHealth,
+  ReconcileProgress, ReviewLastDaysResult, ChatRefreshResultView, QwenTestResult, ProviderHealth,
   SettingsView, SettingsPatch, DraftReplyResult,
   DriverStatus, DriverPostRequest, DriverPostResult, DriverPostProgress, DriverFollowUpResult,
 } from '../shared/api'
@@ -200,6 +200,9 @@ const api = {
     /** 回顧過去 N 天（預設 7）：用既有抽取管線判斷時間窗口、補建 todos。 */
     reviewLastDays: (days?: number): Promise<ReviewLastDaysResult> =>
       ipcRenderer.invoke('pipeline:reviewLastDays', { days }),
+    /** 重新整理一個聊天室最近 N 天（待辦與議題依該聊天室開關）。 */
+    refreshChat: (chatId: string, days: number): Promise<ChatRefreshResultView> =>
+      ipcRenderer.invoke('pipeline:refreshChat', { chatId, days }),
     /** 輕量 backfill：重讀近 N 天訊息只補既有列媒體欄（不跑 LLM、不需金鑰）。 */
     backfillMediaKeys: (
       days?: number

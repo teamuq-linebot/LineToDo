@@ -496,6 +496,12 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       },
       line,
       // 同步呼叫端（reviewLastDays 回顧）也走 ExtractQueue：同一個 pull/commit 通道，結果直接 resolve 給呼叫端。
+      // 重新整理（單一聊天室）：直接走 ExtractQueue，不經回顧帳本（帳本會讓同一批訊息第二次整個跳過）。
+      makeRefreshExtract: () => {
+        const extract = (input: Parameters<ExtractQueue['request']>[0]) => queue.request(input)
+        ;(extract as typeof extract & {identityAttemptManagedByQueue?:boolean}).identityAttemptManagedByQueue=true
+        return extract
+      },
       makeExtract: () => {
         const extract=review.wrapExtract((input) => queue.request(input))
         ;(extract as typeof extract & {identityAttemptManagedByQueue?:boolean}).identityAttemptManagedByQueue=true

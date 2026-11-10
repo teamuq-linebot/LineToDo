@@ -9,6 +9,7 @@ import { hasSavedMessageText, mergeMessageCopies, recalledMessageNotice, recalle
 import { useLineTodoApi } from '../platform/LineTodoApi'
 import { displayChatName } from '../lib/displayChatName'
 import { GroupTopicsPanel } from '../features/groupTopics/GroupTopicsPanel'
+import { ChatRefreshControl } from '../features/chatRefresh/ChatRefreshControl'
 import { ChatTodosPanel } from '../features/chatTodos/ChatTodosPanel'
 import { ChatPromptPanel } from '../features/chatPrompt/ChatPromptPanel'
 import { MediaFileActions, MediaImage } from './MediaView'
@@ -1050,6 +1051,12 @@ export function MessageStream(): JSX.Element {
               </header>
               {paneView === 'topicsTodos' ? (
                 <div className="chat-topics-todos-content" data-testid="chat-topics-todos-content" aria-label={`${activeConversation.name}的議題與待辦`}>
+                  <ChatRefreshControl
+                    key={`refresh-${activeConversation.chatId}`}
+                    chatId={activeConversation.chatId}
+                    todoOn={!prefs.todoOff.includes(activeConversation.chatId)}
+                    topicsOn={prefs.topicsOn.includes(activeConversation.chatId)}
+                  />
                   <GroupTopicsPanel key={`topics-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} embedded />
                   <ChatTodosPanel
                     key={`todos-${activeConversation.chatId}`}

@@ -981,10 +981,9 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
       reactProps(directEnable).onChange({ target: { checked: true } })
       await until(() => topicEnableQueries.some((entry) => entry.chatId === direct.chatId && entry.enabled) && view.container.textContent.includes(directTopic.title), { message: 'enabling direct topics reads existing results for that chat' })
       const directAnalyzeButton = walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === '分析最近聊天室訊息')
-      assert.ok(directAnalyzeButton, 'manual analysis is available for a direct chat')
-      click(directAnalyzeButton)
-      await until(() => topicAnalyzeQueries.includes(direct.chatId) && view.container.textContent.includes('已整理 1 則新訊息'), { message: 'manual direct chat analysis calls the topic API for the selected chat' })
-      assert.deepEqual(topicAnalyzeQueries, [direct.chatId])
+      // F3：embedded 一律不顯示舊的分析按鈕（直接聊天室也一樣）；手動整理改由「重新整理」控制項負責。
+      assert.equal(directAnalyzeButton, undefined, 'the embedded direct chat shows no legacy analyse button')
+      assert.deepEqual(topicAnalyzeQueries, [], 'no analysis runs without the removed button')
       assert.ok(view.container.textContent.includes(directTopic.title))
       assert.ok(view.container.textContent.includes(directTodo.title), 'the todo content remains visible while using topic actions')
       assert.ok(crossTopicQueries.every((value) => value.startsWith('pending:')), 'chats never query cross-group authorization or candidates')
@@ -2681,6 +2680,26 @@ test('F3b turning topics on never flashes the empty result text or the analyse b
     releaseList()
     await until(() => s.view.container.textContent.includes('尚無分析結果'), { message: 'the result area appears after the refresh' })
   } finally { s.dispose() }
+})
+
+test('F3 embedded 議題與待辦頁籤：不論 combined 與待辦開關為何，都不顯示舊的「補分析舊訊息」與「分析最近群組訊息」', async () => {
+  for (const combined of [true, false]) {
+    for (const todoOn of [true, false]) {
+      const chat = toggleChat(`toggle-f3-${combined}-${todoOn}`, '合成群組F3', true)
+      const s = toggleScene([chat], {
+        'db.chats.todoExtractEnabled': () => todoOn,
+        'groupTopics.list': () => ({ ok: true, topics: [], ...(combined ? { combined: true } : {}) }),
+        'groupTopics.pendingCount': () => 3
+      })
+      const label = `combined=${combined} 待辦=${todoOn ? '開' : '關'}`
+      try {
+        await openCombinedPane(s)
+        await until(() => hasSwitch(s.view, '此群組的議題開關') && s.view.container.textContent.includes('尚無分析結果'), { message: `${label}: the topics panel is rendered` })
+        assert.ok(!buttonTexts(s.view).includes('補分析舊訊息'), `${label}: no backfill button in the embedded panel`)
+        assert.ok(!buttonTexts(s.view).includes('分析最近群組訊息'), `${label}: no legacy analyse button in the embedded panel`)
+      } finally { s.dispose() }
+    }
+  }
 })
 
 test('U3 switches are absent while loading, disabled and aria-busy while saving, and a late reply from another chat cannot overwrite the current one', async () => {

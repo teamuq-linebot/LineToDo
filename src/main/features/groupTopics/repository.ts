@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { Database } from 'better-sqlite3'
 import type { TopicAnalysis, TopicMessageInput, TopicView } from './domain'
-import { getMessagesByChatAndIds, getRecentByChat } from '../../db/messages.repo'
+import { getByChatSince, getMessagesByChatAndIds, getRecentByChat } from '../../db/messages.repo'
 import { assertIdentitySnapshotCurrent, identityMetaState, insertIdentityEvent, releaseIdentitySourceAttempt, syncTopicIdentityTerms } from '../../db/identity.repo'
 import type { IdentityCandidate, IdentityContextSnapshot } from '../../../shared/identityDecision'
 import { IDENTITY_QUERY_VERSION } from '../../../shared/identityDecision'
@@ -276,6 +276,16 @@ export function loadPendingMessages(db: Database, chatId: string, limit = 100, i
   return sourceRows
     .filter((row) => row.text !== null)
     .map((row) => ({ msgId: row.msgId, ts: row.ts, direction: row.direction, text: (row.text ?? '').slice(0,3000) }))
+}
+
+/**
+ * 重新整理用：聊天室 sinceMs 之後全部符合資格的訊息（與 selectPendingMessageIds 同一組資格條件），
+ * 不看 topic_message_decisions，已分析過的也列入。依 ts、msgId 由舊到新。
+ */
+export function loadWindowMessages(db: Database, chatId: string, sinceMs: number): TopicMessageInput[] {
+  return getByChatSince(chatId, sinceMs, db)
+    .filter((row) => !row.unsent && row.contentType === 0 && row.text !== null && row.text.trim() !== '')
+    .map((row) => ({ msgId: row.msgId, ts: row.ts, direction: row.direction, text: (row.text ?? '').slice(0, 3000) }))
 }
 
 /** msgIds 中符合議題分析資格的子集（與 loadPendingMessages 同一組條件，含 checkpoint／最近 100 則視窗），依 ts、msgId 排序。 */
