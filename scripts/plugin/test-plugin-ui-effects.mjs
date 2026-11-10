@@ -2279,7 +2279,7 @@ test('overview list: choosing a chat filter does not re-read the overview; an an
   } finally { view.unmount(); api.dispose() }
 })
 
-test('M1 overview UI: a trimmed or compacted group adds one short note above the list', async () => {
+test('M1 overview UI: a trimmed or compacted group adds no note above the list (the 群組議題 page has no explanatory line)', async () => {
   const log = []
   const rows = overviewRows()
   rows[0] = { ...rows[0], topicCount: 31, compacted: true }
@@ -2289,7 +2289,7 @@ test('M1 overview UI: a trimmed or compacted group adds one short note above the
   try {
     await until(() => view.container.textContent.includes('總覽議題0'), { message: 'overview shown' })
     const text = view.container.textContent
-    assert.equal(text.split('部分議題已縮短或未列出').length - 1, 1, 'one note for the whole list')
+    assert.equal(text.includes('部分議題已縮短或未列出'), false, 'the explanatory line is gone')
     assert.equal(text.includes('只顯示最近'), false, 'no per-group hint any more')
   } finally { view.unmount(); api.dispose() }
 })

@@ -347,7 +347,6 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
     () => sortTopicRows(filterTopicRows(topicRowsAll, { chatId: filterChatId === ALL_GROUPS ? null : filterChatId, query }), sortKey, sortDir),
     [topicRowsAll, filterChatId, query, sortKey, sortDir]
   )
-  const trimmedOverview = overviewGroups.some((group) => group.status === 'enabled' && ((group.topicCount ?? group.topics.length) > group.topics.length || !!group.compacted))
 
   function sortBy(key: TopicSortKey): void {
     if (key === sortKey) {
@@ -361,7 +360,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
   return (
     <section className={`settings-section group-topics-panel topics-recap${embedded ? ' embedded' : ''}`} aria-label={heading}>
       {!embedded && !hideTitle && <h2>{heading}</h2>}
-      {!embedded && <details className="group-topics-help">
+      {!embedded && <details className="group-topics-help topics-disclosure">
         <summary>議題分析說明與群組設定</summary>
         <p>議題分析需逐群啟用。已開啟「議題與待辦合併整理」時，新訊息的議題會在「立即整理」與背景整理時一併產生，舊訊息可用「補分析舊訊息」手動補上；否則需手動執行分析。所有群組總覽只讀取各群既有結果，不會自動啟用或分析群組。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>
       </details>}
@@ -370,7 +369,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
       {embedded && !chatId && <p className="muted">目前沒有選取中的聊天室。</p>}
       {error && !chatId && <p className="group-topics-error" role="alert">{error}</p>}
       {globalMode && (
-        <section className="group-topics-list" aria-label="群組議題列表">
+        <section className="group-topics-list set-section" aria-label="群組議題列表">
           {overviewError && <p className="group-topics-error" role="alert">{overviewError}</p>}
           {overviewLoading && <p className="muted" role="status">載入中…</p>}
           {!overviewLoading && overviewGroups.filter((group) => group.status === 'failed').map((group) => (
@@ -379,16 +378,19 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
           {!overviewLoading && !overviewError && topicRowsAll.length === 0 && <p className="muted">尚無議題</p>}
           {!overviewLoading && topicRowsAll.length > 0 && (
             <>
-              <div className="topics-tools">
-                <input type="search" aria-label="搜尋議題" placeholder="搜尋" value={query} onChange={(event) => setQuery(event.target.value)} />
-                <label className="group-topics-group-select">聊天室
+              <div className="board-filters">
+                <label className="filter-field">
+                  <span>搜尋</span>
+                  <input type="search" className="set-input" aria-label="搜尋議題" placeholder="聊天室、標題或摘要" value={query} onChange={(event) => setQuery(event.target.value)} />
+                </label>
+                <label className="filter-field group-topics-group-select">
+                  <span>聊天室</span>
                   <select value={filterChatId} onChange={(event) => setFilterChatId(event.target.value)}>
                     <option value={ALL_GROUPS}>全部</option>
                     {chats.map((chat) => <option key={chat.chatId} value={chat.chatId}>{chat.name ?? '未命名群組'}</option>)}
                   </select>
                 </label>
               </div>
-              {trimmedOverview && <p className="muted" role="note">部分議題已縮短或未列出</p>}
               <TopicsTable
                 rows={visibleTopicRows}
                 sortKey={sortKey}
