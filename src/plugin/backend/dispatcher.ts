@@ -55,7 +55,7 @@ export const SUPPORTED_API_PATHS: readonly string[] = Object.freeze([
   'db.todos.reopenNotMine', 'db.todos.applyNotMineCorrection', 'db.todos.setNotMineCorrectionEnabled',
   'groupTopics.setEnabled', 'groupTopics.pendingCount',
   'groupTopics.list', 'groupTopics.overview', 'groupTopics.todoRefs',
-  'pipeline.status', 'pipeline.loadStats', 'pipeline.runOnce', 'pipeline.reviewLastDays', 'pipeline.refreshChat', 'pipeline.backfillMediaKeys', 'pipeline.setRunning',
+  'pipeline.status', 'pipeline.loadStats', 'pipeline.runOnce', 'pipeline.reviewLastDays', 'pipeline.refreshChat', 'pipeline.refreshChatStatus', 'pipeline.backfillMediaKeys', 'pipeline.setRunning',
   'settings.get', 'settings.update', 'settings.hasSafeStorageKey'
 ])
 
@@ -273,12 +273,6 @@ export class Dispatcher {
     if (!target) return fail('unavailable', `${path} is not available in this build`)
 
     const run = target as (...a: unknown[]) => unknown
-    // 重新整理單一聊天室：回顧進行中或上一次還沒結束就直接拒絕（不排隊，不與全域回顧搶 ExtractQueue）；長任務走 settle。
-    if (path === 'pipeline.refreshChat') {
-      if (this.chatRefreshInflight || this.opts.review?.status().state === 'running') return fail('busy', '目前有回顧或重新整理進行中，請稍後再試')
-      this.chatRefreshInflight = true
-      return this.settle(Promise.resolve().then(() => run(...args) as Promise<unknown>).finally(() => { this.chatRefreshInflight = false }))
-    }
     // 回顧：同時只跑一個、可續跑、有進度（reviewRun.ts）。
     if (path === 'pipeline.reviewLastDays' && this.opts.review) {
       const review = this.opts.review
@@ -355,8 +349,6 @@ export class Dispatcher {
   }
 
   // ── 回應整理 ──
-
-  private chatRefreshInflight = false
 
   private async settle(execution: Promise<unknown>): Promise<Envelope> {
     let timer: NodeJS.Timeout | null = null

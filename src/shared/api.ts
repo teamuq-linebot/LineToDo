@@ -208,10 +208,16 @@ export interface ReviewLastDaysResult {
   note: string | null
 }
 
+/** 聊天室重新整理的排隊狀態：idle＝沒有排隊也沒有執行；queued＝排隊中，ahead＝前面還有幾個（含執行中的）；running＝執行中。 */
+export interface ChatRefreshQueueStatus {
+  state: 'idle' | 'queued' | 'running'
+  ahead: number
+}
+
 /** pipeline.refreshChat 結果（與 main/pipeline/chatRefresh.ts ChatRefreshResult 對齊）：只針對一個聊天室的「重新整理最近 N 天」。 */
 export interface ChatRefreshResultView {
   ok: boolean
-  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'ai_unavailable'
+  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'ai_unavailable' | 'already_queued' | 'already_running'
   days: number | null
   sinceMs: number | null
   todo: { ran: boolean; messages: number; aiCalls: number; todosCreated: number; todosMerged: number; todosResolvedDone: number; failed: boolean; reason?: string }
@@ -628,6 +634,8 @@ export interface LineTodoApi {
     runOnce(): Promise<PipelineRunResult>; reviewLastDays(days?: number): Promise<ReviewLastDaysResult>
     /** 重新整理一個聊天室最近 N 天（1–365 的整數）：待辦與議題依該聊天室目前的開關處理，兩者皆關回 disabled。 */
     refreshChat(chatId: string, days: number): Promise<ChatRefreshResultView>
+    /** 聊天室的重新整理排隊狀態：畫面掛載、切換聊天室時查；排隊中或執行中時定時再查。 */
+    refreshChatStatus(chatId: string): Promise<ChatRefreshQueueStatus>
     backfillMediaKeys(days?: number): Promise<{ ok: boolean; scanned?: number; mediaBackfilled?: number; error?: string }>
     /** 外掛版：長任務的狀態（G-05）；standalone 不提供。 */
     longTaskStatus?(): Promise<LongTaskStatusView>

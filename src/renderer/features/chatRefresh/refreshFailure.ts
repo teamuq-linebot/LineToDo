@@ -9,6 +9,24 @@ const AI_UNAVAILABLE: ReadonlySet<string> = new Set([
 /** 限流／額度：稍後再試。 */
 const AI_BUSY: ReadonlySet<string> = new Set(['rate_limited', 'quota_exceeded', 'quota_exhausted'])
 
+/** 後端還沒準備好（已停止、執行時未啟動、外掛已卸載）。 */
+const BACKEND_NOT_READY: ReadonlySet<string> = new Set(['backend_stopped', 'runtime_not_running', 'disposed'])
+
+/** 單一錯誤碼（呼叫丟出的 error code）→ 一行短字；未知的碼回 undefined，由呼叫端用通用文案。 */
+export function refreshCodeText(code: string): string | undefined {
+  if (AI_UNAVAILABLE.has(code)) return 'AI 無法使用'
+  if (AI_BUSY.has(code)) return 'AI 忙碌中，稍後再試'
+  if (code === 'busy') return '另一項工作進行中，請稍後再試'
+  if (code === 'view_call_timeout') return '逾時，請稍後再試'
+  if (BACKEND_NOT_READY.has(code)) return '後端未就緒，請稍後再試'
+  return undefined
+}
+
+/** 呼叫丟出的錯誤碼 → 畫面短字；只有未知的碼才用通用文案。 */
+export function refreshErrorText(code: string): string {
+  return refreshCodeText(code) ?? '重新整理失敗，請稍後再試'
+}
+
 export interface RefreshFailureInput {
   reason?: string
   todo: { failed: boolean; reason?: string }
