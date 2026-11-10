@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import { getAvatarMeta, isLineAvatarSchemaReady, setAvatarMeta } from '../../main/db/lineAvatar.repo'
-import { ENTITY_KINDS, isLineEntitySchemaReady, isValidEntityMid, liveEntityMids, markGone, purgeGone, upsertEntity } from '../../main/db/lineEntity.repo'
+import { ENTITY_KINDS, isLineEntitySchemaReady, isValidEntityMid, deleteEntities, entityMids, upsertEntity } from '../../main/db/lineEntity.repo'
 import type { EntityInput, EntityKind } from '../../main/db/lineEntity.repo'
 import { contactLocator, contactName, contactRowsAfter, groupLocator, groupRowsAfter, myMid, squareChatLocator, squareChatRowsAfter } from '../../main/line/engine/linedb'
 import type { Db, KeysetCursor, KeysetPage } from '../../main/line/engine/linedb'
@@ -16,18 +16,15 @@ import type { Db, KeysetCursor, KeysetPage } from '../../main/line/engine/linedb
  *
  * 掃描：每個 kind 依序做 keyset 分頁（rowid，WITHOUT ROWID 的表退回主鍵），每個切片一個 transaction（最多 1000 列），切片之間讓出事件迴圈，
  * 一個 burst 最多 burstMs 或 `shouldYield()` 為 true 就結束並釋放 lease，之後睡 max(minSleepMs, sleepFactor × burst)。
- * 進度只放記憶體；任何例外或 dispose 都丟掉進行中的掃描（不標記 gone、不 purge、不寫完成的 meta），下一輪重來。
+ * 進度只放記憶體；任何例外或 dispose 都丟掉進行中的掃描（不刪除、不寫完成的 meta），下一輪重來。
  *
- * 刪除：只在某個 kind 完整掃完時，把「資料庫裡還活著、但這輪沒看到」的列標 gone（不刪、locator 與名字保留）；完整掃描後清除 gone 滿 goneRetentionMs 的列，
- * 但本次筆數少於上次的 purgeGuardRatio 時不清。缺表的 kind 這輪跳過，也不做 gone 判定或 purge。自己的 MID 永不寫入。
+ * 鏡像：只在某個 kind 完整掃完時，把「資料庫裡有、但這輪 LINE 端沒看到」的列直接刪除。缺表的 kind 這輪跳過，掃描中途失敗也不刪。自己的 MID 永不寫入。
  * 日誌與狀態都不含 MID、locator 或顯示名。
  */
 
 export const CONTACT_SYNC_VERSION = 1
 export const CONTACT_SYNC_MIN_INTERVAL_MS = 5 * 60_000
 export const CONTACT_SYNC_POLL_MS = 15_000
-export const CONTACT_SYNC_GONE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
-export const CONTACT_SYNC_PURGE_GUARD_RATIO = 0.5
 
 /** snapshot 的 `lease.source`（鍵 `wal`）與 `walSig()`（鍵 `-wal`）的共同形狀。 */
 export interface SourceSigLike {
@@ -58,8 +55,7 @@ export interface ContactSyncStatus {
   counts: ContactSyncCounts
   /** 最近一次完整掃描寫入（新增或變動）的列數。 */
   written: number
-  gone: number
-  purged: number
+  deleted: number
   doneAt: string | null
   lastBurstMs: number | null
   errors: number
@@ -79,8 +75,6 @@ export interface ContactSyncBudget {
   errorBackoffMaxMs?: number
   minSleepMs?: number
   sleepFactor?: number
-  goneRetentionMs?: number
-  purgeGuardRatio?: number
 }
 
 export interface ContactSyncOptions {
@@ -106,8 +100,7 @@ export interface ContactSync {
 
 const DEFAULTS = {
   sliceMs: 15, burstMs: 300, startDelayMs: 30_000, pollMs: CONTACT_SYNC_POLL_MS, minIntervalMs: CONTACT_SYNC_MIN_INTERVAL_MS,
-  sourceRetryMs: 30_000, sourceRetryMaxMs: 5 * 60_000, errorBackoffMs: 30_000, errorBackoffMaxMs: 10 * 60_000, minSleepMs: 100, sleepFactor: 3,
-  goneRetentionMs: CONTACT_SYNC_GONE_RETENTION_MS, purgeGuardRatio: CONTACT_SYNC_PURGE_GUARD_RATIO
+  sourceRetryMs: 30_000, sourceRetryMaxMs: 5 * 60_000, errorBackoffMs: 30_000, errorBackoffMaxMs: 10 * 60_000, minSleepMs: 100, sleepFactor: 3
 }
 const LIMIT_INIT = 200
 const LIMIT_MIN = 50
@@ -116,7 +109,7 @@ const FAST_QUERY_MS = 5
 
 const emptyCounts = (): ContactSyncCounts => ({ contact: 0, group: 0, square_chat: 0 })
 
-export const CONTACT_SYNC_OFF_STATUS: ContactSyncStatus = { phase: 'off', scans: 0, counts: emptyCounts(), written: 0, gone: 0, purged: 0, doneAt: null, lastBurstMs: null, errors: 0 }
+export const CONTACT_SYNC_OFF_STATUS: ContactSyncStatus = { phase: 'off', scans: 0, counts: emptyCounts(), written: 0, deleted: 0, doneAt: null, lastBurstMs: null, errors: 0 }
 
 interface ScanState {
   startSig: string
@@ -126,7 +119,7 @@ interface ScanState {
   counts: ContactSyncCounts
   skipped: Set<EntityKind>
   written: number
-  gone: number
+  deleted: number
 }
 
 function parseCounts(text: string | null): Partial<ContactSyncCounts> {
@@ -191,7 +184,7 @@ export function createContactSync(options: ContactSyncOptions): ContactSync {
   let running: Promise<void> | null = null
   let scan: ScanState | null = null
   let limit = LIMIT_INIT
-  const status: ContactSyncStatus = { phase: 'pending', scans: 0, counts: emptyCounts(), written: 0, gone: 0, purged: 0, doneAt: null, lastBurstMs: null, errors: 0 }
+  const status: ContactSyncStatus = { phase: 'pending', scans: 0, counts: emptyCounts(), written: 0, deleted: 0, doneAt: null, lastBurstMs: null, errors: 0 }
 
   const readDb = (): Database | null => {
     if (disposed) return null
@@ -212,27 +205,22 @@ export function createContactSync(options: ContactSyncOptions): ContactSync {
 
   function beginScan(startSig: string): ScanState {
     return {
-      startSig, kindIndex: 0, cursor: null, counts: emptyCounts(), skipped: new Set(), written: 0, gone: 0,
+      startSig, kindIndex: 0, cursor: null, counts: emptyCounts(), skipped: new Set(), written: 0, deleted: 0,
       seen: { contact: new Set(), group: new Set(), square_chat: new Set() }
     }
   }
 
-  /** 某個 kind 完整讀完：資料庫裡還活著、但這輪沒看到的列標 gone（差集在記憶體做）。 */
+  /** 某個 kind 完整讀完：資料庫裡有、但這輪沒看到的列刪除（差集在記憶體做）。 */
   function finishKind(db: Database, state: ScanState, kind: EntityKind): void {
     const seen = state.seen[kind]
-    const missing = liveEntityMids(db, kind).filter((mid) => !seen.has(mid))
-    if (missing.length > 0) state.gone += markGone(db, kind, missing, wall())
+    const missing = entityMids(db, kind).filter((mid) => !seen.has(mid))
+    if (missing.length > 0) state.deleted += deleteEntities(db, kind, missing)
     seen.clear()
   }
 
   function complete(db: Database, state: ScanState): void {
     const scanned = ENTITY_KINDS.filter((kind) => !state.skipped.has(kind))
-    const previous = parseCounts(getAvatarMeta(db, 'contact_sync_counts'))
-    const previousTotal = scanned.reduce((sum, kind) => sum + (previous[kind] ?? 0), 0)
-    const currentTotal = scanned.reduce((sum, kind) => sum + state.counts[kind], 0)
-    const guarded = previousTotal > 0 && currentTotal < previousTotal * budget.purgeGuardRatio
-    const purged = guarded ? 0 : db.transaction(() => purgeGone(db, wall(), budget.goneRetentionMs, scanned))()
-    const counts: ContactSyncCounts = { ...emptyCounts(), ...previous }
+    const counts: ContactSyncCounts = { ...emptyCounts(), ...parseCounts(getAvatarMeta(db, 'contact_sync_counts')) }
     for (const kind of scanned) counts[kind] = state.counts[kind]
     const at = wall()
     db.transaction(() => {
@@ -245,8 +233,7 @@ export function createContactSync(options: ContactSyncOptions): ContactSync {
     status.scans += 1
     status.counts = counts
     status.written = state.written
-    status.gone = state.gone
-    status.purged = purged
+    status.deleted = state.deleted
     status.doneAt = new Date(at).toISOString()
     status.phase = 'done'
     scan = null

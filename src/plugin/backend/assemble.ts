@@ -147,7 +147,6 @@ export interface PluginBackendOptions {
    */
   avatarStore?: {
     enabled?: boolean
-    now?(): number
     backfill?: { enabled?: boolean } & AvatarBackfillBudget
     /**
      * LINE 通訊錄（聯絡人、群組、Square 聊天室）的背景同步與讀取層。預設開；`enabled:false`＝worker 不啟動、不建表，reader 也忽略已存在的通訊錄列（回退開關）。
@@ -283,7 +282,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   let avatarSchemaReady = false
   let entitySchemaReady = false
   let avatarDb: BetterSqlite3Database | null = null
-  const avatarReads = { local: 0, fallback: 0, miss: 0, write: 0 }
+  const avatarReads = { local: 0, miss: 0 }
   const engineOptions = { stateFile: join(dataDir, '.watch_json_state'), keyOpts, ...(avatarStoreOn ? { avatarMeta: true } : {}) }
 
   const hub = new EventHub(options.hub)
@@ -353,14 +352,12 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       budget: contactSyncBudget
     })
     : null
-  // 頭像：本地 DB → `any` snapshot（結果寫回本地）→ 文字頭像。功能關閉時只走 LINE DB（舊行為）。
+  // 頭像：本地 DB（通訊錄表／Square 成員）→ 文字頭像，不讀 LINE snapshot。功能關閉時只走 LINE DB（舊行為）。
   const avatarFallback: AvatarMetadataReader = { read: (input) => getAvatarMetadata(input, engineOptions) }
   const avatarReader: AvatarMetadataReader = avatarStoreOn
     ? createLayeredAvatarReader({
       getDb: () => avatarDb,
       entityOn: () => contactSyncOn && entitySchemaReady,
-      fallback: avatarFallback,
-      ...(options.avatarStore?.now ? { now: options.avatarStore.now } : {}),
       onStat: (kind, n) => { avatarReads[kind] += n }
     })
     : avatarFallback
@@ -693,8 +690,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       // 頭像本地表的狀態（只有計數與旗標；任何地方都不輸出 MID、locator 或顯示名）。
       avatarStore: {
         enabled: avatarStoreOn, schemaReady: avatarSchemaReady,
-        reads: { local: avatarReads.local, fallback: avatarReads.fallback, miss: avatarReads.miss },
-        writeThrough: avatarReads.write,
+        reads: { local: avatarReads.local, miss: avatarReads.miss },
         backfill: backfill ? backfill.status() as unknown as JsonValue : OFF_STATUS as unknown as JsonValue,
         // 只有計數與旗標；任何地方都不輸出 MID、locator 或顯示名。
         contactSync: {

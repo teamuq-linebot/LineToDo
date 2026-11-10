@@ -228,18 +228,13 @@ export async function getMessagesSince(
 }
 
 /**
- * 收集這批訊息的頭像來源：每個不同的聊天室一次 `chatAvatarSource`、每個不同的（聊天室, 發話者）一次 `senderAvatarSource`（自己的 accountMid 不收）。
- * 查詢數只和「不同的聊天室／發話者」有關（每個發話者 ≤7、每個聊天室 ≤8 次點查），和列數無關；任何一筆失敗都只是少一筆。
+ * 收集這批訊息的發話者頭像來源：每個不同的（聊天室, 發話者）一次 `senderAvatarSource`（自己的 accountMid 不收）。聊天室的頭像不在這裡收（只來自通訊錄同步）。
+ * 查詢數只和「不同的發話者」有關（每個發話者 ≤7 次點查），和列數無關；任何一筆失敗都只是少一筆。
  */
 export function collectAvatarMeta(con: Db, rows: readonly NewMessageRow[], accountMid: string | null): LineImportAvatarMeta {
-  const meta: LineImportAvatarMeta = { chats: [], senders: [] }
-  const seenChats = new Set<string>()
+  const meta: LineImportAvatarMeta = { senders: [] }
   const seenSenders = new Set<string>()
   for (const r of rows) {
-    if (!seenChats.has(r.chatId)) {
-      seenChats.add(r.chatId)
-      try { meta.chats.push({ chatId: r.chatId, source: chatAvatarSource(con, r.chatId) }) } catch { /* 少一筆，不影響匯入 */ }
-    }
     if (!accountMid || !r.from || r.from === accountMid) continue
     const key = `${r.chatId}\0${r.from}`
     if (seenSenders.has(key)) continue
@@ -293,8 +288,6 @@ export async function getLineImportBatch(
 export interface LineAvatarMetadataBatch {
   chats: Record<string, LineAvatarSource>
   messages: Record<string, LineAvatarSource>
-  /** 這次讀取的來源所認得的自己的 MID（讀不到＝null）。只給本地頭像表的 write-through 排除自己用，avatar.ts 不使用。 */
-  accountMid?: string | null
 }
 
 /** 頭像請求的輸入正規化（上限與格式）：getAvatarMetadata 與本地優先的 layered reader 共用。 */
@@ -327,7 +320,6 @@ export async function getAvatarMetadata(
   if (!opened) return result
   const { con, cleanup } = opened
   try {
-    try { result.accountMid = myMid(con) } catch { result.accountMid = null }
     for (const id of chatIds) result.chats[id] = chatAvatarSource(con, id)
     if (chatId && msgIds.length > 0) {
       const bySourceId = new Map<string, string>()

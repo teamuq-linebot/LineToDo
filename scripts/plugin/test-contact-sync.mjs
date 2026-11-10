@@ -1,5 +1,5 @@
 // LINE address-book sync: the `line_entity` table (lineEntity.repo.ts), the keyset readers (linedb.ts), the sync worker (contactSync.ts),
-// the entity layer of the local reader (lineAvatar.repo.ts / avatarReader.ts) and the production wiring (assemble.ts).
+// the reader (lineAvatar.repo.ts / avatarReader.ts: address book for non-Square, sender copy for Square members, nothing otherwise) and the production wiring (assemble.ts).
 // The LINE side is synthetic: a plain SQLite file with the LINE table shapes behind a fake connection; time is injected (now, wallClock, sleep, yieldLoop),
 // there is no wall-clock threshold anywhere, no real LINE, key or network is touched.
 import assert from 'node:assert/strict'
@@ -23,7 +23,7 @@ import { createContactSync, normalizeSourceSig } from '../../src/plugin/backend/
 import { openDatabase } from '../../src/main/db/database.ts'
 import { createLayeredAvatarReader } from '../../src/plugin/backend/avatarReader.ts'
 import { ensureLineAvatarSchema, isLineAvatarSchemaReady, readLocalAvatars } from '../../src/main/db/lineAvatar.repo.ts'
-import { ENTITY_KINDS, countEntities, ensureLineEntitySchema, isLineEntitySchemaReady, liveEntityMids, markGone, purgeGone, readEntities, upsertEntity } from '../../src/main/db/lineEntity.repo.ts'
+import { ENTITY_KINDS, countEntities, deleteEntities, ensureLineEntitySchema, entityMids, isLineEntitySchemaReady, readEntities, upsertEntity } from '../../src/main/db/lineEntity.repo.ts'
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -75,7 +75,7 @@ test('S-2 schema: isLineAvatarSchemaReady does not depend on whether line_entity
   } finally { without.close(); withEntity.close() }
 })
 
-test('S-3 schema: the columns of line_entity are exactly the design (no raw JSON column), the key is (kind, entity_mid), and the CHECKs reject bad values', () => {
+test('S-3 schema: the columns of line_entity are exactly the design (no raw JSON column, no gone mark), the key is (kind, entity_mid), and the CHECKs reject bad values', () => {
   const db = appDbWith({ entity: true })
   try {
     const columns = db.prepare("PRAGMA table_info('line_entity')").all().map((c) => ({ name: c.name, type: c.type, notnull: c.notnull, pk: c.pk }))
@@ -85,8 +85,7 @@ test('S-3 schema: the columns of line_entity are exactly the design (no raw JSON
       { name: 'source', type: 'TEXT', notnull: 0, pk: 0 },
       { name: 'locator', type: 'TEXT', notnull: 0, pk: 0 },
       { name: 'display_name', type: 'TEXT', notnull: 0, pk: 0 },
-      { name: 'synced_at', type: 'INTEGER', notnull: 1, pk: 0 },
-      { name: 'gone_at', type: 'INTEGER', notnull: 0, pk: 0 }
+      { name: 'synced_at', type: 'INTEGER', notnull: 1, pk: 0 }
     ])
     assert.equal(db.prepare("PRAGMA foreign_key_list('line_entity')").all().length, 0, 'no foreign key')
     assert.match(db.prepare("SELECT sql FROM sqlite_master WHERE name='line_entity'").get().sql, /WITHOUT ROWID/)
@@ -102,7 +101,7 @@ test('S-3 schema: the columns of line_entity are exactly the design (no raw JSON
   } finally { db.close() }
 })
 
-// ───────────── repo semantics (upsert / gone / purge / read) ─────────────
+// ───────────── repo semantics (upsert / delete / read) ─────────────
 
 const person = (mid, locator, name, kind = 'contact') => ({ kind, mid, source: locator ? (kind === 'square_chat' ? 'square' : 'profile') : null, locator, displayName: name })
 
@@ -123,52 +122,34 @@ test('repo upsert: writes only when something changed; a NULL from the source ne
   } finally { db.close() }
 })
 
-test('repo gone: markGone marks only live rows and keeps locator and name; an upsert from the source brings the row back (gone_at NULL) even with unchanged content', () => {
+test('repo delete: deleteEntities removes exactly the listed rows of that kind (in chunks of any size) and nothing else; entityMids lists every row of a kind; a deleted row comes back with the next upsert', () => {
   const db = appDbWith({ entity: true })
   try {
     for (const mid of ['u1', 'u2', 'u3']) upsertEntity(db, person(mid, `/p/${mid}`, `N ${mid}`), 10)
-    assert.deepEqual(liveEntityMids(db, 'contact').sort(), ['u1', 'u2', 'u3'])
-    assert.equal(markGone(db, 'contact', ['u2'], 50), 1)
-    assert.equal(markGone(db, 'contact', ['u2'], 60), 0, 'already gone: not touched again')
-    assert.deepEqual(liveEntityMids(db, 'contact').sort(), ['u1', 'u3'])
-    const gone = entityRows(db).find((r) => r.entity_mid === 'u2')
-    assert.deepEqual({ gone_at: gone.gone_at, locator: gone.locator, name: gone.display_name }, { gone_at: 50, locator: '/p/u2', name: 'N u2' })
-    assert.equal(markGone(db, 'group', ['u1'], 70), 0, 'a different kind is a different row')
-    assert.equal(upsertEntity(db, person('u2', '/p/u2', 'N u2'), 80), true, 'revived')
-    assert.equal(entityRows(db).find((r) => r.entity_mid === 'u2').gone_at, null)
+    upsertEntity(db, person('u2', '/g/2', 'Group two', 'group'), 10)
+    assert.deepEqual(entityMids(db, 'contact').sort(), ['u1', 'u2', 'u3'])
+    assert.equal(deleteEntities(db, 'contact', ['u2']), 1)
+    assert.equal(deleteEntities(db, 'contact', ['u2']), 0, 'already deleted: nothing to do')
+    assert.deepEqual(entityMids(db, 'contact').sort(), ['u1', 'u3'])
+    assert.deepEqual(entityMids(db, 'group'), ['u2'], 'the group with the same mid is a different row')
+    assert.equal(deleteEntities(db, 'contact', []), 0)
+    assert.equal(upsertEntity(db, person('u2', '/p/u2', 'N u2'), 80), true, 'back again')
+    for (let i = 0; i < 2500; i += 1) upsertEntity(db, person(`bulk${i}`, `/p/${i}`, `B${i}`), 1)
+    assert.equal(deleteEntities(db, 'contact', Array.from({ length: 2500 }, (_, i) => `bulk${i}`)), 2500)
+    assert.equal(countEntities(db, 'contact'), 3)
   } finally { db.close() }
 })
 
-test('repo purge: only rows gone for longer than the retention go; live rows and kinds that are not listed stay', () => {
-  const db = appDbWith({ entity: true })
-  try {
-    const now = 1_000 * DAY
-    upsertEntity(db, person('old', '/p/o', 'Old'), now)
-    upsertEntity(db, person('recent', '/p/r', 'Recent'), now)
-    upsertEntity(db, person('live', '/p/l', 'Live'), now)
-    upsertEntity(db, person('oldgroup', '/p/g', 'G', 'group'), now)
-    markGone(db, 'contact', ['old'], now - 91 * DAY)
-    markGone(db, 'contact', ['recent'], now - 89 * DAY)
-    markGone(db, 'group', ['oldgroup'], now - 200 * DAY)
-    assert.equal(purgeGone(db, now, 90 * DAY, ['contact']), 1)
-    assert.deepEqual(entityRows(db).map((r) => `${r.kind}/${r.entity_mid}`).sort(), ['contact/live', 'contact/recent', 'group/oldgroup'])
-    assert.equal(purgeGone(db, now, 90 * DAY), 1, 'now the group row too')
-    assert.equal(purgeGone(db, now, 90 * DAY, []), 0)
-    assert.equal(countEntities(db, 'contact'), 2)
-  } finally { db.close() }
-})
-
-test('repo read: readEntities returns the rows asked for (gone ones too), per kind, in any batch size', () => {
+test('repo read: readEntities returns the rows asked for, per kind, in any batch size', () => {
   const db = appDbWith({ entity: true })
   try {
     for (let i = 0; i < 1000; i += 1) upsertEntity(db, person(`u${i}`, `/p/${i}`, `N${i}`), 1)
     upsertEntity(db, person('u5', '/g/5', 'Group five', 'group'), 1)
-    markGone(db, 'contact', ['u7'], 2)
     const mids = Array.from({ length: 1005 }, (_, i) => `u${i}`)
     const contacts = readEntities(db, 'contact', mids)
     assert.equal(contacts.size, 1000)
-    assert.equal(contacts.get('u7').goneAt, 2)
     assert.equal(contacts.get('u7').locator, '/p/7')
+    assert.equal('goneAt' in contacts.get('u7'), false)
     assert.equal(readEntities(db, 'group', ['u5', 'u6']).get('u5').displayName, 'Group five')
     assert.equal(readEntities(db, 'group', ['u6']).size, 0)
     assert.equal(readEntities(db, 'contact', []).size, 0)
@@ -491,7 +472,7 @@ test('Y-1 first scan: contacts, groups and Square chats are all there with the r
     assert.deepEqual(status.counts, { contact: 40, group: 5, square_chat: 4 })
     assert.equal(status.written, 49)
     for (const [kind, n] of [['contact', 40], ['group', 5], ['square_chat', 4]]) assert.equal(h.db.prepare('SELECT COUNT(*) AS n FROM line_entity WHERE kind=?').get(kind).n, n, kind)
-    assert.deepEqual({ ...byMid(h.db, 'contact', 'u-00003') }, { kind: 'contact', entity_mid: 'u-00003', source: 'profile', locator: '/p/3', display_name: 'Name 3', synced_at: W0, gone_at: null })
+    assert.deepEqual({ ...byMid(h.db, 'contact', 'u-00003') }, { kind: 'contact', entity_mid: 'u-00003', source: 'profile', locator: '/p/3', display_name: 'Name 3', synced_at: W0 })
     assert.deepEqual({ l: byMid(h.db, 'group', 'c-2').locator, n: byMid(h.db, 'group', 'c-2').display_name, s: byMid(h.db, 'group', 'c-2').source }, { l: '/g/2', n: 'Group 2', s: 'profile' })
     assert.equal(h.probe.sql.some((q) => /_squareMember/.test(q)), false)
     assert.equal(h.sync.status().phase, 'done')
@@ -552,12 +533,12 @@ test('Y-5 NULL does not overwrite: when the source loses the picture the local l
 test('Y-6 Square: an illegal OBS hash is stored as NULL, a legal one is stored with source square', async () => {
   const h = await started(spec49())
   try {
-    assert.deepEqual({ ...byMid(h.db, 'square_chat', 's-0') }, { kind: 'square_chat', entity_mid: 's-0', source: 'square', locator: HASH_OK, display_name: 'Sq0', synced_at: W0, gone_at: null })
+    assert.deepEqual({ ...byMid(h.db, 'square_chat', 's-0') }, { kind: 'square_chat', entity_mid: 's-0', source: 'square', locator: HASH_OK, display_name: 'Sq0', synced_at: W0 })
     for (const mid of ['s-2', 's-3']) assert.deepEqual({ l: byMid(h.db, 'square_chat', mid).locator, s: byMid(h.db, 'square_chat', mid).source, n: byMid(h.db, 'square_chat', mid).display_name }, { l: null, s: null, n: mid === 's-2' ? 'Sq2' : 'Sq3' })
   } finally { await h.stop() }
 })
 
-test('Y-7 defensive: a WITHOUT ROWID _contact, a missing _targetProfileDetail column, a missing _groupChat / _squareChat table — the scan still completes, the missing kinds are skipped and their existing rows are not marked gone', async () => {
+test('Y-7 defensive: a WITHOUT ROWID _contact, a missing _targetProfileDetail column, a missing _groupChat / _squareChat table — the scan still completes, the missing kinds are skipped and their existing rows are NOT deleted (a kind that was not scanned is left alone)', async () => {
   const seed = [
     { entity: { kind: 'group', mid: 'c-old', source: 'profile', locator: '/g/old', displayName: 'Old group' } },
     { entity: { kind: 'square_chat', mid: 's-old', source: 'square', locator: HASH_OK, displayName: 'Old square' } }
@@ -571,15 +552,13 @@ test('Y-7 defensive: a WITHOUT ROWID _contact, a missing _targetProfileDetail co
       assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE kind='contact'").get().n, 30, label)
       for (const [kind, mid] of [['group', 'c-old'], ['square_chat', 's-old']]) {
         const row = byMid(h.db, kind, mid)
-        assert.equal(row.locator !== null, true, `${label}: ${kind} keeps its picture`)
-        if (missingKinds) assert.equal(row.gone_at, null, `${label}: ${kind} table is missing, the row is not marked`)
-        else assert.equal(row.gone_at, W0, `${label}: ${kind} table is there and the row vanished, so it is marked`)
+        if (missingKinds) assert.notEqual(row, undefined, `${label}: ${kind} table is missing, the row is not deleted`)
+        else assert.equal(row, undefined, `${label}: ${kind} table is there and the row vanished, so it is deleted`)
       }
-      if (missingKinds) assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE kind IN ('group','square_chat')").get().n, 2, `${label}: nothing was added for the missing kinds`)
-      assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE kind='contact' AND gone_at IS NOT NULL").get().n, 0, `${label}: every contact the scan saw is alive`)
-      if (!missingKinds) {
-        assert.equal(byMid(h.db, 'group', 'c-1').gone_at, null, `${label}: the group the scan saw is alive`)
-        assert.equal(byMid(h.db, 'square_chat', 's-1').gone_at, null, `${label}: the Square chat the scan saw is alive`)
+      if (missingKinds) assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE kind IN ('group','square_chat')").get().n, 2, `${label}: nothing was added or removed for the missing kinds`)
+      else {
+        assert.notEqual(byMid(h.db, 'group', 'c-1'), undefined, `${label}: the group the scan saw is there`)
+        assert.notEqual(byMid(h.db, 'square_chat', 's-1'), undefined, `${label}: the Square chat the scan saw is there`)
       }
     } finally { await h.stop() }
   }
@@ -587,55 +566,39 @@ test('Y-7 defensive: a WITHOUT ROWID _contact, a missing _targetProfileDetail co
 
 // ── D: removal ──
 
-test('D-1 removal: a person removed at the source is marked gone after a complete scan — locator and name stay, the reader-side lookup still returns them — and coming back clears the mark', async () => {
+test('D-1 mirror: a person removed at the source is deleted after a complete scan (the next read finds nothing), the others stay, and coming back at the source brings the row back', async () => {
   const h = await started(spec49())
   try {
     h.line((w) => w.prepare("DELETE FROM _contact WHERE _mid='u-00005'").run())
     await h.scan()
-    const gone = byMid(h.db, 'contact', 'u-00005')
-    assert.deepEqual({ gone_at: gone.gone_at, locator: gone.locator, name: gone.display_name }, { gone_at: h.probe.wall, locator: '/p/5', name: 'Name 5' })
-    assert.equal(h.sync.status().gone, 1)
-    assert.equal(readEntities(h.db, 'contact', ['u-00005']).get('u-00005').locator, '/p/5')
-    assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE gone_at IS NOT NULL").get().n, 1, 'only that one')
+    assert.equal(byMid(h.db, 'contact', 'u-00005'), undefined)
+    assert.equal(h.sync.status().deleted, 1)
+    assert.equal(readEntities(h.db, 'contact', ['u-00005']).size, 0)
+    assert.equal(h.db.prepare('SELECT COUNT(*) AS n FROM line_entity').get().n, 48, 'only that one went')
     h.line((w) => w.prepare("INSERT INTO _contact(_mid,_displayName,_picturePath) VALUES ('u-00005','Name 5','/p/5')").run())
     await h.scan()
-    assert.equal(byMid(h.db, 'contact', 'u-00005').gone_at, null)
-    assert.equal(h.sync.status().gone, 0)
+    assert.equal(byMid(h.db, 'contact', 'u-00005').locator, '/p/5')
+    assert.equal(h.sync.status().deleted, 0)
   } finally { await h.stop() }
 })
 
-test('D-2 retention: rows gone for more than 90 days are purged by a complete scan, rows gone for less stay', async () => {
+test('D-2 mirror, no retention and no guard: a group and a Square chat removed at the source are deleted by the next complete scan, and so is everything when the source list is empty', async () => {
   const h = await started(spec49())
   try {
-    h.line((w) => w.prepare("DELETE FROM _contact WHERE _mid='u-00001'").run())
-    await h.scan()
-    h.line((w) => w.prepare("DELETE FROM _contact WHERE _mid='u-00002'").run())
-    await h.scan({ advance: 50 * DAY })
-    assert.equal(h.sync.status().purged, 0)
-    await h.scan({ advance: 41 * DAY })
-    assert.equal(h.sync.status().purged, 1, 'the first one is 91 days old now')
-    assert.equal(byMid(h.db, 'contact', 'u-00001'), undefined)
-    assert.notEqual(byMid(h.db, 'contact', 'u-00002'), undefined, 'the second one is 41 days old')
+    h.line((w) => { w.prepare("DELETE FROM _groupChat WHERE _chatMid='c-1'").run(); w.prepare("DELETE FROM _squareChat WHERE _squareChatMid='s-1'").run() })
+    await h.scan({ advance: 6 * MIN })
+    assert.equal(byMid(h.db, 'group', 'c-1'), undefined)
+    assert.equal(byMid(h.db, 'square_chat', 's-1'), undefined)
+    assert.equal(h.sync.status().deleted, 2)
+    h.line((w) => w.prepare('DELETE FROM _contact').run())
+    await h.scan({ advance: 6 * MIN })
+    assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE kind='contact'").get().n, 0, 'the mirror follows the source all the way')
+    assert.equal(h.db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE kind='group'").get().n, 4)
+    assert.equal(h.sync.status().counts.contact, 0)
   } finally { await h.stop() }
 })
 
-test('D-3 guards: a scan that finds less than half of the last one does not purge; a read failure in the middle marks nothing, purges nothing, writes no completion meta, and the next round completes normally', async () => {
-  const h = await started(spec49())
-  try {
-    upsertEntity(h.db, { kind: 'contact', mid: 'u-ghost', source: 'profile', locator: '/p/ghost', displayName: 'Ghost' }, 1)
-    markGone(h.db, 'contact', ['u-ghost'], W0 - 500 * DAY)
-    h.line((w) => w.prepare("DELETE FROM _contact WHERE _mid > 'u-00010'").run())
-    await h.scan()
-    assert.equal(h.sync.status().counts.contact, 11)
-    assert.equal(h.sync.status().purged, 0, '20 of 49 is under 50 percent')
-    assert.notEqual(byMid(h.db, 'contact', 'u-ghost'), undefined, 'the old gone row is still there')
-    assert.equal(byMid(h.db, 'contact', 'u-00020').gone_at !== null, true, 'the vanished ones are marked all the same')
-    h.line((w) => w.prepare("DELETE FROM _contact WHERE _mid='u-00003'").run())
-    await h.scan()
-    assert.equal(h.sync.status().purged, 1, 'the next scan is not much smaller than the last one: purge runs')
-    assert.equal(byMid(h.db, 'contact', 'u-ghost'), undefined)
-  } finally { await h.stop() }
-
+test('D-3 failure: a read failure in the middle deletes nothing, writes no completion meta, and the next round completes normally and deletes the vanished row', async () => {
   const failing = await started(spec49())
   try {
     failing.line((w) => w.prepare("DELETE FROM _contact WHERE _mid='u-00004'").run())
@@ -649,13 +612,13 @@ test('D-3 guards: a scan that finds less than half of the last one does not purg
     failing.probe.sig = 'sig-fail'
     await until(() => failing.sync.status().errors > errorsBefore, { message: 'the failure' })
     assert.equal(failing.sync.status().scans, scans)
-    assert.equal(JSON.stringify(entityRows(failing.db)), rowsBefore, 'nothing was marked or purged')
+    assert.equal(JSON.stringify(entityRows(failing.db)), rowsBefore, 'nothing was deleted')
     assert.equal(JSON.stringify(failing.db.prepare('SELECT * FROM line_avatar_meta ORDER BY key').all()), metaBefore, 'no completion meta')
     assert.ok(failing.probe.logs.includes('[contact-sync] read_failed'))
     assert.equal(failing.probe.cleanups, failing.probe.opens)
     armed = false
     await until(() => failing.sync.status().scans > scans, { message: 'the retry completes' })
-    assert.notEqual(byMid(failing.db, 'contact', 'u-00004').gone_at, null, 'and now the vanished row is marked')
+    assert.equal(byMid(failing.db, 'contact', 'u-00004'), undefined, 'and now the vanished row is gone')
   } finally { await failing.stop() }
 })
 
@@ -709,7 +672,7 @@ test('T-3 slicing: 3000 contacts are read in several slices, none over the LIMIT
     const sliced = yielding.probe.slices.filter((s) => s.rows > 0)
     assert.equal(sliced.reduce((sum, s) => sum + s.rows, 0), 3000, 'every row exactly once across the bursts')
     assert.equal(yielding.db.prepare("SELECT COUNT(*) AS n FROM line_entity WHERE kind='contact'").get().n, 3000)
-    assert.equal(yielding.db.prepare('SELECT COUNT(*) AS n FROM line_entity WHERE gone_at IS NOT NULL').get().n, 0, 'resuming never marked anything gone')
+    assert.equal(yielding.sync.status().deleted, 0, 'resuming across bursts never deleted anything')
     assert.equal(yielding.sync.status().counts.contact, 3000)
   } finally { await yielding.stop() }
 })
@@ -807,11 +770,8 @@ test('T-6 signature: walSig() and a snapshot lease.source with the same content 
 
 // ───────────── C5: the entity layer of the local reader ─────────────
 
-const src = (identity, locator, displayName = null, source = 'profile') => ({ identity, locator, displayName, source: locator ? source : null })
-const counted = (impl) => { const f = async (input) => { f.calls.push(input); return impl ? impl(input) : { chats: {}, messages: {} } }; f.calls = []; return { read: f, calls: f.calls } }
-const ent = (kind, mid, locator, name, goneAt = null) => ({ kind, mid, source: locator ? (kind === 'square_chat' ? 'square' : 'profile') : null, locator, displayName: name, goneAt })
-const putEntity = (db, e, at = 1) => { upsertEntity(db, e, at); if (e.goneAt) markGone(db, e.kind, [e.mid], e.goneAt) }
-const putChatRow = (db, chat, locator, name, refreshedAt, source = 'profile') => db.prepare('INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES (?,?,?,?,?)').run(chat, locator ? source : null, locator, name, refreshedAt)
+const ent = (kind, mid, locator, name) => ({ kind, mid, source: locator ? (kind === 'square_chat' ? 'square' : 'profile') : null, locator, displayName: name })
+const putEntity = (db, e, at = 1) => { upsertEntity(db, e, at) }
 
 /** Links one incoming message to one sender profile row, the way an import would. */
 function linkSender(db, { chat = 'c-room-0', msg, mid, locator, name, source = 'profile', refreshedAt = 1 }) {
@@ -822,10 +782,9 @@ function linkSender(db, { chat = 'c-room-0', msg, mid, locator, name, source = '
   db.prepare('INSERT INTO line_message_sender(msg_id,sender_id) VALUES (?,?)').run(msg, id)
 }
 
-test('R-1 chat level: the order is group, Square chat, contact; the first row with a picture wins, otherwise the first with a name; an entity row beats an expired line_chat_avatar row; a row with neither falls through to the old table, and a chat nobody knows is simply absent', () => {
+test('R-1 chat level: the order is group, Square chat, contact; the first row with a picture wins, otherwise the first with a name; the retired line_chat_avatar is never read; a row with neither, and a chat nobody knows, are simply absent', () => {
   const db = appDbWith({ entity: true, chats: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'] })
   try {
-    const NOW = 100 * DAY
     for (const kind of ['group', 'square_chat', 'contact']) putEntity(db, ent(kind, 'm1', `/${kind}/m1`, `${kind} name`))
     putEntity(db, ent('square_chat', 'm2', '/sq/m2', 'Sq name'))
     putEntity(db, ent('contact', 'm2', '/ct/m2', 'Ct name'))
@@ -833,85 +792,74 @@ test('R-1 chat level: the order is group, Square chat, contact; the first row wi
     putEntity(db, ent('contact', 'm3', '/ct/m3', 'Ct name 3'))
     putEntity(db, ent('group', 'm4', null, 'Group named only 4'))
     putEntity(db, ent('contact', 'm4', null, 'Contact named only 4'))
-    putChatRow(db, 'm5', null, 'Expired name only', NOW - 5 * DAY)
+    db.prepare("INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES ('m5','profile','/retired/m5','Retired',1)").run()
     putEntity(db, ent('contact', 'm5', '/ct/m5', 'Fresh from the address book'))
-    putChatRow(db, 'm6', '/legacy/m6', 'Legacy six', NOW - 5 * DAY)
+    db.prepare("INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES ('m6','profile','/retired/m6','Retired six',1)").run()
     putEntity(db, ent('contact', 'm6', null, null))
-    const result = readLocalAvatars(db, { chatIds: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'], chatId: null, msgIds: [] }, NOW, { entity: true })
+    const result = readLocalAvatars(db, { chatIds: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'], chatId: null, msgIds: [] }, { entity: true })
     const pick = (id) => [result.chats[id]?.locator ?? null, result.chats[id]?.displayName ?? null, result.chats[id]?.source ?? null]
     assert.deepEqual(pick('m1'), ['/group/m1', 'group name', 'profile'])
     assert.deepEqual(pick('m2'), ['/sq/m2', 'Sq name', 'square'], 'Square chat before contact')
     assert.deepEqual(pick('m3'), ['/ct/m3', 'Ct name 3', 'profile'], 'a picture further down beats a name higher up')
     assert.deepEqual(pick('m4'), [null, 'Group named only 4', null], 'no picture anywhere: the first name')
-    assert.deepEqual(pick('m5'), ['/ct/m5', 'Fresh from the address book', 'profile'], 'entity before the expired old row')
-    assert.equal(result.stale, undefined, 'no stale copy of an id the entity layer answered')
-    assert.deepEqual(pick('m6'), ['/legacy/m6', 'Legacy six', 'profile'], 'an entity row with neither picture nor name counts as no row')
+    assert.deepEqual(pick('m5'), ['/ct/m5', 'Fresh from the address book', 'profile'], 'the address book, not the retired table')
+    assert.equal('m6' in result.chats, false, 'an entity row with neither picture nor name counts as no row, and the retired table is not asked')
     assert.equal('m7' in result.chats, false)
-    const off = readLocalAvatars(db, { chatIds: ['m1', 'm5'], chatId: null, msgIds: [] }, NOW)
-    assert.equal(off.chats.m1, undefined, 'without the flag the entity layer does not exist')
-    assert.equal(off.stale.chats.m5.displayName, 'Expired name only')
+    assert.equal(Object.hasOwn(result, 'stale'), false)
+    const off = readLocalAvatars(db, { chatIds: ['m1', 'm5'], chatId: null, msgIds: [] })
+    assert.deepEqual(off.chats, {}, 'without the flag there is no address book layer, and nothing else to fall back to')
   } finally { db.close() }
 })
 
-test('R-2 message level: an entity row replaces the old copy of a contact sender (A becomes B); a Square-sourced row is never overridden; a gone contact is still served; an unlinked message is not invented', () => {
+test('R-2 message level: the address book replaces the older copy of a contact sender (A becomes B); a Square-sourced row keeps its own picture and is never overridden; a contact that is not in the address book gets nothing; an unlinked message is not invented', () => {
   const db = appDbWith({ entity: true, chats: ['c-room-0'] })
   try {
     linkSender(db, { msg: 'i:1', mid: 'u-a', locator: '/old/A', name: 'Old A' })
     putEntity(db, ent('contact', 'u-a', '/new/B', 'New B'))
     linkSender(db, { msg: 'i:2', mid: 'sq-member', locator: '0hMemberHash', name: 'Member', source: 'square' })
     putEntity(db, ent('contact', 'sq-member', '/contact/X', 'Same mid as a contact'))
-    linkSender(db, { msg: 'i:3', mid: 'u-gone', locator: '/old/G', name: 'Old G' })
-    putEntity(db, ent('contact', 'u-gone', '/last/known', 'Last known', 50))
+    linkSender(db, { msg: 'i:3', mid: 'u-left', locator: '/old/G', name: 'Old G' })
     linkSender(db, { msg: 'i:4', mid: 'u-plain', locator: '/plain/P', name: 'Plain' })
     putEntity(db, ent('group', 'u-plain', '/group/same-mid', 'A group is not a contact'))
-    const result = readLocalAvatars(db, { chatIds: [], chatId: 'c-room-0', msgIds: ['i:1', 'i:2', 'i:3', 'i:4', 'i:9'] }, 10 * DAY, { entity: true })
+    const result = readLocalAvatars(db, { chatIds: [], chatId: 'c-room-0', msgIds: ['i:1', 'i:2', 'i:3', 'i:4', 'i:9'] }, { entity: true })
     assert.deepEqual([result.messages['i:1'].locator, result.messages['i:1'].displayName, result.messages['i:1'].identity], ['/new/B', 'New B', 'u-a'])
-    assert.deepEqual([result.messages['i:2'].locator, result.messages['i:2'].source], ['0hMemberHash', 'square'], 'source square is not overridden by the entity layer')
-    assert.equal(result.messages['i:3'].locator, '/last/known', 'gone rows are still served')
-    assert.equal(result.messages['i:4'].locator, '/plain/P', 'only the contact kind answers for senders')
+    assert.deepEqual([result.messages['i:2'].locator, result.messages['i:2'].source], ['0hMemberHash', 'square'], 'source square is not overridden by the address book')
+    assert.equal('i:3' in result.messages, false, 'not in the address book: the sender copy is not used')
+    assert.equal('i:4' in result.messages, false, 'only the contact kind answers for senders')
     assert.equal('i:9' in result.messages, false)
-    const off = readLocalAvatars(db, { chatIds: [], chatId: 'c-room-0', msgIds: ['i:1'] }, 10 * DAY)
-    assert.equal(off.messages['i:1'].locator, '/old/A')
+    const off = readLocalAvatars(db, { chatIds: [], chatId: 'c-room-0', msgIds: ['i:1', 'i:2'] })
+    assert.deepEqual(Object.keys(off.messages), ['i:2'], 'with the flag off only the Square member is answered')
   } finally { db.close() }
 })
 
-test('R-3 no fallback: an entity hit never asks the LINE fallback, even ten hours later; an old name-only row without an entity is still re-read as before', async () => {
+test('R-3 no LINE access: the reader has no fallback at all — a chat or message nobody has stored is simply absent, and a LINE reader handed to it is never called', async () => {
   const db = appDbWith({ entity: true, chats: ['c-room-0', 'c-room-1'] })
   try {
-    let nowMs = 100 * DAY
     putEntity(db, ent('group', 'c-room-0', '/g/0', 'Room 0'))
     linkSender(db, { msg: 'i:1', mid: 'u-a', locator: '/old/A', name: 'A' })
     putEntity(db, ent('contact', 'u-a', '/new/A', 'A new'))
-    putChatRow(db, 'c-room-1', null, 'Name only', nowMs)
-    const fallback = counted(() => ({ chats: { 'c-room-1': src('c-room-1', '/from/line', 'Name only') }, messages: {} }))
-    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, now: () => nowMs, entityOn: () => true })
-    const first = await reader.read({ chatIds: ['c-room-0'], chatId: 'c-room-0', msgIds: ['i:1'] })
+    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: () => { throw new Error('the reader must never call a LINE reader') } }, entityOn: () => true })
+    const first = await reader.read({ chatIds: ['c-room-0', 'c-room-1'], chatId: 'c-room-0', msgIds: ['i:1'] })
     assert.equal(first.chats['c-room-0'].locator, '/g/0')
     assert.equal(first.messages['i:1'].locator, '/new/A')
-    assert.equal(fallback.calls.length, 0)
-    nowMs += 10 * 60 * 60 * 1000
-    const later = await reader.read({ chatIds: ['c-room-0'], chatId: 'c-room-0', msgIds: ['i:1'] })
-    assert.equal(later.chats['c-room-0'].locator, '/g/0')
-    assert.equal(fallback.calls.length, 0, 'ten hours later: still no fallback call')
-    const nameOnly = await reader.read({ chatIds: ['c-room-1'], chatId: null, msgIds: [] })
-    assert.equal(nameOnly.chats['c-room-1'].locator, '/from/line', 'the old rule for an old name-only row is unchanged')
-    assert.equal(fallback.calls.length, 1)
+    assert.equal('c-room-1' in first.chats, false, 'a chat nobody has stored: absent (a letter on screen)')
+    const later = await reader.read({ chatIds: ['c-room-1'], chatId: null, msgIds: [] })
+    assert.deepEqual(later.chats, {}, 'asked again: still nothing, and still no LINE read')
+    const text = readFileSync(join(srcRoot, 'plugin', 'backend', 'avatarReader.ts'), 'utf8')
+    assert.equal(/fallback|snapshot|getAvatarMetadata/i.test(text.replace(/\/\*[\s\S]*?\*\//, '')), false, 'avatarReader.ts has no fallback path')
   } finally { db.close() }
 })
 
-test('R-5 broken entity layer: with the table gone (or the flag off) the reader answers from the old tables and does not throw', async () => {
+test('R-5 broken address book layer: with the table gone (or the flag off) the reader answers without it and does not throw', async () => {
   const db = appDbWith({ entity: true, chats: ['c-room-0'] })
   try {
-    putChatRow(db, 'c-room-0', '/legacy/0', 'Legacy', Date.now())
     putEntity(db, ent('group', 'c-room-0', '/entity/0', 'Entity'))
-    const fallback = counted()
-    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, entityOn: () => true })
+    const reader = createLayeredAvatarReader({ getDb: () => db, entityOn: () => true })
     assert.equal((await reader.read({ chatIds: ['c-room-0'], chatId: null, msgIds: [] })).chats['c-room-0'].locator, '/entity/0')
     db.exec('DROP TABLE line_entity')
-    assert.equal((await reader.read({ chatIds: ['c-room-0'], chatId: null, msgIds: [] })).chats['c-room-0'].locator, '/legacy/0')
-    assert.equal(fallback.calls.length, 0)
-    const flagOff = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read } })
-    assert.equal((await flagOff.read({ chatIds: ['c-room-0'], chatId: null, msgIds: [] })).chats['c-room-0'].locator, '/legacy/0')
+    assert.deepEqual((await reader.read({ chatIds: ['c-room-0'], chatId: null, msgIds: [] })).chats, {})
+    const flagOff = createLayeredAvatarReader({ getDb: () => db })
+    assert.deepEqual((await flagOff.read({ chatIds: ['c-room-0'], chatId: null, msgIds: [] })).chats, {})
   } finally { db.close() }
 })
 
@@ -1044,11 +992,10 @@ test('R-4 end to end: a picture changed at the source is picked up by the sync a
   }
 })
 
-test('K-1 switch off: with avatarStore.contactSync.enabled=false the worker never starts, the reader ignores entity rows that already exist, and the state says off; switched on again it uses them', { timeout: 90_000 }, async () => {
+test('K-1 switch off: with avatarStore.contactSync.enabled=false the worker never starts, the reader ignores entity rows that already exist (no picture), and the state says off; switched on again it uses them', { timeout: 90_000 }, async () => {
   const s = stage(wireSpec())
   let backend
   try {
-    const legacyChat = seedAvatarCache(s.dataDir, 'c-room-0', '/p/room-0')
     const entityChat = seedAvatarCache(s.dataDir, 'c-room-0', '/p/entity-only')
     backend = await startBackend(s, { avatarStore: { contactSync: FAST_SYNC } })
     await until(async () => (await info(backend)).avatarStore.contactSync.scans >= 1, { message: 'the first sync' })
@@ -1064,7 +1011,7 @@ test('K-1 switch off: with avatarStore.contactSync.enabled=false the worker neve
     assert.equal(state.enabled, false)
     assert.equal(state.phase, 'off')
     assert.equal(state.schemaReady, false)
-    assert.equal((await backend.call('media', { path: 'media.avatar.prepareChats', args: [['c-room-0']] })).value.paths['c-room-0'], legacyChat, 'the entity row is ignored')
+    assert.equal((await backend.call('media', { path: 'media.avatar.prepareChats', args: [['c-room-0']] })).value.paths['c-room-0'], undefined, 'the entity row is ignored: no picture, a letter')
     await sleepMs(300)
     assert.equal((await info(backend)).avatarStore.contactSync.scans, 0, 'no worker ran')
     await backend.dispose()
@@ -1079,11 +1026,10 @@ test('K-1 switch off: with avatarStore.contactSync.enabled=false the worker neve
   }
 })
 
-test('K-2 table dropped at run time: the reader keeps answering from the old tables, the worker does not throw, and the state shows the schema as not ready', { timeout: 90_000 }, async () => {
+test('K-2 table dropped at run time: the reader keeps answering (without a picture), the worker does not throw, and the state shows the schema as not ready', { timeout: 90_000 }, async () => {
   const s = stage(wireSpec())
   let backend
   try {
-    const legacyChat = seedAvatarCache(s.dataDir, 'c-room-0', '/p/room-0')
     backend = await startBackend(s, { avatarStore: { contactSync: FAST_SYNC } })
     await until(async () => (await info(backend)).avatarStore.contactSync.scans >= 1, { message: 'the first sync' })
     assert.equal((await info(backend)).avatarStore.contactSync.schemaReady, true)
@@ -1093,7 +1039,7 @@ test('K-2 table dropped at run time: the reader keeps answering from the old tab
     await until(async () => { const c = (await info(backend)).avatarStore.contactSync; return c.schemaReady === false && c.phase === 'schema_unavailable' }, { message: 'the state shows the missing schema' })
     const answer = await backend.call('media', { path: 'media.avatar.prepareChats', args: [['c-room-0']] })
     assert.equal(answer.ok, true)
-    assert.equal(answer.value.paths['c-room-0'], legacyChat)
+    assert.equal(answer.value.paths['c-room-0'], undefined)
     assert.equal((await info(backend)).avatarStore.schemaReady, true, 'the avatar feature itself is untouched')
   } finally {
     await backend?.dispose()
