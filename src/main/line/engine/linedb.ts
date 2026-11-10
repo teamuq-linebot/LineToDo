@@ -329,14 +329,16 @@ function profileSource(con: Db, identity: string): LineAvatarSource {
 export function chatAvatarSource(con: Db, chatId: string): LineAvatarSource {
   try {
     const group = con.prepare('SELECT _picturePath FROM _groupChat WHERE _chatMid=?').get(chatId) as { _picturePath?: string | null } | undefined
-    if (typeof group?._picturePath === 'string' && group._picturePath.trim()) {
-      return { identity: chatId, locator: group._picturePath, displayName: chatName(con, chatId), source: 'profile' }
+    const groupPicture = groupLocator(group)
+    if (groupPicture) {
+      return { identity: chatId, locator: groupPicture, displayName: chatName(con, chatId), source: 'profile' }
     }
   } catch { /* optional LINE group schema */ }
   try {
     const square = con.prepare('SELECT _chatImageObsHash FROM _squareChat WHERE _squareChatMid=?').get(chatId) as { _chatImageObsHash?: string | null } | undefined
-    if (typeof square?._chatImageObsHash === 'string' && SQUARE_OBS_HASH.test(square._chatImageObsHash)) {
-      return { identity: chatId, locator: square._chatImageObsHash, displayName: chatName(con, chatId), source: 'square' }
+    const squarePicture = squareChatLocator(square)
+    if (squarePicture) {
+      return { identity: chatId, locator: squarePicture, displayName: chatName(con, chatId), source: 'square' }
     }
   } catch { /* optional LINE Square schema */ }
   return profileSource(con, chatId)
@@ -360,6 +362,111 @@ export function senderAvatarSource(con: Db, chatId: string, senderMid: string): 
     }
   } catch { /* optional LINE Square schema */ }
   return profileSource(con, senderMid)
+}
+
+// ── 通訊錄同步用的分頁讀取（contactSync）──
+
+/** keyset 游標：`rowid` 模式用 rowid 往後讀；WITHOUT ROWID 的表退回用主鍵欄位。 */
+export interface KeysetCursor {
+  mode: 'rowid' | 'key'
+  after: number | string
+}
+
+export interface KeysetPage<T> {
+  rows: T[]
+  /** 下一頁的游標；null＝這張表讀完了。 */
+  next: KeysetCursor | null
+}
+
+export interface GroupChatRow { _chatMid: string; _chatName?: unknown; _picturePath?: unknown }
+export interface SquareChatRow { _squareChatMid: string; _name?: unknown; _chatImageObsHash?: unknown }
+export interface ContactSourceRow extends ContactFields { _mid: string }
+
+const ROWID_START = Number.MIN_SAFE_INTEGER
+const chosenVariant = new WeakMap<object, Map<string, number>>()
+
+function tableExists(con: Db, table: string): boolean {
+  return con.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name=?").get(table) !== undefined
+}
+
+/**
+ * 通用 keyset 分頁。`variants` 由完整到精簡列出欄位組合（較舊的 LINE schema 可能缺欄位），用第一個查得動的；
+ * 第一頁優先用 rowid，表是 WITHOUT ROWID 時退回主鍵欄位。不使用 OFFSET。表不存在回 null（呼叫端跳過這個 kind）；其他錯誤照丟。
+ * 排序欄位的 NULL 與空字串在 key 模式下不會被讀到。
+ */
+function keysetRows<T extends object>(con: Db, table: string, keyCol: string, variants: readonly (readonly string[])[], cursor: KeysetCursor | null, limit: number): KeysetPage<T> | null {
+  const modes: Array<KeysetCursor['mode']> = cursor ? [cursor.mode] : ['rowid', 'key']
+  let lastError: unknown = null
+  const memo = chosenVariant.get(con) ?? new Map<string, number>()
+  chosenVariant.set(con, memo)
+  for (const mode of modes) {
+    const after = cursor ? cursor.after : mode === 'rowid' ? ROWID_START : ''
+    const order = mode === 'rowid' ? 'rowid' : keyCol
+    const head = mode === 'rowid' ? 'rowid AS _rowid,' : ''
+    const known = memo.get(`${table}\0${mode}`)
+    const all = variants.map((_, i) => i)
+    const sequence = known === undefined ? all : [known, ...all.filter((i) => i !== known)]
+    for (const index of sequence) {
+      const sql = `SELECT ${head}${variants[index].join(',')} FROM ${table} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`
+      let rows: Array<Record<string, unknown>>
+      try {
+        rows = con.prepare(sql).all(after, limit) as Array<Record<string, unknown>>
+      } catch (error) {
+        lastError = error
+        continue
+      }
+      memo.set(`${table}\0${mode}`, index)
+      const out = rows.map((row) => {
+        if (mode === 'rowid') { const { _rowid, ...rest } = row; void _rowid; return rest }
+        return row
+      }) as T[]
+      if (rows.length < limit) return { rows: out, next: null }
+      const lastRow = rows[rows.length - 1]
+      const next: KeysetCursor = mode === 'rowid'
+        ? { mode, after: toSafeNumber(lastRow._rowid as number | bigint) }
+        : { mode, after: String(lastRow[keyCol]) }
+      return { rows: out, next }
+    }
+  }
+  if (!tableExists(con, table)) return null
+  throw lastError ?? new Error('keyset_read_failed')
+}
+
+const CONTACT_VARIANTS = [
+  ['_mid', '_picturePath', '_targetProfileDetail', '_displayNameOverridden', '_displayName'],
+  ['_mid', '_picturePath', '_displayNameOverridden', '_displayName'],
+  ['_mid', '_targetProfileDetail', '_displayNameOverridden', '_displayName'],
+  ['_mid', '_picturePath', '_displayName'],
+  ['_mid', '_displayName'],
+  ['_mid'],
+] as const
+const GROUP_VARIANTS = [['_chatMid', '_chatName', '_picturePath'], ['_chatMid', '_chatName'], ['_chatMid', '_picturePath'], ['_chatMid']] as const
+const SQUARE_CHAT_VARIANTS = [['_squareChatMid', '_name', '_chatImageObsHash'], ['_squareChatMid', '_name'], ['_squareChatMid']] as const
+
+/** `_contact` 的一頁（缺表回 null；缺欄位退回較少的欄位組合）。 */
+export function contactRowsAfter(con: Db, cursor: KeysetCursor | null, limit: number): KeysetPage<ContactSourceRow> | null {
+  return keysetRows<ContactSourceRow>(con, '_contact', '_mid', CONTACT_VARIANTS, cursor, limit)
+}
+
+/** `_groupChat` 的一頁。 */
+export function groupRowsAfter(con: Db, cursor: KeysetCursor | null, limit: number): KeysetPage<GroupChatRow> | null {
+  return keysetRows<GroupChatRow>(con, '_groupChat', '_chatMid', GROUP_VARIANTS, cursor, limit)
+}
+
+/** `_squareChat` 的一頁（只有聊天室，不含 `_squareMember`）。 */
+export function squareChatRowsAfter(con: Db, cursor: KeysetCursor | null, limit: number): KeysetPage<SquareChatRow> | null {
+  return keysetRows<SquareChatRow>(con, '_squareChat', '_squareChatMid', SQUARE_CHAT_VARIANTS, cursor, limit)
+}
+
+/** 群組頭像 locator：`_picturePath`（非空白）。 */
+export function groupLocator(row: Pick<GroupChatRow, '_picturePath'> | null | undefined): string | null {
+  return typeof row?._picturePath === 'string' && row._picturePath.trim() ? row._picturePath : null
+}
+
+/** Square 聊天室頭像 locator：OBS hash 必須符合格式，否則沒有。 */
+export function squareChatLocator(row: Pick<SquareChatRow, '_chatImageObsHash'> | null | undefined): string | null {
+  const hash = row?._chatImageObsHash
+  return typeof hash === 'string' && SQUARE_OBS_HASH.test(hash) ? hash : null
 }
 
 /**

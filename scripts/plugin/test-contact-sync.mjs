@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 
+import * as linedb from '../../src/main/line/engine/linedb.ts'
 import { openDatabase } from '../../src/main/db/database.ts'
 import { ensureLineAvatarSchema, isLineAvatarSchemaReady } from '../../src/main/db/lineAvatar.repo.ts'
 import { ENTITY_KINDS, countEntities, ensureLineEntitySchema, isLineEntitySchemaReady, liveEntityMids, markGone, purgeGone, readEntities, upsertEntity } from '../../src/main/db/lineEntity.repo.ts'
@@ -162,4 +163,160 @@ test('repo read: readEntities returns the rows asked for (gone ones too), per ki
     assert.equal(readEntities(db, 'contact', []).size, 0)
     assert.deepEqual([...ENTITY_KINDS], ['contact', 'group', 'square_chat'])
   } finally { db.close() }
+})
+
+// ───────────── a synthetic LINE database (plain SQLite with the LINE table shapes) ─────────────
+
+const ME = 'u-account-mid-0000'
+const HASH_OK = '0hAbCdEf_123-xyz'
+
+/**
+ * spec: { me?, contacts: [{ mid, name?, over?, picture?, detail? }], groups: [{ mid, name?, picture? }], squares: [{ mid, name?, hash? }],
+ *         contactWithoutRowid?, noDetailColumn?, noPictureColumn?, noGroupTable?, noSquareTable?, noProfile? }
+ */
+function makeLine(path, spec = {}) {
+  const db = new DatabaseSync(path)
+  const without = spec.contactWithoutRowid ? ' WITHOUT ROWID' : ''
+  const contactCols = ['_mid TEXT PRIMARY KEY', '_displayNameOverridden TEXT', '_displayName TEXT']
+  if (!spec.noDetailColumn) contactCols.push('_targetProfileDetail TEXT')
+  if (!spec.noPictureColumn) contactCols.push('_picturePath TEXT')
+  db.exec(`CREATE TABLE _profile(_mid TEXT, _picturePath TEXT); CREATE TABLE _contact(${contactCols.join(', ')})${without};`)
+  if (!spec.noGroupTable) db.exec('CREATE TABLE _groupChat(_chatMid TEXT PRIMARY KEY, _chatName TEXT, _picturePath TEXT)')
+  if (!spec.noSquareTable) db.exec('CREATE TABLE _squareChat(_squareChatMid TEXT PRIMARY KEY, _name TEXT, _chatImageObsHash TEXT)')
+  if (!spec.noProfile) db.prepare('INSERT INTO _profile(_mid,_picturePath) VALUES (?,?)').run(spec.me ?? ME, '/p/me')
+  populateLine(db, spec)
+  db.close()
+}
+
+function populateLine(db, spec) {
+  const cols = ['_mid', '_displayNameOverridden', '_displayName']
+  if (!spec.noDetailColumn) cols.push('_targetProfileDetail')
+  if (!spec.noPictureColumn) cols.push('_picturePath')
+  const addContact = db.prepare(`INSERT INTO _contact(${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`)
+  db.exec('BEGIN')
+  for (const c of spec.contacts ?? []) {
+    const values = [c.mid, c.over ?? null, c.name ?? `name ${c.mid}`]
+    if (!spec.noDetailColumn) values.push(c.detail ?? null)
+    if (!spec.noPictureColumn) values.push(c.picture ?? null)
+    addContact.run(...values)
+  }
+  if (!spec.noGroupTable) for (const g of spec.groups ?? []) db.prepare('INSERT INTO _groupChat(_chatMid,_chatName,_picturePath) VALUES (?,?,?)').run(g.mid, g.name ?? `group ${g.mid}`, g.picture ?? null)
+  if (!spec.noSquareTable) for (const q of spec.squares ?? []) db.prepare('INSERT INTO _squareChat(_squareChatMid,_name,_chatImageObsHash) VALUES (?,?,?)').run(q.mid, q.name ?? `square ${q.mid}`, q.hash ?? null)
+  db.exec('COMMIT')
+}
+
+/** A LINE connection over the plain file with the Db shape linedb.ts uses; every SQL text is recorded. */
+function openLineCon(path, log = []) {
+  const db = new DatabaseSync(path, { readOnly: true })
+  return {
+    sql: log,
+    pragma: () => [],
+    prepare: (sql) => ({
+      get: (...params) => { log.push(sql); return db.prepare(sql).get(...params) },
+      all: (...params) => { log.push(sql); return db.prepare(sql).all(...params) }
+    }),
+    close: () => db.close()
+  }
+}
+
+const tempDir = () => mkdtempSync(join(tmpdir(), 'contact-sync-'))
+const manyContacts = (n) => Array.from({ length: n }, (_, i) => ({ mid: `u-${String(i).padStart(5, '0')}`, name: `Name ${i}`, picture: `/p/${i}` }))
+
+/** Reads a whole table page by page; returns the rows and the number of pages. */
+function readAll(reader, con, limit) {
+  const rows = []
+  let cursor = null
+  let pages = 0
+  for (;;) {
+    const page = reader(con, cursor, limit)
+    if (page === null) return null
+    pages += 1
+    rows.push(...page.rows)
+    if (!page.next) return { rows, pages }
+    cursor = page.next
+  }
+}
+
+// ───────────── C3: the keyset readers ─────────────
+
+test('C3 keyset: contactRowsAfter pages through every _contact row exactly once in rowid order, with rowid > ? (never OFFSET)', () => {
+  const dir = tempDir()
+  try {
+    const path = join(dir, 'line.edb')
+    makeLine(path, { contacts: manyContacts(2500) })
+    const con = openLineCon(path)
+    const result = readAll(linedb.contactRowsAfter, con, 700)
+    assert.equal(result.rows.length, 2500)
+    assert.deepEqual(result.rows.map((r) => r._mid), manyContacts(2500).map((c) => c.mid))
+    assert.equal(result.pages, 4)
+    assert.ok(con.sql.some((q) => /WHERE rowid > \?/.test(q)))
+    assert.equal(con.sql.some((q) => /OFFSET/i.test(q)), false)
+    assert.deepEqual(Object.keys(result.rows[0]).sort(), ['_displayName', '_displayNameOverridden', '_mid', '_picturePath', '_targetProfileDetail'].sort(), 'the rowid helper column is not part of the row')
+    con.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('C3 keyset: a WITHOUT ROWID _contact falls back to the primary key (_mid > ?) and still returns every row once', () => {
+  const dir = tempDir()
+  try {
+    const path = join(dir, 'line.edb')
+    makeLine(path, { contacts: manyContacts(1234), contactWithoutRowid: true })
+    const con = openLineCon(path)
+    const result = readAll(linedb.contactRowsAfter, con, 500)
+    assert.deepEqual(result.rows.map((r) => r._mid), manyContacts(1234).map((c) => c.mid))
+    assert.equal(result.pages, 3)
+    assert.ok(con.sql.some((q) => /WHERE _mid > \?/.test(q)))
+    assert.equal(con.sql.some((q) => /OFFSET/i.test(q)), false)
+    con.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('C3 keyset: a missing _targetProfileDetail or _picturePath column degrades to the columns that exist; a missing table is null, not an error; other failures are thrown', () => {
+  const dir = tempDir()
+  try {
+    const noDetail = join(dir, 'a.edb')
+    makeLine(noDetail, { contacts: [{ mid: 'u1', name: 'One', picture: '/p/1' }], noDetailColumn: true, noGroupTable: true, noSquareTable: true })
+    const a = openLineCon(noDetail)
+    const rowsA = linedb.contactRowsAfter(a, null, 10)
+    assert.deepEqual(rowsA.rows.map((r) => [r._mid, linedb.contactLocator(r), linedb.contactName(r)]), [['u1', '/p/1', 'One']])
+    assert.equal(linedb.groupRowsAfter(a, null, 10), null, 'no _groupChat table')
+    assert.equal(linedb.squareChatRowsAfter(a, null, 10), null, 'no _squareChat table')
+    a.close()
+
+    const noPicture = join(dir, 'b.edb')
+    makeLine(noPicture, { contacts: [{ mid: 'u2', name: 'Two', detail: JSON.stringify({ picturePath: '/d/2' }) }], noPictureColumn: true })
+    const b = openLineCon(noPicture)
+    assert.deepEqual(linedb.contactRowsAfter(b, null, 10).rows.map((r) => [r._mid, linedb.contactLocator(r)]), [['u2', '/d/2']])
+    b.close()
+
+    const broken = {
+      pragma: () => [],
+      prepare: (sql) => ({
+        get: () => { if (/sqlite_master/.test(sql)) return { ok: 1 }; throw new Error('database disk image is malformed') },
+        all: () => { throw new Error('database disk image is malformed') }
+      }),
+      close: () => undefined
+    }
+    assert.throws(() => linedb.contactRowsAfter(broken, null, 10), /malformed/, 'the table exists but cannot be read: an error, not "missing"')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('C3 keyset: groups and Square chats are paged the same way, and _squareMember is never read', () => {
+  const dir = tempDir()
+  try {
+    const path = join(dir, 'line.edb')
+    const groups = Array.from({ length: 30 }, (_, i) => ({ mid: `c-${String(i).padStart(3, '0')}`, picture: `/g/${i}` }))
+    const squares = Array.from({ length: 25 }, (_, i) => ({ mid: `s-${String(i).padStart(3, '0')}`, hash: i % 2 ? HASH_OK : 'not-a-hash' }))
+    makeLine(path, { groups, squares })
+    const con = openLineCon(path)
+    const g = readAll(linedb.groupRowsAfter, con, 7)
+    const q = readAll(linedb.squareChatRowsAfter, con, 10)
+    assert.deepEqual(g.rows.map((r) => r._chatMid), groups.map((x) => x.mid))
+    assert.deepEqual(q.rows.map((r) => r._squareChatMid), squares.map((x) => x.mid))
+    assert.equal(q.rows.map((r) => linedb.squareChatLocator(r)).filter(Boolean).length, 12, 'only well-formed OBS hashes are locators')
+    assert.equal(linedb.groupLocator({ _picturePath: '  ' }), null)
+    assert.equal(linedb.groupLocator({ _picturePath: '/g/1' }), '/g/1')
+    assert.equal(con.sql.some((query) => /_squareMember/.test(query)), false)
+    con.close()
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
