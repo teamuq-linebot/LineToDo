@@ -12,7 +12,6 @@ type AvatarMime = keyof typeof MIME_EXT
 export interface AvatarCacheFs {
   mkdir(path: string, options: { recursive: true }): Promise<unknown>
   readFile(path: string): Promise<Uint8Array>
-  readdir(path: string): Promise<string[]>
   rename(from: string, to: string): Promise<void>
   stat(path: string): Promise<{ size: number; mtimeMs: number; isFile(): boolean }>
   unlink(path: string): Promise<void>
@@ -140,22 +139,6 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
       else active -= 1
     }
   }
-  const fileNames = async (): Promise<Array<{ name: string; size: number; mtimeMs: number }>> => {
-    let names: string[]
-    try { names = await fs.readdir(dir) } catch { return [] }
-    const files: Array<{ name: string; size: number; mtimeMs: number }> = []
-    for (const name of names) {
-      if (!/^[a-f0-9]{64}\.(?:jpg|png|webp)$/u.test(name)) continue
-      try {
-        const file = join(dir, name)
-        const s = await fs.stat(file)
-        if (!s.isFile()) continue
-        const checksum = await fs.stat(`${file}.sha256`).catch(() => null)
-        files.push({ name, size: s.size + (checksum?.size ?? 0), mtimeMs: s.mtimeMs })
-      } catch { /* concurrently removed */ }
-    }
-    return files
-  }
   const probe = async (key: string): Promise<string | undefined> => {
     for (const ext of Object.values(MIME_EXT)) {
       const name = `${key}.${ext}`
@@ -168,7 +151,7 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
     try {
       const key = avatarCacheKey(identity, locator)
       // 命中時依 key 直接 stat 三種副檔名，不掃整個目錄；找不到才退回列舉（舊檔名、手動放入的檔案）。
-      const cachedName = (await probe(key)) ?? (await fileNames()).find((f) => f.name.startsWith(key + '.'))?.name
+      const cachedName = (await probe(key))
       if (cachedName) {
         const ext = cachedName.slice(key.length + 1)
         const mime = (Object.entries(MIME_EXT).find(([, e]) => e === ext)?.[0]) as AvatarMime | undefined
