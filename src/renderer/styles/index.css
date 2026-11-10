@@ -1011,21 +1011,48 @@ code {
 .group-topics-panel.topics-recap .group-topic-card > .group-topic-meta { margin: 4px 0; }
 .group-topics-error { color: var(--err); font-size: 12px; }
 .group-topics-notice { color: var(--muted); font-size: 11px; }
-.group-topics-group-select { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
-.group-topics-list { display: grid; gap: 10px; }
-.topics-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
-.topics-tools input[type="search"] { flex: 1 1 200px; max-width: 320px; padding: 6px 8px; }
-.topics-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.topics-table th, .topics-table td { padding: 8px 6px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
-.topics-table th { color: var(--muted); font-weight: 600; }
+/* 群組議題列表（全域分頁）：面板是設定頁的 set-section；篩選列與欄位標籤沿用總覽的 board-filters／filter-field；
+   列內標題、內文、動作列沿用看板卡片的 card-title／card-detail／card-actions；展開符號與聊天頁的 chat-todo-details 同色。 */
+.group-topics-panel.topics-recap > h2 { margin: 0 0 12px; font-size: 18px; }
+.group-topics-help { margin: 0 0 12px; font-size: 12.5px; }
+.group-topics-help > p { margin: 8px 0 0 16px; color: var(--muted); line-height: 1.6; }
+.topics-disclosure > summary,
+.group-topics-help > summary { width: fit-content; color: var(--accent); cursor: pointer; list-style: none; }
+.topics-disclosure > summary::-webkit-details-marker,
+.group-topics-help > summary::-webkit-details-marker { display: none; }
+.topics-disclosure > summary::before,
+.group-topics-help > summary::before { content: '›'; display: inline-block; width: 10px; margin-right: 2px; transition: transform 0.15s; }
+.topics-disclosure[open] > summary::before,
+.group-topics-help[open] > summary::before { transform: rotate(90deg); }
+/* select 的固有寬度取決於最長的聊天室名稱；不限寬會把整個面板撐出窄視窗 */
+.group-topics-group-select { min-width: 0; max-width: 100%; }
+.group-topics-group-select select { min-width: 0; max-width: 100%; }
+.topics-disclosure > summary { font-size: 12px; }
+.topics-disclosure > .card-meta { margin: 6px 0; }
+.topics-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.topics-table th, .topics-table td { padding: 10px 8px; border-bottom: 1px solid var(--row-border); text-align: left; vertical-align: top; }
+.topics-table th { padding: 4px 8px 8px; border-bottom-color: var(--border); color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.topics-table tbody tr.topics-row:hover td { background: var(--hover-row); }
 .topics-sort { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
-.topics-col-chat { width: 22%; overflow-wrap: anywhere; }
-.topics-col-time { width: 14%; white-space: nowrap; color: var(--muted); }
-.topics-col-topic strong { display: block; font-size: 13px; }
-.topics-col-topic p { margin: 4px 0; color: var(--card-detail-text); line-height: 1.5; }
-.topics-row-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.topics-col-chat { width: 22%; overflow-wrap: anywhere; color: var(--accent); }
+.topics-col-time { width: 14%; white-space: nowrap; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.topics-col-topic .card-detail { margin: 4px 0 0; }
 .topics-sentinel-cell { padding: 0; border: 0; }
 .topics-sentinel { height: 1px; }
+/* 窄版（容器 ≤ 420，沿用既有斷點）：三欄改成每列兩行（聊天室與時間在上、議題在下）；表頭仍是三顆排序鈕 */
+@container lt-app (max-width: 420px) {
+  .topics-table,
+  .topics-table thead,
+  .topics-table tbody,
+  .topics-table tr { display: block; }
+  .topics-table thead tr { display: flex; flex-wrap: wrap; gap: 4px 16px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+  .topics-table th { display: block; width: auto; padding: 4px 0; border: 0; }
+  .topics-table tr.topics-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--row-border); }
+  .topics-table td { display: block; width: auto; min-width: 0; padding: 0; border: 0; }
+  .topics-col-chat { grid-column: 1; grid-row: 1; width: auto; font-size: 11.5px; }
+  .topics-col-time { grid-column: 2; grid-row: 1; width: auto; text-align: right; }
+  .topics-col-topic { grid-column: 1 / -1; grid-row: 2; margin-top: 4px; }
+}
 
 @container lt-app (max-width: 760px) {
   .chat-workspace {

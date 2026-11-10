@@ -90,15 +90,15 @@ export function TopicsTable({ rows, sortKey, sortDir, onSort, resetKey, canOpenC
             <tr key={row.key} className="topics-row" data-testid="topic-row">
               <td className="topics-col-chat">{row.chatName}</td>
               <td className="topics-col-topic">
-                <strong>{topic.title}</strong>
-                {topic.summary && <p>{topic.summary}</p>}
-                <details>
+                <strong className="card-title">{topic.title}</strong>
+                {topic.summary && <p className="card-detail">{topic.summary}</p>}
+                <details className="topics-disclosure">
                   <summary>細節（來源 {topic.evidenceMsgIds.length} 則）</summary>
-                  <small>{qualityText(topic)}</small>
+                  <div className="card-meta">{qualityText(topic)}</div>
                   {topic.evidenceMsgIds.length > 0
                     ? <ul>{topic.evidenceMsgIds.map((id) => <li key={id}><code>{id}</code></li>)}</ul>
                     : <p className="muted">目前沒有可列出的來源訊息參照。</p>}
-                  <div className="topics-row-actions">
+                  <div className="card-actions">
                     {canOpenChat && <button type="button" className="ghost" onClick={() => onOpenChat(row.chatId)}>開啟來源聊天室</button>}
                     <button type="button" className="ghost" onClick={() => onShowTodoRefs(topic)}>檢查既有待辦關聯</button>
                   </div>
