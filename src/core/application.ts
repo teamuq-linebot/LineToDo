@@ -22,7 +22,8 @@ import { draftReply } from '../main/llm/draftReply'
 import type { PipelineDefaults } from '../main/config/defaults'
 import type { QwenConfig } from '../main/config/qwen'
 import { reviewLastDays, backfillMediaKeys } from '../main/pipeline/backfill'
-import { refreshChatLastDays, topicRefreshOutcome, type ChatRefreshResult } from '../main/pipeline/chatRefresh'
+import { emptyResult, parseChatRefreshDays, precheckChatRefresh, refreshChatLastDays, topicRefreshOutcome, type ChatRefreshDeps, type ChatRefreshResult } from '../main/pipeline/chatRefresh'
+import { ChatRefreshQueue } from './chatRefreshQueue'
 import type { ChatExtractInput } from '../main/pipeline/runOnce'
 import type { ExtractResult } from '../main/llm/schema'
 import { deriveMsgId } from '../main/db/schema'
@@ -70,6 +71,8 @@ export interface LineTodoApplicationPorts {
   makeRefreshExtract?(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null
   /** 「重新整理最近 N 天」開始前的 AI 就緒檢查（外掛：向 host 重新確認）；省略＝視為就緒。 */
   refreshReady?(): Promise<boolean>
+  /** 「重新整理最近 N 天」排隊時：回顧進行中就先等它結束（外掛：回顧的 single-flight 狀態）；省略＝不等。 */
+  refreshBlocked?(): boolean
   media: {
     open(msgId: string, db: Database): Promise<{ ok: boolean; error?: string }>
     saveAs(msgId: string, db: Database): Promise<{ ok: boolean; canceled?: boolean; error?: string }>
@@ -172,6 +175,23 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   let lineImportSchemaReady = false
   let groupTopicsService: ReturnType<typeof createGroupTopicsService> | null = null
   let topicBackground: ReturnType<typeof createTopicBackground> | null = null
+  // 重新整理：不同聊天室依序跑（FIFO），同一聊天室不重複加入；守門（precheck）在排隊前做，AI 未就緒等情況不必排隊等待。
+  const refreshQueue = new ChatRefreshQueue({ isBlocked: () => ports.refreshBlocked?.() === true })
+  const refreshDeps = (): ChatRefreshDeps => {
+    const refreshExtract = ports.makeRefreshExtract ? ports.makeRefreshExtract() : ports.makeExtract()
+    return {
+      db: database.db,
+      config: ports.pipelineConfig.getDefaults(),
+      extractFn: refreshExtract,
+      identityAttemptManagedByQueue: (refreshExtract as ((input: ChatExtractInput) => Promise<ExtractResult>) & { identityAttemptManagedByQueue?: boolean } | null)?.identityAttemptManagedByQueue === true,
+      correctionsForChat: (id) => repos.notMine.corrections(id),
+      onCorrectionsPayloadBuilt: (id, messageIds, rules) => rules.forEach((rule) => repos.notMine.effect(rule, id, messageIds, 'reviewLastDays')),
+      aiReady: ports.refreshReady,
+      topicRefresh: groupTopicsService
+        ? async (id, sinceMs) => topicRefreshOutcome(await groupTopicsService!.refreshWindow(id, sinceMs, () => ports.providers.resolveProvider()))
+        : undefined
+    }
+  }
   const unknownIdentity: ParticipantIdentityProvider = {
     resolve: () => ({ participantKey: null, scope: 'unknown', keyVersion: null, status: 'unknown', reason: 'safe_storage_unavailable' }),
     epoch: () => null,
@@ -476,20 +496,14 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
         onProgress: (progress: BackfillProgress) => { if (state === 'running') events.emit('backfill-progress', progress) }
       }),
       refreshChat: async (chatId: string, days: unknown): Promise<ChatRefreshResult> => {
-        const refreshExtract = ports.makeRefreshExtract ? ports.makeRefreshExtract() : ports.makeExtract()
-        return refreshChatLastDays(chatId, days, {
-          db: database.db,
-          config: ports.pipelineConfig.getDefaults(),
-          extractFn: refreshExtract,
-          identityAttemptManagedByQueue: (refreshExtract as ((input: ChatExtractInput) => Promise<ExtractResult>) & { identityAttemptManagedByQueue?: boolean } | null)?.identityAttemptManagedByQueue === true,
-          correctionsForChat: (id) => repos.notMine.corrections(id),
-          onCorrectionsPayloadBuilt: (id, messageIds, rules) => rules.forEach((rule) => repos.notMine.effect(rule, id, messageIds, 'reviewLastDays')),
-          aiReady: ports.refreshReady,
-          topicRefresh: groupTopicsService
-            ? async (id, sinceMs) => topicRefreshOutcome(await groupTopicsService!.refreshWindow(id, sinceMs, () => ports.providers.resolveProvider()))
-            : undefined
-        })
+        const early = await precheckChatRefresh(chatId, days, refreshDeps())
+        if (early) return early
+        const queued = refreshQueue.enqueue(chatId, () => refreshChatLastDays(chatId, days, refreshDeps()))
+        if (queued) return queued
+        const state = refreshQueue.status(chatId).state
+        return emptyResult(parseChatRefreshDays(days), null, state === 'running' ? 'already_running' : 'already_queued')
       },
+      refreshChatStatus: async (chatId: string) => refreshQueue.status(chatId),
       backfillMediaKeys: async (days = 7) => {
         try {
           const result = await backfillMediaKeys(Number.isFinite(days) && days > 0 ? Math.floor(days) : 7, {

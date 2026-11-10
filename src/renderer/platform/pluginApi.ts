@@ -18,7 +18,7 @@
  * 不依賴 React／DOM（node:test 以 mock `window.tuqPlugin` 驗證）。
  */
 import type {
-  AvatarRequestOptions, AvatarUrlBatchDTO, DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult
+  AvatarRequestOptions, AvatarUrlBatchDTO, ChatRefreshQueueStatus, DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult
 } from '../../shared/api'
 import { PLUGIN_CAPABILITIES, type HostCapabilities } from './capabilities'
 import { normalizeHostAiSelection, type HostAiSelection } from '../../shared/hostAi'
@@ -367,6 +367,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       runOnce: () => call('pipeline.runOnce'),
       reviewLastDays: (days) => call('pipeline.reviewLastDays', days),
       refreshChat: (chatId, days) => call('pipeline.refreshChat', chatId, days),
+      refreshChatStatus: (chatId) => call<ChatRefreshQueueStatus>('pipeline.refreshChatStatus', chatId),
       backfillMediaKeys: (days) => call('pipeline.backfillMediaKeys', days),
       // G-05：回顧與補媒體金鑰由 backend 管理；畫面重新載入、Promise 斷掉（job_not_found）或 backend 重啟後用它查目前的狀態。
       longTaskStatus: () => call<LongTaskStatusView>('tasks.status'),

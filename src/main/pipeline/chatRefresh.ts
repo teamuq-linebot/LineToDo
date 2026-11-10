@@ -61,7 +61,8 @@ export interface ChatRefreshDeps {
 
 export interface ChatRefreshResult {
   ok: boolean
-  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'ai_unavailable'
+  /** already_queued／already_running：同一聊天室已在排隊或執行中，這次不重複加入（外掛的排隊層產生）。 */
+  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'ai_unavailable' | 'already_queued' | 'already_running'
   days: number | null
   sinceMs: number | null
   /** failed 時 reason 是底層失敗原因碼（如 extract_await_timeout、transport），不再吞掉。 */
@@ -69,7 +70,7 @@ export interface ChatRefreshResult {
   topics: { ran: boolean; aiCalls: number; analyzed: number; batches: number; failed: boolean; reason?: string }
 }
 
-function emptyResult(days: number | null, sinceMs: number | null, reason?: ChatRefreshResult['reason']): ChatRefreshResult {
+export function emptyResult(days: number | null, sinceMs: number | null, reason?: ChatRefreshResult['reason']): ChatRefreshResult {
   return {
     ok: false,
     ...(reason ? { reason } : {}),
@@ -176,11 +177,10 @@ async function refreshTodos(chatId: string, sinceMs: number, nowMs: number, deps
   return leg
 }
 
-/**
- * 重新整理一個聊天室最近 N 天。N 不合法 → invalid_days；聊天室不存在 → unsupported_chat；
- * 待辦與議題都關 → disabled；AI 未就緒（或沒有抽取函式）→ ai_unavailable，不送任何請求、不進佇列等待。
- */
-export async function refreshChatLastDays(chatId: string, days: unknown, deps: ChatRefreshDeps): Promise<ChatRefreshResult> {
+interface RefreshGate { days: number; nowMs: number; sinceMs: number; todoOn: boolean; topicsOn: boolean }
+
+/** 開始前的守門：不合法就回結果（不碰 AI、不碰資料）；通過就回排程需要的參數。 */
+async function gateChatRefresh(chatId: string, days: unknown, deps: ChatRefreshDeps): Promise<ChatRefreshResult | RefreshGate> {
   const parsed = parseChatRefreshDays(days)
   if (parsed === null) return emptyResult(null, null, 'invalid_days')
   const nowMs = (deps.nowFn ?? (() => Date.now()))()
@@ -191,9 +191,29 @@ export async function refreshChatLastDays(chatId: string, days: unknown, deps: C
   const topicsOn = !!deps.topicRefresh && isTopicsEnabled(db, chatId)
   if (!todoOn && !topicsOn) return emptyResult(parsed, sinceMs, 'disabled')
   if (!deps.extractFn || !(deps.aiReady ? await deps.aiReady().catch(() => false) : true)) return emptyResult(parsed, sinceMs, 'ai_unavailable')
+  return { days: parsed, nowMs, sinceMs, todoOn, topicsOn }
+}
+
+/**
+ * 只做守門（同 refreshChatLastDays 開頭）：回傳不需要排隊的結果（參數錯誤、聊天室不存在、開關全關、AI 未就緒），
+ * 通過則回 null。外掛的排隊層用它讓這幾種情況立即回報，不要排在別的聊天室後面等。
+ */
+export async function precheckChatRefresh(chatId: string, days: unknown, deps: ChatRefreshDeps): Promise<ChatRefreshResult | null> {
+  const gate = await gateChatRefresh(chatId, days, deps)
+  return 'ok' in gate ? gate : null
+}
+
+/**
+ * 重新整理一個聊天室最近 N 天。N 不合法 → invalid_days；聊天室不存在 → unsupported_chat；
+ * 待辦與議題都關 → disabled；AI 未就緒（或沒有抽取函式）→ ai_unavailable，不送任何請求、不進佇列等待。
+ */
+export async function refreshChatLastDays(chatId: string, days: unknown, deps: ChatRefreshDeps): Promise<ChatRefreshResult> {
+  const gate = await gateChatRefresh(chatId, days, deps)
+  if ('ok' in gate) return gate
+  const { todoOn, topicsOn, nowMs, sinceMs } = gate
   const cfg = deps.config ?? getPipelineDefaults()
 
-  const result = emptyResult(parsed, sinceMs)
+  const result = emptyResult(gate.days, sinceMs)
   let ok = true
   if (todoOn) {
     result.todo = await refreshTodos(chatId, sinceMs, nowMs, deps, cfg)
