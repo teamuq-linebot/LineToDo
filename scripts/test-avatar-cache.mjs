@@ -128,7 +128,7 @@ test('rejects non-image, MIME/signature mismatch, and over-limit bodies; backs o
   assert.deepEqual(await fs.readdir(join(dataDir, 'avatar-cache')).catch(() => []), [])
 })
 
-test('single-flights same key, bounds concurrent distinct downloads, and enforces disk/entry budgets', async (t) => {
+test('single-flights same key and bounds concurrent distinct downloads', async (t) => {
   const { dataDir, fs } = await fixture(t)
   let active = 0
   let peak = 0
@@ -141,17 +141,46 @@ test('single-flights same key, bounds concurrent distinct downloads, and enforce
     active -= 1
     return response(JPEG)
   }
-  const cache = createAvatarCache({ dataDir, fs, fetchImpl, maxConcurrent: 2, maxEntries: 2, maxCacheBytes: 160 })
+  const cache = createAvatarCache({ dataDir, fs, fetchImpl, maxConcurrent: 2 })
   const same = await Promise.all(Array.from({ length: 8 }, () => cache.get({ identity: 'same', locator: '/same' })))
   assert.equal(calls, 1)
   assert.ok(same.every((r) => r.path === same[0].path))
   await Promise.all([1, 2, 3, 4].map((n) => cache.get({ identity: `id-${n}`, locator: `/u-${n}` })))
   assert.ok(peak <= 2)
-  const names = (await fs.readdir(join(dataDir, 'avatar-cache'))).filter((name) => /^[a-f0-9]{64}\.(?:jpg|png|webp)$/u.test(name))
-  assert.ok(names.length <= 2, `entries=${names.length}`)
-  const sizes = await Promise.all(names.map(async (name) => {
-    const file = join(dataDir, 'avatar-cache', name)
-    return (await fs.stat(file)).size + (await fs.stat(`${file}.sha256`)).size
-  }))
-  assert.ok(sizes.reduce((a, b) => a + b, 0) <= 160)
+})
+
+test('no total cache limit: more than 256 entries and more than 32 MB all stay on disk', async (t) => {
+  const { dataDir, fs, files } = await fixture(t)
+  const big = new Uint8Array(1024 * 1024)
+  big[0] = 0xff; big[1] = 0xd8; big[big.length - 2] = 0xff; big[big.length - 1] = 0xd9
+  let calls = 0
+  const fetchImpl = async () => { calls += 1; return response(calls <= 40 ? big : JPEG) }
+  const cache = createAvatarCache({ dataDir, fs, fetchImpl, maxConcurrent: 8 })
+  const total = 300
+  const results = []
+  for (let n = 0; n < total; n += 1) results.push(await cache.get({ identity: `id-${n}`, locator: `/u-${n}` }))
+  assert.ok(results.every((r) => r && r.cached === false))
+  const names = (await fs.readdir(join(dataDir, 'avatar-cache'))).filter((name) => /^[a-f0-9]{64}.(?:jpg|png|webp)$/u.test(name))
+  assert.equal(names.length, total)
+  let bytes = 0
+  for (const name of names) bytes += (await fs.stat(join(dataDir, 'avatar-cache', name))).size
+  assert.ok(bytes > 32 * 1024 * 1024, `bytes=${bytes}`)
+  for (const r of results) assert.ok(files.has(join(dataDir, r.path)), 'file still present: ' + r.path)
+  const before = calls
+  const again = await cache.get({ identity: 'id-0', locator: '/u-0' })
+  assert.equal(again.cached, true)
+  assert.equal(calls, before, 'oldest entry is served from disk without a re-download')
+})
+
+test('per-image limit still applies: an image over maxImageBytes (default 2 MB) is rejected and nothing is written', async (t) => {
+  const { dataDir, fs } = await fixture(t)
+  const over = new Uint8Array(2 * 1024 * 1024 + 1)
+  over[0] = 0xff; over[1] = 0xd8; over[over.length - 2] = 0xff; over[over.length - 1] = 0xd9
+  const cache = createAvatarCache({ dataDir, fs, fetchImpl: async () => response(over) })
+  assert.equal(await cache.get({ identity: 'id', locator: '/over' }), null)
+  assert.deepEqual(await fs.readdir(join(dataDir, 'avatar-cache')).catch(() => []), [])
+  const exact = new Uint8Array(2 * 1024 * 1024)
+  exact[0] = 0xff; exact[1] = 0xd8; exact[exact.length - 2] = 0xff; exact[exact.length - 1] = 0xd9
+  const ok = await createAvatarCache({ dataDir, fs, fetchImpl: async () => response(exact) }).get({ identity: 'id', locator: '/exact' })
+  assert.equal(ok.size, exact.length)
 })

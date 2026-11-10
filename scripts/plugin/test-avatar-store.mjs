@@ -434,7 +434,7 @@ test('A-5 the reader never fails and never asks LINE: no db, no tables, a missin
   } finally { db.close() }
 })
 
-test('A-5 R-AV-4: avatarCache.load finds a cached image by stat-ing its key — it does not list the directory — and still falls back to listing when the key is not there', async () => {
+test('A-5 R-AV-4: avatarCache.load finds a cached image by stat-ing its key — it never lists the directory, hit or miss', async () => {
   const root = mkdtempSync(join(tmpdir(), 'avatar-cache-'))
   try {
     const jpeg = Buffer.from([0xff, 0xd8, 1, 2, 3, 0xff, 0xd9])
@@ -467,7 +467,7 @@ test('A-5 R-AV-4: avatarCache.load finds a cached image by stat-ing its key — 
     assert.equal(other, null)
     assert.equal(calls.readdir, 0, 'the key probe found the entry (it was then discarded as invalid)')
     assert.equal(await cache.get({ identity: 'u-missing', locator: '/p/missing' }), null)
-    assert.ok(calls.readdir >= 1, 'when the probe finds nothing the directory is listed as the fallback (names this code did not write)')
+    assert.equal(calls.readdir, 0, 'a miss does not list the directory either: the cost does not grow with the number of cached images')
     assert.equal(fetches, 2)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

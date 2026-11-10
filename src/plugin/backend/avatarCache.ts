@@ -5,17 +5,16 @@ import { join } from 'node:path'
 export const AVATAR_CACHE_DIR = 'avatar-cache'
 const ORIGIN = 'https://profile.line-scdn.net'
 const SQUARE_ORIGIN = 'https://obs.line-scdn.net'
+const MAX_FAILURE_ENTRIES = 512
 const MIME_EXT = Object.freeze({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' } as const)
 type AvatarMime = keyof typeof MIME_EXT
 
 export interface AvatarCacheFs {
   mkdir(path: string, options: { recursive: true }): Promise<unknown>
   readFile(path: string): Promise<Uint8Array>
-  readdir(path: string): Promise<string[]>
   rename(from: string, to: string): Promise<void>
   stat(path: string): Promise<{ size: number; mtimeMs: number; isFile(): boolean }>
   unlink(path: string): Promise<void>
-  utimes(path: string, atime: Date, mtime: Date): Promise<void>
   writeFile(path: string, data: Uint8Array, options: { flag: 'wx' }): Promise<void>
 }
 
@@ -33,8 +32,6 @@ export interface AvatarCacheOptions {
   fetchImpl?: (url: string, init: { method: 'GET'; redirect: 'manual'; signal: AbortSignal }) => Promise<AvatarFetchResponse>
   fs?: AvatarCacheFs
   maxImageBytes?: number
-  maxCacheBytes?: number
-  maxEntries?: number
   maxConcurrent?: number
   failureBackoffMs?: number
   timeoutMs?: number
@@ -120,8 +117,6 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
   const fs = options.fs ?? fsPromises
   const dir = join(options.dataDir, AVATAR_CACHE_DIR)
   const maxImageBytes = options.maxImageBytes ?? 2 * 1024 * 1024
-  const maxCacheBytes = options.maxCacheBytes ?? 32 * 1024 * 1024
-  const maxEntries = options.maxEntries ?? 256
   const maxConcurrent = Math.max(1, Math.floor(options.maxConcurrent ?? 4))
   const backoffMs = options.failureBackoffMs ?? 60_000
   const timeoutMs = options.timeoutMs ?? 10_000
@@ -130,7 +125,7 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
   const failures = new Map<string, number>()
   const rememberFailure = (key: string): void => {
     failures.set(key, now() + backoffMs)
-    while (failures.size > Math.max(32, maxEntries * 2)) failures.delete(failures.keys().next().value as string)
+    while (failures.size > MAX_FAILURE_ENTRIES) failures.delete(failures.keys().next().value as string)
   }
   let active = 0
   const waiters: Array<() => void> = []
@@ -144,22 +139,6 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
       else active -= 1
     }
   }
-  const fileNames = async (): Promise<Array<{ name: string; size: number; mtimeMs: number }>> => {
-    let names: string[]
-    try { names = await fs.readdir(dir) } catch { return [] }
-    const files: Array<{ name: string; size: number; mtimeMs: number }> = []
-    for (const name of names) {
-      if (!/^[a-f0-9]{64}\.(?:jpg|png|webp)$/u.test(name)) continue
-      try {
-        const file = join(dir, name)
-        const s = await fs.stat(file)
-        if (!s.isFile()) continue
-        const checksum = await fs.stat(`${file}.sha256`).catch(() => null)
-        files.push({ name, size: s.size + (checksum?.size ?? 0), mtimeMs: s.mtimeMs })
-      } catch { /* concurrently pruned */ }
-    }
-    return files
-  }
   const probe = async (key: string): Promise<string | undefined> => {
     for (const ext of Object.values(MIME_EXT)) {
       const name = `${key}.${ext}`
@@ -167,28 +146,12 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
     }
     return undefined
   }
-  const prune = async (keep: string): Promise<void> => {
-    const files = await fileNames()
-    let bytes = files.reduce((n, f) => n + f.size, 0)
-    let count = files.length
-    for (const f of files.filter((x) => x.name !== keep).sort((a, b) => a.mtimeMs - b.mtimeMs)) {
-      if (bytes <= maxCacheBytes && count <= maxEntries) break
-      try {
-        const file = join(dir, f.name)
-        await fs.unlink(file)
-        await fs.unlink(`${file}.sha256`).catch(() => undefined)
-        bytes -= f.size
-        count -= 1
-      } catch { /* retry on a later write */ }
-    }
-  }
-
   const load = async (identity: string, locator: string, url: string): Promise<AvatarCacheResult | null> => {
     const release = await acquire()
     try {
       const key = avatarCacheKey(identity, locator)
       // 命中時依 key 直接 stat 三種副檔名，不掃整個目錄；找不到才退回列舉（舊檔名、手動放入的檔案）。
-      const cachedName = (await probe(key)) ?? (await fileNames()).find((f) => f.name.startsWith(key + '.'))?.name
+      const cachedName = (await probe(key))
       if (cachedName) {
         const ext = cachedName.slice(key.length + 1)
         const mime = (Object.entries(MIME_EXT).find(([, e]) => e === ext)?.[0]) as AvatarMime | undefined
@@ -198,7 +161,6 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
           const expectedChecksum = Buffer.from(await fs.readFile(`${cachedPath}.sha256`)).toString('utf8').trim()
           const actualChecksum = createHash('sha256').update(data).digest('hex')
           if (mime && /^[a-f0-9]{64}$/u.test(expectedChecksum) && expectedChecksum === actualChecksum && identifyImage(data, mime) && data.length <= maxImageBytes) {
-            await fs.utimes(cachedPath, new Date(now()), new Date(now())).catch(() => undefined)
             return { path: `${AVATAR_CACHE_DIR}/${cachedName}`, mime, size: data.length, cached: true }
           }
           await fs.unlink(cachedPath).catch(() => undefined)
@@ -224,7 +186,7 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
       } catch { rememberFailure(key); return null }
       finally { clearTimeout(timer) }
       const mime = bytes && identifyImage(bytes, response.headers.get('content-type'))
-      if (!bytes || !mime || bytes.length > maxCacheBytes) { rememberFailure(key); return null }
+      if (!bytes || !mime || bytes.length > maxImageBytes) { rememberFailure(key); return null }
       const name = `${key}.${MIME_EXT[mime]}`
       const target = join(dir, name)
       const temp = join(dir, `.${name}.${createHash('sha256').update(String(now())).digest('hex').slice(0, 8)}.tmp`)
@@ -248,7 +210,6 @@ export function createAvatarCache(options: AvatarCacheOptions): AvatarCache {
         return null
       }
       failures.delete(key)
-      await prune(name)
       return { path: `${AVATAR_CACHE_DIR}/${name}`, mime, size: bytes.length, cached: false }
     } finally { release() }
   }
