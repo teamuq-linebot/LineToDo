@@ -2115,13 +2115,13 @@ test('group-topics root tab: an old saved topics value opens the all-groups over
   try {
     await until(() => tab('群組議題') && log.some((entry) => entry.path === 'groupTopics.overview') && view.container.textContent.includes('總覽議題0'), { message: 'the saved group-topics tab opens its all-groups results' })
     assert.equal(hasClassName(tab('群組議題'), 'active'), true, 'the old persisted topics tab is restored as the new root tab')
-    assert.ok(view.container.textContent.includes('所有群組'), 'the initial view is the all-groups overview')
-    assert.ok(walk(view.container).some((element) => hasClassName(element, 'group-topics-overview')), 'the existing global panel is mounted')
+    assert.ok(walk(view.container).some((element) => element.localName === 'input' && element.getAttribute('aria-label') === '搜尋議題'), 'the initial view is the topic list with its search box')
+    assert.ok(walk(view.container).some((element) => hasClassName(element, 'group-topics-list')), 'the topic list is mounted')
     assert.equal(log.some((entry) => entry.path === 'db.todos.list'), false, 'opening the topic tab did not depend on overview-board loading')
     assert.equal(log.some((entry) => entry.path.startsWith('messages.')), false, 'opening the topic tab did not depend on selecting a chat')
 
     const groupSelect = walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
-    assert.ok(groupSelect, 'the existing group selector stays available')
+    assert.ok(groupSelect, 'the chat filter stays available')
     reactProps(groupSelect).onChange({ target: { value: 'ov-group-1' } })
     await until(() => log.some((entry) => entry.path === 'groupTopics.list' && entry.args[0] === 'ov-group-1') && view.container.textContent.includes('聊天室近況'), { message: 'choosing a group opens its existing topic controls' })
     const groupSwitch = switchByLabel(view, '此群組的議題開關')
@@ -2250,44 +2250,36 @@ test('L2 overview: a first load that fails shows only the error, not the empty-g
   const view = ui.mount(ui.groupTopicsScene(api))
   try {
     await until(() => view.container.textContent.includes('群組議題總覽載入失敗'), { message: 'the error is shown' })
-    assert.equal(view.container.textContent.includes('目前沒有可用群組'), false, 'error and empty sentence never together')
-    assert.equal(view.container.textContent.includes('正在彙整'), false, 'not stuck on loading')
+    assert.equal(view.container.textContent.includes('尚無議題'), false, 'error and empty sentence never together')
+    assert.equal(view.container.textContent.includes('載入中…'), false, 'not stuck on loading')
   } finally { view.unmount(); api.dispose() }
 })
 
-test('L2/I2 overview: back from a single group the overview shows loading (not the previous error or stale groups) until the new read lands', async () => {
+test('overview list: choosing a chat filter does not re-read the overview; an analysis run re-reads it so the list shows the result', async () => {
   const log = []
   let calls = 0
-  let release
-  const gate = new Promise((resolve) => { release = resolve })
   const api = groupTopicsApi(log, {
-    'groupTopics.overview': () => { calls += 1; if (calls === 1) return overviewRows(); if (calls === 2) return Promise.reject(new Error('second read failed')); return gate.then(() => overviewRows()) },
-    'groupTopics.list': () => ({ ok: false, topics: [] }),
-    'groupTopics.pendingCount': () => 0
-  }, { onRun: () => undefined })
+    'groupTopics.overview': () => { calls += 1; return overviewRows() },
+    'groupTopics.list': (chatId) => ({ ok: chatId === 'ov-group-1', topics: [] }),
+    'groupTopics.pendingCount': () => 0,
+    'groupTopics.analyze': () => ({ ok: true, count: 1, analyzedCount: 1 })
+  })
   dom.document.documentElement.dataset ??= {}
   const view = ui.mount(ui.groupTopicsScene(api))
   const select = () => walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
   try {
     await until(() => view.container.textContent.includes('總覽議題0'), { message: 'first read shown' })
     reactProps(select()).onChange({ target: { value: 'ov-group-1' } })
-    await until(() => hasSwitch(view, '此群組的議題開關'), { message: 'single-group detail' })
-    reactProps(select()).onChange({ target: { value: '__all_groups__' } })
-    await until(() => view.container.textContent.includes('second read failed'), { message: 'second read fails and the error is shown' })
-    reactProps(select()).onChange({ target: { value: 'ov-group-1' } })
-    await until(() => hasSwitch(view, '此群組的議題開關'), { message: 'single-group detail again' })
-    reactProps(select()).onChange({ target: { value: '__all_groups__' } })
-    await until(() => calls === 3, { timeout: 5000, message: 'third read pending behind the 2 s spacing' })
-    const text = view.container.textContent
-    assert.ok(text.includes('正在彙整'), 'loading shown while the new read is pending')
-    assert.equal(text.includes('second read failed'), false, 'old error cleared on return')
-    assert.equal(text.includes('總覽議題0'), false, 'stale groups hidden while loading')
-    release()
-    await until(() => view.container.textContent.includes('總覽議題0'), { message: 'new read lands' })
-  } finally { release(); view.unmount(); api.dispose() }
+    await until(() => hasSwitch(view, '此群組的議題開關') && buttonTexts(view).includes('分析最近群組訊息'), { message: 'the chat filter shows its switch and the analyze button' })
+    assert.deepEqual(walk(view.container).filter((element) => hasClassName(element, 'topics-row')).map((row) => walk(row).find((element) => element.localName === 'strong').textContent), ['總覽議題1'], 'the list narrows to the chosen chat')
+    assert.equal(calls, 1, 'choosing a filter does not re-read the overview')
+    reactProps(walk(view.container).find((element) => element.localName === 'button' && element.textContent.trim() === '分析最近群組訊息')).onClick()
+    await until(() => calls === 2, { timeout: 5000, message: 'the analysis run re-reads the overview' })
+    await until(() => view.container.textContent.includes('總覽議題1'), { message: 'the list is still shown after the re-read' })
+  } finally { view.unmount(); api.dispose() }
 })
 
-test('M1 overview UI: trimmed rows say so, how many topics are shown out of the total and that text was shortened', async () => {
+test('M1 overview UI: a trimmed or compacted group adds one short note above the list', async () => {
   const log = []
   const rows = overviewRows()
   rows[0] = { ...rows[0], topicCount: 31, compacted: true }
@@ -2297,10 +2289,160 @@ test('M1 overview UI: trimmed rows say so, how many topics are shown out of the 
   try {
     await until(() => view.container.textContent.includes('總覽議題0'), { message: 'overview shown' })
     const text = view.container.textContent
-    assert.ok(text.includes('只顯示最近 1 項（共 31 項）'), 'shown / total hint')
-    assert.ok(text.includes('已縮短'), 'compaction hint')
-    assert.equal(text.split('只顯示最近').length - 1, 1, 'only the trimmed group carries the hint')
+    assert.equal(text.split('部分議題已縮短或未列出').length - 1, 1, 'one note for the whole list')
+    assert.equal(text.includes('只顯示最近'), false, 'no per-group hint any more')
   } finally { view.unmount(); api.dispose() }
+})
+
+// ───────────── 群組議題列表：一列一則議題（聊天室／議題／最後更新），可排序、搜尋、依聊天室篩選 ─────────────
+
+const listTopicRow = (topicId, chatId, title, lastSourceTs, summary = '摘要。') => ({
+  topicId, chatId, title, summary, lastSourceTs, evidenceCount: 1, evidenceMsgIds: [`${topicId}-m`], participantLowerBound: null,
+  userParticipation: 'unknown', relevance: 'unknown', relevanceEvidence: [], observation: 'unknown', heat: 'unvalidated', trend: 'unknown'
+})
+// 列表甲 2 則、列表丁 1 則、列表乙 已啟用但沒有議題、列表丙 未啟用：列表只該有三列。
+const LIST_ROWS = () => [
+  { chatId: 'list-a', name: '列表甲', enabled: true, pendingCount: 0, backlogCount: 0, topics: [listTopicRow('t-a1', 'list-a', '甲一', Date.UTC(2026, 10, 1)), listTopicRow('t-a2', 'list-a', '甲二', Date.UTC(2026, 10, 3))] },
+  { chatId: 'list-b', name: '列表乙', enabled: true, pendingCount: 0, backlogCount: 0, topics: [] },
+  { chatId: 'list-c', name: '列表丙', enabled: false, pendingCount: 0, backlogCount: 0, topics: [] },
+  { chatId: 'list-d', name: '列表丁', enabled: true, pendingCount: 0, backlogCount: 0, topics: [listTopicRow('t-d1', 'list-d', '丁一', Date.UTC(2026, 10, 2))] }
+]
+const listApi = (log, extra = {}) => groupTopicsApi(log, { 'groupTopics.overview': () => LIST_ROWS(), 'groupTopics.pendingCount': () => 0, ...extra })
+const topicRowEls = (view) => walk(view.container).filter((element) => hasClassName(element, 'topics-row'))
+const rowTitles = (view) => topicRowEls(view).map((row) => walk(row).find((element) => element.localName === 'strong').textContent)
+const headerTh = (view, label) => walk(view.container).find((element) => element.localName === 'th' && element.textContent.trim().startsWith(label))
+const headerButton = (view, label) => walk(headerTh(view, label)).find((element) => element.localName === 'button')
+const searchInput = (view) => walk(view.container).find((element) => element.localName === 'input' && element.getAttribute('aria-label') === '搜尋議題')
+const chatFilter = (view) => walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
+
+test('topic list: one row per topic with its chat name, newest first; columns 聊天室 / 議題 / 最後更新; groups without topics add no row and no sentence', async () => {
+  const log = []
+  const api = listApi(log)
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  try {
+    await until(() => topicRowEls(view).length === 3, { message: 'three topic rows' })
+    assert.deepEqual(rowTitles(view), ['甲二', '丁一', '甲一'], 'newest first by default')
+    assert.deepEqual(topicRowEls(view).map((row) => walk(row).find((element) => hasClassName(element, 'topics-col-chat')).textContent), ['列表甲', '列表丁', '列表甲'])
+    assert.deepEqual(['聊天室', '議題', '最後更新'].map((label) => headerTh(view, label) !== undefined), [true, true, true], 'the three columns')
+    assert.equal(headerTh(view, '最後更新').getAttribute('aria-sort'), 'descending')
+    assert.match(walk(topicRowEls(view)[0]).find((element) => hasClassName(element, 'topics-col-time')).textContent, /^\d\d\/\d\d \d\d:\d\d$/)
+    assert.equal(topicRowEls(view).some((row) => row.textContent.includes('列表乙')), false, 'a group with no topics has no row')
+    assert.equal(view.container.textContent.includes('此群已啟用'), false, 'no per-group sentence')
+    assert.equal(view.container.textContent.includes('尚無分析結果'), false, 'no per-group empty result line')
+    assert.ok(chatFilter(view).textContent.includes('列表丙'), 'the chat dropdown still offers every group')
+  } finally { view.unmount(); api.dispose() }
+})
+
+test('topic list sort: a header click sorts, the next click on the same header reverses, and aria-sort follows', async () => {
+  const log = []
+  const api = listApi(log)
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  try {
+    await until(() => topicRowEls(view).length === 3, { message: 'three topic rows' })
+    const newestFirst = rowTitles(view)
+    const sortedBy = (label) => headerTh(view, label).getAttribute('aria-sort')
+    reactProps(headerButton(view, '議題')).onClick()
+    await until(() => sortedBy('議題') === 'ascending', { message: 'first click on a text column is ascending' })
+    const ascending = rowTitles(view)
+    reactProps(headerButton(view, '議題')).onClick()
+    await until(() => sortedBy('議題') === 'descending', { message: 'second click reverses' })
+    await until(() => rowTitles(view).join() === [...ascending].reverse().join(), { message: 'descending is the reverse of ascending' })
+    assert.equal(sortedBy('最後更新'), 'none', 'the other columns are not sorted')
+    reactProps(headerButton(view, '最後更新')).onClick()
+    await until(() => sortedBy('最後更新') === 'descending', { message: 'a time column starts newest first' })
+    await until(() => rowTitles(view).join() === newestFirst.join(), { message: 'back to newest first' })
+  } finally { view.unmount(); api.dispose() }
+})
+
+test('topic list search: a keyword narrows the rows by title or chat name; no match shows one line; an empty box shows everything', async () => {
+  const log = []
+  const api = listApi(log)
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  try {
+    await until(() => topicRowEls(view).length === 3, { message: 'three topic rows' })
+    reactProps(searchInput(view)).onChange({ target: { value: '丁' } })
+    await until(() => rowTitles(view).join() === '丁一', { message: 'chat name keyword' })
+    reactProps(searchInput(view)).onChange({ target: { value: '甲' } })
+    await until(() => rowTitles(view).join() === '甲二,甲一', { message: 'title and chat name keyword' })
+    reactProps(searchInput(view)).onChange({ target: { value: '不存在的字' } })
+    await until(() => topicRowEls(view).length === 0 && view.container.textContent.includes('沒有符合的議題'), { message: 'no-match line' })
+    reactProps(searchInput(view)).onChange({ target: { value: '' } })
+    await until(() => topicRowEls(view).length === 3, { message: 'empty box shows everything' })
+  } finally { view.unmount(); api.dispose() }
+})
+
+test('topic list filter: the chat dropdown narrows the rows and shows that chat’s switch; 全部 brings every row back', async () => {
+  const log = []
+  const api = listApi(log)
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  try {
+    await until(() => topicRowEls(view).length === 3, { message: 'three topic rows' })
+    assert.equal(hasSwitch(view, '此群組的議題開關'), false, 'no chat switch while every chat is listed')
+    reactProps(chatFilter(view)).onChange({ target: { value: 'list-d' } })
+    await until(() => rowTitles(view).join() === '丁一' && hasSwitch(view, '此群組的議題開關'), { message: 'one chat filtered, its switch shown' })
+    reactProps(chatFilter(view)).onChange({ target: { value: '__all_groups__' } })
+    await until(() => topicRowEls(view).length === 3 && !hasSwitch(view, '此群組的議題開關'), { message: 'all chats again' })
+    assert.equal(log.filter((entry) => entry.path === 'groupTopics.overview').length, 1, 'filtering never re-reads the overview')
+  } finally { view.unmount(); api.dispose() }
+})
+
+test('topic list empty: with no topics at all there is one short line and no table, search box or chat dropdown', async () => {
+  const log = []
+  const api = listApi(log, { 'groupTopics.overview': () => LIST_ROWS().map((row) => ({ ...row, topics: [] })) })
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  try {
+    await until(() => view.container.textContent.includes('尚無議題'), { message: 'the empty line' })
+    assert.equal(walk(view.container).some((element) => element.localName === 'table'), false, 'no table')
+    assert.equal(searchInput(view), undefined, 'no search box')
+    assert.equal(chatFilter(view), undefined, 'no chat dropdown')
+    assert.equal(view.container.textContent.includes('此群已啟用'), false)
+  } finally { view.unmount(); api.dispose() }
+})
+
+/** An IntersectionObserver stand-in for the list's sentinel: `reach()` is "the user scrolled to the bottom". */
+function installSentinelStandIn() {
+  const observers = []
+  const previous = globalThis.IntersectionObserver
+  globalThis.IntersectionObserver = class {
+    constructor(callback) { this.callback = callback; this.targets = new Set(); observers.push(this) }
+    observe(target) { this.targets.add(target) }
+    unobserve(target) { this.targets.delete(target) }
+    disconnect() { this.targets.clear() }
+  }
+  return {
+    reach() {
+      for (const observer of observers) {
+        if (observer.targets.size > 0) observer.callback([...observer.targets].map((target) => ({ target, isIntersecting: true })))
+      }
+    },
+    restore() { if (previous === undefined) delete globalThis.IntersectionObserver; else globalThis.IntersectionObserver = previous }
+  }
+}
+
+test('topic list batching: 30 rows first, the next 30 when the sentinel is reached, and a sort change starts over at 30', async () => {
+  const many = Array.from({ length: 65 }, (_, index) => listTopicRow(`b-${index}`, 'list-a', `批次${String(index).padStart(2, '0')}`, Date.UTC(2026, 10, 1) + index * 1000))
+  const log = []
+  const sentinel = installSentinelStandIn()
+  const api = listApi(log, { 'groupTopics.overview': () => [{ ...LIST_ROWS()[0], topics: many }] })
+  dom.document.documentElement.dataset ??= {}
+  const view = ui.mount(ui.groupTopicsScene(api))
+  try {
+    await until(() => topicRowEls(view).length === 30, { message: 'the first batch of 30 rows' })
+    assert.ok(byAttr(view.container, 'data-testid', 'topics-sentinel'), 'the sentinel waits below the first batch')
+    sentinel.reach()
+    await until(() => topicRowEls(view).length === 60, { message: 'the second batch' })
+    sentinel.reach()
+    await until(() => topicRowEls(view).length === 65, { message: 'the last rows' })
+    assert.equal(byAttr(view.container, 'data-testid', 'topics-sentinel'), null, 'no sentinel once everything is drawn')
+    reactProps(headerButton(view, '議題')).onClick()
+    await until(() => topicRowEls(view).length === 30, { message: 'a sort change starts over at 30' })
+    assert.equal(rowTitles(view)[0], '批次00', 'the sorted list starts from the first row of the new order')
+  } finally { sentinel.restore(); view.unmount(); api.dispose() }
 })
 
 // ───────────── Phase 4: combined todo+topic wording and switch ─────────────
