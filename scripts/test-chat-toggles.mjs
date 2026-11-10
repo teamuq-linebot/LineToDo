@@ -12,7 +12,7 @@ import { TODO_BACKFILL_DAYS, chatTodoPrefsReady, ensureChatTodoPrefsSchema, isTo
 import { applyChatExtract, runOnce } from '../src/main/pipeline/runOnce.ts'
 import { reviewLastDays } from '../src/main/pipeline/backfill.ts'
 import { getPipelineDefaults } from '../src/main/config/defaults.ts'
-import { ensureGroupTopicsSchema, loadPendingMessages, setEnabled } from '../src/main/features/groupTopics/repository.ts'
+import { ensureGroupTopicsSchema, isEnabled, loadPendingMessages, setEnabled } from '../src/main/features/groupTopics/repository.ts'
 import { createGroupTopicsService } from '../src/main/features/groupTopics/service.ts'
 import { createTopicBackground } from '../src/main/features/groupTopics/background.ts'
 import { GROUP_TOPICS_PROMPT } from '../src/main/features/groupTopics/prompts/bundle.ts'
@@ -1089,7 +1089,7 @@ test('L9 fail-closed is intact: legacy blocked=1 chats still read as off before 
     assert.equal(isTodoExtractEnabled(db, 'old'), false)
     const snapshot = listChatPrefs(db)
     assert.deepEqual(snapshot.todoOff, ['old'])
-    assert.deepEqual(snapshot.topicsOn, [], 'blocked=1 never counts as topics on')
+    assert.deepEqual(snapshot.topicsOn, ['fine'], 'blocked=1 never counts as topics on; a group with no topic row and todo on does (做法 B)')
     setChatPinned(db, 'fine', true, NOW_MS)
     setChatIgnored(db, 'fine', true, { nowMs: NOW_MS })
     setChatHidden(db, 'fine', true, { nowMs: NOW_MS })
@@ -1164,8 +1164,8 @@ test('L10 listPrefs reads every flag in one call with the same meaning as the si
     setChatHidden(db, 'c', true, { nowMs: NOW_MS })
     setTodoExtractEnabled(db, 'd', false, NOW_MS)
     const snapshot = listChatPrefs(db)
-    assert.deepEqual(snapshot, { prefsReady: true, topicsAvailable: true, pinned: ['a'], hidden: ['c'], todoOff: ['b', 'c', 'd'], topicsOn: ['a'] })
-    for (const id of ['a', 'b', 'c', 'd', 'e']) assert.equal(snapshot.todoOff.includes(id), !isTodoExtractEnabled(db, id), id)
+    assert.deepEqual(snapshot, { prefsReady: true, topicsAvailable: true, pinned: ['a'], hidden: ['c'], todoOff: ['b', 'c', 'd'], topicsOn: ['a', 'e'] })
+    for (const id of ['a', 'b', 'c', 'd', 'e']) { assert.equal(snapshot.todoOff.includes(id), !isTodoExtractEnabled(db, id), id); assert.equal(snapshot.topicsOn.includes(id), isEnabled(db, id), 'topicsOn matches isEnabled: ' + id) }
     assert.deepEqual(listChatPrefs(db, { topics: false }), { ...snapshot, topicsAvailable: false, topicsOn: [] })
     const noTopics = listFixture({ topics: false })
     try {

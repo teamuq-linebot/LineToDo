@@ -7,6 +7,8 @@ import test from 'node:test'
 import { SCHEMA_DDL } from '../src/main/db/schema.ts'
 import { createGroupTopicsService, GROUP_TOPICS_OVERVIEW_BYTE_LIMIT, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT } from '../src/main/features/groupTopics/service.ts'
 import { ensureGroupTopicsSchema } from '../src/main/features/groupTopics/repository.ts'
+import { createTopicBackground } from '../src/main/features/groupTopics/background.ts'
+import { ensureChatTodoPrefsSchema, setTodoExtractEnabled } from '../src/main/db/chatTodoPrefs.repo.ts'
 import { ensureLineImportSchema } from '../src/main/db/lineImport.repo.ts'
 import { buildTopicSave, completedInputExists, countPendingMessages, GROUP_TOPICS_VALIDATOR_VERSION, loadMessages, loadPendingMessages, listTopics, saveAnalysis, selectTopicTargets, todoRefs } from '../src/main/features/groupTopics/repository.ts'
 import { COMBINED_BUNDLE_ENABLED, COMBINED_JSON_SCHEMA, COMBINED_PROMPT_HASH, COMBINED_PROMPT_VERSION, COMBINED_SCHEMA_HASH, COMBINED_SCHEMA_VERSION, COMBINED_TOPIC_SECTION, GROUP_TOPICS_BUNDLE_ENABLED, GROUP_TOPICS_JSON_SCHEMA, GROUP_TOPICS_PROMPT, GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_PROMPT_VERSION, GROUP_TOPICS_SCHEMA_HASH, GROUP_TOPICS_SCHEMA_VERSION } from '../src/main/features/groupTopics/prompts/bundle.ts'
@@ -67,6 +69,8 @@ const analysisA = {
 
 test('group topic analysis is opt-in, chat-local, fail-closed, and never writes executable TODO state', async () => {
   const db = dbFixture()
+  ensureChatTodoPrefsSchema(db)
+  setTodoExtractEnabled(db,'group-a',false)
   const service = createGroupTopicsService(db)
   let calls = 0
   const providerA = fakeProvider(analysisA, (req) => { calls++; assert.match(req.system,/ONE chat only/); assert.equal(JSON.parse(req.user).messages[0].msgId,'a1'); assert.equal(Object.hasOwn(JSON.parse(req.user).messages[0],'sender'),false); assert.equal(/participant_key|sender_mid|account_mid|_from/i.test(req.user),false) })
@@ -119,7 +123,7 @@ test('direct chat topics are opt-in, stay chat-local, retain todo references, an
   assert.equal(ownTopic.topics.length,1)
   assert.equal(ownTopic.topics[0].chatId,'dm')
   assert.deepEqual(service.todoRefs(ownTopic.topics[0].topicId),[{todoId:'todo-dm',status:'pending',bucket:'todo',matchedMsgIds:['d1']}])
-  assert.deepEqual(service.list('group-a'),{ok:false,topics:[]})
+  assert.deepEqual(service.list('group-a'),{ok:true,topics:[]})
   assert.equal(service.enableCrossChat,undefined)
   assert.equal(service.crossChatEnabled,undefined)
   assert.equal(service.listLinkCandidates,undefined)
@@ -797,7 +801,7 @@ test('overview that already fits is returned untouched (no compaction flag, full
 test('overview aggregates every group in one read: enabled flag, capped recent topics, pending counts; disabled groups carry no topics; direct chats are left out', async () => {
   const db = dbFixture()
   const service = createGroupTopicsService(db)
-  assert.deepEqual(service.overview().map((row) => [row.chatId, row.enabled, row.topics.length, row.pendingCount, row.backlogCount]).sort(), [['group-a', false, 0, 0, 0], ['group-b', false, 0, 0, 0]])
+  assert.deepEqual(service.overview().map((row) => [row.chatId, row.enabled, row.topics.length, row.pendingCount, row.backlogCount]).sort(), [['group-a', true, 0, 2, 2], ['group-b', true, 0, 1, 1]])
   service.enable('group-a', true)
   const before = service.overview().find((row) => row.chatId === 'group-a')
   assert.equal(before.enabled, true)
@@ -818,5 +822,84 @@ test('overview aggregates every group in one read: enabled flag, capped recent t
   assert.equal(capped.topics.length, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT, 'at most N recent topics per group')
   assert.equal(capped.topics[0].title, '大量議題39', 'newest first, same order as list')
   assert.equal(service.list('group-b').topics.length, 40, 'single-group list is not capped by the overview limit')
+  db.close()
+})
+
+function backgroundCandidates(db) {
+  const seen = []
+  let scheduled = null
+  const background = createTopicBackground({
+    db,
+    service: { pendingCount: (chatId) => { seen.push(chatId); return 0 }, analyze: async () => ({ ok: false, reason: 'unused' }) },
+    resolveProvider: () => null,
+    active: () => true,
+    setTimer: (fn) => { scheduled = fn; return () => {} },
+    config: { startDelayMs: 0 }
+  })
+  background.start()
+  scheduled()
+  background.stop()
+  return seen
+}
+
+test('default-on: a group with no topic row follows its todo switch (on: analyzed and combined); an explicit row 0 closes it', async () => {
+  const db = dbFixture()
+  ensureChatTodoPrefsSchema(db)
+  const service = createGroupTopicsService(db)
+  assert.equal(service.list('group-a').ok, true, 'no row and todo on: the topic switch is on')
+  assert.equal(service.overview().find((row) => row.chatId === 'group-a').enabled, true)
+  assert.equal(createGroupTopicsService(db, { isCombinedActive: () => true }).list('group-a').combined, true, 'the default-on group joins the combined pass')
+  let calls = 0
+  const provider = fakeProvider(analysisA, () => { calls++ })
+  assert.deepEqual(await service.analyze('group-a', () => provider), { ok: true, count: 2, analyzedCount: 2 })
+  assert.equal(calls, 1, 'the default-on group is sent to topic extraction')
+  db.prepare(`INSERT INTO todos(id,chat_id,bucket,title,source_msg_ids,created_at,updated_at)
+    VALUES('todo-a','group-a','todo','群甲既有待辦','["a1"]','now','now')`).run()
+  const launch = service.list('group-a').topics.find((topic) => topic.title === 'Project Orion launch meeting')
+  assert.deepEqual(service.todoRefs(launch.topicId), [{ todoId: 'todo-a', status: 'pending', bucket: 'todo', matchedMsgIds: ['a1'] }])
+  assert.deepEqual(backgroundCandidates(db), [], 'a todo-on group is never a topic-background candidate')
+  assert.equal(service.enable('group-a', false).ok, true)
+  assert.equal(service.list('group-a').ok, false, 'an explicit row 0 closes the group')
+  assert.deepEqual(await service.analyze('group-a', () => { throw new Error('closed group must not resolve a provider') }), { ok: false, reason: 'disabled' })
+  db.close()
+})
+
+test('default-on: a group with no topic row and its todo switch off stays closed and is not a topic-background candidate', async () => {
+  const db = dbFixture()
+  ensureChatTodoPrefsSchema(db)
+  setTodoExtractEnabled(db, 'group-a', false)
+  const service = createGroupTopicsService(db)
+  assert.equal(service.list('group-a').ok, false, 'no row and todo off: closed')
+  assert.equal(service.overview().find((row) => row.chatId === 'group-a').enabled, false)
+  assert.deepEqual(await service.analyze('group-a', () => { throw new Error('closed group must not resolve a provider') }), { ok: false, reason: 'disabled' })
+  assert.deepEqual(backgroundCandidates(db), [], 'no row and todo off is not a background candidate')
+  db.close()
+})
+
+test('default-on: an explicit row decides; row 1 opens a todo-off group as the only background candidate, row 0 closes it', () => {
+  const db = dbFixture()
+  ensureChatTodoPrefsSchema(db)
+  setTodoExtractEnabled(db, 'group-a', false)
+  setTodoExtractEnabled(db, 'group-b', false)
+  const service = createGroupTopicsService(db)
+  assert.equal(service.enable('group-a', true).ok, true)
+  assert.equal(service.enable('group-b', false).ok, true)
+  assert.equal(service.list('group-a').ok, true, 'row 1 opens the group whatever its todo switch says')
+  assert.equal(service.list('group-b').ok, false, 'row 0 closes the group')
+  assert.deepEqual(backgroundCandidates(db), ['group-a'], 'only the todo-off group with row 1 is a background candidate')
+  db.close()
+})
+
+test('default-on: blocked groups and direct chats without a row stay closed; a direct chat with an explicit row is unchanged', async () => {
+  const db = dbFixture()
+  ensureChatTodoPrefsSchema(db)
+  db.prepare("UPDATE chats SET blocked=1 WHERE chat_id='group-b'").run()
+  const service = createGroupTopicsService(db)
+  assert.equal(service.list('group-b').ok, false, 'blocked group: closed even with no row and todo on')
+  assert.deepEqual(await service.analyze('group-b', () => { throw new Error('blocked group must not resolve a provider') }), { ok: false, reason: 'disabled' })
+  assert.equal(service.list('dm').ok, false, 'a direct chat without a row stays closed')
+  assert.deepEqual(await service.analyze('dm', () => { throw new Error('direct chat must not resolve a provider') }), { ok: false, reason: 'disabled' })
+  assert.equal(service.enable('dm', true).ok, true)
+  assert.equal(service.list('dm').ok, true, 'a direct chat with an explicit row 1 is opt-in as before')
   db.close()
 })

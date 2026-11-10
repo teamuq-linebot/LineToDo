@@ -267,9 +267,9 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
           return { ok: false, reason: 'disabled' }
         }
         if (!saved) {
-          const current=db.prepare(`SELECT p.enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?`).get(chatId) as {enabled:number|null}|undefined
+          const current=db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
           if(!current) return {ok:false,reason:'unsupported_chat'}
-          if(current.enabled!==1) return {ok:false,reason:'disabled'}
+          if(!isEnabled(db,chatId)) return {ok:false,reason:'disabled'}
           return { ok: true, count: listTopics(db, chatId).length, analyzedCount: 0 }
         }
         return { ok: true, count: listTopics(db, chatId).length, analyzedCount: messages.length }

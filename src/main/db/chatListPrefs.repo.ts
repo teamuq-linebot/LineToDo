@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import { applyTodoExtractEnabled, chatTodoPrefsReady } from './chatTodoPrefs.repo'
+import { isEnabled } from '../features/groupTopics/repository'
 import { runImmediateTransaction } from './sourceCache'
 
 /**
@@ -66,6 +67,12 @@ function ids(db: Database, sql: string): string[] {
   return (db.prepare(sql).all() as Array<{ chat_id: string }>).map((row) => row.chat_id)
 }
 
+/** 議題開啟的聊天室；判斷與 isEnabled 相同（無紀錄的群組依待辦開關），SQL 只做候選預篩。 */
+function topicsOnChats(db: Database): string[] {
+  return ids(db, 'SELECT c.chat_id FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.blocked=0 AND (c.is_group=1 OR p.enabled=1) ORDER BY c.chat_id')
+    .filter((chatId) => isEnabled(db, chatId))
+}
+
 export function listChatPrefs(db: Database, options: ChatListPrefsOptions = {}): ChatListPrefsSnapshot {
   const prefsReady = chatListPrefsReady(db)
   const topicsAvailable = options.topics !== false && tableExists(db, 'group_topic_preferences')
@@ -80,7 +87,7 @@ export function listChatPrefs(db: Database, options: ChatListPrefsOptions = {}):
     hidden: prefsReady ? ids(db, 'SELECT chat_id FROM chat_list_preferences WHERE hidden=1 ORDER BY chat_id') : [],
     todoOff: ids(db, todoOffSql),
     topicsOn: topicsAvailable
-      ? ids(db, 'SELECT p.chat_id FROM group_topic_preferences p WHERE p.enabled=1 AND NOT EXISTS (SELECT 1 FROM chats c WHERE c.chat_id=p.chat_id AND c.blocked=1) ORDER BY p.chat_id')
+      ? topicsOnChats(db)
       : []
   }
 }

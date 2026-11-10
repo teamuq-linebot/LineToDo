@@ -130,6 +130,7 @@ test('flag ON: only chats with topics enabled (groups and 1:1) get a topic key; 
 
   const disabled = scenario({ topicsEnabled: false })
   try {
+    setEnabled(disabled.db, disabled.chatId, false)
     await disabled.feed()
     const pulled = disabled.pull()
     assert.equal(pulled.payload.topic, undefined)
@@ -785,4 +786,15 @@ test('front-loaded assertions: a todo or topic candidate whose revision moved (i
       assert.equal(processedCount(s.db), 0)
     } finally { s.close() }
   }
+})
+
+test('default-on: a group with no topic row and its todo switch on joins the combined pass', async () => {
+  const s = scenario({ count: 3, topicsEnabled: false })
+  try {
+    await s.feed()
+    const pulled = s.pull()
+    assert.ok(pulled.payload.topic, 'no row and todo on: the combined call carries topic targets')
+    assert.ok(pulled.payload.topic.targetMsgIds.length > 0)
+    assert.ok(pulled.payload.topic.targetMsgIds.every((id) => s.ids.includes(id)))
+  } finally { s.close() }
 })
