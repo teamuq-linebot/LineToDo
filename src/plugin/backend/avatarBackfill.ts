@@ -170,7 +170,7 @@ export function createAvatarBackfill(options: AvatarBackfillOptions): AvatarBack
       setPhase(db, 'chats')
     }
     if (status.phase === 'chats') {
-      const todo = chatsWithoutAvatar(db, CHAT_BATCH)
+      const todo = chatsWithoutAvatar(db, CHAT_BATCH, wall())
       if (todo.length === 0) { setPhase(db, 'messages'); return false }
       let unreadable = false
       const tx = db.transaction(() => {

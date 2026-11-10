@@ -20,7 +20,8 @@ import { collectAvatarMeta, getAvatarMetadata, getLineImportBatch, getMessagesSi
 import { createNodeLineFsPort } from '../../src/main/line/engine/nodeLineFsPort.ts'
 import { avatarCacheKey, createAvatarCache } from '../../src/plugin/backend/avatarCache.ts'
 import { createLayeredAvatarReader } from '../../src/plugin/backend/avatarReader.ts'
-import { advanceLinkWatermark, ensureLineAvatarSchema, createSenderLinker, hasLinkGap } from '../../src/main/db/lineAvatar.repo.ts'
+import * as linedb from '../../src/main/line/engine/linedb.ts'
+import { AVATAR_BACKFILL_VERSION, AVATAR_NAME_ONLY_RETRY_MS, advanceLinkWatermark, ensureLineAvatarSchema, createSenderLinker, hasLinkGap } from '../../src/main/db/lineAvatar.repo.ts'
 import { ensureLineImportSchema } from '../../src/main/db/lineImport.repo.ts'
 import { createAvatarBackfill } from '../../src/plugin/backend/avatarBackfill.ts'
 import { LineSnapshotStore } from '../../src/main/line/engine/lineSnapshot.ts'
@@ -100,8 +101,8 @@ function makeLineDb(path, spec) {
     addChat.run(chat.id, 1)
     if (chat.id.startsWith('c')) addGroup.run(chat.id, chat.name ?? `room ${chat.id}`, chat.picture ?? null)
   }
-  const addContact = db.prepare('INSERT INTO _contact(_mid,_displayName,_picturePath) VALUES (?,?,?)')
-  for (const contact of spec.contacts) addContact.run(contact.mid, contact.name ?? `name ${contact.mid}`, contact.picture ?? null)
+  const addContact = db.prepare('INSERT INTO _contact(_mid,_displayName,_picturePath,_targetProfileDetail) VALUES (?,?,?,?)')
+  for (const contact of spec.contacts) addContact.run(contact.mid, contact.name ?? `name ${contact.mid}`, contact.picture ?? null, contact.detail ?? null)
   const add = db.prepare('INSERT INTO _message(_id,_chatId,_createdTime,_from,_text,_contentType,_contentMetadata,_contentInfo,_attribute) VALUES (?,?,?,?,?,0,NULL,NULL,0)')
   db.exec('BEGIN')
   let n = 0
@@ -420,19 +421,19 @@ test('A-5 partial miss: only what the local layer lacks goes to the fallback, wh
   } finally { db.close() }
 })
 
-test('A-5 hit rules: a locator or a name is a hit, an empty row confirmed within 24 h is a hit (known to have no picture), a stale empty row is a miss that the fallback refreshes', async () => {
+test('A-5 hit rules: a locator is a hit, a name-only row is a hit for one hour, an empty row confirmed within 24 h is a hit (known to have no picture), a stale name-only or empty row is a miss that the fallback refreshes', async () => {
   const db = appDbWith({ chats: ['c-a', 'c-b', 'c-c', 'c-d'] })
   try {
     const t = 1_800_000_000_000
     const put = (id, locator, name, at) => db.prepare('INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES (?,?,?,?,?)').run(id, locator ? 'profile' : null, locator, name, at)
     put('c-a', '/p/a', null, t - 100 * 3600 * 1000)
-    put('c-b', null, 'Name only', t - 100 * 3600 * 1000)
+    put('c-b', null, 'Name only', t - 30 * 60 * 1000)
     put('c-c', null, null, t - 23 * 3600 * 1000)
     put('c-d', null, null, t - 25 * 3600 * 1000)
     const fallback = counted((input) => ({ chats: Object.fromEntries(input.chatIds.map((id) => [id, src(id, '/p/refreshed', 'Refreshed')])), messages: {} }))
     const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, now: () => t })
     const answer = await reader.read({ chatIds: ['c-a', 'c-b', 'c-c', 'c-d'] })
-    assert.deepEqual(fallback.calls, [{ chatIds: ['c-d'] }], 'only the stale empty row went to the fallback')
+    assert.deepEqual(fallback.calls, [{ chatIds: ['c-d'] }], 'only the stale empty row went to the fallback (the fresh name-only row is a hit)')
     assert.equal(answer.chats['c-c'].locator, null)
     assert.equal(answer.chats['c-d'].locator, '/p/refreshed')
     assert.equal(db.prepare("SELECT locator FROM line_chat_avatar WHERE chat_id='c-d'").get().locator, '/p/refreshed', 'and the refresh was written back')
@@ -982,7 +983,7 @@ test('A-6 gap detection: a finished backfill starts over when the last import ba
     const upgraded = await rerun()
     assert.ok(upgraded.opens >= 1, 'a new algorithm version starts over')
     assert.equal(rowsOf(db, 'line_message_sender'), seeded.expected.length)
-    assert.equal(db.prepare("SELECT value FROM line_avatar_meta WHERE key='backfill_version'").get().value, '1')
+    assert.equal(db.prepare("SELECT value FROM line_avatar_meta WHERE key='backfill_version'").get().value, String(AVATAR_BACKFILL_VERSION))
   } finally { db.close(); s.cleanup() }
 })
 
@@ -1415,4 +1416,203 @@ test('chats phase: one chat the source cannot read does not block the others in 
     assert.deepEqual(records(), [['c-aaa-bad', '/p/bad'], ['c-room-0', '/p/room-0'], ['c-room-1', '/p/room-1']], 'a later burst retried the chat and read it for real')
     assert.equal(probe.opens, probe.cleanups)
   } finally { db.close(); s.cleanup() }
+})
+
+// ───────────── the `_targetProfileDetail.picturePath` source and re-reading name-only rows (fix/line-todo-avatar-tpd) ─────────────
+
+const PIC79 = `/${'a1B2c3D4e5'.repeat(7)}xyz_-Q7Z` // 1 + 70 + 7 + 1 = 79
+const PIC166 = `/${'f0e1d2c3b4'.repeat(8)}/${'a9b8c7d6e5'.repeat(8)}abc_` // 1 + 80 + 1 + 80 + 4 = 166
+const detailOf = (picturePath) => JSON.stringify({ profileName: 'x', pictureStatus: 'ok', picturePath })
+const HOUR = 60 * 60 * 1000
+
+test('profile source: a NULL _contact._picturePath falls back to _targetProfileDetail.picturePath (source profile); _picturePath still wins; bad JSON, a missing field or a non-string never throws and gives null', () => {
+  assert.equal(PIC79.length, 79)
+  assert.equal(PIC166.length, 166)
+  const spec = {
+    chats: [{ id: 'c-room-0' }, { id: 'u-peer-a' }, { id: 'u-peer-b' }],
+    contacts: [
+      { mid: 'u-null-detail166', picture: null, detail: detailOf(PIC166) },
+      { mid: 'u-null-detail79', picture: null, detail: detailOf(PIC79) },
+      { mid: 'u-both', picture: '/p/own-picture', detail: detailOf('/p/detail-picture') },
+      { mid: 'u-bad-json', picture: null, detail: '{not json' },
+      { mid: 'u-no-field', picture: null, detail: JSON.stringify({ profileName: 'only a name' }) },
+      { mid: 'u-empty-field', picture: null, detail: detailOf('   ') },
+      { mid: 'u-number-field', picture: null, detail: JSON.stringify({ picturePath: 12345 }) },
+      { mid: 'u-json-null', picture: null, detail: 'null' },
+      { mid: 'u-no-detail', picture: null, detail: null },
+      { mid: 'u-peer-a', name: 'Peer A', picture: null, detail: detailOf(PIC79) },
+      { mid: 'u-peer-b', name: 'Peer B', picture: '/p/peer-b', detail: detailOf('/p/ignored') }
+    ],
+    messages: []
+  }
+  const s = stage(spec)
+  try {
+    const con = openLineCon(s.src)
+    try {
+      const of = (mid) => linedb.senderAvatarSource(con, 'c-room-0', mid)
+      assert.deepEqual({ ...of('u-null-detail166') }, { identity: 'u-null-detail166', locator: PIC166, displayName: 'name u-null-detail166', source: 'profile' })
+      assert.deepEqual([of('u-null-detail79').locator, of('u-null-detail79').source], [PIC79, 'profile'])
+      assert.deepEqual([of('u-both').locator, of('u-both').source], ['/p/own-picture', 'profile'], '_picturePath has priority')
+      for (const mid of ['u-bad-json', 'u-no-field', 'u-empty-field', 'u-number-field', 'u-json-null', 'u-no-detail', 'u-unknown']) {
+        const got = of(mid)
+        assert.deepEqual([got.locator, got.source], [null, null], mid)
+      }
+      // a 1:1 chat takes the same path (chatAvatarSource -> profileSource)
+      const peerA = linedb.chatAvatarSource(con, 'u-peer-a')
+      assert.deepEqual([peerA.locator, peerA.source], [PIC79, 'profile'])
+      assert.equal(linedb.chatAvatarSource(con, 'u-peer-b').locator, '/p/peer-b')
+    } finally { con.close() }
+  } finally { s.cleanup() }
+})
+
+test('profile source: locators of the _picturePath shape (leading slash, 79 and 166 characters) taken from _targetProfileDetail pass the unchanged safeImageUrl — the avatar cache requests the profile CDN URL for them, exactly as for the same string read from _picturePath', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'avatar-safe-url-'))
+  try {
+    const fetchBefore = fetchCalls
+    const asked = []
+    const cache = createAvatarCache({ dataDir: root, fetchImpl: async (url) => { asked.push(url); throw new Error('offline') } })
+    const spec = {
+      chats: [{ id: 'c-room-0' }],
+      contacts: [
+        { mid: 'u-d79', picture: null, detail: detailOf(PIC79) }, { mid: 'u-d166', picture: null, detail: detailOf(PIC166) },
+        { mid: 'u-p79', picture: PIC79, detail: null }, { mid: 'u-p166', picture: PIC166, detail: null }
+      ],
+      messages: []
+    }
+    const s = stage(spec)
+    try {
+      const con = openLineCon(s.src)
+      try {
+        for (const mid of ['u-d79', 'u-d166', 'u-p79', 'u-p166']) {
+          const source = linedb.senderAvatarSource(con, 'c-room-0', mid)
+          await cache.get({ identity: mid, locator: source.locator })
+        }
+      } finally { con.close() }
+    } finally { s.cleanup() }
+    const url = (path) => `https://profile.line-scdn.net${path}`
+    assert.deepEqual(asked, [url(PIC79), url(PIC166), url(PIC79), url(PIC166)], 'safeImageUrl accepted all four (a rejected locator would never reach fetch)')
+    assert.equal(fetchCalls, fetchBefore, 'and the global fetch was never used')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('upgrade: name-only rows written by the old version are re-read without any new message — the version change reopens a finished backfill, senders are filled from _targetProfileDetail, a 1:1 chat is re-read, a chat that really has no picture is stamped (so the round ends) and a chat that already has a picture is left alone', async () => {
+  assert.equal(AVATAR_NAME_ONLY_RETRY_MS, HOUR)
+  const spec = {
+    chats: [{ id: 'c-room-0', name: 'Room 0', picture: null }, { id: 'c-room-1', name: 'Room 1', picture: '/p/room-1' }, { id: 'u-peer' }],
+    contacts: [
+      { mid: 'u-sender-000', name: 'Garry', picture: null, detail: detailOf(PIC166) },
+      { mid: 'u-sender-001', name: 'Nobody', picture: null, detail: null },
+      { mid: 'u-peer', name: 'Peer', picture: null, detail: detailOf(PIC79) }
+    ],
+    messages: [{ chat: 'c-room-0', from: 'u-sender-000' }, { chat: 'c-room-0', from: 'u-sender-001' }]
+  }
+  const s = stage(spec)
+  const db = appDbWith({ chats: ['c-room-0', 'c-room-1', 'u-peer'], messages: [{ id: 'i:1000001', chat: 'c-room-0' }, { id: 'i:1000002', chat: 'c-room-0' }] })
+  try {
+    const old = Date.now() - 2 * HOUR
+    const putChat = db.prepare('INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES (?,?,?,?,?)')
+    putChat.run('c-room-0', null, null, 'Room 0', old)
+    putChat.run('c-room-1', 'profile', '/p/room-1', 'Room 1', old)
+    putChat.run('u-peer', null, null, 'Peer', old)
+    const putSender = db.prepare('INSERT INTO line_sender_profile(chat_id,sender_mid,source,locator,display_name,refreshed_at) VALUES (?,?,NULL,NULL,?,?)')
+    const garry = putSender.run('c-room-0', 'u-sender-000', 'Garry', old).lastInsertRowid
+    const nobody = putSender.run('c-room-0', 'u-sender-001', 'Nobody', old).lastInsertRowid
+    db.prepare('INSERT INTO line_message_sender(msg_id,sender_id) VALUES (?,?)').run('i:1000001', garry)
+    db.prepare('INSERT INTO line_message_sender(msg_id,sender_id) VALUES (?,?)').run('i:1000002', nobody)
+    // the state the previous version left behind: a finished backfill of algorithm version 1
+    for (const [k, v] of [['backfill_version', '1'], ['backfill_phase', 'done'], ['backfill_done_at', new Date(old).toISOString()]]) db.prepare('INSERT INTO line_avatar_meta(key,value) VALUES (?,?)').run(k, v)
+
+    const startedAt = Date.now()
+    const { backfill, probe } = backfillOver(s.src, db)
+    await runToDone(backfill)
+    await backfill.dispose()
+    assert.ok(probe.opens >= 1, 'the finished version-1 backfill was reopened by the version change')
+
+    const sender = (mid) => ({ ...db.prepare('SELECT source,locator,display_name,refreshed_at FROM line_sender_profile WHERE sender_mid=?').get(mid) })
+    assert.deepEqual({ ...sender('u-sender-000'), refreshed_at: 0 }, { source: 'profile', locator: PIC166, display_name: 'Garry', refreshed_at: 0 }, 'Garry now has the picture from _targetProfileDetail')
+    assert.equal(sender('u-sender-001').locator, null, 'a person who really has none stays without')
+    const chat = (id) => ({ ...db.prepare('SELECT source,locator,display_name,refreshed_at FROM line_chat_avatar WHERE chat_id=?').get(id) })
+    assert.deepEqual({ ...chat('u-peer'), refreshed_at: 0 }, { source: 'profile', locator: PIC79, display_name: 'Peer', refreshed_at: 0 }, 'the 1:1 chat was re-read')
+    assert.equal(chat('c-room-0').locator, null)
+    assert.ok(chat('c-room-0').refreshed_at >= startedAt, 'the chat without a picture was re-read and stamped now (that is why the chats phase ends instead of picking it up again)')
+    assert.equal(chat('c-room-1').refreshed_at, old, 'a chat that already has a picture is not touched')
+    assert.equal(db.prepare("SELECT value FROM line_avatar_meta WHERE key='backfill_version'").get().value, String(AVATAR_BACKFILL_VERSION))
+  } finally { db.close(); s.cleanup() }
+})
+
+test('upgrade without the backfill: a name-only row older than the cooldown is re-read the next time it is viewed and gets its picture — no new message needed', async () => {
+  const db = appDbWith({ chats: ['c-room-0', 'u-peer'], messages: [{ id: 'i:1' }] })
+  try {
+    const t = 1_800_000_000_000
+    db.prepare('INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES (?,?,?,?,?)').run('u-peer', null, null, 'Peer', t - 5 * HOUR)
+    const linker = createSenderLinker(db)
+    linker.link('i:1', 'c-room-0', linker.upsert('c-room-0', 'u-garry', src('u-garry', null, 'Garry'), t - 5 * HOUR))
+    const fallback = counted((input) => ({
+      accountMid: ME,
+      chats: Object.fromEntries(input.chatIds.map((id) => [id, src(id, PIC79, 'Peer')])),
+      messages: Object.fromEntries((input.msgIds ?? []).map((id) => [id, src('u-garry', PIC166, 'Garry')]))
+    }))
+    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, now: () => t })
+    const answer = await reader.read({ chatIds: ['u-peer'], chatId: 'c-room-0', msgIds: ['i:1'] })
+    assert.equal(fallback.calls.length, 1)
+    assert.equal(answer.chats['u-peer'].locator, PIC79)
+    assert.equal(answer.messages['i:1'].locator, PIC166)
+    assert.equal(db.prepare("SELECT locator FROM line_chat_avatar WHERE chat_id='u-peer'").get().locator, PIC79)
+    assert.equal(db.prepare("SELECT locator FROM line_sender_profile WHERE sender_mid='u-garry'").get().locator, PIC166)
+    await reader.read({ chatIds: ['u-peer'], chatId: 'c-room-0', msgIds: ['i:1'] })
+    assert.equal(fallback.calls.length, 1, 'then it is local')
+  } finally { db.close() }
+})
+
+test('cooldown (fake clock): a person without a picture is not looked up on every read — a name-only row is a hit for one hour, one lookup after that stamps it, and the next reads are local again; a stale row survives a failing lookup', async () => {
+  const db = appDbWith({ chats: ['c-room-0'], messages: [{ id: 'i:1' }, { id: 'i:2' }] })
+  try {
+    let t = 1_800_000_000_000
+    const linker = createSenderLinker(db)
+    linker.link('i:1', 'c-room-0', linker.upsert('c-room-0', 'u-nobody', src('u-nobody', null, 'Nobody'), t))
+    linker.link('i:2', 'c-room-0', linker.upsert('c-room-0', 'u-garry', src('u-garry', null, 'Garry'), t))
+    const stamp = () => db.prepare("SELECT refreshed_at AS at FROM line_sender_profile WHERE sender_mid='u-nobody'").get().at
+    let garryPicture = null
+    let failing = false
+    const fallback = counted((input) => {
+      if (failing) throw new Error('no snapshot')
+      const answer = { accountMid: ME, chats: {}, messages: {} }
+      for (const id of input.msgIds ?? []) answer.messages[id] = id === 'i:1' ? src('u-nobody', null, 'Nobody') : src('u-garry', garryPicture, 'Garry')
+      return answer
+    })
+    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, now: () => t })
+    const ask = () => reader.read({ chatId: 'c-room-0', msgIds: ['i:1', 'i:2'] })
+
+    for (let i = 0; i < 5; i += 1) await ask()
+    assert.equal(fallback.calls.length, 0, 'five reads inside the cooldown never open the LINE source')
+
+    t += HOUR - 1
+    await ask()
+    assert.equal(fallback.calls.length, 0, 'one millisecond before the hour is still local')
+
+    t += 2
+    failing = true
+    const kept = await ask()
+    assert.equal(fallback.calls.length, 1, 'past the hour both rows are asked once')
+    assert.equal(kept.messages['i:1'].displayName, 'Nobody', 'a failing lookup does not make the known name disappear')
+    assert.equal(kept.messages['i:1'].locator, null)
+    failing = false
+
+    t += 10 * 60 * 1000 + 1 // the in-memory negative cache (10 min) has expired
+    garryPicture = PIC166
+    const refreshed = await ask()
+    assert.equal(fallback.calls.length, 2)
+    assert.equal(refreshed.messages['i:2'].locator, PIC166)
+    assert.equal(db.prepare("SELECT locator FROM line_sender_profile WHERE sender_mid='u-garry'").get().locator, PIC166, 'the picture was written back')
+    assert.equal(stamp(), t, 'the person without a picture was stamped by that lookup')
+
+    for (let i = 0; i < 5; i += 1) await ask()
+    assert.equal(fallback.calls.length, 2, 'afterwards every read is local again — no lookup per prepareMessages')
+
+    t += HOUR + 1
+    await ask()
+    assert.equal(fallback.calls.length, 3, 'and the person without a picture is looked at again one hour later, once')
+    await ask()
+    assert.equal(fallback.calls.length, 3)
+  } finally { db.close() }
 })

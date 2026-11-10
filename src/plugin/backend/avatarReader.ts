@@ -54,18 +54,26 @@ export function createLayeredAvatarReader(options: LayeredAvatarReaderOptions): 
 
       const db = options.getDb()
       const ready = db !== null && isLineAvatarSchemaReady(db)
+      let stale: LocalAvatarResult['stale']
       if (ready) {
         try {
           const local = readLocalAvatars(db, request, now())
           Object.assign(result.chats, local.chats)
           Object.assign(result.messages, local.messages)
+          stale = local.stale
         } catch { /* 本地層讀不到：全部交給 fallback */ }
       }
       stat('local', Object.keys(result.chats).length + Object.keys(result.messages).length)
 
       const wantChats = chatIds.filter((id) => !(id in result.chats) && !isNegative(`c\0${id}`))
       const wantMsgs = chatId ? msgIds.filter((id) => !(id in result.messages) && !isNegative(`m\0${chatId}\0${id}`)) : []
-      if (wantChats.length === 0 && wantMsgs.length === 0) return result
+      // 只有名字的過期紀錄：問不到新的就沿用舊的（保住顯示名），不讓它消失。
+      const useStale = (): void => {
+        if (!stale) return
+        for (const id of chatIds) if (!(id in result.chats) && stale.chats[id]) result.chats[id] = stale.chats[id]
+        for (const id of msgIds) if (!(id in result.messages) && stale.messages[id]) result.messages[id] = stale.messages[id]
+      }
+      if (wantChats.length === 0 && wantMsgs.length === 0) { useStale(); return result }
 
       const fetched: LocalAvatarResult = { chats: {}, messages: {}, accountMid: null }
       try {
@@ -85,6 +93,7 @@ export function createLayeredAvatarReader(options: LayeredAvatarReaderOptions): 
       }
       Object.assign(result.chats, fetched.chats)
       Object.assign(result.messages, fetched.messages)
+      useStale()
       return result
     }
   }

@@ -15,10 +15,15 @@ import type { LineImportBatch } from '../line/importTypes'
  */
 
 export const LINE_AVATAR_SCHEMA_VERSION = 1
-/** 回填演算法的版本：升版會讓已完成的回填重新開始。 */
-export const AVATAR_BACKFILL_VERSION = 1
+/** 回填演算法的版本：升版會讓已完成的回填重新開始。2＝補上舊版留下的 name-only 列（發話者靠 fillOnly 補 locator、聊天室靠 chatsWithoutAvatar 重讀）。 */
+export const AVATAR_BACKFILL_VERSION = 2
 /** 兩個欄位都是空的紀錄（確定沒有頭像）在這段時間內算命中。 */
 export const AVATAR_EMPTY_FRESH_MS = 24 * 60 * 60 * 1000
+/**
+ * 只有名字、沒有照片的紀錄（locator 為空、display_name 有值）在這段時間內算命中；超過就當 miss，重新讀 LINE 來源。
+ * 重新讀了還是沒有照片時，refreshed_at 會被更新（見 upsert 的 WHERE），所以「真的沒照片」的人每小時最多重查一次，不是每次 prepareMessages。
+ */
+export const AVATAR_NAME_ONLY_RETRY_MS = 60 * 60 * 1000
 /** 資料沒變時，同一筆紀錄多久之後才再寫一次（只為了更新 refreshed_at）。 */
 const REFRESH_WRITE_MS = 6 * 60 * 60 * 1000
 const MAX_SENDER_MID = 128
@@ -97,6 +102,7 @@ export function upsertChatAvatar(db: Database, chatId: string, source: LineAvata
       refreshed_at = excluded.refreshed_at
     WHERE (excluded.locator IS NOT NULL AND excluded.locator IS NOT locator)
        OR (excluded.display_name IS NOT NULL AND excluded.display_name IS NOT display_name)
+       OR (locator IS NULL AND refreshed_at < excluded.refreshed_at - ${AVATAR_NAME_ONLY_RETRY_MS})
        OR refreshed_at < excluded.refreshed_at - ${REFRESH_WRITE_MS}`)
     .run({ chatId, source: source.source, locator: source.locator, name: source.displayName, now: nowMs }).changes > 0
 }
@@ -122,7 +128,8 @@ export function createSenderLinker(db: Database, options: { fillOnly?: boolean }
       locator = COALESCE(locator, excluded.locator),
       display_name = COALESCE(display_name, excluded.display_name),
       refreshed_at = excluded.refreshed_at
-    WHERE (locator IS NULL AND excluded.locator IS NOT NULL) OR (display_name IS NULL AND excluded.display_name IS NOT NULL)`
+    WHERE (locator IS NULL AND excluded.locator IS NOT NULL) OR (display_name IS NULL AND excluded.display_name IS NOT NULL)
+       OR (locator IS NULL AND refreshed_at < excluded.refreshed_at - ${AVATAR_NAME_ONLY_RETRY_MS})`
     : `DO UPDATE SET
       source = CASE WHEN excluded.locator IS NOT NULL THEN excluded.source ELSE source END,
       locator = COALESCE(excluded.locator, locator),
@@ -130,6 +137,7 @@ export function createSenderLinker(db: Database, options: { fillOnly?: boolean }
       refreshed_at = excluded.refreshed_at
     WHERE (excluded.locator IS NOT NULL AND excluded.locator IS NOT locator)
        OR (excluded.display_name IS NOT NULL AND excluded.display_name IS NOT display_name)
+       OR (locator IS NULL AND refreshed_at < excluded.refreshed_at - ${AVATAR_NAME_ONLY_RETRY_MS})
        OR refreshed_at < excluded.refreshed_at - ${REFRESH_WRITE_MS}`
   const upsertProfile = db.prepare(`INSERT INTO line_sender_profile(chat_id,sender_mid,source,locator,display_name,refreshed_at)
     SELECT @chatId,@mid,@source,@locator,@name,@now WHERE EXISTS (SELECT 1 FROM chats WHERE chat_id=@chatId)
@@ -199,26 +207,35 @@ export interface LocalAvatarResult {
   messages: Record<string, LineAvatarSource>
   /** fallback（LINE DB）回報的自己的 MID；只給 write-through 排除用，不離開 main process。沒有或 null＝未知，訊息不寫入。 */
   accountMid?: string | null
+  /** 只有名字、已超過重試時間的本地紀錄：這次當 miss 去問 fallback，fallback 也查不到時才退回用它（保住顯示名）。 */
+  stale?: { chats: Record<string, LineAvatarSource>; messages: Record<string, LineAvatarSource> }
 }
 
 interface AvatarRow { source: 'profile' | 'square' | null; locator: string | null; display_name: string | null; refreshed_at: number }
 
 const hasText = (value: string | null): boolean => typeof value === 'string' && value.trim().length > 0
 
-/** locator 或 display_name 有值就算命中；兩者都空、但 24 小時內確認過（確定沒有頭像）也算命中；其餘算 miss。 */
+/**
+ * 有 locator 就命中。沒有 locator 時：只有名字的紀錄在 AVATAR_NAME_ONLY_RETRY_MS 內算命中、超過算 miss（LINE 端可能後來才有照片）；
+ * 兩者都空的紀錄 24 小時內確認過（確定沒有頭像）算命中；其餘算 miss。
+ */
 function isHit(row: AvatarRow, nowMs: number): boolean {
-  return hasText(row.locator) || hasText(row.display_name) || nowMs - row.refreshed_at <= AVATAR_EMPTY_FRESH_MS
+  if (hasText(row.locator)) return true
+  return nowMs - row.refreshed_at <= (hasText(row.display_name) ? AVATAR_NAME_ONLY_RETRY_MS : AVATAR_EMPTY_FRESH_MS)
 }
 
 const placeholders = (n: number): string => Array.from({ length: n }, () => '?').join(',')
 
 export function readLocalAvatars(db: Database, input: { chatIds: readonly string[]; chatId: string | null; msgIds: readonly string[] }, nowMs: number): LocalAvatarResult {
   const result: LocalAvatarResult = { chats: {}, messages: {} }
+  const stale: NonNullable<LocalAvatarResult['stale']> = { chats: {}, messages: {} }
   if (input.chatIds.length > 0) {
     const rows = db.prepare(`SELECT chat_id,source,locator,display_name,refreshed_at FROM line_chat_avatar WHERE chat_id IN (${placeholders(input.chatIds.length)})`)
       .all(...input.chatIds) as Array<AvatarRow & { chat_id: string }>
     for (const row of rows) {
-      if (isHit(row, nowMs)) result.chats[row.chat_id] = { identity: row.chat_id, locator: row.locator, displayName: row.display_name, source: row.source }
+      const source: LineAvatarSource = { identity: row.chat_id, locator: row.locator, displayName: row.display_name, source: row.source }
+      if (isHit(row, nowMs)) result.chats[row.chat_id] = source
+      else if (hasText(row.display_name)) stale.chats[row.chat_id] = source
     }
   }
   if (input.chatId && input.msgIds.length > 0) {
@@ -227,9 +244,12 @@ export function readLocalAvatars(db: Database, input: { chatIds: readonly string
       WHERE ms.msg_id IN (${placeholders(input.msgIds.length)}) AND sp.chat_id=?`)
       .all(...input.msgIds, input.chatId) as Array<AvatarRow & { msg_id: string; sender_mid: string }>
     for (const row of rows) {
-      if (isHit(row, nowMs)) result.messages[row.msg_id] = { identity: row.sender_mid, locator: row.locator, displayName: row.display_name, source: row.source }
+      const source: LineAvatarSource = { identity: row.sender_mid, locator: row.locator, displayName: row.display_name, source: row.source }
+      if (isHit(row, nowMs)) result.messages[row.msg_id] = source
+      else if (hasText(row.display_name)) stale.messages[row.msg_id] = source
     }
   }
+  if (Object.keys(stale.chats).length > 0 || Object.keys(stale.messages).length > 0) result.stale = stale
   return result
 }
 
@@ -258,8 +278,9 @@ export function knownChatIds(db: Database): Set<string> {
   return new Set((db.prepare('SELECT chat_id FROM chats').all() as Array<{ chat_id: string }>).map((row) => row.chat_id))
 }
 
-export function chatsWithoutAvatar(db: Database, limit: number): string[] {
-  return (db.prepare(`SELECT c.chat_id AS chat_id FROM chats c WHERE NOT EXISTS (SELECT 1 FROM line_chat_avatar a WHERE a.chat_id=c.chat_id) LIMIT ?`).all(limit) as Array<{ chat_id: string }>).map((row) => row.chat_id)
+/** 還沒有頭像紀錄的聊天室，加上紀錄裡沒有 locator 且已超過重試時間的（舊版留下的 name-only 列）；重讀後 refreshed_at 會更新，所以不會重複回來。 */
+export function chatsWithoutAvatar(db: Database, limit: number, nowMs: number = Date.now()): string[] {
+  return (db.prepare(`SELECT c.chat_id AS chat_id FROM chats c WHERE NOT EXISTS (SELECT 1 FROM line_chat_avatar a WHERE a.chat_id=c.chat_id AND (a.locator IS NOT NULL OR a.refreshed_at >= ? - ${AVATAR_NAME_ONLY_RETRY_MS})) LIMIT ?`).all(nowMs, limit) as Array<{ chat_id: string }>).map((row) => row.chat_id)
 }
 
 /**
