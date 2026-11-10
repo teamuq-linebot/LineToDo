@@ -183,6 +183,47 @@ export function myMid(con: Db): string | null {
   return r ? r._mid : null
 }
 
+/** `_contact` 的欄位（原樣的欄位名）；contactLocator／contactName 只讀這幾個，缺欄位等同 NULL。 */
+export interface ContactFields {
+  _picturePath?: unknown
+  _targetProfileDetail?: unknown
+  _displayNameOverridden?: unknown
+  _displayName?: unknown
+}
+
+/** LINE leaves `_contact._picturePath` NULL for some people but keeps the same path in `_targetProfileDetail` (JSON). Bad JSON or a missing field is simply "no picture". */
+function detailPicturePath(detail: unknown): string | null {
+  if (typeof detail !== 'string' || !detail.trim()) return null
+  try {
+    const path = (JSON.parse(detail) as { picturePath?: unknown } | null)?.picturePath
+    return typeof path === 'string' && path.trim() ? path : null
+  } catch {
+    return null
+  }
+}
+
+/** 聯絡人頭像 locator：先取 `_picturePath`，空白就取 `_targetProfileDetail.picturePath`。純函式。 */
+export function contactLocator(row: ContactFields | null | undefined): string | null {
+  if (typeof row?._picturePath === 'string' && row._picturePath.trim()) return row._picturePath
+  return detailPicturePath(row?._targetProfileDetail)
+}
+
+/** 聯絡人顯示名：_displayNameOverridden → _displayName → _targetProfileDetail.profileName（壞 JSON 跳過）。純函式。 */
+export function contactName(row: ContactFields | null | undefined): string | null {
+  if (!row) return null
+  if (row._displayNameOverridden) return row._displayNameOverridden as string
+  if (row._displayName) return row._displayName as string
+  if (row._targetProfileDetail) {
+    try {
+      const pn = (JSON.parse(row._targetProfileDetail as string) as { profileName?: string }).profileName
+      if (pn) return pn
+    } catch {
+      // 壞 JSON -> 跳過（對齊 py except Exception: pass）
+    }
+  }
+  return null
+}
+
 /**
  * chatName — 把 chatId/mid 解成顯示名（1:1 / 群組 / community）。
  * 逐字對齊 linedb.py:65-92（`chat_name`）的解析順序與 fallback：
@@ -221,27 +262,8 @@ export function chatName(con: Db, chatId: string): string | null {
     .prepare(
       'SELECT _displayNameOverridden,_displayName,_targetProfileDetail FROM _contact WHERE _mid=?',
     )
-    .get(chatId) as
-    | {
-        _displayNameOverridden: string | null
-        _displayName: string | null
-        _targetProfileDetail: string | null
-      }
-    | undefined
-  if (ct) {
-    if (ct._displayNameOverridden) return ct._displayNameOverridden
-    if (ct._displayName) return ct._displayName
-    if (ct._targetProfileDetail) {
-      try {
-        const pn = (JSON.parse(ct._targetProfileDetail) as { profileName?: string })
-          .profileName
-        if (pn) return pn
-      } catch {
-        // 壞 JSON -> 跳過（對齊 py except Exception: pass）
-      }
-    }
-  }
-  return null
+    .get(chatId) as ContactFields | undefined
+  return ct ? contactName(ct) : null
 }
 
 /** Resolve a sender's Square display name in the context of the active Square chat. */
@@ -276,17 +298,6 @@ export interface LineAvatarSource {
 
 const SQUARE_OBS_HASH = /^0h[A-Za-z0-9_-]+$/u
 
-/** LINE leaves `_contact._picturePath` NULL for some people but keeps the same path in `_targetProfileDetail` (JSON). Bad JSON or a missing field is simply "no picture". */
-function detailPicturePath(detail: unknown): string | null {
-  if (typeof detail !== 'string' || !detail.trim()) return null
-  try {
-    const path = (JSON.parse(detail) as { picturePath?: unknown } | null)?.picturePath
-    return typeof path === 'string' && path.trim() ? path : null
-  } catch {
-    return null
-  }
-}
-
 function contactPicture(con: Db, identity: string): string | null {
   let row: { _picturePath?: string | null; _targetProfileDetail?: string | null } | undefined
   try {
@@ -298,8 +309,7 @@ function contactPicture(con: Db, identity: string): string | null {
       return null
     }
   }
-  if (typeof row?._picturePath === 'string' && row._picturePath.trim()) return row._picturePath
-  return detailPicturePath(row?._targetProfileDetail)
+  return contactLocator(row)
 }
 
 function profileSource(con: Db, identity: string): LineAvatarSource {
