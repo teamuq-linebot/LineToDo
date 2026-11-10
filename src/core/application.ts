@@ -22,7 +22,7 @@ import { draftReply } from '../main/llm/draftReply'
 import type { PipelineDefaults } from '../main/config/defaults'
 import type { QwenConfig } from '../main/config/qwen'
 import { reviewLastDays, backfillMediaKeys } from '../main/pipeline/backfill'
-import { refreshChatLastDays, type ChatRefreshResult } from '../main/pipeline/chatRefresh'
+import { refreshChatLastDays, topicRefreshOutcome, type ChatRefreshResult } from '../main/pipeline/chatRefresh'
 import type { ChatExtractInput } from '../main/pipeline/runOnce'
 import type { ExtractResult } from '../main/llm/schema'
 import { deriveMsgId } from '../main/db/schema'
@@ -68,6 +68,8 @@ export interface LineTodoApplicationPorts {
   makeExtract(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null
   /** 「重新整理最近 N 天」專用的抽取函式（外掛：直接用 ExtractQueue，不經回顧帳本）；省略＝沿用 makeExtract。 */
   makeRefreshExtract?(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null
+  /** 「重新整理最近 N 天」開始前的 AI 就緒檢查（外掛：向 host 重新確認）；省略＝視為就緒。 */
+  refreshReady?(): Promise<boolean>
   media: {
     open(msgId: string, db: Database): Promise<{ ok: boolean; error?: string }>
     saveAs(msgId: string, db: Database): Promise<{ ok: boolean; canceled?: boolean; error?: string }>
@@ -482,11 +484,9 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
           identityAttemptManagedByQueue: (refreshExtract as ((input: ChatExtractInput) => Promise<ExtractResult>) & { identityAttemptManagedByQueue?: boolean } | null)?.identityAttemptManagedByQueue === true,
           correctionsForChat: (id) => repos.notMine.corrections(id),
           onCorrectionsPayloadBuilt: (id, messageIds, rules) => rules.forEach((rule) => repos.notMine.effect(rule, id, messageIds, 'reviewLastDays')),
+          aiReady: ports.refreshReady,
           topicRefresh: groupTopicsService
-            ? async (id, sinceMs) => {
-              const r = await groupTopicsService!.refreshWindow(id, sinceMs, () => ports.providers.resolveProvider())
-              return { ok: r.ok, reason: r.reason ?? r.failure?.code, analyzedCount: r.analyzedCount, batches: r.batches }
-            }
+            ? async (id, sinceMs) => topicRefreshOutcome(await groupTopicsService!.refreshWindow(id, sinceMs, () => ports.providers.resolveProvider()))
             : undefined
         })
       },

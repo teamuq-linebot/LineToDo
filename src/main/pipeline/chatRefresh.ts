@@ -55,14 +55,17 @@ export interface ChatRefreshDeps {
   onCorrectionsPayloadBuilt?: (chatId: string, messageIds: string[], rules: Array<{ id: string; revision: number; condition: string; effect: string }>) => void
   /** 議題重新分析；省略＝議題不參與（等同議題關閉）。 */
   topicRefresh?: (chatId: string, sinceMs: number) => Promise<TopicRefreshOutcome>
+  /** host AI 是否就緒（未安裝、未登入、模型無法載入都是 false）；省略＝視為就緒。false 時不送任何請求，直接回 ai_unavailable。 */
+  aiReady?: () => Promise<boolean>
 }
 
 export interface ChatRefreshResult {
   ok: boolean
-  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'no_ai'
+  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'ai_unavailable'
   days: number | null
   sinceMs: number | null
-  todo: { ran: boolean; messages: number; aiCalls: number; todosCreated: number; todosMerged: number; todosResolvedDone: number; failed: boolean }
+  /** failed 時 reason 是底層失敗原因碼（如 extract_await_timeout、transport），不再吞掉。 */
+  todo: { ran: boolean; messages: number; aiCalls: number; todosCreated: number; todosMerged: number; todosResolvedDone: number; failed: boolean; reason?: string }
   topics: { ran: boolean; aiCalls: number; analyzed: number; batches: number; failed: boolean; reason?: string }
 }
 
@@ -92,6 +95,24 @@ function sliceByDay(msgs: MessageDTO[], sinceMs: number): MessageDTO[][] {
 }
 
 type TodoLeg = ChatRefreshResult['todo']
+
+const REASON_CODE = /^[a-z0-9_]{2,40}$/
+
+/** 失敗原因碼：優先取錯誤的 `.code`（AiPortError、host 錯誤），否則取 Error 訊息（佇列的 extract_await_timeout 等）；都不是短代碼時 'unknown'。 */
+function failureReason(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code
+  if (typeof code === 'string' && REASON_CODE.test(code)) return code
+  const message = error instanceof Error ? error.message : ''
+  return REASON_CODE.test(message) ? message : 'unknown'
+}
+
+/**
+ * groupTopics 的 refreshWindow 結果 → TopicRefreshOutcome。第一批失敗時外層 reason 是 `analysis_failed`，
+ * 真正原因在 failure.code（如 transport），所以優先取 failure.code。
+ */
+export function topicRefreshOutcome(r: { ok: boolean; reason?: string; failure?: { code: string }; analyzedCount: number; batches: number }): TopicRefreshOutcome {
+  return { ok: r.ok, reason: r.failure?.code ?? r.reason, analyzedCount: r.analyzedCount, batches: r.batches }
+}
 
 async function refreshTodos(chatId: string, sinceMs: number, nowMs: number, deps: ChatRefreshDeps, cfg: PipelineDefaults): Promise<TodoLeg> {
   const db = deps.db
@@ -148,15 +169,16 @@ async function refreshTodos(chatId: string, sinceMs: number, nowMs: number, deps
       leg.todosMerged += tally.todosMerged
       leg.todosResolvedDone += tally.todosResolvedDone
     }
-  } catch {
+  } catch (error) {
     leg.failed = true
+    leg.reason = failureReason(error)
   }
   return leg
 }
 
 /**
  * 重新整理一個聊天室最近 N 天。N 不合法 → invalid_days；聊天室不存在 → unsupported_chat；
- * 待辦與議題都關 → disabled；只有 AI 缺席且待辦是唯一要跑的部分 → no_ai。
+ * 待辦與議題都關 → disabled；AI 未就緒（或沒有抽取函式）→ ai_unavailable，不送任何請求、不進佇列等待。
  */
 export async function refreshChatLastDays(chatId: string, days: unknown, deps: ChatRefreshDeps): Promise<ChatRefreshResult> {
   const parsed = parseChatRefreshDays(days)
@@ -168,19 +190,14 @@ export async function refreshChatLastDays(chatId: string, days: unknown, deps: C
   const todoOn = isTodoExtractEnabled(db, chatId)
   const topicsOn = !!deps.topicRefresh && isTopicsEnabled(db, chatId)
   if (!todoOn && !topicsOn) return emptyResult(parsed, sinceMs, 'disabled')
+  if (!deps.extractFn || !(deps.aiReady ? await deps.aiReady().catch(() => false) : true)) return emptyResult(parsed, sinceMs, 'ai_unavailable')
   const cfg = deps.config ?? getPipelineDefaults()
 
   const result = emptyResult(parsed, sinceMs)
   let ok = true
   if (todoOn) {
-    if (!deps.extractFn) {
-      result.todo = { ...result.todo, ran: true, failed: true }
-      ok = false
-      result.reason = 'no_ai'
-    } else {
-      result.todo = await refreshTodos(chatId, sinceMs, nowMs, deps, cfg)
-      if (result.todo.failed) ok = false
-    }
+    result.todo = await refreshTodos(chatId, sinceMs, nowMs, deps, cfg)
+    if (result.todo.failed) ok = false
   }
   if (topicsOn) {
     const outcome = await deps.topicRefresh!(chatId, sinceMs)

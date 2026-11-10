@@ -13,7 +13,8 @@ import { ensureGroupTopicsSchema, setEnabled } from '../../src/main/features/gro
 import { createGroupTopicsService } from '../../src/main/features/groupTopics/service.ts'
 import { getPipelineDefaults } from '../../src/main/config/defaults.ts'
 import { applyChatExtract } from '../../src/main/pipeline/runOnce.ts'
-import { parseChatRefreshDays, refreshChatLastDays } from '../../src/main/pipeline/chatRefresh.ts'
+import { parseChatRefreshDays, refreshChatLastDays, topicRefreshOutcome } from '../../src/main/pipeline/chatRefresh.ts'
+import { refreshFailureText } from '../../src/renderer/features/chatRefresh/refreshFailure.ts'
 
 const DAY = 24 * 60 * 60 * 1000
 const NOW = Date.UTC(2026, 10, 10, 3, 0, 0)
@@ -306,6 +307,83 @@ test('守護：一般抽取路徑（refreshOnly 未設）時，update_existing �
   assert.equal(after.title, '一般路徑新標題', '一般路徑仍覆寫標題')
   assert.equal(after.priority, 3, '一般路徑仍覆寫優先級')
   assert.equal(after.status, 'pending')
+})
+
+// ───────── 失敗原因保留（AI 未就緒、佇列逾時、議題 transport）─────────
+
+test('AI 尚未就緒：立刻回 ai_unavailable，不送任何抽取請求、也不跑議題', async () => {
+  const db = open()
+  insertMessages([raw('a1', 'A', NOW - DAY)], db)
+  setTodoExtractEnabled(db, 'A', true)
+  ensureGroupTopicsSchema(db)
+  setEnabled(db, 'A', true)
+  const rec = recorder()
+  const topicCalls = []
+  const topicRefresh = async (chatId, sinceMs) => { topicCalls.push({ chatId, sinceMs }); return { ok: true, analyzedCount: 1, batches: 1 } }
+  const result = await refreshChatLastDays('A', 7, { db, nowFn: () => NOW, extractFn: rec.fn, topicRefresh, aiReady: async () => false })
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'ai_unavailable')
+  assert.equal(rec.calls.length, 0, '沒有任何佇列 request（不進入佇列等待）')
+  assert.equal(topicCalls.length, 0)
+  assert.equal(result.todo.ran, false)
+  assert.equal(result.topics.ran, false)
+})
+
+test('待辦段在佇列等待逾時：extract_await_timeout 保留在結果裡，不被吞掉', async () => {
+  const db = open()
+  insertMessages([raw('a1', 'A', NOW - DAY)], db)
+  setTodoExtractEnabled(db, 'A', true)
+  const result = await refreshChatLastDays('A', 7, { db, nowFn: () => NOW, aiReady: async () => true, extractFn: async () => { throw new Error('extract_await_timeout') } })
+  assert.equal(result.ok, false)
+  assert.equal(result.todo.failed, true)
+  assert.equal(result.todo.reason, 'extract_await_timeout')
+})
+
+test('議題段第一批 transport 失敗：原因保留在 topics.reason，且只呼叫一次（第一批失敗就停）', async () => {
+  const db = open()
+  ensureGroupTopicsSchema(db)
+  insertMessages([raw('t1', 'A', NOW - DAY, '議題訊息')], db)
+  setEnabled(db, 'A', true)
+  const topicCalls = []
+  const topicRefresh = async (chatId) => { topicCalls.push(chatId); return { ok: false, reason: 'transport', analyzedCount: 0, batches: 1 } }
+  const result = await refreshChatLastDays('A', 7, { db, nowFn: () => NOW, extractFn: recorder().fn, topicRefresh, aiReady: async () => true })
+  assert.equal(result.ok, false)
+  assert.equal(result.topics.failed, true)
+  assert.equal(result.topics.reason, 'transport')
+  assert.equal(topicCalls.length, 1)
+})
+
+test('議題第一批失敗：外層 reason 是 analysis_failed，底層 failure.code（transport）優先保留', () => {
+  const failed = { ok: false, reason: 'analysis_failed', failure: { stage: 'provider_complete', path: null, code: 'transport' }, analyzedCount: 0, batches: 1 }
+  assert.deepEqual(topicRefreshOutcome(failed), { ok: false, reason: 'transport', analyzedCount: 0, batches: 1 })
+  assert.deepEqual(topicRefreshOutcome({ ok: false, reason: 'disabled', analyzedCount: 0, batches: 0 }), { ok: false, reason: 'disabled', analyzedCount: 0, batches: 0 })
+  assert.deepEqual(topicRefreshOutcome({ ok: true, count: 3, analyzedCount: 20, batches: 1 }), { ok: true, reason: undefined, analyzedCount: 20, batches: 1 })
+})
+
+test('畫面短字：AI 無法使用類 → 「AI 無法使用」；限流 → 「AI 忙碌中，稍後再試」；其他沿用現有短字', () => {
+  const todoFail = (reason) => ({ reason: undefined, todo: { failed: true, reason }, topics: { failed: false } })
+  const topicFail = (reason) => ({ reason: undefined, todo: { failed: false }, topics: { failed: true, reason } })
+  for (const reason of ['transport', 'plugin_host_unavailable', 'timeout', 'extract_await_timeout']) {
+    assert.equal(refreshFailureText(todoFail(reason)), 'AI 無法使用', `todo ${reason}`)
+    assert.equal(refreshFailureText(topicFail(reason)), 'AI 無法使用', `topics ${reason}`)
+  }
+  assert.equal(refreshFailureText({ reason: 'ai_unavailable', todo: { failed: false }, topics: { failed: false } }), 'AI 無法使用')
+  assert.equal(refreshFailureText(todoFail('rate_limited')), 'AI 忙碌中，稍後再試')
+  assert.equal(refreshFailureText(topicFail('rate_limited')), 'AI 忙碌中，稍後再試')
+  assert.equal(refreshFailureText(todoFail('todo_identity_index_building')), '部分重新整理失敗，請稍後再試')
+  assert.equal(refreshFailureText({ reason: 'invalid_days', todo: { failed: false }, topics: { failed: false } }), '重新整理失敗，請稍後再試')
+  assert.equal(refreshFailureText({ reason: 'disabled', todo: { failed: false }, topics: { failed: false } }), '待辦與議題都已關閉')
+  assert.equal(refreshFailureText({ reason: 'unsupported_chat', todo: { failed: false }, topics: { failed: false } }), '找不到這個聊天室')
+})
+
+test('端到端：AI 就緒但議題 transport 失敗，UI 短字是「AI 無法使用」（經 topicRefreshOutcome 與 refreshChatLastDays）', async () => {
+  const db = open()
+  ensureGroupTopicsSchema(db)
+  insertMessages([raw('t1', 'A', NOW - DAY, '議題訊息')], db)
+  setEnabled(db, 'A', true)
+  const failed = { ok: false, reason: 'analysis_failed', failure: { stage: 'provider_complete', path: null, code: 'transport' }, analyzedCount: 0, batches: 1 }
+  const result = await refreshChatLastDays('A', 7, { db, nowFn: () => NOW, extractFn: recorder().fn, aiReady: async () => true, topicRefresh: async () => topicRefreshOutcome(failed) })
+  assert.equal(refreshFailureText(result), 'AI 無法使用')
 })
 
 function rowsOpen(db, chatId) {

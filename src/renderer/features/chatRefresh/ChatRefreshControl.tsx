@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useLineTodoApi } from '../../platform/LineTodoApi'
+import { refreshFailureText } from './refreshFailure'
 
 const REFRESH_DAYS_MIN = 1
 const REFRESH_DAYS_MAX = 365
@@ -37,7 +38,7 @@ export function ChatRefreshControl({ chatId, todoOn, topicsOn }: Props): JSX.Ele
     setError('')
     try {
       const result = await lineTodoApi.pipeline.refreshChat(chatId, days)
-      if (!result.ok) setError(refreshFailureText(result.reason, result.todo.failed || result.topics.failed))
+      if (!result.ok) setError(refreshFailureText(result))
     } catch {
       setError('重新整理失敗，請稍後再試')
     } finally {
@@ -66,11 +67,4 @@ export function ChatRefreshControl({ chatId, todoOn, topicsOn }: Props): JSX.Ele
       {error && <p className="group-topics-error" role="alert">{error}</p>}
     </div>
   )
-}
-
-function refreshFailureText(reason: string | undefined, partial: boolean): string {
-  if (reason === 'disabled') return '待辦與議題都已關閉'
-  if (reason === 'no_ai') return 'AI 尚未就緒，請稍後再試'
-  if (reason === 'unsupported_chat') return '找不到這個聊天室'
-  return partial ? '部分重新整理失敗，請稍後再試' : '重新整理失敗，請稍後再試'
 }

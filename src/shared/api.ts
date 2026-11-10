@@ -211,10 +211,10 @@ export interface ReviewLastDaysResult {
 /** pipeline.refreshChat 結果（與 main/pipeline/chatRefresh.ts ChatRefreshResult 對齊）：只針對一個聊天室的「重新整理最近 N 天」。 */
 export interface ChatRefreshResultView {
   ok: boolean
-  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'no_ai'
+  reason?: 'invalid_days' | 'unsupported_chat' | 'disabled' | 'ai_unavailable'
   days: number | null
   sinceMs: number | null
-  todo: { ran: boolean; messages: number; aiCalls: number; todosCreated: number; todosMerged: number; todosResolvedDone: number; failed: boolean }
+  todo: { ran: boolean; messages: number; aiCalls: number; todosCreated: number; todosMerged: number; todosResolvedDone: number; failed: boolean; reason?: string }
   topics: { ran: boolean; aiCalls: number; analyzed: number; batches: number; failed: boolean; reason?: string }
 }
 
