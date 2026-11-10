@@ -276,20 +276,43 @@ export interface LineAvatarSource {
 
 const SQUARE_OBS_HASH = /^0h[A-Za-z0-9_-]+$/u
 
-function profileSource(con: Db, identity: string): LineAvatarSource {
-  for (const table of ['_contact', '_profile'] as const) {
+/** LINE leaves `_contact._picturePath` NULL for some people but keeps the same path in `_targetProfileDetail` (JSON). Bad JSON or a missing field is simply "no picture". */
+function detailPicturePath(detail: unknown): string | null {
+  if (typeof detail !== 'string' || !detail.trim()) return null
+  try {
+    const path = (JSON.parse(detail) as { picturePath?: unknown } | null)?.picturePath
+    return typeof path === 'string' && path.trim() ? path : null
+  } catch {
+    return null
+  }
+}
+
+function contactPicture(con: Db, identity: string): string | null {
+  let row: { _picturePath?: string | null; _targetProfileDetail?: string | null } | undefined
+  try {
+    row = con.prepare('SELECT _picturePath,_targetProfileDetail FROM _contact WHERE _mid=?').get(identity) as typeof row
+  } catch {
     try {
-      const row = table === '_contact'
-        ? con.prepare('SELECT _picturePath FROM _contact WHERE _mid=?').get(identity) as { _picturePath?: string | null } | undefined
-        : con.prepare('SELECT _picturePath FROM _profile WHERE _mid=?').get(identity) as { _picturePath?: string | null } | undefined
-      if (typeof row?._picturePath === 'string' && row._picturePath.trim()) {
-        return { identity, locator: row._picturePath, displayName: chatName(con, identity), source: 'profile' }
-      }
+      row = con.prepare('SELECT _picturePath FROM _contact WHERE _mid=?').get(identity) as typeof row
     } catch {
-      // Older schemas can omit one of these optional tables/columns.
+      return null
     }
   }
-  return { identity, locator: null, displayName: chatName(con, identity), source: null }
+  if (typeof row?._picturePath === 'string' && row._picturePath.trim()) return row._picturePath
+  return detailPicturePath(row?._targetProfileDetail)
+}
+
+function profileSource(con: Db, identity: string): LineAvatarSource {
+  let locator = contactPicture(con, identity)
+  if (!locator) {
+    try {
+      const row = con.prepare('SELECT _picturePath FROM _profile WHERE _mid=?').get(identity) as { _picturePath?: string | null } | undefined
+      if (typeof row?._picturePath === 'string' && row._picturePath.trim()) locator = row._picturePath
+    } catch {
+      // Older schemas can omit this optional table/column.
+    }
+  }
+  return { identity, locator, displayName: chatName(con, identity), source: locator ? 'profile' : null }
 }
 
 /** Read chat image metadata without changing or deriving the canonical chat id. */
