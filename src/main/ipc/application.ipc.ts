@@ -51,6 +51,7 @@ export function registerApplicationApiIpc(api: Api): () => void {
   handle('pipeline:loadStats', () => api.pipeline.loadStats())
   handle('pipeline:runOnce', () => api.pipeline.runOnce())
   handle('pipeline:reviewLastDays', (args) => api.pipeline.reviewLastDays(args?.days))
+  handle('pipeline:refreshChat', (args) => api.pipeline.refreshChat(args?.chatId, args?.days))
   handle('pipeline:backfillMediaKeys', (args) => api.pipeline.backfillMediaKeys(args?.days))
   handle('pipeline:setRunning', (args) => api.pipeline.setRunning(!!args?.running))
   handle('settings:testQwen', () => api.pipeline.testQwen())

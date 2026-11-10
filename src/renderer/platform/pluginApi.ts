@@ -366,6 +366,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       loadStats: () => call('pipeline.loadStats'),
       runOnce: () => call('pipeline.runOnce'),
       reviewLastDays: (days) => call('pipeline.reviewLastDays', days),
+      refreshChat: (chatId, days) => call('pipeline.refreshChat', chatId, days),
       backfillMediaKeys: (days) => call('pipeline.backfillMediaKeys', days),
       // G-05：回顧與補媒體金鑰由 backend 管理；畫面重新載入、Promise 斷掉（job_not_found）或 backend 重啟後用它查目前的狀態。
       longTaskStatus: () => call<LongTaskStatusView>('tasks.status'),

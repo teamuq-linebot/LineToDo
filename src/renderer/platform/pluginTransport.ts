@@ -280,7 +280,7 @@ export const STATUS_TIMEOUT_PATHS: ReadonlySet<string> = new Set(['line.status',
 /** backend 本來就會執行到 soft deadline（20 s）才回 `pending` 的路徑（AI 草擬／分析、回顧、補金鑰…）：走 core，但等待上限用 `longMs`。 */
 export const LONG_CALL_PATHS: ReadonlySet<string> = new Set([
   'db.todos.draftReply', 'db.todos.analyzeNotMine', 'groupTopics.analyze', 'settings.prompt.refine',
-  'pipeline.runOnce', 'pipeline.reviewLastDays', 'pipeline.backfillMediaKeys'
+  'pipeline.runOnce', 'pipeline.reviewLastDays', 'pipeline.refreshChat', 'pipeline.backfillMediaKeys'
 ])
 
 /** 路徑所屬的通道。`events.close` 走 core：它很短，不該排在還沒回來的長輪詢後面。 */

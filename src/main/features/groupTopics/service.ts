@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto'
 import { LlmProviderError, type LlmErrorCode, type LlmProvider } from '../../llm/provider/types'
 import { GROUP_TOPICS_BUNDLE_ENABLED, GROUP_TOPICS_JSON_SCHEMA, GROUP_TOPICS_PROMPT, GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_PROMPT_VERSION, GROUP_TOPICS_SCHEMA_HASH, GROUP_TOPICS_SCHEMA_VERSION } from './prompts/bundle'
 import { TopicAnalysisValidationError, validateTopicAnalysis, type TopicFailurePath, type TopicValidationReason } from './domain'
-import { completedInputExists, countBacklogMessages, countPendingMessages, GROUP_TOPICS_VALIDATOR_VERSION, isEnabled, listTopics, loadPendingMessages, loadTopicCandidates, recordFailure, saveAnalysis, setEnabled, todoRefs, type TopicFailureStage, type TopicProviderKind } from './repository'
+import { completedInputExists, countBacklogMessages, countPendingMessages, GROUP_TOPICS_VALIDATOR_VERSION, isEnabled, listTopics, loadPendingMessages, loadTopicCandidates, loadWindowMessages, recordFailure, saveAnalysis, setEnabled, todoRefs, type TopicFailureStage, type TopicProviderKind } from './repository'
+import type { TopicMessageInput } from './domain'
 import { getMessagesByChatAndIds } from '../../db/messages.repo'
 import { listChats } from '../../db/chats.repo'
 import { isTodoExtractEnabled } from '../../db/chatTodoPrefs.repo'
@@ -55,7 +56,10 @@ export interface GroupTopicsService {
   overview(): GroupTopicsOverviewRow[]
   pendingCount(chatId: string): number
   todoRefs(topicId: string): ReturnType<typeof todoRefs>
-  analyze(chatId: string, resolveProvider: () => LlmProvider | null): Promise<{ ok: boolean; reason?: string; failure?: {stage:TopicFailureStage;path:TopicFailurePath|null;code:LlmErrorCode|'invalid_json'|'persistence_failed'|TopicValidationReason}; count?: number; analyzedCount?: number }>
+  /** `refreshMessages`：重新整理用，直接分析這批訊息（不看既有 decision，也不跳過已完成的相同輸入；重複由 saveAnalysis 的 digest 擋下）。 */
+  analyze(chatId: string, resolveProvider: () => LlmProvider | null, opts?: { refreshMessages?: TopicMessageInput[] }): Promise<{ ok: boolean; reason?: string; failure?: {stage:TopicFailureStage;path:TopicFailurePath|null;code:LlmErrorCode|'invalid_json'|'persistence_failed'|TopicValidationReason}; count?: number; analyzedCount?: number }>
+  /** 重新整理：聊天室 sinceMs 之後的全部訊息，每 GROUP_TOPICS_BATCH_SIZE 則一批依序 analyze；遇到第一個失敗就停。 */
+  refreshWindow(chatId: string, sinceMs: number, resolveProvider: () => LlmProvider | null): Promise<{ ok: boolean; reason?: string; count?: number; analyzedCount: number; batches: number; failure?: {stage:TopicFailureStage;path:TopicFailurePath|null;code:LlmErrorCode|'invalid_json'|'persistence_failed'|TopicValidationReason} }>
 }
 
 export function requestSchemaForBatch(messages:Array<{msgId:string}>,candidates:IdentityCandidate[]): unknown {
@@ -143,7 +147,7 @@ export interface GroupTopicsServiceOptions {
 export function createGroupTopicsService(db: Database, options: GroupTopicsServiceOptions = {}): GroupTopicsService {
   const combinedActive = (chatId: string): boolean => options.isCombinedActive?.() === true && isTodoExtractEnabled(db, chatId)
   const analysisLocks = new Map<string, Promise<void>>()
-  return {
+  const service: GroupTopicsService = {
     enable(chatId, enabled) { return { ok: setEnabled(db, chatId, enabled) } },
     pendingCount(chatId) {
       const chat = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
@@ -166,7 +170,7 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
       return fitOverviewToBudget(rows, GROUP_TOPICS_OVERVIEW_BYTE_LIMIT)
     },
     todoRefs(topicId) { return todoRefs(db, topicId) },
-    async analyze(chatId, resolveProvider) {
+    async analyze(chatId, resolveProvider, opts = {}) {
       const previous = analysisLocks.get(chatId) ?? Promise.resolve()
       let release!: () => void
       const current = new Promise<void>((resolve) => { release = resolve })
@@ -177,9 +181,9 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
       const chat = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=?').get(chatId)
       if (!chat) return { ok: false, reason: 'unsupported_chat' }
       if (!isEnabled(db, chatId)) return { ok: false, reason: 'disabled' }
-      const messages = combinedActive(chatId)
+      const messages = opts.refreshMessages ?? (combinedActive(chatId)
         ? loadPendingMessages(db, chatId, GROUP_TOPICS_BATCH_SIZE, 100, { processedFilter: 'processed' })
-        : loadPendingMessages(db, chatId, GROUP_TOPICS_BATCH_SIZE, 100)
+        : loadPendingMessages(db, chatId, GROUP_TOPICS_BATCH_SIZE, 100))
       if (!messages.length) return { ok: true, count: listTopics(db, chatId).length, analyzedCount: 0 }
       if(!advanceIdentityIndex(db,chatId,'topic')) return {ok:false,reason:'identity_indexing'}
       const recalled=recallTopicIdentityCandidates(db,chatId,messages.map((message)=>message.text),messages.map((message)=>message.msgId))
@@ -201,7 +205,7 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
       const candidateRevisions=recalled.candidateRevisions.filter((candidate)=>candidateIds.has(candidate.entityId))
       const identitySnapshot=captureIdentitySnapshot(db,chatId,sourceRows,fitted.candidateTruncated,candidateRevisions)
       if(!identitySnapshot) return {ok:false,reason:'source_changed'}
-      if (completedInputExists(db, chatId, messages, versions)) return { ok: true, count: listTopics(db, chatId).length, analyzedCount: 0 }
+      if (!opts.refreshMessages && completedInputExists(db, chatId, messages, versions)) return { ok: true, count: listTopics(db, chatId).length, analyzedCount: 0 }
       const userPayload=fitted.user
       if (providerResolveFailed) {
         const failure={stage:'provider_resolve' as const,path:null,code:'invalid_config' as const,reason:'provider_unavailable',providerKind:'unknown' as const}
@@ -277,6 +281,19 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
         release()
         if (analysisLocks.get(chatId) === current) analysisLocks.delete(chatId)
       }
+    },
+    async refreshWindow(chatId, sinceMs, resolveProvider) {
+      const all = loadWindowMessages(db, chatId, sinceMs)
+      let analyzedCount = 0
+      let batches = 0
+      for (let offset = 0; offset < all.length; offset += GROUP_TOPICS_BATCH_SIZE) {
+        batches += 1
+        const result = await service.analyze(chatId, resolveProvider, { refreshMessages: all.slice(offset, offset + GROUP_TOPICS_BATCH_SIZE) })
+        if (!result.ok) return { ...result, analyzedCount, batches }
+        analyzedCount += result.analyzedCount ?? 0
+      }
+      return { ok: true, count: listTopics(db, chatId).length, analyzedCount, batches }
     }
   }
+  return service
 }
