@@ -32,6 +32,12 @@ export const DEFAULT_BLOCKLIST: BlocklistRules = {
   minTextLenForLLM: 2
 }
 
+/**
+ * AI 新待辦（outcome=new）的信心下限：confidence 低於此值就不建立新卡，這批訊息仍標為已處理。
+ * 併入或連結既有待辦（update_existing／link）不受此門檻影響。
+ */
+export const TODO_NEW_MIN_CONFIDENCE = 0.4
+
 export const DEFAULTS: PipelineDefaults = {
   pollIntervalSec: 30,
   concurrency: 2,

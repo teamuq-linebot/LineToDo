@@ -21,7 +21,7 @@ import {
 import { startRun, finishRun } from '../db/pipeline.repo'
 import type { LineBridge, LlmStatus } from '../db/pipeline.repo'
 import type { RawLineMessage } from '../line/types'
-import { getPipelineDefaults } from '../config/defaults'
+import { getPipelineDefaults, TODO_NEW_MIN_CONFIDENCE } from '../config/defaults'
 import type { PipelineDefaults } from '../config/defaults'
 import { resolveProvider } from '../llm/provider'
 import { extractTodos } from '../llm/extractor'
@@ -263,6 +263,8 @@ export function buildTodoApply(
       return times.length===evidenceIds.length&&times.every((ts)=>ts<=candidate.completionEventTs!)
     }
     const createNewTodo=(nt:ExtractResult['newTodos'][number],decision:IdentityDecision,candidateIds:string[],guard:string):void=>{
+      // 任何會新建卡的草稿（含 update_existing 被降級為新建）都受信心下限約束；不建卡時訊息仍由本體末尾 markProcessed 標為已處理。
+      if(nt.confidence<TODO_NEW_MIN_CONFIDENCE) return
       const created=createCanonicalTodo(nt)
       changedTodoIds.add(created.id)
       const canonicalId=created.id
@@ -319,6 +321,8 @@ export function buildTodoApply(
           result.todosMerged+=1;result.updatedIds.push(current.id)
         } else {
           if(decision.outcome==='link'&&!decision.candidateId) throw new Error('identity_link_target_missing')
+          // link 與非 R 系列的 new 也會新建卡（連到既有待辦），同樣受信心下限約束。
+          if(nt.confidence<TODO_NEW_MIN_CONFIDENCE) continue
           const created=createCanonicalTodo(nt)
           changedTodoIds.add(created.id)
           const canonicalId=created.id
@@ -348,14 +352,15 @@ export function buildTodoApply(
       const target=openTodos.find((todo)=>todo.id===r.todoId)
       if(!target||target.status==='suggested_done'||target.status==='done') continue
       const toDone=!(target.bucket==='schedule'&&isFuture(target.dueAt,now))
+      const completionIds=r.evidenceMsgIds ?? []
+      // 完成判定缺有效證據（空，或含本輪不存在的 msgId）：只略過這一筆，待辦維持原狀態、不寫完成紀錄；同輪其他結果照常寫入。
+      if(toDone&&(completionIds.length===0||completionIds.some((id)=>!eventTsById.has(id)))) continue
       const updated=resolveTodo(target.id,r.evidence,toDone,db)
       if(updated) {
         result.resolvedIds.push(target.id);resolvedIdsThisChat.add(target.id);changedTodoIds.add(target.id)
         if(toDone)result.todosResolvedDone+=1;else result.todosSuggestedDone+=1
         if(toDone) {
-          const completionIds=r.evidenceMsgIds ?? []
           const completionEventTs=Math.max(...completionIds.map((id)=>eventTsById.get(id)??0))
-          if(completionIds.length===0||completionIds.some((id)=>!eventTsById.has(id))) throw new Error('completion_source_evidence_missing')
           const decisionId=createDecisionRow(`complete_${target.id.slice(0,32)}`,'update_existing',{todoId:target.id,evidence:r.evidence,evidenceMsgIds:completionIds},[], 'same_completed_action',target.id)
           addSources(decisionId,completionIds);addEvent(decisionId,'resolved_existing',{todoId:target.id,completionEventTs})
           insertSourceHistory(target.id,completionIds)

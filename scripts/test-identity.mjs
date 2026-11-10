@@ -12,12 +12,13 @@ import { migrate } from '../src/main/db/migrate.ts'
 import { SCHEMA_VERSION, SOURCE_CACHE_DDL } from '../src/main/db/schema.ts'
 import { advanceIdentityIndex, beginIdentitySourceAttempt, recordIdentitySourceAttempt, captureIdentitySnapshot, explainIdentityCandidateQuery, listIdentityBackfillIssues, recallTodoIdentityCandidates, recallTopicIdentityCandidates, releaseIdentitySourceAttempt } from '../src/main/db/identity.repo.ts'
 import { ROLLING_SOURCE_SESSION_POLICY, configureSourceSessionPolicy, readChatSourceState } from '../src/main/db/sourceCache.ts'
-import { applyChatExtract, buildTodoApply } from '../src/main/pipeline/runOnce.ts'
+import { applyChatExtract, buildTodoApply, DEFAULT_TODO_IDENTITY_VERSIONS } from '../src/main/pipeline/runOnce.ts'
 import { runOnce } from '../src/main/pipeline/runOnce.ts'
+import { applyCombinedExtract } from '../src/main/pipeline/combinedApply.ts'
 import { reviewLastDays } from '../src/main/pipeline/backfill.ts'
 import { ExtractQueue } from '../src/plugin/backend/extractQueue.ts'
 import { ReviewCoordinator, ReviewLedger } from '../src/plugin/backend/reviewRun.ts'
-import { getPipelineDefaults } from '../src/main/config/defaults.ts'
+import { getPipelineDefaults, TODO_NEW_MIN_CONFIDENCE } from '../src/main/config/defaults.ts'
 import { buildTopicSave, ensureGroupTopicsSchema, GROUP_TOPICS_SCHEMA_VERSION, setEnabled } from '../src/main/features/groupTopics/repository.ts'
 import { createGroupTopicsService } from '../src/main/features/groupTopics/service.ts'
 import { EXTRACT_JSON_SCHEMA, validateExtractResult } from '../src/main/llm/schema.ts'
@@ -1009,3 +1010,129 @@ test('SourceSessionPolicy: identity attempts rotate the epoch at 64 requests by 
     }finally{opened.close()}
   }
 })
+
+// ── extract guard（A：缺證據的完成判定只跳過該筆；B：低信心新待辦不建立）────────
+// 外掛 outbox（applyChatExtract）與 combined（applyCombinedExtract）兩條路徑必須行為相同。
+const EXTRACT_PATHS = ['outbox', 'combined']
+function applyTodoExtractVia(path,db,chatId,msgId,work,extract){
+  if(path==='outbox') return runTodoApply(db,chatId,msgId,work,extract)
+  const tally={todosCreated:0,todosMerged:0,todosResolvedDone:0,todosSuggestedDone:0,createdIds:[],resolvedIds:[],updatedIds:[]}
+  applyCombinedExtract({db,cfg:getPipelineDefaults(),now:NOW,chatId,msgIds:[msgId],topic:null,todo:extract,tally,identityVersions:DEFAULT_TODO_IDENTITY_VERSIONS,identity:{
+    snapshot:work.snapshot,sourceLease:work.lease,candidates:work.recalled.candidates,candidatesTruncated:work.candidatesTruncated,
+    selectedMessageIds:[msgId],targetType:'todo',allowedTodoIds:work.openTodos.map((todo)=>todo.id)
+  }})
+  return tally
+}
+const countTodos=(db,chatId)=>db.prepare('SELECT COUNT(*) AS n FROM todos WHERE chat_id=?').get(chatId).n
+const processedOf=(db,msgId)=>db.prepare('SELECT processed FROM messages WHERE msg_id=?').get(msgId).processed
+
+test('extract guard threshold: the named constant is 0.4 in the defaults module',()=>{
+  assert.equal(TODO_NEW_MIN_CONFIDENCE,0.4)
+})
+
+test('extract guard validator: empty or unselected resolved evidence is dropped instead of thrown; a valid entry survives',()=>{
+  const context={candidates:[],candidatesTruncated:false,selectedMessageIds:['m1'],targetType:'todo',allowedTodoIds:['t1']}
+  const value=validateExtractResult({importance:'action',newTodos:[],identityDecisions:[],updates:[],resolved:[
+    {todoId:'t1',evidence:'empty list',evidenceMsgIds:[]},
+    {todoId:'t1',evidence:'unknown id',evidenceMsgIds:['ghost-msg']},
+    {todoId:'t1',evidence:'valid',evidenceMsgIds:['m1']}
+  ]},context)
+  assert.deepEqual(value.resolved.map((r)=>r.evidence),['valid'])
+})
+
+for (const path of EXTRACT_PATHS) {
+  test(`extract guard (A) ${path}: a completion without valid evidence skips only that item; the same-round new todo lands and the chat is not failed`,()=>{
+    const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+    try{
+      const first=addMessage(db,`ga-${path}-first`,1000,'alpha beta action one')
+      const canonical=applyTodoExtractVia(path,db,chatId,first,buildWork(db,chatId,[first]),newExtract(first,todoDecision(first,'ga-d1'))).createdIds[0]
+      assert.equal(db.prepare('SELECT status FROM todos WHERE id=?').get(canonical).status,'pending')
+      const cases=[{label:'empty evidenceMsgIds',ids:[]},{label:'evidence id not in this round',ids:['ghost-msg']}]
+      cases.forEach((c,index)=>{
+        const msg=addMessage(db,`ga-${path}-${index}`,2000+index*1000,`gamma delta other thing ${index}`)
+        const work=buildWork(db,chatId,[msg])
+        const extract={importance:'action',identityDecisions:[todoDecision(msg,`ga-new-${index}`)],updates:[],
+          newTodos:[todoDraft(msg,`ga-new-${index}`,{title:`同輪新待辦 ${index}`})],
+          resolved:[{todoId:canonical,evidence:'看起來已完成',evidenceMsgIds:c.ids}]}
+        const tally=applyTodoExtractVia(path,db,chatId,msg,work,extract)
+        assert.equal(tally.todosCreated,1,c.label)
+        assert.deepEqual(tally.resolvedIds,[],c.label)
+        assert.equal(db.prepare('SELECT status FROM todos WHERE id=?').get(canonical).status,'pending',c.label)
+        assert.equal(db.prepare("SELECT COUNT(*) AS n FROM todos WHERE chat_id=? AND title=?").get(chatId,`同輪新待辦 ${index}`).n,1,c.label)
+        assert.equal(processedOf(db,msg),1,c.label)
+      })
+    }finally{opened.db.close()}
+  })
+
+  test(`extract guard (B) ${path}: a new todo below 0.4 is not created but its messages are processed; exactly 0.4 is created`,()=>{
+    const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+    try{
+      const low=addMessage(db,`gb-${path}-low`,1000,'low confidence chatter')
+      const lowExtract={importance:'action',updates:[],resolved:[],identityDecisions:[todoDecision(low,'gb-low')],
+        newTodos:[todoDraft(low,'gb-low',{confidence:0.39})]}
+      const lowTally=applyTodoExtractVia(path,db,chatId,low,buildWork(db,chatId,[low]),lowExtract)
+      assert.equal(lowTally.todosCreated,0)
+      assert.deepEqual(lowTally.createdIds,[])
+      assert.equal(countTodos(db,chatId),0)
+      assert.equal(processedOf(db,low),1)
+
+      const edge=addMessage(db,`gb-${path}-edge`,2000,'edge confidence task')
+      const edgeExtract={importance:'action',updates:[],resolved:[],identityDecisions:[todoDecision(edge,'gb-edge')],
+        newTodos:[todoDraft(edge,'gb-edge',{confidence:0.4})]}
+      const edgeTally=applyTodoExtractVia(path,db,chatId,edge,buildWork(db,chatId,[edge]),edgeExtract)
+      assert.equal(edgeTally.todosCreated,1)
+      assert.equal(countTodos(db,chatId),1)
+      assert.equal(processedOf(db,edge),1)
+    }finally{opened.db.close()}
+  })
+
+  test(`extract guard (B) ${path}: a low-confidence update_existing hit still merges into the existing todo`,()=>{
+    const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+    try{
+      const first=addMessage(db,`gb2-${path}-first`,1000,'alpha beta action one')
+      const canonical=applyTodoExtractVia(path,db,chatId,first,buildWork(db,chatId,[first]),newExtract(first,todoDecision(first,'gb2-d1'))).createdIds[0]
+      const second=addMessage(db,`gb2-${path}-second`,2000,'alpha beta action follow up')
+      const work=buildWork(db,chatId,[second])
+      assert.ok(work.recalled.candidates.some((candidate)=>candidate.entityId===canonical))
+      const decision=todoDecision(second,'gb2-d2',{outcome:'update_existing',candidateType:'todo',candidateId:canonical,relationKind:null,reasonCode:'same_active_action'})
+      const extract=newExtract(second,decision,todoDraft(second,'gb2-d2',{title:'alpha beta action follow up revised',confidence:0.2}))
+      const tally=applyTodoExtractVia(path,db,chatId,second,work,extract)
+      assert.equal(tally.todosCreated,0)
+      assert.equal(tally.todosMerged,1)
+      assert.ok(tally.updatedIds.includes(canonical))
+      assert.equal(countTodos(db,chatId),1)
+      assert.equal(db.prepare('SELECT title FROM todos WHERE id=?').get(canonical).title,'alpha beta action follow up revised')
+      assert.equal(processedOf(db,second),1)
+    }finally{opened.db.close()}
+  })
+
+  test(`extract guard (B) ${path}: a low-confidence update_existing hit on a completed todo (downgraded to new) creates no card but processes the message; 0.4 creates it`,()=>{
+    const opened=openFixture();const db=opened.db;const chatId='identity-chat'
+    try{
+      const doneSource=addMessage(db,`gb3-${path}-done-source`,1000,'alpha beta report action')
+      const done=createTodo({chatId,bucket:'todo',status:'done',title:'Alpha beta report action',sourceMsgIds:[doneSource]},db)
+      drainIndex(db,chatId,'todo');drainIndex(db,chatId,'topic')
+      const hitDecision=(msgId,draftRef)=>todoDecision(msgId,draftRef,{outcome:'update_existing',candidateType:'todo',candidateId:done.id,relationKind:null,reasonCode:'same_active_action'})
+
+      const low=addMessage(db,`gb3-${path}-low`,2000,'alpha beta report action once more')
+      const lowWork=buildWork(db,chatId,[low])
+      assert.ok(lowWork.recalled.candidates.some((candidate)=>candidate.entityId===done.id))
+      const lowExtract=newExtract(low,hitDecision(low,'gb3-low'),todoDraft(low,'gb3-low',{title:'Alpha beta report action once more',confidence:0.39}))
+      const lowTally=applyTodoExtractVia(path,db,chatId,low,lowWork,lowExtract)
+      assert.equal(lowTally.todosCreated,0)
+      assert.deepEqual(lowTally.createdIds,[])
+      assert.equal(countTodos(db,chatId),1)
+      assert.equal(db.prepare('SELECT status FROM todos WHERE id=?').get(done.id).status,'done')
+      assert.equal(processedOf(db,low),1)
+
+      const edge=addMessage(db,`gb3-${path}-edge`,3000,'alpha beta report action again')
+      const edgeWork=buildWork(db,chatId,[edge])
+      assert.ok(edgeWork.recalled.candidates.some((candidate)=>candidate.entityId===done.id))
+      const edgeExtract=newExtract(edge,hitDecision(edge,'gb3-edge'),todoDraft(edge,'gb3-edge',{title:'Alpha beta report action again',confidence:0.4}))
+      const edgeTally=applyTodoExtractVia(path,db,chatId,edge,edgeWork,edgeExtract)
+      assert.equal(edgeTally.todosCreated,1)
+      assert.equal(countTodos(db,chatId),2)
+      assert.equal(processedOf(db,edge),1)
+    }finally{opened.db.close()}
+  })
+}

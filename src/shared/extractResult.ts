@@ -36,10 +36,11 @@ const NewTodoSchema = z.object({
   sourceMsgIds: z.array(z.string()).min(1)
 })
 
+// evidenceMsgIds 允許空陣列：空或不屬於本輪的完成證據不在這裡擲錯，由 validateExtractResult 過濾掉該筆（見那裡的註解）。
 const ResolvedSchema = z.object({
   todoId: z.string().min(1),
   evidence: z.string().min(1),
-  evidenceMsgIds: z.array(z.string().min(1)).min(1).max(20).optional()
+  evidenceMsgIds: z.array(z.string().min(1)).max(20).optional()
 })
 
 // 既有代辦升級/重新分類（最典型：會議從「喬時間的代辦」→「時間確定的行程」）。
@@ -83,19 +84,19 @@ export function validateExtractResult(value: unknown, identityContext?: ExtractI
   const identityDecisions: IdentityDecision[] = identityContext
     ? validateIdentityDecisions(parsed.identityDecisions, parsed.newTodos.map((todo) => todo.draftRef ?? ''), identityContext)
     : (parsed.identityDecisions ?? []) as IdentityDecision[]
+  const selected = identityContext ? new Set(identityContext.selectedMessageIds) : null
+  // 完成判定的證據必須是本輪選取的訊息；缺少或不合格就略過該筆（待辦維持原狀態），不拒絕整批。
+  const hasValidEvidence = (ids: string[] | undefined): boolean => !!ids?.length && (selected === null || ids.every((id) => selected.has(id)))
   if (identityContext) {
-    const selected = new Set(identityContext.selectedMessageIds)
-    if (parsed.newTodos.some((todo) => todo.sourceMsgIds.some((id) => !selected.has(id)))) {
+    if (parsed.newTodos.some((todo) => todo.sourceMsgIds.some((id) => !selected!.has(id)))) {
       throw new Error('newTodo_source_not_selected')
-    }
-    if (parsed.resolved.some((todo) => !todo.evidenceMsgIds?.length || todo.evidenceMsgIds.some((id)=>!selected.has(id)))) {
-      throw new Error('resolved_evidence_not_selected')
     }
     const allowedTodoIds = new Set(identityContext.allowedTodoIds)
     if (parsed.resolved.some((todo) => !allowedTodoIds.has(todo.todoId)) || parsed.updates.some((todo) => !allowedTodoIds.has(todo.todoId))) {
       throw new Error('existing_todo_id_not_supplied')
     }
   }
+  const resolved = parsed.resolved.filter((todo) => hasValidEvidence(todo.evidenceMsgIds))
   // 正規化 optional → null，給下游 DB 寫入用穩定型別。
   return {
     importance: parsed.importance,
@@ -109,7 +110,7 @@ export function validateExtractResult(value: unknown, identityContext?: ExtractI
       confidence: t.confidence,
       sourceMsgIds: t.sourceMsgIds
     })),
-    resolved: parsed.resolved.map((r) => ({ todoId: r.todoId, evidence: r.evidence, ...(r.evidenceMsgIds ? { evidenceMsgIds:[...r.evidenceMsgIds] } : {}) })),
+    resolved: resolved.map((r) => ({ todoId: r.todoId, evidence: r.evidence, ...(r.evidenceMsgIds ? { evidenceMsgIds:[...r.evidenceMsgIds] } : {}) })),
     updates: parsed.updates.map((u) => ({
       todoId: u.todoId,
       bucket: u.bucket,
