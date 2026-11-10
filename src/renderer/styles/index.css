@@ -1315,6 +1315,10 @@ button:disabled {
   flex: 1;
   min-height: 0;
 }
+.kb-board-loading {
+  padding: 24px 4px;
+  text-align: center;
+}
 .kb-column {
   background: var(--panel);
   border: 1px solid var(--border);

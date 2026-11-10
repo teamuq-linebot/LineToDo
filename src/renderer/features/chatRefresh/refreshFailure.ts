@@ -41,3 +41,16 @@ export function refreshFailureText(result: RefreshFailureInput): string {
   if (reasons.some((reason) => reason !== undefined && AI_BUSY.has(reason))) return 'AI 忙碌中，稍後再試'
   return result.todo.failed || result.topics.failed ? '部分重新整理失敗，請稍後再試' : '重新整理失敗，請稍後再試'
 }
+
+export interface RefreshSummaryInput {
+  todo: { ran: boolean; todosCreated: number; todosMerged: number; todosResolvedDone: number }
+  topics: { ran: boolean; analyzed: number }
+}
+
+/** 最近一次排隊執行成功時的一行摘要（待辦與議題各取有跑的那一半）。 */
+export function refreshSummaryText(result: RefreshSummaryInput): string {
+  const parts: string[] = []
+  if (result.todo.ran) parts.push(`待辦新增 ${result.todo.todosCreated}、合併 ${result.todo.todosMerged}、標為完成 ${result.todo.todosResolvedDone}`)
+  if (result.topics.ran) parts.push(`議題分析 ${result.topics.analyzed} 則`)
+  return parts.length > 0 ? `上次重新整理完成：${parts.join('；')}` : '上次重新整理完成'
+}

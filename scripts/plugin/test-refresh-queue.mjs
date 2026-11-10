@@ -7,8 +7,8 @@ import { openDatabase } from '../../src/main/db/database.ts'
 import { insertMessages } from '../../src/main/db/messages.repo.ts'
 import { ensureChatTodoPrefsSchema, setTodoExtractEnabled } from '../../src/main/db/chatTodoPrefs.repo.ts'
 import { precheckChatRefresh, refreshChatLastDays } from '../../src/main/pipeline/chatRefresh.ts'
-import { ChatRefreshQueue } from '../../src/core/chatRefreshQueue.ts'
-import { refreshCodeText, refreshErrorText, refreshFailureText } from '../../src/renderer/features/chatRefresh/refreshFailure.ts'
+import { ChatRefreshQueue, createChatRefreshService } from '../../src/core/chatRefreshQueue.ts'
+import { refreshCodeText, refreshErrorText, refreshFailureText, refreshSummaryText } from '../../src/renderer/features/chatRefresh/refreshFailure.ts'
 
 const DAY = 24 * 60 * 60 * 1000
 const NOW = Date.UTC(2026, 10, 10, 3, 0, 0)
@@ -167,4 +167,83 @@ test('畫面錯誤碼映射：未知 code 才是通用文案', () => {
 test('結果映射沿用：部分失敗與原因短字不變', () => {
   assert.equal(refreshFailureText({ reason: undefined, todo: { failed: true, reason: 'todo_identity_index_building' }, topics: { failed: false } }), '部分重新整理失敗，請稍後再試')
   assert.equal(refreshFailureText({ reason: 'already_queued', todo: { failed: false }, topics: { failed: false } }), '重新整理失敗，請稍後再試')
+})
+
+const quick = (promise, ms = 1000) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`refreshChat 未在 ${ms} ms 內回應（變成長時間 job）`)), ms))])
+async function waitUntil(predicate, message) {
+  for (let i = 0; i < 400; i += 1) {
+    if (predicate()) return
+    await flush()
+  }
+  assert.fail(message)
+}
+
+test('pipeline.refreshChat 連續對 5 個聊天室：每次立即回應（queued＋ahead），不回 pending；背景依序完成；status 拿到 queued(ahead)／running／最後結果', async () => {
+  const db = open()
+  const chats = ['A', 'B', 'C', 'D', 'E']
+  insertMessages(chats.map((id) => raw(`${id}1`, id, NOW - DAY)), db)
+  for (const id of chats) setTodoExtractEnabled(db, id, true)
+  const order = []
+  const hold = gate()
+  const extractFn = async (input) => {
+    const id = input.chat.chatId
+    order.push(`${id} start`)
+    if (id === 'A') await hold.promise
+    if (id === 'C') throw new Error('extract_await_timeout')
+    order.push(`${id} end`)
+    return NOOP_RESULT
+  }
+  const deps = { db, nowFn: () => NOW, extractFn, aiReady: async () => true }
+  const service = createChatRefreshService({
+    queue: new ChatRefreshQueue(),
+    precheck: (chatId, days) => precheckChatRefresh(chatId, days, deps),
+    run: (chatId, days) => refreshChatLastDays(chatId, days, deps)
+  })
+
+  const replies = []
+  for (const id of chats) replies.push(await quick(service.refreshChat(id, 7)))
+  replies.forEach((reply, i) => {
+    assert.equal(reply.reason, 'queued', `${chats[i]} 立即回 queued，不是 pending job`)
+    assert.equal(reply.ok, false)
+    assert.equal(reply.ahead, i, `${chats[i]} 前面還有 ${i} 個（A 馬上開始）`)
+  })
+  assert.deepEqual(service.refreshChatStatus('A'), { state: 'running', ahead: 0 })
+  assert.deepEqual(service.refreshChatStatus('B'), { state: 'queued', ahead: 1 })
+  assert.deepEqual(service.refreshChatStatus('E'), { state: 'queued', ahead: 4 })
+  assert.deepEqual(order, ['A start'], 'A 在背景執行，其餘排隊；呼叫端沒有等它')
+
+  // 同一聊天室還在排隊或執行中：不重複加入，回 already_*（不是錯誤）。
+  assert.equal((await service.refreshChat('C', 7)).reason, 'already_queued')
+  assert.equal((await service.refreshChat('A', 7)).reason, 'already_running')
+
+  hold.open()
+  await waitUntil(() => chats.every((id) => service.refreshChatStatus(id).last), 'five queued refreshes finish in the background')
+  assert.deepEqual(order, ['A start', 'A end', 'B start', 'B end', 'C start', 'D start', 'D end', 'E start', 'E end'], '依序執行；C 丟錯（沒有 end）後 D、E 照跑')
+  for (const id of chats) {
+    const status = service.refreshChatStatus(id)
+    assert.equal(status.state, 'idle', `${id} 結束後是 idle`)
+    assert.equal(typeof status.last.finishedAtMs, 'number')
+  }
+  assert.equal(service.refreshChatStatus('A').last.ok, true)
+  assert.equal(service.refreshChatStatus('A').last.result.todo.failed, false)
+  assert.equal(service.refreshChatStatus('C').last.ok, false)
+  assert.equal(service.refreshChatStatus('C').last.result.todo.reason, 'extract_await_timeout')
+  assert.equal(refreshFailureText(service.refreshChatStatus('C').last.result), 'AI 無法使用', '失敗原因以短字顯示')
+  assert.match(refreshSummaryText(service.refreshChatStatus('A').last.result), /^上次重新整理完成：待辦新增 \d+、合併 \d+、標為完成 \d+$/)
+  assert.equal((await service.refreshChat('A', 7)).reason, 'queued', '結束後同一聊天室可以再加入')
+})
+
+test('pipeline.refreshChat 守門失敗仍立即回應，不進佇列（參數錯誤、AI 未就緒）', async () => {
+  const db = open()
+  insertMessages([raw('a1', 'A', NOW - DAY)], db)
+  setTodoExtractEnabled(db, 'A', true)
+  const extractFn = async () => NOOP_RESULT
+  const service = createChatRefreshService({
+    queue: new ChatRefreshQueue(),
+    precheck: (chatId, days) => precheckChatRefresh(chatId, days, { db, nowFn: () => NOW, extractFn, aiReady: async () => false }),
+    run: async () => assert.fail('守門失敗不應執行')
+  })
+  assert.equal((await quick(service.refreshChat('A', 7))).reason, 'ai_unavailable')
+  assert.equal((await quick(service.refreshChat('A', 0))).reason, 'invalid_days')
+  assert.deepEqual(service.refreshChatStatus('A'), { state: 'idle', ahead: 0 })
 })
