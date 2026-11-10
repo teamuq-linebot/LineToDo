@@ -6,6 +6,7 @@ import { assertIdentitySnapshotCurrent, identityMetaState, insertIdentityEvent, 
 import type { IdentityCandidate, IdentityContextSnapshot } from '../../../shared/identityDecision'
 import { IDENTITY_QUERY_VERSION } from '../../../shared/identityDecision'
 import { runImmediateTransaction, sharedSourceRows, type ChatSourceLease } from '../../db/sourceCache'
+import { isTodoExtractEnabled } from '../../db/chatTodoPrefs.repo'
 
 export const GROUP_TOPICS_SCHEMA_VERSION = 3
 
@@ -211,9 +212,17 @@ export function setEnabled(db: Database, chatId: string, enabled: boolean): bool
   return true
 }
 
+/**
+ * 議題開關的唯一判斷（做法 B）。所有讀取點都走這裡，不得各自再寫判斷式：
+ * blocked=1 或聊天室不存在：關（fail-closed）；有偏好紀錄：完全依紀錄；
+ * 無偏好紀錄：只有群組（is_group=1）且待辦抽取開啟時視為開，一對一聊天室無紀錄維持關。
+ */
 export function isEnabled(db: Database, chatId: string): boolean {
-  // blocked=1 為遷移前舊資料：fail-closed 視為關閉（遷移成功後 blocked 全為 0）。
-  return (db.prepare('SELECT p.enabled AS enabled FROM group_topic_preferences p WHERE p.chat_id=? AND NOT EXISTS (SELECT 1 FROM chats c WHERE c.chat_id=p.chat_id AND c.blocked=1)').get(chatId) as { enabled: number } | undefined)?.enabled === 1
+  const row = db.prepare('SELECT c.is_group AS isGroup, c.blocked AS blocked, p.enabled AS enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=?')
+    .get(chatId) as { isGroup: number; blocked: number; enabled: number | null } | undefined
+  if (!row || row.blocked === 1) return false
+  if (row.enabled !== null) return row.enabled === 1
+  return row.isGroup === 1 && isTodoExtractEnabled(db, chatId)
 }
 
 export function loadMessages(db: Database, chatId: string, limit = 100): TopicMessageInput[] {
@@ -316,9 +325,8 @@ export function buildTopicSave(db: Database, chatId: string, input: TopicMessage
   const wasIdentityReady=identityMetaState(db,chatId,'topic')==='ready'
   const tx = db.transaction(() => {
     if(identity&&!opts.skipSnapshotAssert) assertIdentitySnapshotCurrent(db,chatId,identity.snapshot,'topic')
-    const active = db.prepare(`SELECT p.enabled FROM chats c
-      LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=? AND c.blocked=0`).get(chatId) as {enabled:number|null}|undefined
-    if (!active || active.enabled !== 1) return 'inactive' as const
+    const active = db.prepare('SELECT 1 AS x FROM chats WHERE chat_id=? AND blocked=0').get(chatId)
+    if (!active || !isEnabled(db, chatId)) return 'inactive' as const
     const existing = db.prepare('SELECT state FROM topic_analysis_runs WHERE chat_id=? AND input_digest=?').get(chatId,digest) as { state: string } | undefined
     if (existing?.state === 'complete') return false
     db.prepare(`INSERT INTO topic_analysis_runs(run_id,chat_id,input_digest,prompt_version,prompt_hash,schema_version,schema_hash,state,error_code,created_at)
@@ -484,9 +492,9 @@ export function listTopics(db: Database, chatId: string): TopicView[] {
 }
 
 export function todoRefs(db: Database, topicId: string): Array<{todoId:string;status:string;bucket:string;matchedMsgIds:string[]}> {
-  const topic = db.prepare(`SELECT t.chat_id,p.enabled FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
-    JOIN group_topic_preferences p ON p.chat_id=t.chat_id WHERE t.topic_id=? AND c.blocked=0`).get(topicId) as {chat_id:string;enabled:number}|undefined
-  if(!topic || topic.enabled!==1) return []
+  const topic = db.prepare(`SELECT t.chat_id FROM discussion_topics t JOIN chats c ON c.chat_id=t.chat_id
+    WHERE t.topic_id=? AND c.blocked=0`).get(topicId) as {chat_id:string}|undefined
+  if(!topic || !isEnabled(db,topic.chat_id)) return []
   const rows = db.prepare('SELECT id,status,bucket,source_msg_ids FROM todos WHERE chat_id=?').all(topic.chat_id) as Array<{id:string;status:string;bucket:string;source_msg_ids:string}>
   const sourceIds = new Set((db.prepare('SELECT msg_id FROM topic_evidence WHERE topic_id=?').all(topicId) as Array<{msg_id:string}>).map((r)=>r.msg_id))
   return rows.map((todo)=>({todo,matched: (JSON.parse(todo.source_msg_ids) as string[]).filter((id)=>sourceIds.has(id))})).filter(({matched})=>matched.length>0)

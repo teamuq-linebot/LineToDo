@@ -32,7 +32,7 @@ import { splitCombined, topicCandidatesOnly } from '../../main/features/groupTop
 import type { CombinedTopicPayload } from '../../main/features/groupTopics/combined'
 import { TopicAnalysisValidationError } from '../../main/features/groupTopics/domain'
 import type { TopicAnalysis, TopicMessageInput } from '../../main/features/groupTopics/domain'
-import { GROUP_TOPICS_VALIDATOR_VERSION, loadTopicCandidates, recordFailure as recordTopicFailure, selectTopicTargets } from '../../main/features/groupTopics/repository'
+import { GROUP_TOPICS_VALIDATOR_VERSION, isEnabled, loadTopicCandidates, recordFailure as recordTopicFailure, selectTopicTargets } from '../../main/features/groupTopics/repository'
 import type { ApplyTally, ChatExtractInput, ExtractSink, RunOnceResult } from '../../main/pipeline/runOnce'
 import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, recallTodoIdentityCandidates, recordIdentitySourceAttempt, releaseIdentitySourceAttempt, renewIdentitySourceLease, tableExists } from '../../main/db/identity.repo'
 import { getMessagesByChatAndIds, getRecentByChat } from '../../main/db/messages.repo'
@@ -971,10 +971,7 @@ export class ExtractQueue implements ExtractSink {
     if (!COMBINED_BUNDLE_ENABLED || !GROUP_TOPICS_BUNDLE_ENABLED) return false
     try {
       if (!tableExists(this.opts.db, 'discussion_topics') || !tableExists(this.opts.db, 'group_topic_preferences')) return false
-      const row = this.opts.db.prepare(
-        'SELECT p.enabled AS enabled FROM chats c LEFT JOIN group_topic_preferences p ON p.chat_id=c.chat_id WHERE c.chat_id=? AND c.blocked=0'
-      ).get(chatId) as { enabled: number | null } | undefined
-      if (!row || row.enabled !== 1) return false
+      if (!isEnabled(this.opts.db, chatId)) return false
     } catch { return false }
     const degraded = this.topicDegrade.get(chatId)
     if (degraded && degraded.until > this.now()) { this.noteFallback(chatId, 'degraded'); return false }
