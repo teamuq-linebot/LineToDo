@@ -13,6 +13,7 @@ import { COMBINED_BUNDLE_ENABLED, COMBINED_JSON_SCHEMA, COMBINED_PROMPT_HASH, CO
 import { makeHttpProvider } from '../src/main/llm/provider/httpOpenAi.ts'
 import { LlmProviderError } from '../src/main/llm/provider/types.ts'
 import { loadGroupTopicsOverview } from '../src/renderer/features/groupTopics/groupTopicsOverview.ts'
+import { buildTopicRows, filterTopicRows, formatTopicTime, sortTopicRows } from '../src/renderer/features/groupTopics/topicRows.ts'
 
 function dbFixture(filename = ':memory:') {
   const db = new NativeDatabase(filename)
@@ -819,4 +820,56 @@ test('overview aggregates every group in one read: enabled flag, capped recent t
   assert.equal(capped.topics[0].title, '大量議題39', 'newest first, same order as list')
   assert.equal(service.list('group-b').topics.length, 40, 'single-group list is not capped by the overview limit')
   db.close()
+})
+
+// ───────────── 群組議題列表（topicRows）：列的組成、篩選、排序、時間格式 ─────────────
+
+const listTopic = (topicId, chatId, title, lastSourceTs, summary = '摘要') => ({ topicId, chatId, title, summary, lastSourceTs, evidenceCount: 1, evidenceMsgIds: [] })
+
+test('topic list rows: only enabled groups contribute rows, one row per topic, unnamed groups get a fallback name', () => {
+  const rows = buildTopicRows([
+    { chat: { chatId: 'g1', name: 'Alpha' }, status: 'enabled', topics: [listTopic('t1', 'g1', 'a1', 100), listTopic('t2', 'g1', 'a2', 200)] },
+    { chat: { chatId: 'g2', name: 'Beta' }, status: 'enabled', topics: [] },
+    { chat: { chatId: 'g3', name: null }, status: 'disabled', topics: [] },
+    { chat: { chatId: 'g4', name: 'Delta' }, status: 'failed', topics: [], error: 'synthetic' },
+    { chat: { chatId: 'g5', name: null }, status: 'enabled', topics: [listTopic('t5', 'g5', 'e1', 50)] }
+  ])
+  assert.deepEqual(rows.map((row) => [row.chatName, row.topic.title]), [['Alpha', 'a1'], ['Alpha', 'a2'], ['未命名群組', 'e1']])
+  assert.equal(new Set(rows.map((row) => row.key)).size, 3, 'row keys are unique')
+})
+
+const listRows = () => buildTopicRows([
+  { chat: { chatId: 'g-beta', name: 'Beta' }, status: 'enabled', topics: [listTopic('r1', 'g-beta', 'c-task', 300)] },
+  { chat: { chatId: 'g-alpha', name: 'Alpha' }, status: 'enabled', topics: [listTopic('r2', 'g-alpha', 'a-task', 100), listTopic('r3', 'g-alpha', 'b-task', 400)] },
+  { chat: { chatId: 'g-gamma', name: 'Gamma' }, status: 'enabled', topics: [listTopic('r4', 'g-gamma', 'd-task', 200, '本週預算審核')] }
+])
+const order = (rows) => rows.map((row) => row.topic.topicId)
+
+test('topic list sort: 最後更新 newest first by default and both directions work; text ties fall back to newest first', () => {
+  const rows = listRows()
+  assert.deepEqual(order(sortTopicRows(rows, 'updated', 'desc')), ['r3', 'r1', 'r4', 'r2'])
+  assert.deepEqual(order(sortTopicRows(rows, 'updated', 'asc')), ['r2', 'r4', 'r1', 'r3'])
+  assert.deepEqual(order(sortTopicRows(rows, 'title', 'asc')), ['r2', 'r3', 'r1', 'r4'])
+  assert.deepEqual(order(sortTopicRows(rows, 'title', 'desc')), ['r4', 'r1', 'r3', 'r2'])
+  assert.deepEqual(order(sortTopicRows(rows, 'chat', 'asc')), ['r3', 'r2', 'r1', 'r4'], 'Alpha (newest first inside the tie), Beta, Gamma')
+  assert.deepEqual(order(sortTopicRows(rows, 'chat', 'desc')), ['r4', 'r1', 'r3', 'r2'], 'the tie keeps newest first in descending order too')
+  assert.deepEqual(order(rows), ['r1', 'r2', 'r3', 'r4'], 'sorting does not mutate the input')
+})
+
+test('topic list filter: chat filter, case-insensitive keyword over chat name / title / summary, and every keyword must match', () => {
+  const rows = listRows()
+  assert.deepEqual(order(filterTopicRows(rows, { chatId: null, query: '' })), ['r1', 'r2', 'r3', 'r4'])
+  assert.deepEqual(order(filterTopicRows(rows, { chatId: null, query: '   ' })), ['r1', 'r2', 'r3', 'r4'], 'whitespace-only query matches everything')
+  assert.deepEqual(order(filterTopicRows(rows, { chatId: 'g-alpha', query: '' })), ['r2', 'r3'], 'chat filter')
+  assert.deepEqual(order(filterTopicRows(rows, { chatId: null, query: 'ALPHA' })), ['r2', 'r3'], 'chat name matches, case-insensitive')
+  assert.deepEqual(order(filterTopicRows(rows, { chatId: null, query: 'a-TASK' })), ['r2'], 'title matches, case-insensitive')
+  assert.deepEqual(order(filterTopicRows(rows, { chatId: null, query: '預算' })), ['r4'], 'summary matches')
+  assert.deepEqual(order(filterTopicRows(rows, { chatId: null, query: 'alpha b-task' })), ['r3'], 'two keywords both have to match')
+  assert.deepEqual(order(filterTopicRows(rows, { chatId: 'g-alpha', query: 'b-task' })), ['r3'], 'chat filter and keyword combine')
+  assert.deepEqual(order(filterTopicRows(rows, { chatId: 'g-beta', query: 'b-task' })), [], 'no match gives an empty list')
+})
+
+test('topic list time: MM/DD HH:mm in local time, empty for an invalid timestamp', () => {
+  assert.equal(formatTopicTime(new Date(2026, 10, 9, 7, 5).getTime()), '11/09 07:05')
+  assert.equal(formatTopicTime(Number.NaN), '')
 })

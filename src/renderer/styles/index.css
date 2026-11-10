@@ -1012,6 +1012,20 @@ code {
 .group-topics-error { color: var(--err); font-size: 12px; }
 .group-topics-notice { color: var(--muted); font-size: 11px; }
 .group-topics-group-select { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+.group-topics-list { display: grid; gap: 10px; }
+.topics-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.topics-tools input[type="search"] { flex: 1 1 200px; max-width: 320px; padding: 6px 8px; }
+.topics-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.topics-table th, .topics-table td { padding: 8px 6px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.topics-table th { color: var(--muted); font-weight: 600; }
+.topics-sort { padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.topics-col-chat { width: 22%; overflow-wrap: anywhere; }
+.topics-col-time { width: 14%; white-space: nowrap; color: var(--muted); }
+.topics-col-topic strong { display: block; font-size: 13px; }
+.topics-col-topic p { margin: 4px 0; color: var(--card-detail-text); line-height: 1.5; }
+.topics-row-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.topics-sentinel-cell { padding: 0; border: 0; }
+.topics-sentinel { height: 1px; }
 
 @container lt-app (max-width: 760px) {
   .chat-workspace {

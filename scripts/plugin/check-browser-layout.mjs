@@ -257,7 +257,7 @@ const SCENES = [
   { id: 'stream-topicsTodos', tab: 'stream', cols: 'chat', expect: ['.chat-topics-todos-content', '.group-topic-card', '.chat-todo-card'], run: async (h) => { await h.ev(`document.querySelector('.chat-list-item')?.click()`); await sleep(400); await h.ev(textClick('.chat-pane-view-toggle button', '議題與待辦')); await waitVisible(h, '.group-topic-card') } },
   { id: 'stream-aiSettings', tab: 'stream', cols: 'chat', expect: ['.chat-pane-view-toggle'], run: async (h) => { await h.ev(`document.querySelector('.chat-list-item')?.click()`); await sleep(400); await h.ev(textClick('.chat-pane-view-toggle button', 'AI')); await sleep(500) } },
   { id: 'stream-lightbox', tab: 'stream', cols: 'chat', expect: ['.sm-lightbox img'], run: async (h) => { await h.ev(LIGHTBOX); await sleep(300) } },
-  { id: 'topics', tab: 'topics', expect: ['.group-topics-panel', '.group-topic-card'], run: async (h) => { await waitVisible(h, '.group-topic-card') } },
+  { id: 'topics', tab: 'topics', expect: ['.group-topics-panel', '.topics-table', '.topics-row'], run: async (h) => { await waitVisible(h, '.topics-row') } },
   { id: 'settings', tab: 'settings', expect: ['.settings-wrap'], run: async () => { await sleep(400) } },
   { id: 'settings-view', tab: 'settings', mode: 'settings', expect: ['.settings-wrap'], run: async () => { await sleep(400) } },
   // chat title bar: the bridge status line (dot, text, 重試, 重啟 N 次, 診斷) lives in the header; F5 of the chat-menu review
