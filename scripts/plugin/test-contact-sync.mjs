@@ -15,7 +15,8 @@ import { createNodeLineFsPort } from '../../src/main/line/engine/nodeLineFsPort.
 import { walSig } from '../../src/main/line/engine/watchEngine.ts'
 import { createContactSync, normalizeSourceSig } from '../../src/plugin/backend/contactSync.ts'
 import { openDatabase } from '../../src/main/db/database.ts'
-import { ensureLineAvatarSchema, isLineAvatarSchemaReady } from '../../src/main/db/lineAvatar.repo.ts'
+import { createLayeredAvatarReader } from '../../src/plugin/backend/avatarReader.ts'
+import { ensureLineAvatarSchema, isLineAvatarSchemaReady, readLocalAvatars } from '../../src/main/db/lineAvatar.repo.ts'
 import { ENTITY_KINDS, countEntities, ensureLineEntitySchema, isLineEntitySchemaReady, liveEntityMids, markGone, purgeGone, readEntities, upsertEntity } from '../../src/main/db/lineEntity.repo.ts'
 
 const DAY = 24 * 60 * 60 * 1000
@@ -788,4 +789,114 @@ test('T-6 signature: walSig() and a snapshot lease.source with the same content 
       assert.equal(normalizeSourceSig(undefined), 'edb=-;wal=-')
     } finally { resetLineEnginePorts() }
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ───────────── C5: the entity layer of the local reader ─────────────
+
+const src = (identity, locator, displayName = null, source = 'profile') => ({ identity, locator, displayName, source: locator ? source : null })
+const counted = (impl) => { const f = async (input) => { f.calls.push(input); return impl ? impl(input) : { chats: {}, messages: {} } }; f.calls = []; return { read: f, calls: f.calls } }
+const ent = (kind, mid, locator, name, goneAt = null) => ({ kind, mid, source: locator ? (kind === 'square_chat' ? 'square' : 'profile') : null, locator, displayName: name, goneAt })
+const putEntity = (db, e, at = 1) => { upsertEntity(db, e, at); if (e.goneAt) markGone(db, e.kind, [e.mid], e.goneAt) }
+const putChatRow = (db, chat, locator, name, refreshedAt, source = 'profile') => db.prepare('INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES (?,?,?,?,?)').run(chat, locator ? source : null, locator, name, refreshedAt)
+
+/** Links one incoming message to one sender profile row, the way an import would. */
+function linkSender(db, { chat = 'c-room-0', msg, mid, locator, name, source = 'profile', refreshedAt = 1 }) {
+  const at = new Date('2026-11-02T00:00:00.000Z').toISOString()
+  db.prepare(`INSERT OR IGNORE INTO messages(msg_id,chat_id,ts,time_iso,direction,sender,text,content_type,processed,ingested_at) VALUES (?,?,1,?,'in','x','t',0,0,?)`).run(msg, chat, at, at)
+  db.prepare('INSERT INTO line_sender_profile(chat_id,sender_mid,source,locator,display_name,refreshed_at) VALUES (?,?,?,?,?,?)').run(chat, mid, locator ? source : null, locator, name, refreshedAt)
+  const id = db.prepare('SELECT sender_id FROM line_sender_profile WHERE chat_id=? AND sender_mid=?').get(chat, mid).sender_id
+  db.prepare('INSERT INTO line_message_sender(msg_id,sender_id) VALUES (?,?)').run(msg, id)
+}
+
+test('R-1 chat level: the order is group, Square chat, contact; the first row with a picture wins, otherwise the first with a name; an entity row beats an expired line_chat_avatar row; a row with neither falls through to the old table, and a chat nobody knows is simply absent', () => {
+  const db = appDbWith({ entity: true, chats: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'] })
+  try {
+    const NOW = 100 * DAY
+    for (const kind of ['group', 'square_chat', 'contact']) putEntity(db, ent(kind, 'm1', `/${kind}/m1`, `${kind} name`))
+    putEntity(db, ent('square_chat', 'm2', '/sq/m2', 'Sq name'))
+    putEntity(db, ent('contact', 'm2', '/ct/m2', 'Ct name'))
+    putEntity(db, ent('group', 'm3', null, 'Group named only'))
+    putEntity(db, ent('contact', 'm3', '/ct/m3', 'Ct name 3'))
+    putEntity(db, ent('group', 'm4', null, 'Group named only 4'))
+    putEntity(db, ent('contact', 'm4', null, 'Contact named only 4'))
+    putChatRow(db, 'm5', null, 'Expired name only', NOW - 5 * DAY)
+    putEntity(db, ent('contact', 'm5', '/ct/m5', 'Fresh from the address book'))
+    putChatRow(db, 'm6', '/legacy/m6', 'Legacy six', NOW - 5 * DAY)
+    putEntity(db, ent('contact', 'm6', null, null))
+    const result = readLocalAvatars(db, { chatIds: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7'], chatId: null, msgIds: [] }, NOW, { entity: true })
+    const pick = (id) => [result.chats[id]?.locator ?? null, result.chats[id]?.displayName ?? null, result.chats[id]?.source ?? null]
+    assert.deepEqual(pick('m1'), ['/group/m1', 'group name', 'profile'])
+    assert.deepEqual(pick('m2'), ['/sq/m2', 'Sq name', 'square'], 'Square chat before contact')
+    assert.deepEqual(pick('m3'), ['/ct/m3', 'Ct name 3', 'profile'], 'a picture further down beats a name higher up')
+    assert.deepEqual(pick('m4'), [null, 'Group named only 4', null], 'no picture anywhere: the first name')
+    assert.deepEqual(pick('m5'), ['/ct/m5', 'Fresh from the address book', 'profile'], 'entity before the expired old row')
+    assert.equal(result.stale, undefined, 'no stale copy of an id the entity layer answered')
+    assert.deepEqual(pick('m6'), ['/legacy/m6', 'Legacy six', 'profile'], 'an entity row with neither picture nor name counts as no row')
+    assert.equal('m7' in result.chats, false)
+    const off = readLocalAvatars(db, { chatIds: ['m1', 'm5'], chatId: null, msgIds: [] }, NOW)
+    assert.equal(off.chats.m1, undefined, 'without the flag the entity layer does not exist')
+    assert.equal(off.stale.chats.m5.displayName, 'Expired name only')
+  } finally { db.close() }
+})
+
+test('R-2 message level: an entity row replaces the old copy of a contact sender (A becomes B); a Square-sourced row is never overridden; a gone contact is still served; an unlinked message is not invented', () => {
+  const db = appDbWith({ entity: true, chats: ['c-room-0'] })
+  try {
+    linkSender(db, { msg: 'i:1', mid: 'u-a', locator: '/old/A', name: 'Old A' })
+    putEntity(db, ent('contact', 'u-a', '/new/B', 'New B'))
+    linkSender(db, { msg: 'i:2', mid: 'sq-member', locator: '0hMemberHash', name: 'Member', source: 'square' })
+    putEntity(db, ent('contact', 'sq-member', '/contact/X', 'Same mid as a contact'))
+    linkSender(db, { msg: 'i:3', mid: 'u-gone', locator: '/old/G', name: 'Old G' })
+    putEntity(db, ent('contact', 'u-gone', '/last/known', 'Last known', 50))
+    linkSender(db, { msg: 'i:4', mid: 'u-plain', locator: '/plain/P', name: 'Plain' })
+    putEntity(db, ent('group', 'u-plain', '/group/same-mid', 'A group is not a contact'))
+    const result = readLocalAvatars(db, { chatIds: [], chatId: 'c-room-0', msgIds: ['i:1', 'i:2', 'i:3', 'i:4', 'i:9'] }, 10 * DAY, { entity: true })
+    assert.deepEqual([result.messages['i:1'].locator, result.messages['i:1'].displayName, result.messages['i:1'].identity], ['/new/B', 'New B', 'u-a'])
+    assert.deepEqual([result.messages['i:2'].locator, result.messages['i:2'].source], ['0hMemberHash', 'square'], 'source square is not overridden by the entity layer')
+    assert.equal(result.messages['i:3'].locator, '/last/known', 'gone rows are still served')
+    assert.equal(result.messages['i:4'].locator, '/plain/P', 'only the contact kind answers for senders')
+    assert.equal('i:9' in result.messages, false)
+    const off = readLocalAvatars(db, { chatIds: [], chatId: 'c-room-0', msgIds: ['i:1'] }, 10 * DAY)
+    assert.equal(off.messages['i:1'].locator, '/old/A')
+  } finally { db.close() }
+})
+
+test('R-3 no fallback: an entity hit never asks the LINE fallback, even ten hours later; an old name-only row without an entity is still re-read as before', async () => {
+  const db = appDbWith({ entity: true, chats: ['c-room-0', 'c-room-1'] })
+  try {
+    let nowMs = 100 * DAY
+    putEntity(db, ent('group', 'c-room-0', '/g/0', 'Room 0'))
+    linkSender(db, { msg: 'i:1', mid: 'u-a', locator: '/old/A', name: 'A' })
+    putEntity(db, ent('contact', 'u-a', '/new/A', 'A new'))
+    putChatRow(db, 'c-room-1', null, 'Name only', nowMs)
+    const fallback = counted(() => ({ chats: { 'c-room-1': src('c-room-1', '/from/line', 'Name only') }, messages: {} }))
+    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, now: () => nowMs, entityOn: () => true })
+    const first = await reader.read({ chatIds: ['c-room-0'], chatId: 'c-room-0', msgIds: ['i:1'] })
+    assert.equal(first.chats['c-room-0'].locator, '/g/0')
+    assert.equal(first.messages['i:1'].locator, '/new/A')
+    assert.equal(fallback.calls.length, 0)
+    nowMs += 10 * 60 * 60 * 1000
+    const later = await reader.read({ chatIds: ['c-room-0'], chatId: 'c-room-0', msgIds: ['i:1'] })
+    assert.equal(later.chats['c-room-0'].locator, '/g/0')
+    assert.equal(fallback.calls.length, 0, 'ten hours later: still no fallback call')
+    const nameOnly = await reader.read({ chatIds: ['c-room-1'], chatId: null, msgIds: [] })
+    assert.equal(nameOnly.chats['c-room-1'].locator, '/from/line', 'the old rule for an old name-only row is unchanged')
+    assert.equal(fallback.calls.length, 1)
+  } finally { db.close() }
+})
+
+test('R-5 broken entity layer: with the table gone (or the flag off) the reader answers from the old tables and does not throw', async () => {
+  const db = appDbWith({ entity: true, chats: ['c-room-0'] })
+  try {
+    putChatRow(db, 'c-room-0', '/legacy/0', 'Legacy', Date.now())
+    putEntity(db, ent('group', 'c-room-0', '/entity/0', 'Entity'))
+    const fallback = counted()
+    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, entityOn: () => true })
+    assert.equal((await reader.read({ chatIds: ['c-room-0'], chatId: null, msgIds: [] })).chats['c-room-0'].locator, '/entity/0')
+    db.exec('DROP TABLE line_entity')
+    assert.equal((await reader.read({ chatIds: ['c-room-0'], chatId: null, msgIds: [] })).chats['c-room-0'].locator, '/legacy/0')
+    assert.equal(fallback.calls.length, 0)
+    const flagOff = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read } })
+    assert.equal((await flagOff.read({ chatIds: ['c-room-0'], chatId: null, msgIds: [] })).chats['c-room-0'].locator, '/legacy/0')
+  } finally { db.close() }
 })

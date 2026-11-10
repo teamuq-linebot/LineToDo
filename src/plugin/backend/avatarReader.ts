@@ -16,6 +16,8 @@ export type AvatarReadKind = 'local' | 'fallback' | 'miss' | 'write'
 
 export interface LayeredAvatarReaderOptions {
   getDb(): Database | null
+  /** 通訊錄層（entity）要不要用；沒給就不用。每次讀取都重新問，旗標關掉或表不見了立刻退回舊表。 */
+  entityOn?(): boolean
   fallback: AvatarMetadataReader
   now?(): number
   /** 計數（診斷用）：local／fallback／miss 是 id 的個數，write 是寫回本地的筆數。 */
@@ -57,7 +59,9 @@ export function createLayeredAvatarReader(options: LayeredAvatarReaderOptions): 
       let stale: LocalAvatarResult['stale']
       if (ready) {
         try {
-          const local = readLocalAvatars(db, request, now())
+          let entity = false
+          try { entity = options.entityOn?.() === true } catch { entity = false }
+          const local = readLocalAvatars(db, request, now(), { entity })
           Object.assign(result.chats, local.chats)
           Object.assign(result.messages, local.messages)
           stale = local.stale

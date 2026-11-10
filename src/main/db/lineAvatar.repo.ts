@@ -2,6 +2,8 @@ import type { Database } from 'better-sqlite3'
 import { deriveMsgId } from './schema'
 import type { LineAvatarSource } from '../line/engine/linedb'
 import type { LineImportBatch } from '../line/importTypes'
+import { readEntities } from './lineEntity.repo'
+import type { EntityKind, EntityRecord } from './lineEntity.repo'
 
 /**
  * lineAvatar.repo.ts — 頭像的本地 DB（發話者頭像持久化，設計附錄 D-AV1～D-AV10）。
@@ -227,12 +229,38 @@ function isHit(row: AvatarRow, nowMs: number): boolean {
 
 const placeholders = (n: number): string => Array.from({ length: n }, () => '?').join(',')
 
-export function readLocalAvatars(db: Database, input: { chatIds: readonly string[]; chatId: string | null; msgIds: readonly string[] }, nowMs: number): LocalAvatarResult {
+export interface ReadLocalOptions {
+  /** 開啟通訊錄層：命中即權威（不套 isHit 的時間規則、不問 fallback）。關閉或讀不到時行為與舊版完全相同。 */
+  entity?: boolean
+}
+
+/** 聊天室層的查詢順序：群組 → Square 聊天室 → 聯絡人（同 linedb.chatAvatarSource）。 */
+const CHAT_ENTITY_ORDER: readonly EntityKind[] = ['group', 'square_chat', 'contact']
+
+const entitySource = (identity: string, record: EntityRecord): LineAvatarSource => ({
+  identity, locator: record.locator, displayName: record.displayName, source: hasText(record.locator) ? (record.source ?? 'profile') : null
+})
+const hasEntityContent = (record: EntityRecord): boolean => hasText(record.locator) || hasText(record.displayName)
+
+export function readLocalAvatars(db: Database, input: { chatIds: readonly string[]; chatId: string | null; msgIds: readonly string[] }, nowMs: number, options: ReadLocalOptions = {}): LocalAvatarResult {
   const result: LocalAvatarResult = { chats: {}, messages: {} }
   const stale: NonNullable<LocalAvatarResult['stale']> = { chats: {}, messages: {} }
-  if (input.chatIds.length > 0) {
-    const rows = db.prepare(`SELECT chat_id,source,locator,display_name,refreshed_at FROM line_chat_avatar WHERE chat_id IN (${placeholders(input.chatIds.length)})`)
-      .all(...input.chatIds) as Array<AvatarRow & { chat_id: string }>
+  // 通訊錄層：取第一個有 locator 的列，沒有就取第一個有名字的列；兩者都空的列視為沒有（退到舊表）。讀不到（表不見了）就整層略過。
+  const answeredByEntity = new Set<string>()
+  if (options.entity && input.chatIds.length > 0) {
+    try {
+      const byKind = CHAT_ENTITY_ORDER.map((kind) => readEntities(db, kind, input.chatIds))
+      for (const id of input.chatIds) {
+        const records = byKind.map((found) => found.get(id)).filter((record): record is EntityRecord => record !== undefined)
+        const pick = records.find((record) => hasText(record.locator)) ?? records.find((record) => hasText(record.displayName))
+        if (pick) { result.chats[id] = entitySource(id, pick); answeredByEntity.add(id) }
+      }
+    } catch { /* 通訊錄層讀不到：照舊走舊表 */ }
+  }
+  const legacyChatIds = input.chatIds.filter((id) => !answeredByEntity.has(id))
+  if (legacyChatIds.length > 0) {
+    const rows = db.prepare(`SELECT chat_id,source,locator,display_name,refreshed_at FROM line_chat_avatar WHERE chat_id IN (${placeholders(legacyChatIds.length)})`)
+      .all(...legacyChatIds) as Array<AvatarRow & { chat_id: string }>
     for (const row of rows) {
       const source: LineAvatarSource = { identity: row.chat_id, locator: row.locator, displayName: row.display_name, source: row.source }
       if (isHit(row, nowMs)) result.chats[row.chat_id] = source
@@ -244,7 +272,17 @@ export function readLocalAvatars(db: Database, input: { chatIds: readonly string
       FROM line_message_sender ms JOIN line_sender_profile sp ON sp.sender_id=ms.sender_id
       WHERE ms.msg_id IN (${placeholders(input.msgIds.length)}) AND sp.chat_id=?`)
       .all(...input.msgIds, input.chatId) as Array<AvatarRow & { msg_id: string; sender_mid: string }>
+    // 發話者層：Square 來源的列（成員）不被聯絡人覆蓋；其餘的批次查聯絡人，命中就用 entity 的結果。
+    let contacts = new Map<string, EntityRecord>()
+    if (options.entity) {
+      const mids = [...new Set(rows.filter((row) => row.source !== 'square').map((row) => row.sender_mid))]
+      if (mids.length > 0) {
+        try { contacts = readEntities(db, 'contact', mids) } catch { /* 通訊錄層讀不到：照舊 */ }
+      }
+    }
     for (const row of rows) {
+      const record = row.source !== 'square' ? contacts.get(row.sender_mid) : undefined
+      if (record && hasEntityContent(record)) { result.messages[row.msg_id] = entitySource(row.sender_mid, record); continue }
       const source: LineAvatarSource = { identity: row.sender_mid, locator: row.locator, displayName: row.display_name, source: row.source }
       if (isHit(row, nowMs)) result.messages[row.msg_id] = source
       else if (hasText(row.display_name)) stale.messages[row.msg_id] = source
