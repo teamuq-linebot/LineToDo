@@ -2012,6 +2012,73 @@ button:disabled {
   box-shadow: var(--shadow-pop);
 }
 
+/* ── 頭像放大視窗（大頭貼 + 名字）── */
+button.avatar-zoom-trigger {
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+.avatar-zoom-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.avatar-zoom-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  background: var(--backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+.avatar-zoom-backdrop:focus { outline: none; }
+.avatar-zoom-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: min(480px, 100%);
+  max-height: 100%;
+}
+.avatar-zoom-photo {
+  display: block;
+  flex: 0 1 auto;
+  min-height: 0;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+}
+.avatar-zoom-name {
+  max-width: 100%;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.avatar-zoom-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.avatar-zoom-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* ── 設定頁 ───────────────────────────────────────── */
 .settings-wrap {
   max-width: 720px;

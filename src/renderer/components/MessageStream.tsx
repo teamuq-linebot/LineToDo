@@ -14,6 +14,7 @@ import { ChatTodosPanel } from '../features/chatTodos/ChatTodosPanel'
 import { ChatPromptPanel } from '../features/chatPrompt/ChatPromptPanel'
 import { MediaFileActions, MediaImage } from './MediaView'
 import { ContextMenu, ContextMenuItem } from './ContextMenu'
+import { AvatarZoomDialog } from './AvatarZoomDialog'
 import { HeaderStatus } from './HeaderStatusSlot'
 import { focusFirstMenuItem, useContextMenuKeys } from '../hooks/useContextMenuKeys'
 import { layoutScale, placeFixedMenu, type MenuPlacement } from '../lib/zoom'
@@ -143,7 +144,7 @@ function rememberFailedAvatarSource(source: string): void {
   }
 }
 
-function AvatarGlyph({ url, label, isGroup }: { url?: string; label: string; isGroup: boolean }): JSX.Element | string {
+function useAvatarPhoto(url: string | undefined): { photo: string | null; onError: () => void } {
   const [failedSource, setFailedSource] = useState<string | null>(() =>
     url && failedAvatarSources.has(url) ? url : null
   )
@@ -152,19 +153,65 @@ function AvatarGlyph({ url, label, isGroup }: { url?: string; label: string; isG
     setFailedSource(url && failedAvatarSources.has(url) ? url : null)
   }, [url])
 
-  if (!url || failedSource === url || failedAvatarSources.has(url)) return avatarMark(label, isGroup)
+  const photo = !url || failedSource === url || failedAvatarSources.has(url) ? null : url
+  return {
+    photo,
+    onError: () => {
+      if (!url) return
+      rememberFailedAvatarSource(url)
+      setFailedSource(url)
+    }
+  }
+}
+
+function AvatarImage({ src, onError }: { src: string; onError: () => void }): JSX.Element {
+  return <img src={src} alt="" loading="lazy" decoding="async" draggable={false} onError={onError} />
+}
+
+function AvatarGlyph({ url, label, isGroup }: { url?: string; label: string; isGroup: boolean }): JSX.Element | string {
+  const { photo, onError } = useAvatarPhoto(url)
+  if (!photo) return avatarMark(label, isGroup)
+  return <AvatarImage src={photo} onError={onError} />
+}
+
+/** 有照片時是可點的按鈕（點了放大，只顯示大頭貼與名字）；只有字母時維持原本不可點的圓形標記。 */
+function ZoomableAvatar({ url, label, name, isGroup, className, title, chatId }: {
+  url?: string
+  label: string
+  name: string
+  isGroup: boolean
+  className: string
+  title?: string
+  chatId?: string
+}): JSX.Element {
+  const { photo, onError } = useAvatarPhoto(url)
+  const [zoomSrc, setZoomSrc] = useState<string | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const close = (): void => {
+    setZoomSrc(null)
+    triggerRef.current?.focus()
+  }
   return (
-    <img
-      src={url}
-      alt=""
-      loading="lazy"
-      decoding="async"
-      draggable={false}
-      onError={() => {
-        rememberFailedAvatarSource(url)
-        setFailedSource(url)
-      }}
-    />
+    <>
+      {photo ? (
+        <button
+          ref={triggerRef}
+          type="button"
+          className={`${className} avatar-zoom-trigger`}
+          aria-label={name}
+          title={title}
+          data-avatar-chat-id={chatId}
+          onClick={() => setZoomSrc(photo)}
+        >
+          <AvatarImage src={photo} onError={onError} />
+        </button>
+      ) : (
+        <span className={className} aria-hidden="true" title={title} data-avatar-chat-id={chatId}>
+          {avatarMark(label, isGroup)}
+        </span>
+      )}
+      {zoomSrc && <AvatarZoomDialog src={zoomSrc} name={name} onClose={close} />}
+    </>
   )
 }
 
@@ -354,9 +401,7 @@ function MessageRow({
       data-avatar-message-chat-id={incoming && m.msgId?.startsWith('i:') ? m.chatId : undefined}
     >
       {incoming && (
-        <span className="chat-message-avatar" aria-hidden="true" title={sender}>
-          <AvatarGlyph url={avatarUrl} label={sender} isGroup={false} />
-        </span>
+        <ZoomableAvatar url={avatarUrl} label={sender} name={sender} isGroup={false} className="chat-message-avatar" title={sender} />
       )}
       <div className="chat-message-content">
         <span className="chat-message-sender">{sender}</span>
@@ -1031,9 +1076,7 @@ export function MessageStream(): JSX.Element {
             <>
               <header className="chat-pane-header">
                 <button type="button" className="chat-back-button" onClick={() => setMobileView('list')} aria-label="返回聊天室列表">‹ <span>聊天室</span></button>
-                <span className={`chat-avatar chat-pane-avatar${activeConversation.isGroup ? ' group' : ''}`} data-avatar-chat-id={activeConversation.chatId} aria-hidden="true">
-                  <AvatarGlyph url={chatAvatarUrls[activeConversation.chatId]} label={activeConversation.name} isGroup={activeConversation.isGroup} />
-                </span>
+                <ZoomableAvatar url={chatAvatarUrls[activeConversation.chatId]} label={activeConversation.name} name={activeConversation.name} isGroup={activeConversation.isGroup} className={`chat-avatar chat-pane-avatar${activeConversation.isGroup ? ' group' : ''}`} chatId={activeConversation.chatId} />
                 <div className="chat-pane-title">
                   <h2>{activeConversation.name}</h2>
                   <span>{activeConversation.isGroup ? '群組' : '聊天室'} · {activeConversation.loadedCount} 則已載入訊息</span>
