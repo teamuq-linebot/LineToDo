@@ -1269,7 +1269,7 @@ const PIC79 = `/${'a1B2c3D4e5'.repeat(7)}xyz_-Q7Z` // 1 + 70 + 7 + 1 = 79
 const PIC166 = `/${'f0e1d2c3b4'.repeat(8)}/${'a9b8c7d6e5'.repeat(8)}abc_` // 1 + 80 + 1 + 80 + 4 = 166
 const detailOf = (picturePath) => JSON.stringify({ profileName: 'x', pictureStatus: 'ok', picturePath })
 
-test('profile source: a NULL _contact._picturePath falls back to _targetProfileDetail.picturePath (source profile); _picturePath still wins; bad JSON, a missing field or a non-string never throws and gives null', () => {
+test('profile source: a NULL _contact._picturePath falls back to _targetProfileDetail.picturePath (source profile); _targetProfileDetail.picturePath wins over a different _picturePath; bad JSON, a missing field or a non-string never throws and gives null', () => {
   assert.equal(PIC79.length, 79)
   assert.equal(PIC166.length, 166)
   const spec = {
@@ -1278,6 +1278,8 @@ test('profile source: a NULL _contact._picturePath falls back to _targetProfileD
       { mid: 'u-null-detail166', picture: null, detail: detailOf(PIC166) },
       { mid: 'u-null-detail79', picture: null, detail: detailOf(PIC79) },
       { mid: 'u-both', picture: '/p/own-picture', detail: detailOf('/p/detail-picture') },
+      { mid: 'u-picture-only', picture: '/p/only-picture', detail: null },
+      { mid: 'u-bad-json-picture', picture: '/p/bad-json-picture', detail: '{not json' },
       { mid: 'u-bad-json', picture: null, detail: '{not json' },
       { mid: 'u-no-field', picture: null, detail: JSON.stringify({ profileName: 'only a name' }) },
       { mid: 'u-empty-field', picture: null, detail: detailOf('   ') },
@@ -1296,7 +1298,9 @@ test('profile source: a NULL _contact._picturePath falls back to _targetProfileD
       const of = (mid) => linedb.senderAvatarSource(con, 'c-room-0', mid)
       assert.deepEqual({ ...of('u-null-detail166') }, { identity: 'u-null-detail166', locator: PIC166, displayName: 'name u-null-detail166', source: 'profile' })
       assert.deepEqual([of('u-null-detail79').locator, of('u-null-detail79').source], [PIC79, 'profile'])
-      assert.deepEqual([of('u-both').locator, of('u-both').source], ['/p/own-picture', 'profile'], '_picturePath has priority')
+      assert.deepEqual([of('u-both').locator, of('u-both').source], ['/p/detail-picture', 'profile'], 'the detail picturePath has priority')
+      assert.deepEqual([of('u-picture-only').locator, of('u-picture-only').source], ['/p/only-picture', 'profile'], 'no detail: _picturePath')
+      assert.deepEqual([of('u-bad-json-picture').locator, of('u-bad-json-picture').source], ['/p/bad-json-picture', 'profile'], 'broken detail JSON: _picturePath')
       for (const mid of ['u-bad-json', 'u-no-field', 'u-empty-field', 'u-number-field', 'u-json-null', 'u-no-detail', 'u-unknown']) {
         const got = of(mid)
         assert.deepEqual([got.locator, got.source], [null, null], mid)
@@ -1304,7 +1308,7 @@ test('profile source: a NULL _contact._picturePath falls back to _targetProfileD
       // a 1:1 chat takes the same path (chatAvatarSource -> profileSource)
       const peerA = linedb.chatAvatarSource(con, 'u-peer-a')
       assert.deepEqual([peerA.locator, peerA.source], [PIC79, 'profile'])
-      assert.equal(linedb.chatAvatarSource(con, 'u-peer-b').locator, '/p/peer-b')
+      assert.equal(linedb.chatAvatarSource(con, 'u-peer-b').locator, '/p/ignored')
     } finally { con.close() }
   } finally { s.cleanup() }
 })

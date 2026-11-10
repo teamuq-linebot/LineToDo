@@ -202,10 +202,11 @@ function detailPicturePath(detail: unknown): string | null {
   }
 }
 
-/** 聯絡人頭像 locator：先取 `_picturePath`，空白就取 `_targetProfileDetail.picturePath`。純函式。 */
+/** 聯絡人頭像 locator：先取 `_targetProfileDetail.picturePath`（目前的頭像），沒有（空白、缺欄位、壞 JSON）才取 `_picturePath`（可能已過期）。純函式。 */
 export function contactLocator(row: ContactFields | null | undefined): string | null {
-  if (typeof row?._picturePath === 'string' && row._picturePath.trim()) return row._picturePath
-  return detailPicturePath(row?._targetProfileDetail)
+  const fromDetail = detailPicturePath(row?._targetProfileDetail)
+  if (fromDetail) return fromDetail
+  return typeof row?._picturePath === 'string' && row._picturePath.trim() ? row._picturePath : null
 }
 
 /** 聯絡人顯示名：_displayNameOverridden → _displayName → _targetProfileDetail.profileName（壞 JSON 跳過）。純函式。 */
