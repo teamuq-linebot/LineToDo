@@ -13,6 +13,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { closeSync as nodeClose, copyFileSync, existsSync, fstatSync as nodeFstat, mkdirSync, openSync as nodeOpen, readFileSync, readSync as nodeRead, readdirSync, statSync as nodeStat, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 
 import { createWasmSqliteCipherEngine } from '../src/main/line/engine/wasmSqliteCipherEngine.ts'
@@ -381,6 +382,81 @@ test('F4: createWin32LineFsPort() sweeps linedb-* / linekey-scan-* snapshot dire
     const fresh = createWin32LineFsPort({ workspaceRoot: join(root, 'brand-new', 'line-engine') })
     assert.equal(fresh.sweptOrphans, 0)
     assert.ok(existsSync(join(root, 'brand-new', 'line-engine')))
+  } finally {
+    rmQuiet(root)
+  }
+})
+
+// ── C3: address-book keyset readers (engine-neutral: a plain SQLite file behind the Db shape, no Electron 31 writer needed) ──
+
+function plainLineCon(path, build) {
+  const writer = new DatabaseSync(path)
+  build(writer)
+  writer.close()
+  const db = new DatabaseSync(path, { readOnly: true })
+  return {
+    pragma: () => [],
+    prepare: (sql) => ({ get: (...params) => db.prepare(sql).get(...params), all: (...params) => db.prepare(sql).all(...params) }),
+    close: () => db.close()
+  }
+}
+
+function pageAll(reader, con, limit) {
+  const rows = []
+  let cursor = null
+  for (;;) {
+    const page = reader(con, cursor, limit)
+    if (page === null) return null
+    rows.push(...page.rows)
+    if (!page.next) return rows
+    cursor = page.next
+  }
+}
+
+test('C3: _contact keyset paging returns every row once for a rowid table and for a WITHOUT ROWID table (primary-key fallback)', () => {
+  const root = makeTempRoot('wasm-linedb-keyset-')
+  try {
+    for (const [label, tail] of [['rowid', ''], ['without rowid', ' WITHOUT ROWID']]) {
+      const con = plainLineCon(join(root, `${label.replace(' ', '-')}.edb`), (db) => {
+        db.exec(`CREATE TABLE _contact(_mid TEXT PRIMARY KEY, _displayNameOverridden TEXT, _displayName TEXT, _targetProfileDetail TEXT, _picturePath TEXT)${tail}`)
+        const add = db.prepare('INSERT INTO _contact(_mid,_displayName,_picturePath) VALUES (?,?,?)')
+        for (let i = 0; i < 1500; i += 1) add.run(`u${String(i).padStart(5, '0')}`, `N${i}`, i % 3 ? `/p/${i}` : null)
+      })
+      const rows = pageAll(linedb.contactRowsAfter, con, 400)
+      assert.equal(rows.length, 1500, label)
+      assert.deepEqual(rows.map((r) => r._mid), Array.from({ length: 1500 }, (_, i) => `u${String(i).padStart(5, '0')}`), label)
+      assert.equal(new Set(rows.map((r) => r._mid)).size, 1500, `${label}: no row twice`)
+      con.close()
+    }
+  } finally {
+    rmQuiet(root)
+  }
+})
+
+test('C3: a missing _contact / _groupChat / _squareChat table is null (kind skipped), a missing _targetProfileDetail column still yields the pictures, and the LINE fixture shape (no _picturePath) keeps names and detail pictures', () => {
+  const root = makeTempRoot('wasm-linedb-keyset-missing-')
+  try {
+    const empty = plainLineCon(join(root, 'empty.edb'), (db) => db.exec('CREATE TABLE _profile(_mid TEXT)'))
+    assert.equal(linedb.contactRowsAfter(empty, null, 10), null)
+    assert.equal(linedb.groupRowsAfter(empty, null, 10), null)
+    assert.equal(linedb.squareChatRowsAfter(empty, null, 10), null)
+    empty.close()
+
+    const old = plainLineCon(join(root, 'old.edb'), (db) => {
+      db.exec('CREATE TABLE _contact(_mid TEXT PRIMARY KEY, _displayNameOverridden TEXT, _displayName TEXT, _picturePath TEXT); CREATE TABLE _groupChat(_chatMid TEXT PRIMARY KEY, _chatName TEXT)')
+      db.prepare('INSERT INTO _contact VALUES (?,?,?,?)').run('u1', null, 'One', '/p/1')
+      db.prepare('INSERT INTO _groupChat VALUES (?,?)').run('c1', 'Group')
+    })
+    assert.deepEqual(linedb.contactRowsAfter(old, null, 10).rows.map((r) => [r._mid, linedb.contactLocator(r), linedb.contactName(r)]), [['u1', '/p/1', 'One']])
+    assert.deepEqual(linedb.groupRowsAfter(old, null, 10).rows.map((r) => [r._chatMid, linedb.groupLocator(r), r._chatName]), [['c1', null, 'Group']])
+    old.close()
+
+    const fixtureShape = plainLineCon(join(root, 'fixture.edb'), (db) => {
+      db.exec('CREATE TABLE _contact(_mid TEXT PRIMARY KEY, _displayNameOverridden TEXT, _displayName TEXT, _targetProfileDetail TEXT)')
+      db.prepare('INSERT INTO _contact VALUES (?,?,?,?)').run('u2', null, null, JSON.stringify({ picturePath: '/d/2', profileName: 'From detail' }))
+    })
+    assert.deepEqual(linedb.contactRowsAfter(fixtureShape, null, 10).rows.map((r) => [linedb.contactLocator(r), linedb.contactName(r)]), [['/d/2', 'From detail']])
+    fixtureShape.close()
   } finally {
     rmQuiet(root)
   }

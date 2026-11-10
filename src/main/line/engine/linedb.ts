@@ -183,6 +183,47 @@ export function myMid(con: Db): string | null {
   return r ? r._mid : null
 }
 
+/** `_contact` 的欄位（原樣的欄位名）；contactLocator／contactName 只讀這幾個，缺欄位等同 NULL。 */
+export interface ContactFields {
+  _picturePath?: unknown
+  _targetProfileDetail?: unknown
+  _displayNameOverridden?: unknown
+  _displayName?: unknown
+}
+
+/** LINE leaves `_contact._picturePath` NULL for some people but keeps the same path in `_targetProfileDetail` (JSON). Bad JSON or a missing field is simply "no picture". */
+function detailPicturePath(detail: unknown): string | null {
+  if (typeof detail !== 'string' || !detail.trim()) return null
+  try {
+    const path = (JSON.parse(detail) as { picturePath?: unknown } | null)?.picturePath
+    return typeof path === 'string' && path.trim() ? path : null
+  } catch {
+    return null
+  }
+}
+
+/** 聯絡人頭像 locator：先取 `_picturePath`，空白就取 `_targetProfileDetail.picturePath`。純函式。 */
+export function contactLocator(row: ContactFields | null | undefined): string | null {
+  if (typeof row?._picturePath === 'string' && row._picturePath.trim()) return row._picturePath
+  return detailPicturePath(row?._targetProfileDetail)
+}
+
+/** 聯絡人顯示名：_displayNameOverridden → _displayName → _targetProfileDetail.profileName（壞 JSON 跳過）。純函式。 */
+export function contactName(row: ContactFields | null | undefined): string | null {
+  if (!row) return null
+  if (row._displayNameOverridden) return row._displayNameOverridden as string
+  if (row._displayName) return row._displayName as string
+  if (row._targetProfileDetail) {
+    try {
+      const pn = (JSON.parse(row._targetProfileDetail as string) as { profileName?: string }).profileName
+      if (pn) return pn
+    } catch {
+      // 壞 JSON -> 跳過（對齊 py except Exception: pass）
+    }
+  }
+  return null
+}
+
 /**
  * chatName — 把 chatId/mid 解成顯示名（1:1 / 群組 / community）。
  * 逐字對齊 linedb.py:65-92（`chat_name`）的解析順序與 fallback：
@@ -221,27 +262,8 @@ export function chatName(con: Db, chatId: string): string | null {
     .prepare(
       'SELECT _displayNameOverridden,_displayName,_targetProfileDetail FROM _contact WHERE _mid=?',
     )
-    .get(chatId) as
-    | {
-        _displayNameOverridden: string | null
-        _displayName: string | null
-        _targetProfileDetail: string | null
-      }
-    | undefined
-  if (ct) {
-    if (ct._displayNameOverridden) return ct._displayNameOverridden
-    if (ct._displayName) return ct._displayName
-    if (ct._targetProfileDetail) {
-      try {
-        const pn = (JSON.parse(ct._targetProfileDetail) as { profileName?: string })
-          .profileName
-        if (pn) return pn
-      } catch {
-        // 壞 JSON -> 跳過（對齊 py except Exception: pass）
-      }
-    }
-  }
-  return null
+    .get(chatId) as ContactFields | undefined
+  return ct ? contactName(ct) : null
 }
 
 /** Resolve a sender's Square display name in the context of the active Square chat. */
@@ -276,34 +298,47 @@ export interface LineAvatarSource {
 
 const SQUARE_OBS_HASH = /^0h[A-Za-z0-9_-]+$/u
 
-function profileSource(con: Db, identity: string): LineAvatarSource {
-  for (const table of ['_contact', '_profile'] as const) {
+function contactPicture(con: Db, identity: string): string | null {
+  let row: { _picturePath?: string | null; _targetProfileDetail?: string | null } | undefined
+  try {
+    row = con.prepare('SELECT _picturePath,_targetProfileDetail FROM _contact WHERE _mid=?').get(identity) as typeof row
+  } catch {
     try {
-      const row = table === '_contact'
-        ? con.prepare('SELECT _picturePath FROM _contact WHERE _mid=?').get(identity) as { _picturePath?: string | null } | undefined
-        : con.prepare('SELECT _picturePath FROM _profile WHERE _mid=?').get(identity) as { _picturePath?: string | null } | undefined
-      if (typeof row?._picturePath === 'string' && row._picturePath.trim()) {
-        return { identity, locator: row._picturePath, displayName: chatName(con, identity), source: 'profile' }
-      }
+      row = con.prepare('SELECT _picturePath FROM _contact WHERE _mid=?').get(identity) as typeof row
     } catch {
-      // Older schemas can omit one of these optional tables/columns.
+      return null
     }
   }
-  return { identity, locator: null, displayName: chatName(con, identity), source: null }
+  return contactLocator(row)
+}
+
+function profileSource(con: Db, identity: string): LineAvatarSource {
+  let locator = contactPicture(con, identity)
+  if (!locator) {
+    try {
+      const row = con.prepare('SELECT _picturePath FROM _profile WHERE _mid=?').get(identity) as { _picturePath?: string | null } | undefined
+      if (typeof row?._picturePath === 'string' && row._picturePath.trim()) locator = row._picturePath
+    } catch {
+      // Older schemas can omit this optional table/column.
+    }
+  }
+  return { identity, locator, displayName: chatName(con, identity), source: locator ? 'profile' : null }
 }
 
 /** Read chat image metadata without changing or deriving the canonical chat id. */
 export function chatAvatarSource(con: Db, chatId: string): LineAvatarSource {
   try {
     const group = con.prepare('SELECT _picturePath FROM _groupChat WHERE _chatMid=?').get(chatId) as { _picturePath?: string | null } | undefined
-    if (typeof group?._picturePath === 'string' && group._picturePath.trim()) {
-      return { identity: chatId, locator: group._picturePath, displayName: chatName(con, chatId), source: 'profile' }
+    const groupPicture = groupLocator(group)
+    if (groupPicture) {
+      return { identity: chatId, locator: groupPicture, displayName: chatName(con, chatId), source: 'profile' }
     }
   } catch { /* optional LINE group schema */ }
   try {
     const square = con.prepare('SELECT _chatImageObsHash FROM _squareChat WHERE _squareChatMid=?').get(chatId) as { _chatImageObsHash?: string | null } | undefined
-    if (typeof square?._chatImageObsHash === 'string' && SQUARE_OBS_HASH.test(square._chatImageObsHash)) {
-      return { identity: chatId, locator: square._chatImageObsHash, displayName: chatName(con, chatId), source: 'square' }
+    const squarePicture = squareChatLocator(square)
+    if (squarePicture) {
+      return { identity: chatId, locator: squarePicture, displayName: chatName(con, chatId), source: 'square' }
     }
   } catch { /* optional LINE Square schema */ }
   return profileSource(con, chatId)
@@ -327,6 +362,111 @@ export function senderAvatarSource(con: Db, chatId: string, senderMid: string): 
     }
   } catch { /* optional LINE Square schema */ }
   return profileSource(con, senderMid)
+}
+
+// ── 通訊錄同步用的分頁讀取（contactSync）──
+
+/** keyset 游標：`rowid` 模式用 rowid 往後讀；WITHOUT ROWID 的表退回用主鍵欄位。 */
+export interface KeysetCursor {
+  mode: 'rowid' | 'key'
+  after: number | string
+}
+
+export interface KeysetPage<T> {
+  rows: T[]
+  /** 下一頁的游標；null＝這張表讀完了。 */
+  next: KeysetCursor | null
+}
+
+export interface GroupChatRow { _chatMid: string; _chatName?: unknown; _picturePath?: unknown }
+export interface SquareChatRow { _squareChatMid: string; _name?: unknown; _chatImageObsHash?: unknown }
+export interface ContactSourceRow extends ContactFields { _mid: string }
+
+const ROWID_START = Number.MIN_SAFE_INTEGER
+const chosenVariant = new WeakMap<object, Map<string, number>>()
+
+function tableExists(con: Db, table: string): boolean {
+  return con.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name=?").get(table) !== undefined
+}
+
+/**
+ * 通用 keyset 分頁。`variants` 由完整到精簡列出欄位組合（較舊的 LINE schema 可能缺欄位），用第一個查得動的；
+ * 第一頁優先用 rowid，表是 WITHOUT ROWID 時退回主鍵欄位。不使用 OFFSET。表不存在回 null（呼叫端跳過這個 kind）；其他錯誤照丟。
+ * 排序欄位的 NULL 與空字串在 key 模式下不會被讀到。
+ */
+function keysetRows<T extends object>(con: Db, table: string, keyCol: string, variants: readonly (readonly string[])[], cursor: KeysetCursor | null, limit: number): KeysetPage<T> | null {
+  const modes: Array<KeysetCursor['mode']> = cursor ? [cursor.mode] : ['rowid', 'key']
+  let lastError: unknown = null
+  const memo = chosenVariant.get(con) ?? new Map<string, number>()
+  chosenVariant.set(con, memo)
+  for (const mode of modes) {
+    const after = cursor ? cursor.after : mode === 'rowid' ? ROWID_START : ''
+    const order = mode === 'rowid' ? 'rowid' : keyCol
+    const head = mode === 'rowid' ? 'rowid AS _rowid,' : ''
+    const known = memo.get(`${table}\0${mode}`)
+    const all = variants.map((_, i) => i)
+    const sequence = known === undefined ? all : [known, ...all.filter((i) => i !== known)]
+    for (const index of sequence) {
+      const sql = `SELECT ${head}${variants[index].join(',')} FROM ${table} WHERE ${order} > ? ORDER BY ${order} LIMIT ?`
+      let rows: Array<Record<string, unknown>>
+      try {
+        rows = con.prepare(sql).all(after, limit) as Array<Record<string, unknown>>
+      } catch (error) {
+        lastError = error
+        continue
+      }
+      memo.set(`${table}\0${mode}`, index)
+      const out = rows.map((row) => {
+        if (mode === 'rowid') { const { _rowid, ...rest } = row; void _rowid; return rest }
+        return row
+      }) as T[]
+      if (rows.length < limit) return { rows: out, next: null }
+      const lastRow = rows[rows.length - 1]
+      const next: KeysetCursor = mode === 'rowid'
+        ? { mode, after: toSafeNumber(lastRow._rowid as number | bigint) }
+        : { mode, after: String(lastRow[keyCol]) }
+      return { rows: out, next }
+    }
+  }
+  if (!tableExists(con, table)) return null
+  throw lastError ?? new Error('keyset_read_failed')
+}
+
+const CONTACT_VARIANTS = [
+  ['_mid', '_picturePath', '_targetProfileDetail', '_displayNameOverridden', '_displayName'],
+  ['_mid', '_picturePath', '_displayNameOverridden', '_displayName'],
+  ['_mid', '_targetProfileDetail', '_displayNameOverridden', '_displayName'],
+  ['_mid', '_picturePath', '_displayName'],
+  ['_mid', '_displayName'],
+  ['_mid'],
+] as const
+const GROUP_VARIANTS = [['_chatMid', '_chatName', '_picturePath'], ['_chatMid', '_chatName'], ['_chatMid', '_picturePath'], ['_chatMid']] as const
+const SQUARE_CHAT_VARIANTS = [['_squareChatMid', '_name', '_chatImageObsHash'], ['_squareChatMid', '_name'], ['_squareChatMid']] as const
+
+/** `_contact` 的一頁（缺表回 null；缺欄位退回較少的欄位組合）。 */
+export function contactRowsAfter(con: Db, cursor: KeysetCursor | null, limit: number): KeysetPage<ContactSourceRow> | null {
+  return keysetRows<ContactSourceRow>(con, '_contact', '_mid', CONTACT_VARIANTS, cursor, limit)
+}
+
+/** `_groupChat` 的一頁。 */
+export function groupRowsAfter(con: Db, cursor: KeysetCursor | null, limit: number): KeysetPage<GroupChatRow> | null {
+  return keysetRows<GroupChatRow>(con, '_groupChat', '_chatMid', GROUP_VARIANTS, cursor, limit)
+}
+
+/** `_squareChat` 的一頁（只有聊天室，不含 `_squareMember`）。 */
+export function squareChatRowsAfter(con: Db, cursor: KeysetCursor | null, limit: number): KeysetPage<SquareChatRow> | null {
+  return keysetRows<SquareChatRow>(con, '_squareChat', '_squareChatMid', SQUARE_CHAT_VARIANTS, cursor, limit)
+}
+
+/** 群組頭像 locator：`_picturePath`（非空白）。 */
+export function groupLocator(row: Pick<GroupChatRow, '_picturePath'> | null | undefined): string | null {
+  return typeof row?._picturePath === 'string' && row._picturePath.trim() ? row._picturePath : null
+}
+
+/** Square 聊天室頭像 locator：OBS hash 必須符合格式，否則沒有。 */
+export function squareChatLocator(row: Pick<SquareChatRow, '_chatImageObsHash'> | null | undefined): string | null {
+  const hash = row?._chatImageObsHash
+  return typeof hash === 'string' && SQUARE_OBS_HASH.test(hash) ? hash : null
 }
 
 /**

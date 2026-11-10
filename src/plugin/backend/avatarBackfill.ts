@@ -1,17 +1,17 @@
 import type { Database } from 'better-sqlite3'
 import {
-  AVATAR_BACKFILL_VERSION, advanceLinkWatermark, chatsWithoutAvatar, createSenderLinker, deleteAvatarMeta, getAvatarMeta, hasLinkGap, isLineAvatarSchemaReady,
-  knownChatIds, setAvatarMeta, upsertChatAvatar
+  AVATAR_BACKFILL_VERSION, advanceLinkWatermark, createSenderLinker, deleteAvatarMeta, getAvatarMeta, hasLinkGap, isLineAvatarSchemaReady,
+  knownChatIds, setAvatarMeta
 } from '../../main/db/lineAvatar.repo'
 import type { AvatarMetaKey } from '../../main/db/lineAvatar.repo'
-import { chatAvatarSource, maxMessageRowId, myMid, olderSenderRows, senderAvatarSource } from '../../main/line/engine/linedb'
+import { maxMessageRowId, myMid, olderSenderRows, senderAvatarSource } from '../../main/line/engine/linedb'
 import type { Db, LineAvatarSource } from '../../main/line/engine/linedb'
 
 /**
  * avatarBackfill.ts — 既有訊息的頭像連結背景回填（設計附錄 §6）。
  *
  * 只用 `any` snapshot（呼叫端的 `openSource`＝`openLineDbFor({ policy: 'any' })`）：沒有 snapshot 或沒有金鑰就回 null，這裡等一下再試，
- * 絕不觸發複製或金鑰掃描。階段一把 app DB 裡還沒有頭像紀錄的聊天室補上；階段二從最新的 LINE rowid 往回，替「app DB 已經有、direction='in'」的訊息建立 msg → 發話者連結。
+ * 絕不觸發複製或金鑰掃描。只有一個階段：從最新的 LINE rowid 往回，替「app DB 已經有、direction='in'」的訊息建立 msg → 發話者連結。
  * 游標、掃描與連結計數、階段都存在 `line_avatar_meta`，所以可以中斷、續做；重複跑是冪等的。
  *
  * 不卡事件迴圈：每個切片 ≤ sliceMs（預設 15 ms；LIMIT 自適應 50–1000），切片之間讓出事件迴圈；一個 burst 最多 burstMs（預設 300 ms）
@@ -85,7 +85,6 @@ const LIMIT_MIN = 50
 const LIMIT_MAX = 1000
 const FAST_QUERY_MS = 5
 const SOURCE_CACHE_MAX = 5000
-const CHAT_BATCH = 50
 /** 缺口偵測：最後一批匯入比 link_watermark 晚超過這麼久才重開回填。 */
 const LINK_GAP_MS = 60_000
 
@@ -127,6 +126,7 @@ export function createAvatarBackfill(options: AvatarBackfillOptions): AvatarBack
   function load(db: Database): void {
     const version = meta(db, 'backfill_version')
     let phase = meta(db, 'backfill_phase') ?? 'pending'
+    if (phase === 'chats') phase = 'messages' // 舊版的聊天室階段已移除
     const reopen = (phase === 'done' && hasLinkGap(db, LINK_GAP_MS)) || (version !== null && version !== String(AVATAR_BACKFILL_VERSION))
     if (reopen) {
       phase = 'pending'
@@ -148,7 +148,7 @@ export function createAvatarBackfill(options: AvatarBackfillOptions): AvatarBack
   const setPhase = (db: Database, phase: string): void => {
     put(db, 'backfill_phase', phase)
     status.phase = phase
-    if (phase === 'chats' && !meta(db, 'backfill_started_at')) {
+    if (phase === 'messages' && !meta(db, 'backfill_started_at')) {
       const at = new Date(wall()).toISOString()
       put(db, 'backfill_started_at', at)
       status.startedAt = at
@@ -167,25 +167,7 @@ export function createAvatarBackfill(options: AvatarBackfillOptions): AvatarBack
     if (status.phase === 'pending') {
       // 一輪的起點要持久化：完成時 link_watermark 推進到這個時間（不是完成時的最新批次），一輪進行中才提交、沒寫到連結的批次才不會被吞掉。
       put(db, 'backfill_round_at', new Date(wall()).toISOString())
-      setPhase(db, 'chats')
-    }
-    if (status.phase === 'chats') {
-      const todo = chatsWithoutAvatar(db, CHAT_BATCH)
-      if (todo.length === 0) { setPhase(db, 'messages'); return false }
-      let unreadable = false
-      const tx = db.transaction(() => {
-        for (const chatId of todo) {
-          let source: LineAvatarSource
-          // 讀不到是暫時的失敗，不是「確認沒有頭像」：這個聊天室不寫任何紀錄，留在待辦裡，下一個 burst 重試。
-          try { source = chatAvatarSource(con, chatId) } catch { unreadable = true; continue }
-          upsertChatAvatar(db, chatId, source, wall())
-          if (clock() - sliceStart >= budget.sliceMs) break
-        }
-      })
-      tx()
-      options.onSlice?.({ ms: clock() - sliceStart, rows: todo.length })
-      if (unreadable) throw new Error('chat_read_failed')
-      return false
+      setPhase(db, 'messages')
     }
 
     // messages：游標＝最後一筆完整處理完的 rowid；沒有游標就從目前最大的 rowid 開始（往回掃）。

@@ -282,13 +282,12 @@ function outItem(msgId, chatId = 'c-room', ts = 10) {
   return { ...base, message: { ...base.message, direction: 'out', sender: 'me' } }
 }
 
-/** A batch the way watchEngine builds it: avatarMeta carries one source per distinct chat and per distinct (chat, sender). */
-function avatarBatch(items, { id = 'avatar-batch', senders, chats } = {}) {
+/** A batch the way watchEngine builds it: avatarMeta carries one source per distinct (chat, sender); chat pictures are not collected. */
+function avatarBatch(items, { id = 'avatar-batch', senders } = {}) {
   const mids = [...new Set(items.filter((i) => i.senderMid).map((i) => `${i.message.chatId}\0${i.senderMid}`))]
   return {
     ...batch(items, id, { createdTime: 20, rowId: 9 }),
     avatarMeta: {
-      chats: chats ?? [...new Set(items.map((i) => i.message.chatId))].map((chatId) => ({ chatId, source: srcOf(`/chat-${chatId}`, `name-${chatId}`) })),
       senders: senders ?? mids.map((key) => { const [chatId, senderMid] = key.split('\0'); return { chatId, senderMid, source: srcOf(`/p-${senderMid}`, `n-${senderMid}`) } })
     }
   }
@@ -310,7 +309,7 @@ test('avatar write: incoming messages get a sender profile and a link in the sam
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_sender_profile').get().n, 2)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_message_sender').get().n, 3)
   assert.deepEqual({ ...db.prepare('SELECT source,locator,display_name FROM line_sender_profile WHERE sender_mid=?').get('mid-A') }, { source: 'profile', locator: '/p-mid-A', display_name: 'n-mid-A' })
-  assert.deepEqual({ ...db.prepare("SELECT source,locator,display_name FROM line_chat_avatar WHERE chat_id='c-room'").get() }, { source: 'profile', locator: '/chat-c-room', display_name: 'name-c-room' })
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_chat_avatar').get().n, 0, 'the chat level is not written: chat pictures come only from the address book')
   const joined = db.prepare(`SELECT ms.msg_id AS id, sp.sender_mid AS mid FROM line_message_sender ms JOIN line_sender_profile sp ON sp.sender_id=ms.sender_id ORDER BY ms.msg_id`).all().map((r) => [r.id, r.mid])
   assert.deepEqual(joined, [['i:a-1', 'mid-A'], ['i:a-2', 'mid-B'], ['i:a-3', 'mid-A']])
   assert.ok(db.prepare("SELECT value FROM line_avatar_meta WHERE key='link_watermark'").get().value, 'link_watermark is the commit time of the batch')
@@ -387,27 +386,23 @@ test('avatar write: null never overwrites a known value, a new locator does, and
   const db = avatarDb()
   const temp = mkdtempSync(join(tmpdir(), 'line-avatar-upsert-'))
   const identity = identityProvider(temp)
-  const run = (id, msgId, source, chat) => commitLineImportBatch(db, avatarBatch([item({ msgId, senderMid: 'mid-A', ts: 30 })], { id, senders: [{ chatId: 'c-room', senderMid: 'mid-A', source }], chats: [{ chatId: 'c-room', source: chat }] }), identity)
+  const run = (id, msgId, source) => commitLineImportBatch(db, avatarBatch([item({ msgId, senderMid: 'mid-A', ts: 30 })], { id, senders: [{ chatId: 'c-room', senderMid: 'mid-A', source }] }), identity)
   const row = () => ({ ...db.prepare('SELECT source,locator,display_name,refreshed_at FROM line_sender_profile').get() })
-  const chatRow = () => ({ ...db.prepare('SELECT source,locator,display_name FROM line_chat_avatar').get() })
-  run('b1', 'u-1', srcOf('/old', 'Alice'), srcOf('/room', 'Room'))
+  run('b1', 'u-1', srcOf('/old', 'Alice'))
   const first = row()
   assert.deepEqual([first.source, first.locator, first.display_name], ['profile', '/old', 'Alice'])
-  run('b2', 'u-2', srcOf(null, null), srcOf(null, null))
+  run('b2', 'u-2', srcOf(null, null))
   assert.deepEqual({ ...row(), refreshed_at: 0 }, { source: 'profile', locator: '/old', display_name: 'Alice', refreshed_at: 0 }, 'null locator and null name keep the old values')
-  assert.deepEqual(chatRow(), { source: 'profile', locator: '/room', display_name: 'Room' })
   assert.equal(row().refreshed_at, first.refreshed_at, 'nothing changed and it is recent: the row was not rewritten')
-  run('b3', 'u-3', srcOf('/new', null, 'square'), srcOf('/room', 'Renamed'))
+  run('b3', 'u-3', srcOf('/new', null, 'square'))
   assert.deepEqual([row().source, row().locator, row().display_name], ['square', '/new', 'Alice'])
-  assert.equal(chatRow().display_name, 'Renamed')
-  run('b3b', 'u-3b', srcOf(null, 'Alicia'), srcOf(null, 'Roomy'))
+  run('b3b', 'u-3b', srcOf(null, 'Alicia'))
   assert.deepEqual([row().source, row().locator, row().display_name], ['square', '/new', 'Alicia'], 'a new name with no locator updates the name only')
-  assert.deepEqual(chatRow(), { source: 'profile', locator: '/room', display_name: 'Roomy' })
-  run('b3c', 'u-3c', srcOf('/new', 'Alice', 'square'), srcOf('/room', 'Renamed'))
+  run('b3c', 'u-3c', srcOf('/new', 'Alice', 'square'))
   assert.equal(row().display_name, 'Alice')
   db.prepare('UPDATE line_sender_profile SET refreshed_at=refreshed_at-?').run(7 * 3600 * 1000)
   const stale = row().refreshed_at
-  run('b4', 'u-4', srcOf('/new', 'Alice', 'square'), srcOf('/room', 'Renamed'))
+  run('b4', 'u-4', srcOf('/new', 'Alice', 'square'))
   assert.ok(row().refreshed_at > stale, 'an unchanged row older than six hours is refreshed')
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_sender_profile').get().n, 1)
   db.close()
@@ -522,7 +517,7 @@ test('avatar tables cascade: deleting a message drops its link, deleting a chat 
   rmSync(temp, { recursive: true, force: true })
 })
 
-test('avatar write with the account MID unknown (the source _profile is not there yet): only the chat level is written — no sender profile and no link whoever the rows say wrote them, the watermark does not move and the gap detector still sees the batch; the next batch with a known account links normally', () => {
+test('avatar write with the account MID unknown (the source _profile is not there yet): nothing at all is written for avatars — no chat level, no sender profile and no link whoever the rows say wrote them, the watermark does not move and the gap detector still sees the batch; the next batch with a known account links normally', () => {
   const db = avatarDb()
   const temp = mkdtempSync(join(tmpdir(), 'line-avatar-unknown-account-'))
   const identity = identityProvider(temp)
@@ -534,7 +529,7 @@ test('avatar write with the account MID unknown (the source _profile is not ther
   ] })
   commitLineImportBatch(db, first, identity)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM messages').get().n, 2)
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_chat_avatar').get().n, 1, 'the chat level is still written')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_chat_avatar').get().n, 0, 'and the chat level is never written')
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_sender_profile').get().n, 0)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_message_sender').get().n, 0)
   for (const [name, text] of Object.entries(dumpAll(db))) assert.equal(text.includes('u-account'), false, `the account MID is not in ${name}`)

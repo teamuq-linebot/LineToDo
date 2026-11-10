@@ -1,9 +1,9 @@
 // Avatars in the local DB (lineAvatar.repo.ts, avatarReader.ts, avatarBackfill.ts), through the production wiring (assemble.ts).
 //
-// A-4 import-time writes: watchEngine collects one avatar source per distinct chat / (chat, sender) on the connection that is already open (query count independent of the row count),
+// A-4 import-time writes: watchEngine collects one avatar source per distinct (chat, sender) on the connection that is already open (query count independent of the row count; chats come only from the address book),
 //   the plugin backend creates the four tables, a poll through createPluginBackend writes the links (incoming only), getMessagesSince collects nothing.
-// A-5 layered reader: local first (no LINE open, no copy, median CPU time of calls 2..20 < 60 ms), the 'any' fallback only for what is missing (written back), a negative cache, R-AV-4 (avatarCache.load stats the key directly).
-// A-6 backfill: 'any' only, newest first, <= 15 ms slices at about a 25 % duty cycle, interruptible and resumable, gap detection, dispose quiet.
+// A-5 reader: three rules only (non-Square: line_entity; Square member: line_sender_profile; otherwise no picture), local only (no LINE open, no copy, median CPU time of calls 2..20 < 60 ms), R-AV-4 (avatarCache.load stats the key directly).
+// A-6 backfill: 'any' only, messages only (no chats phase), newest first, <= 15 ms slices at about a 25 % duty cycle, interruptible and resumable, gap detection, dispose quiet.
 // The LINE side is synthetic: a plain SQLite file with the LINE table shapes behind a fake engine (no real LINE, key or network is touched; fetch is replaced by a thrower).
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -20,8 +20,10 @@ import { collectAvatarMeta, getAvatarMetadata, getLineImportBatch, getMessagesSi
 import { createNodeLineFsPort } from '../../src/main/line/engine/nodeLineFsPort.ts'
 import { avatarCacheKey, createAvatarCache } from '../../src/plugin/backend/avatarCache.ts'
 import { createLayeredAvatarReader } from '../../src/plugin/backend/avatarReader.ts'
-import { advanceLinkWatermark, ensureLineAvatarSchema, createSenderLinker, hasLinkGap } from '../../src/main/db/lineAvatar.repo.ts'
+import * as linedb from '../../src/main/line/engine/linedb.ts'
+import { AVATAR_BACKFILL_VERSION, advanceLinkWatermark, ensureLineAvatarSchema, createSenderLinker, hasLinkGap } from '../../src/main/db/lineAvatar.repo.ts'
 import { ensureLineImportSchema } from '../../src/main/db/lineImport.repo.ts'
+import { ensureLineEntitySchema, upsertEntity } from '../../src/main/db/lineEntity.repo.ts'
 import { createAvatarBackfill } from '../../src/plugin/backend/avatarBackfill.ts'
 import { LineSnapshotStore } from '../../src/main/line/engine/lineSnapshot.ts'
 import { createLineAccess } from '../../src/main/line/engine/lineAccess.ts'
@@ -100,8 +102,8 @@ function makeLineDb(path, spec) {
     addChat.run(chat.id, 1)
     if (chat.id.startsWith('c')) addGroup.run(chat.id, chat.name ?? `room ${chat.id}`, chat.picture ?? null)
   }
-  const addContact = db.prepare('INSERT INTO _contact(_mid,_displayName,_picturePath) VALUES (?,?,?)')
-  for (const contact of spec.contacts) addContact.run(contact.mid, contact.name ?? `name ${contact.mid}`, contact.picture ?? null)
+  const addContact = db.prepare('INSERT INTO _contact(_mid,_displayName,_picturePath,_targetProfileDetail) VALUES (?,?,?,?)')
+  for (const contact of spec.contacts) addContact.run(contact.mid, contact.name ?? `name ${contact.mid}`, contact.picture ?? null, contact.detail ?? null)
   const add = db.prepare('INSERT INTO _message(_id,_chatId,_createdTime,_from,_text,_contentType,_contentMetadata,_contentInfo,_attribute) VALUES (?,?,?,?,?,0,NULL,NULL,0)')
   db.exec('BEGIN')
   let n = 0
@@ -180,7 +182,7 @@ const SPEC_SMALL = { chats: chatsOf(2), contacts: people(3), messages: { count: 
 
 // ───────────── A-4: collection (watchEngine) ─────────────
 
-test('A-4 collect: getLineImportBatch with avatarMeta reads one source per distinct chat and per distinct (chat, sender) — never the account MID — and the query count does not grow with the row count', async () => {
+test('A-4 collect: getLineImportBatch with avatarMeta reads one source per distinct (chat, sender) — never the account MID — and the query count does not grow with the row count', async () => {
   const bounds = []
   for (const count of [40, 400]) {
     const s = stage({ chats: chatsOf(2), contacts: people(3), messages: { count, outEvery: 4 } })
@@ -195,16 +197,14 @@ test('A-4 collect: getLineImportBatch with avatarMeta reads one source per disti
       const q1 = s.calls.queries
       const batch = await getLineImportBatch({ stateFile: s.stateFile, keyOpts: s.keyOpts, cursor, limit: 1000, avatarMeta: true })
       const extra = s.calls.queries - q1 - plainQueries
-      const { chats, senders } = batch.avatarMeta
-      const distinctChats = new Set(batch.items.map((i) => i.message.chatId))
+      const { senders } = batch.avatarMeta
+      assert.equal(batch.avatarMeta.chats, undefined, 'chats are not collected: their pictures come only from the address book')
       const distinctSenders = new Set(batch.items.filter((i) => i.senderMid && i.senderMid !== ME).map((i) => `${i.message.chatId}\0${i.senderMid}`))
-      assert.deepEqual(chats.map((c) => c.chatId).sort(), [...distinctChats].sort())
       assert.deepEqual(senders.map((x) => `${x.chatId}\0${x.senderMid}`).sort(), [...distinctSenders].sort())
       assert.equal(senders.some((x) => x.senderMid === ME), false, 'the account MID is not collected')
-      assert.ok(chats.every((c) => c.source.locator?.startsWith('/p/room-')), 'chat pictures come from _groupChat')
       assert.ok(senders.every((x) => x.source.locator?.startsWith('/p/pic-') && x.source.identity === x.senderMid))
-      assert.ok(extra <= 7 * distinctSenders.size + 8 * distinctChats.size, `${extra} extra queries <= 7*${distinctSenders.size} + 8*${distinctChats.size}`)
-      bounds.push({ count, extra, senders: distinctSenders.size, chats: distinctChats.size })
+      assert.ok(extra <= 7 * distinctSenders.size, `${extra} extra queries <= 7*${distinctSenders.size}`)
+      bounds.push({ count, extra, senders: distinctSenders.size })
     } finally { s.cleanup() }
   }
   assert.equal(bounds[0].extra, bounds[1].extra, `ten times the rows, the same number of extra queries (${JSON.stringify(bounds)})`)
@@ -229,7 +229,7 @@ test('A-4 collect: getMessagesSince never collects (even when the engine options
   } finally { s.cleanup() }
 })
 
-test('A-4 collect: a lookup that throws drops only that chat or sender, never the others and never the batch', () => {
+test('A-4 collect: a lookup that throws drops only that sender, never the others and never the batch', () => {
   const con = {
     prepare: () => ({
       get: (...params) => { if (params.includes('bad-sender') || params.includes('bad-chat')) throw new Error('synthetic read failure'); return undefined },
@@ -241,7 +241,7 @@ test('A-4 collect: a lookup that throws drops only that chat or sender, never th
     { chatId: 'c-ok', from: ME }, { chatId: 'c-ok', from: null }, { chatId: 'c-ok', from: 'good-sender' }
   ]
   const meta = collectAvatarMeta(con, rows, ME)
-  assert.deepEqual(meta.chats.map((c) => c.chatId), ['c-ok'])
+  assert.equal(meta.chats, undefined)
   assert.deepEqual(meta.senders.map((x) => `${x.chatId}/${x.senderMid}`), ['c-ok/good-sender', 'bad-chat/good-sender'])
 })
 
@@ -272,7 +272,7 @@ function appDb(s) {
   return new Database(join(s.dataDir, 'line-todo.db'), { readonly: true })
 }
 
-test('A-4 wiring: through createPluginBackend the avatar tables exist (user_version unchanged), a poll writes chat and sender profiles and links for incoming messages only, and the account MID is nowhere in the app DB', { timeout: 60_000 }, async () => {
+test('A-4 wiring: through createPluginBackend the avatar tables exist (user_version unchanged), a poll writes sender profiles and links for incoming messages only, and the account MID is nowhere in the app DB', { timeout: 60_000 }, async () => {
   const s = stage(SPEC_SMALL)
   let backend
   try {
@@ -288,7 +288,7 @@ test('A-4 wiring: through createPluginBackend the avatar tables exist (user_vers
       const incoming = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE direction='in'").get().n
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_message_sender').get().n, incoming, 'every incoming message is linked, no outgoing one')
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM line_message_sender ms JOIN messages m ON m.msg_id=ms.msg_id WHERE m.direction='out'").get().n, 0)
-      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_chat_avatar').get().n, 2)
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_chat_avatar').get().n, 0, 'the chat level is not written any more')
       assert.ok(db.prepare('SELECT COUNT(*) AS n FROM line_sender_profile').get().n >= 3)
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM line_sender_profile WHERE sender_mid=?").get(ME).n, 0)
       for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()) {
@@ -333,6 +333,7 @@ function appDbWith({ chats = ['c-room-0'], messages = [] } = {}) {
   const opened = openDatabase({ dbPath: ':memory:' })
   const db = opened.db
   ensureLineAvatarSchema(db)
+  ensureLineEntitySchema(db)
   const at = new Date('2026-11-02T00:00:00.000Z').toISOString()
   for (const chat of chats) db.prepare('INSERT INTO chats(chat_id,name,is_group,blocked,first_seen_at,last_seen_at) VALUES (?,?,1,0,?,?)').run(chat, chat, at, at)
   messages.forEach((m, i) => db.prepare(`INSERT INTO messages(msg_id,chat_id,ts,time_iso,direction,sender,text,content_type,processed,ingested_at)
@@ -345,25 +346,25 @@ const counted = (impl) => { const f = async (input) => { f.calls.push(input); re
 const rowsOf = (db, table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n
 
 /** Seeds `n` incoming messages from `senders` senders into one chat, linked the way an import would link them. */
-function seedLinked(db, { chat = 'c-room-0', n = 200, senders = 5, tag = 'm' } = {}) {
+function seedLinked(db, { chat = 'c-room-0', n = 200, senders = 5, tag = 'm', book = true } = {}) {
   const ids = Array.from({ length: n }, (_, i) => `i:${tag}${i}`)
   const at = new Date().toISOString()
   ids.forEach((id, i) => db.prepare(`INSERT INTO messages(msg_id,chat_id,ts,time_iso,direction,sender,text,content_type,processed,ingested_at)
     VALUES (?,?,?,?,'in','x','t',0,0,?)`).run(id, chat, 1_700_000_000_000 + i, at, at))
   const linker = createSenderLinker(db)
   const sid = Array.from({ length: senders }, (_, k) => linker.upsert(chat, `u-sender-${String(k).padStart(3, '0')}`, src('x', `/p/pic-${k}`, `Sender ${k}`), Date.now()))
+  if (book) for (let k = 0; k < senders; k += 1) upsertEntity(db, { kind: 'contact', mid: `u-sender-${String(k).padStart(3, '0')}`, source: 'profile', locator: `/p/pic-${k}`, displayName: `Sender ${k}` }, Date.now())
   ids.forEach((id, i) => linker.link(id, chat, sid[i % senders]))
   return ids
 }
 
-test('A-5 local first: with 200 linked messages, 20 consecutive reads never call the fallback, return the original sender identity and locator, and the median CPU time of reads 2..20 is < 60 ms', async () => {
+test('A-5 local first: with 200 linked messages, 20 consecutive reads return the original sender identity and locator from the address book, the median CPU time of reads 2..20 is < 60 ms, and the reader has no way to reach LINE', async () => {
   const db = appDbWith()
   try {
     const ids = seedLinked(db, { n: 200, senders: 5 })
-    db.prepare("INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES ('c-room-0','profile','/p/room','Room 0',?)").run(Date.now())
-    const fallback = counted()
-    const stats = { local: 0, fallback: 0, miss: 0, write: 0 }
-    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, onStat: (kind, n) => { stats[kind] += n } })
+    upsertEntity(db, { kind: 'group', mid: 'c-room-0', source: 'profile', locator: '/p/room', displayName: 'Room 0' }, Date.now())
+    const stats = { local: 0, miss: 0 }
+    const reader = createLayeredAvatarReader({ getDb: () => db, entityOn: () => true, onStat: (kind, n) => { stats[kind] += n } })
     const samples = []
     for (let i = 0; i < 20; i += 1) {
       const { value: answer, cpuMs, wallMs } = await withCpu(() => reader.read({ chatId: 'c-room-0', msgIds: ids }))
@@ -373,119 +374,63 @@ test('A-5 local first: with 200 linked messages, 20 consecutive reads never call
     }
     const chats = await reader.read({ chatIds: ['c-room-0'] })
     assert.deepEqual(chats.chats['c-room-0'], { identity: 'c-room-0', locator: '/p/room', displayName: 'Room 0', source: 'profile' })
-    assert.equal(fallback.calls.length, 0, 'the LINE side was never asked')
     assertCpuCriterion(samples, 'reader.read')
-    assert.deepEqual(stats, { local: 20 * 200 + 1, fallback: 0, miss: 0, write: 0 })
+    assert.deepEqual(stats, { local: 20 * 200 + 1, miss: 0 })
   } finally { db.close() }
 })
 
-test('A-5 partial miss: only what the local layer lacks goes to the fallback, what it finds is written back (the next read is fully local), and an outgoing or unknown message is never stored', async () => {
-  const db = appDbWith({ messages: [{ id: 'i:out-1', direction: 'out' }] })
+test('A-5 the three rules: (1) non-Square — line_entity with a locator is used, and it wins over an older line_sender_profile copy and over the retired line_chat_avatar; (2) Square member — line_sender_profile; (3) anything else — nothing, so the screen shows a letter', async () => {
+  const db = appDbWith({ chats: ['c-room-0', 'c-square', 'c-nobody'] })
   try {
-    const known = seedLinked(db, { n: 6, senders: 2 })
     const at = new Date().toISOString()
-    for (const id of ['i:new-1', 'i:new-2']) db.prepare("INSERT INTO messages(msg_id,chat_id,ts,time_iso,direction,sender,text,content_type,processed,ingested_at) VALUES (?, 'c-room-0', 5, ?, 'in', 'x', 't', 0, 0, ?)").run(id, at, at)
-    const fallback = counted((input) => ({
-      chats: Object.fromEntries((input.chatIds ?? []).map((id) => [id, src(id, `/p/${id}`, `chat ${id}`)])),
-      messages: {
-        'i:new-1': src('u-sender-000', '/p/pic-0', 'Sender 0'), 'i:new-2': src('u-late', '/p/late', 'Late'),
-        'i:out-1': src(ME, '/p/me', 'Me'), 'i:not-in-app-db': src('u-ghost', '/p/ghost', 'Ghost')
-      },
-      accountMid: ME
-    }))
-    const stats = { local: 0, fallback: 0, miss: 0, write: 0 }
-    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, onStat: (kind, n) => { stats[kind] += n } })
-    const ask = ['i:new-1', 'i:new-2', 'i:out-1', 'i:not-in-app-db', ...known.slice(0, 2)]
-    const first = await reader.read({ chatId: 'c-room-0', msgIds: ask })
-    assert.deepEqual(fallback.calls, [{ chatIds: [], chatId: 'c-room-0', msgIds: ['i:new-1', 'i:new-2', 'i:out-1', 'i:not-in-app-db'] }], 'only the missing ids were asked for')
-    assert.equal(Object.keys(first.messages).length, 6, 'local and fallback answers are merged, the unknown ones too (the caller shows them once)')
-    assert.equal(first.messages['i:m0'].identity, 'u-sender-000')
-    const profiles = db.prepare('SELECT sender_mid AS m FROM line_sender_profile ORDER BY sender_mid').all().map((r) => r.m)
-    assert.deepEqual(profiles, ['u-late', 'u-sender-000', 'u-sender-001'], 'the new sender was stored; the outgoing message (account MID) and the id that is not in the app DB were not')
-    assert.equal(rowsOf(db, 'line_message_sender'), 8)
-    const dump = JSON.stringify(db.prepare('SELECT * FROM line_sender_profile').all()) + JSON.stringify(db.prepare('SELECT * FROM line_message_sender').all())
-    assert.equal(dump.includes(ME) || dump.includes('u-ghost'), false)
-    assert.equal(stats.write, 2)
-    const second = await reader.read({ chatId: 'c-room-0', msgIds: ['i:new-1', 'i:new-2', ...known.slice(0, 2)] })
-    assert.equal(fallback.calls.length, 1, 'written back: the second read is entirely local')
-    assert.equal(second.messages['i:new-2'].identity, 'u-late')
+    const linker = createSenderLinker(db)
+    const addMsg = (id, chat) => db.prepare("INSERT INTO messages(msg_id,chat_id,ts,time_iso,direction,sender,text,content_type,processed,ingested_at) VALUES (?,?,1,?,'in','x','t',0,0,?)").run(id, chat, at, at)
+    const link = (id, chat, mid, source) => { addMsg(id, chat); linker.link(id, chat, linker.upsert(chat, mid, source, Date.now())) }
+    link('i:contact', 'c-room-0', 'u-friend', src('x', '/p/OLD', 'Old name'))
+    link('i:square', 'c-square', 'sq-member', src('x', '/p/square-member', 'Member', 'square'))
+    link('i:unknown', 'c-nobody', 'u-stranger', src('x', '/p/stranger-copy', 'Stranger'))
+    link('i:square-no-photo', 'c-square', 'sq-plain', src('x', null, 'Plain'))
+    upsertEntity(db, { kind: 'contact', mid: 'u-friend', source: 'profile', locator: '/p/NEW', displayName: 'New name' }, Date.now())
+    upsertEntity(db, { kind: 'contact', mid: 'sq-member', source: 'profile', locator: '/p/entity-must-not-win', displayName: 'X' }, Date.now())
+    upsertEntity(db, { kind: 'group', mid: 'c-room-0', source: 'profile', locator: '/p/entity-room', displayName: 'Room' }, Date.now())
+    db.prepare("INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES ('c-room-0','profile','/p/retired-chat-copy','Retired',?)").run(Date.now())
+    db.prepare("INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES ('c-nobody','profile','/p/retired-only','Retired',?)").run(Date.now())
+    const reader = createLayeredAvatarReader({ getDb: () => db, entityOn: () => true })
 
-    await reader.read({ chatIds: ['c-new-chat'] })
-    assert.equal(rowsOf(db, 'line_chat_avatar'), 0, 'a chat that is not in the app DB is not stored (foreign key), and nothing throws')
-    assert.equal(stats.write, 2, 'and it is not counted as written')
-    db.prepare("INSERT INTO chats(chat_id,name,is_group,blocked,first_seen_at,last_seen_at) VALUES ('c-new-chat','n',1,0,?,?)").run(at, at)
-    await reader.read({ chatIds: ['c-new-chat'] })
-    assert.equal(rowsOf(db, 'line_chat_avatar'), 1, 'once the chat exists the answer is stored')
-    assert.equal(stats.write, 3)
+    const a = await reader.read({ chatIds: ['c-room-0', 'c-nobody'], chatId: 'c-room-0', msgIds: ['i:contact'] })
+    assert.equal(a.chats['c-room-0'].locator, '/p/entity-room', 'rule 1: the address book, not the retired chat table')
+    assert.equal('c-nobody' in a.chats, false, 'rule 3: the retired chat table is not read')
+    assert.deepEqual(a.messages['i:contact'], { identity: 'u-friend', locator: '/p/NEW', displayName: 'New name', source: 'profile' }, 'rule 1: the address book wins over the older sender copy')
+
+    const b = await reader.read({ chatId: 'c-square', msgIds: ['i:square', 'i:square-no-photo'] })
+    assert.deepEqual(b.messages['i:square'], { identity: 'sq-member', locator: '/p/square-member', displayName: 'Member', source: 'square' }, 'rule 2: a Square member keeps the picture the import stored')
+    assert.equal(b.messages['i:square-no-photo'], undefined, 'a sender copy that is not a Square member is not read')
+
+    const c = await reader.read({ chatId: 'c-nobody', msgIds: ['i:unknown'] })
+    assert.deepEqual(c.messages, {}, 'rule 3: not in the address book and not a Square member: nothing (the sender copy is not read)')
+    const off = await createLayeredAvatarReader({ getDb: () => db, entityOn: () => false }).read({ chatIds: ['c-room-0'], chatId: 'c-room-0', msgIds: ['i:contact'] })
+    assert.deepEqual(off.chats, {}, 'with the address book switched off a non-Square chat has no picture')
+    assert.deepEqual(off.messages, {}, 'and neither has a contact')
   } finally { db.close() }
 })
 
-test('A-5 hit rules: a locator or a name is a hit, an empty row confirmed within 24 h is a hit (known to have no picture), a stale empty row is a miss that the fallback refreshes', async () => {
-  const db = appDbWith({ chats: ['c-a', 'c-b', 'c-c', 'c-d'] })
-  try {
-    const t = 1_800_000_000_000
-    const put = (id, locator, name, at) => db.prepare('INSERT INTO line_chat_avatar(chat_id,source,locator,display_name,refreshed_at) VALUES (?,?,?,?,?)').run(id, locator ? 'profile' : null, locator, name, at)
-    put('c-a', '/p/a', null, t - 100 * 3600 * 1000)
-    put('c-b', null, 'Name only', t - 100 * 3600 * 1000)
-    put('c-c', null, null, t - 23 * 3600 * 1000)
-    put('c-d', null, null, t - 25 * 3600 * 1000)
-    const fallback = counted((input) => ({ chats: Object.fromEntries(input.chatIds.map((id) => [id, src(id, '/p/refreshed', 'Refreshed')])), messages: {} }))
-    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, now: () => t })
-    const answer = await reader.read({ chatIds: ['c-a', 'c-b', 'c-c', 'c-d'] })
-    assert.deepEqual(fallback.calls, [{ chatIds: ['c-d'] }], 'only the stale empty row went to the fallback')
-    assert.equal(answer.chats['c-c'].locator, null)
-    assert.equal(answer.chats['c-d'].locator, '/p/refreshed')
-    assert.equal(db.prepare("SELECT locator FROM line_chat_avatar WHERE chat_id='c-d'").get().locator, '/p/refreshed', 'and the refresh was written back')
-  } finally { db.close() }
-})
-
-test('A-5 negative cache: a miss is remembered for ten minutes (fake clock) and then asked again; at most 2,000 entries are kept (the oldest go first)', async () => {
+test('A-5 the reader never fails and never asks LINE: no db, no tables, a missing address book table, an entityOn that throws and empty requests all answer empty maps', async () => {
   const db = appDbWith()
   try {
-    let t = 1_800_000_000_000
-    const fallback = counted()
-    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read }, now: () => t })
-    await reader.read({ chatIds: ['c-x'] })
-    await reader.read({ chatIds: ['c-x'] })
-    assert.equal(fallback.calls.length, 1, 'the second ask is answered from the negative cache')
-    t += 10 * 60 * 1000 - 1
-    await reader.read({ chatIds: ['c-x'] })
-    assert.equal(fallback.calls.length, 1, 'still inside the ten minutes')
-    t += 2
-    await reader.read({ chatIds: ['c-x'] })
-    assert.equal(fallback.calls.length, 2, 'expired: asked again')
-
-    const many = counted()
-    const big = createLayeredAvatarReader({ getDb: () => db, fallback: { read: many.read }, now: () => t })
-    for (let i = 0; i < 21; i += 1) await big.read({ chatIds: Array.from({ length: 100 }, (_, k) => `c-n-${i * 100 + k}`) })
-    assert.equal(many.calls.length, 21)
-    await big.read({ chatIds: ['c-n-2099'] })
-    assert.equal(many.calls.length, 21, 'the newest miss is still remembered')
-    await big.read({ chatIds: ['c-n-0'] })
-    assert.equal(many.calls.length, 22, 'the oldest miss was evicted (2,100 > 2,000)')
-  } finally { db.close() }
-})
-
-test('A-5 the fallback failing, returning null or undefined never reaches the caller; no local layer (no tables, no db) means the fallback alone; empty requests are answered without anything', async () => {
-  const db = appDbWith()
-  try {
-    for (const impl of [() => { throw new Error('boom') }, () => null, () => undefined, () => ({})]) {
-      const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: async () => impl() } })
-      assert.deepEqual(await reader.read({ chatIds: ['c-room-0'] }), { chats: {}, messages: {} })
-    }
     const bare = openDatabase({ dbPath: ':memory:' }).db
     try {
-      const fallback = counted((input) => ({ chats: Object.fromEntries(input.chatIds.map((id) => [id, src(id, '/p/x', 'X')])), messages: {} }))
       for (const getDb of [() => bare, () => null]) {
-        const reader = createLayeredAvatarReader({ getDb, fallback: { read: fallback.read } })
-        assert.equal((await reader.read({ chatIds: ['c-q'] })).chats['c-q'].locator, '/p/x')
+        assert.deepEqual(await createLayeredAvatarReader({ getDb, entityOn: () => true }).read({ chatIds: ['c-q'] }), { chats: {}, messages: {} })
       }
     } finally { bare.close() }
-    const none = counted()
-    const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: none.read } })
+    assert.deepEqual(await createLayeredAvatarReader({ getDb: () => db, entityOn: () => { throw new Error('flag') } }).read({ chatIds: ['c-room-0'] }), { chats: {}, messages: {} })
+    db.exec('DROP TABLE line_entity')
+    const stats = { local: 0, miss: 0 }
+    const reader = createLayeredAvatarReader({ getDb: () => db, entityOn: () => true, onStat: (kind, n) => { stats[kind] += n } })
+    assert.deepEqual(await reader.read({ chatIds: ['c-room-0', 'c-room-1'] }), { chats: {}, messages: {} }, 'the address book table is gone: still no throw')
+    assert.deepEqual(stats, { local: 0, miss: 2 })
     assert.deepEqual(await reader.read({}), { chats: {}, messages: {} })
     assert.deepEqual(await reader.read({ chatId: 'c-room-0', msgIds: ['not-an-id'] }), { chats: {}, messages: {} })
-    assert.equal(none.calls.length, 0)
   } finally { db.close() }
 })
 
@@ -538,7 +483,7 @@ function seedAvatarCache(dataDir, identity, locator) {
   return `avatar-cache/${name}`
 }
 
-test('A-5 wiring: once the poll has stored the links, media.avatar.prepareMessages is answered from the local DB — no LINE open, no copy, no download, the median CPU time of calls 2..20 is < 60 ms; ids the local layer lacks go to the fallback only, which never copies', { timeout: 90_000 }, async () => {
+test('A-5 wiring: once the poll has stored the links and the address book has the contacts, media.avatar.prepareMessages is answered from the local DB — no LINE open, no copy, no download, the median CPU time of calls 2..20 is < 60 ms; an id the local DB lacks gets no picture and LINE is still not opened', { timeout: 90_000 }, async () => {
   const s = stage({ chats: chatsOf(1), contacts: people(6), messages: { count: 300, outEvery: 5 } })
   let backend
   try {
@@ -551,6 +496,10 @@ test('A-5 wiring: once the poll has stored the links, media.avatar.prepareMessag
       await until(() => db.prepare('SELECT COUNT(*) AS n FROM line_message_sender').get().n === incoming, { message: 'every incoming message linked' })
       const ids = db.prepare("SELECT msg_id AS id FROM messages WHERE direction='in' AND chat_id='c-room-0' ORDER BY ts LIMIT 200").all().map((r) => r.id)
       assert.equal(ids.length, 200)
+      const writer = new Database(join(s.dataDir, 'line-todo.db'))
+      try {
+        for (let k = 0; k < 6; k += 1) upsertEntity(writer, { kind: 'contact', mid: `u-sender-${String(k).padStart(3, '0')}`, source: 'profile', locator: `/p/pic-${k}`, displayName: `Sender ${k}` }, Date.now())
+      } finally { writer.close() }
 
       const opensBefore = s.calls.opens
       const copiesBefore = s.copies()
@@ -569,13 +518,14 @@ test('A-5 wiring: once the poll has stored the links, media.avatar.prepareMessag
       assert.equal(fetchCalls, 0, 'nothing was downloaded')
       assertCpuCriterion(samples, 'media.avatar.prepareMessages')
       const after = (await info(backend)).avatarStore.reads
-      assert.deepEqual({ local: after.local - before.local, fallback: after.fallback - before.fallback }, { local: 20 * 200, fallback: 0 })
+      assert.deepEqual({ local: after.local - before.local, miss: after.miss - before.miss }, { local: 20 * 200, miss: 0 })
+      assert.equal(after.fallback, undefined, 'there is no fallback counter any more')
 
-      // ids the local layer lacks: the fallback is asked for exactly those, through the existing snapshot (an 'any' open, no copy), and the answer for a message LINE does not know is empty
+      // an id the local DB lacks: no picture, and LINE is not opened for it (no snapshot read, no copy)
       const fresh = (await backend.call('media', { path: 'media.avatar.prepareMessages', args: ['c-room-0', [...ids.slice(0, 3), 'i:9999999']] })).value
       assert.equal(Object.keys(fresh.paths).length, 3)
       assert.equal(s.copies(), copiesBefore, 'still no copy')
-      assert.ok(s.calls.opens <= opensBefore + 1, 'at most one read-only open of the existing snapshot for the missing id')
+      assert.equal(s.calls.opens, opensBefore, 'LINE was not opened for the missing id either')
       const miss = (await info(backend)).avatarStore.reads
       assert.equal(miss.local - after.local, 3)
       assert.equal(miss.miss - after.miss, 1)
@@ -588,7 +538,7 @@ test('A-5 wiring: once the poll has stored the links, media.avatar.prepareMessag
   }
 })
 
-test('A-5 wiring: with no snapshot to read (snapshot:{enabled:false}) and nothing stored locally an avatar request answers empty maps — ok:true, no error into the dispatcher', { timeout: 60_000 }, async () => {
+test('A-5 wiring: with nothing stored locally (and the snapshot disabled) an avatar request answers empty maps — ok:true, no error into the dispatcher', { timeout: 60_000 }, async () => {
   const s = stage(SPEC_SMALL)
   let backend
   try {
@@ -686,7 +636,7 @@ async function runToDone(backfill, { timeout = 60_000 } = {}) {
   await until(() => backfill.status().phase === 'done', { timeout, step: 5, message: 'the backfill to finish' })
 }
 
-test('A-6 backfill: chats first, then newest to oldest by LINE rowid; only incoming messages that the app DB has are linked (no outgoing, no d: ids, no unknown rows, no row the app DB files under another chat); the account MID is never stored', async () => {
+test('A-6 backfill: messages only (no chats phase), newest to oldest by LINE rowid; only incoming messages that the app DB has are linked (no outgoing, no d: ids, no unknown rows, no row the app DB files under another chat); the account MID is never stored', async () => {
   const spec = { chats: chatsOf(3), contacts: people(8), messages: { count: 1500, outEvery: 6 } }
   const s = stage(spec)
   const db = appDbWith({ chats: [] })
@@ -698,14 +648,14 @@ test('A-6 backfill: chats first, then newest to oldest by LINE rowid; only incom
     assert.deepEqual(sortedPairs(linksOf(db)), sortedPairs(seeded.expected), 'exactly the incoming messages the app DB knows are linked, with their original sender')
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM line_message_sender WHERE msg_id LIKE 'd:%'").get().n, 0)
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_sender_profile WHERE sender_mid=?').get(ME).n, 0)
-    assert.equal(rowsOf(db, 'line_chat_avatar'), 3, 'phase one stored every chat')
+    assert.equal(rowsOf(db, 'line_chat_avatar'), 0, 'the backfill does not store chats')
     const profile = db.prepare("SELECT source,locator,display_name FROM line_sender_profile WHERE sender_mid='u-sender-001'").get()
     assert.deepEqual({ ...profile }, { source: 'profile', locator: '/p/pic-1', display_name: 'Sender 1' })
 
-    // chats before messages, and the messages phase walks rowid downwards without gaps
+    // there is no chats phase, and the messages phase walks rowid downwards without gaps
     const phases = probe.slices.map((x) => x.phase)
-    assert.equal(phases[0], 'chats')
-    assert.ok(phases.lastIndexOf('chats') < phases.indexOf('messages'), 'every chats slice precedes the messages slices')
+    assert.equal(phases.includes('chats'), false)
+    assert.equal(phases[0], 'messages')
     const expectedRowIds = seeded.rows.filter((r) => r.sender && r.sender !== ME).map((r) => r.rid).sort((a, b) => b - a)
     assert.deepEqual([...new Set(probe.rowsLog.flat())], expectedRowIds, 'rowids come newest first and nothing is skipped (a row cut off by the slice budget is simply read again)')
     const cursors = probe.slices.filter((x) => x.phase === 'messages').map((x) => Number(x.cursor))
@@ -730,7 +680,7 @@ test('A-6 backfill is interruptible and resumable: after a dispose in the middle
   try {
     const seededFull = seedAppFromLine(full, s.src, { skipEvery: 7, chats: spec.chats.map((c) => c.id) })
     seedAppFromLine(db, s.src, { skipEvery: 7, chats: spec.chats.map((c) => c.id) })
-    const reference = backfillOver(s.src, full)
+    const reference = backfillOver(s.src, full, { budget: { sliceMs: 1 } })
     await runToDone(reference.backfill)
     await reference.backfill.dispose()
     assert.ok(reference.probe.slices.length > 4, 'the run takes several slices')
@@ -982,7 +932,7 @@ test('A-6 gap detection: a finished backfill starts over when the last import ba
     const upgraded = await rerun()
     assert.ok(upgraded.opens >= 1, 'a new algorithm version starts over')
     assert.equal(rowsOf(db, 'line_message_sender'), seeded.expected.length)
-    assert.equal(db.prepare("SELECT value FROM line_avatar_meta WHERE key='backfill_version'").get().value, '1')
+    assert.equal(db.prepare("SELECT value FROM line_avatar_meta WHERE key='backfill_version'").get().value, String(AVATAR_BACKFILL_VERSION))
   } finally { db.close(); s.cleanup() }
 })
 
@@ -1016,7 +966,7 @@ test('A-6 wiring: after a restart with the avatar store switched on, createPlugi
     try {
       const incoming = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE direction='in'").get().n
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_message_sender').get().n, incoming, 'every incoming message got its link')
-      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_chat_avatar').get().n, 2)
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_chat_avatar').get().n, 0)
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM line_sender_profile WHERE sender_mid=?').get(ME).n, 0)
       assert.equal(status.linked, incoming)
       assert.equal(status.scanned, 480)
@@ -1079,6 +1029,8 @@ test('static: the sender MID table and column are named only in lineAvatar.repo.
   const owner = 'lineAvatar.repo.ts'
   const holders = files.filter((f) => /line_sender_profile|sender_mid/.test(readFileSync(join(root, f), 'utf8'))).map((f) => f.split(/[\\/]/).pop())
   assert.deepEqual(holders, [owner])
+  const entityHolders = files.filter((f) => /line_entity|entity_mid/.test(readFileSync(join(root, f), 'utf8'))).map((f) => f.split(/[\\/]/).pop())
+  assert.deepEqual(entityHolders, ['lineEntity.repo.ts'], 'the address-book table and its MID column are named only in lineEntity.repo.ts')
   for (const f of ['plugin/backend/assemble.ts', 'plugin/backend/invokeTrace.ts']) {
     assert.equal(/senderMid|sender_mid|line_sender_profile/.test(readFileSync(join(root, f), 'utf8')), false, `${f} never names the sender MID`)
   }
@@ -1095,43 +1047,12 @@ const holders = (db, needle) => db.prepare("SELECT name FROM sqlite_master WHERE
   .filter(({ name }) => JSON.stringify(db.prepare(`SELECT * FROM "${name}"`).all()).includes(needle)).map(({ name }) => name)
 const avatarRows = (db) => ['line_chat_avatar', 'line_sender_profile', 'line_message_sender'].map((t) => rowsOf(db, t))
 
-test('F1 collect: with the account MID unknown only the chats are collected — no sender, whoever wrote the rows', () => {
+test('F1 collect: with the account MID unknown no sender is collected, whoever wrote the rows', () => {
   const con = { prepare: () => ({ get: () => undefined, all: () => [] }) }
   const rows = [{ chatId: 'c-ok', from: 'someone' }, { chatId: 'c-ok', from: ME }]
   for (const unknown of [null, '']) {
     const meta = collectAvatarMeta(con, rows, unknown)
-    assert.deepEqual(meta.chats.map((c) => c.chatId), ['c-ok'])
     assert.deepEqual(meta.senders, [])
-  }
-})
-
-test('F1 write-through: the account MID never gets a profile — not when the app DB mis-filed our own message as incoming, not when the source cannot say who we are, not when it reports nothing', async () => {
-  for (const [label, extra] of [['source knows us', { accountMid: ME }], ['source cannot say who we are', { accountMid: null }], ['source reports nothing', {}]]) {
-    const db = appDbWith({ messages: [{ id: 'i:mine', direction: 'in' }, { id: 'i:theirs', direction: 'in' }] })
-    try {
-      const fallback = counted(() => ({ chats: { 'c-room-0': src('c-room-0', '/p/room', 'Room') }, messages: { 'i:mine': src(ME, '/p/me', 'Me'), 'i:theirs': src('u-friend', '/p/f', 'Friend') }, ...extra }))
-      const reader = createLayeredAvatarReader({ getDb: () => db, fallback: { read: fallback.read } })
-      const answer = await reader.read({ chatIds: ['c-room-0'], chatId: 'c-room-0', msgIds: ['i:mine', 'i:theirs'] })
-      assert.equal(Object.keys(answer.messages).length, 2, `${label}: the caller still gets both answers to show`)
-      assert.deepEqual(holders(db, ME), [], `${label}: the account MID is in no table`)
-      assert.equal(rowsOf(db, 'line_chat_avatar'), 1, `${label}: the chat level is written regardless`)
-      assert.equal(rowsOf(db, 'line_sender_profile'), extra.accountMid ? 1 : 0, `${label}: a friend profile only when we know who we are`)
-    } finally { db.close() }
-  }
-})
-
-test('F1 source: getAvatarMetadata reports the account MID the source knows, and null when its _profile is empty', async () => {
-  for (const [noProfile, expected] of [[false, ME], [true, null]]) {
-    const s = stage({ ...SPEC_SMALL, noProfile })
-    try {
-      s.legacyPorts()
-      const store = new LineSnapshotStore({ fs: s.fs, dir: join(s.dataDir, 'line-engine', 'snapshot'), walOnly: true })
-      const access = createLineAccess({ store })
-      configureLineEnginePorts({ access })
-      ;(await access.open({ dbPath: s.src, policy: 'fresh', keyOpts: s.keyOpts })).cleanup()
-      const answer = await getAvatarMetadata({ chatIds: ['c-room-0'] }, { dbPath: s.src, keyOpts: s.keyOpts })
-      assert.equal(answer.accountMid, expected)
-    } finally { s.cleanup() }
   }
 })
 
@@ -1275,41 +1196,6 @@ test('watermark: a batch committed in the middle of a round that wrote no links 
   } finally { db.close(); s.cleanup() }
 })
 
-test('chats phase: a chat the source cannot read right now is a transient failure — no "no avatar" record is written for it, the error is counted with backoff, and a later burst reads it for real', async () => {
-  const spec = { chats: chatsOf(2), contacts: people(4), messages: { count: 200, outEvery: 5 } }
-  const s = stage(spec)
-  const db = appDbWith({ chats: [] })
-  try {
-    const seeded = seedAppFromLine(db, s.src, { chats: spec.chats.map((c) => c.id) })
-    const flag = { fail: true }
-    const h = {}
-    const { backfill, probe } = backfillOver(s.src, db, {
-      openSource: async () => {
-        h.probe.opens += 1
-        const real = openLineCon(s.src)
-        const con = {
-          pragma: real.pragma,
-          close: real.close,
-          prepare: (sql) => (flag.fail && /_groupChat/.test(sql) ? { get() { throw new Error('transient read failure') }, all() { throw new Error('transient read failure') } } : real.prepare(sql))
-        }
-        return { con, cleanup: () => { h.probe.cleanups += 1; con.close() }, shouldYield: () => false }
-      }
-    })
-    h.probe = probe
-    backfill.start()
-    await until(() => backfill.status().errors >= 3, { message: 'a few failed bursts' })
-    assert.equal(rowsOf(db, 'line_chat_avatar'), 0, 'no record at all — in particular no empty "confirmed no avatar" row')
-    assert.notEqual(backfill.status().phase, 'messages')
-    assert.deepEqual(probe.sleeps.slice(1, 4), [30_000, 60_000, 120_000], 'errors back off')
-    flag.fail = false
-    await runToDone(backfill)
-    await backfill.dispose()
-    assert.deepEqual(db.prepare('SELECT chat_id AS c, locator AS l FROM line_chat_avatar ORDER BY chat_id').all().map((r) => [r.c, r.l]), [['c-room-0', '/p/room-0'], ['c-room-1', '/p/room-1']], 'read for real after the failure cleared')
-    assert.equal(rowsOf(db, 'line_message_sender'), seeded.expected.length)
-    assert.equal(probe.opens, probe.cleanups)
-  } finally { db.close(); s.cleanup() }
-})
-
 // ───────────── fix 2: the behaviours Reviewer r2 found unguarded (watermark never backwards, fillOnly fills only what is empty, one unreadable chat does not block the others) ─────────────
 
 test('watermark: advancing never moves link_watermark backwards — a round that started before the current watermark leaves it where it is', async () => {
@@ -1377,42 +1263,94 @@ test('fillOnly (what the backfill uses): an empty locator is filled (with its so
   } finally { db.close() }
 })
 
-test('chats phase: one chat the source cannot read does not block the others in the same slice — they are all written, the unreadable one has no record and the error is counted, and the next burst retries it', async () => {
-  const bad = { id: 'c-aaa-bad', name: 'Bad room', picture: '/p/bad' }
-  const spec = { chats: [bad, ...chatsOf(2)], contacts: people(4), messages: { count: 120, outEvery: 5 } }
+// ───────────── the `_targetProfileDetail.picturePath` source and re-reading name-only rows (fix/line-todo-avatar-tpd) ─────────────
+
+const PIC79 = `/${'a1B2c3D4e5'.repeat(7)}xyz_-Q7Z` // 1 + 70 + 7 + 1 = 79
+const PIC166 = `/${'f0e1d2c3b4'.repeat(8)}/${'a9b8c7d6e5'.repeat(8)}abc_` // 1 + 80 + 1 + 80 + 4 = 166
+const detailOf = (picturePath) => JSON.stringify({ profileName: 'x', pictureStatus: 'ok', picturePath })
+
+test('profile source: a NULL _contact._picturePath falls back to _targetProfileDetail.picturePath (source profile); _picturePath still wins; bad JSON, a missing field or a non-string never throws and gives null', () => {
+  assert.equal(PIC79.length, 79)
+  assert.equal(PIC166.length, 166)
+  const spec = {
+    chats: [{ id: 'c-room-0' }, { id: 'u-peer-a' }, { id: 'u-peer-b' }],
+    contacts: [
+      { mid: 'u-null-detail166', picture: null, detail: detailOf(PIC166) },
+      { mid: 'u-null-detail79', picture: null, detail: detailOf(PIC79) },
+      { mid: 'u-both', picture: '/p/own-picture', detail: detailOf('/p/detail-picture') },
+      { mid: 'u-bad-json', picture: null, detail: '{not json' },
+      { mid: 'u-no-field', picture: null, detail: JSON.stringify({ profileName: 'only a name' }) },
+      { mid: 'u-empty-field', picture: null, detail: detailOf('   ') },
+      { mid: 'u-number-field', picture: null, detail: JSON.stringify({ picturePath: 12345 }) },
+      { mid: 'u-json-null', picture: null, detail: 'null' },
+      { mid: 'u-no-detail', picture: null, detail: null },
+      { mid: 'u-peer-a', name: 'Peer A', picture: null, detail: detailOf(PIC79) },
+      { mid: 'u-peer-b', name: 'Peer B', picture: '/p/peer-b', detail: detailOf('/p/ignored') }
+    ],
+    messages: []
+  }
+  const s = stage(spec)
+  try {
+    const con = openLineCon(s.src)
+    try {
+      const of = (mid) => linedb.senderAvatarSource(con, 'c-room-0', mid)
+      assert.deepEqual({ ...of('u-null-detail166') }, { identity: 'u-null-detail166', locator: PIC166, displayName: 'name u-null-detail166', source: 'profile' })
+      assert.deepEqual([of('u-null-detail79').locator, of('u-null-detail79').source], [PIC79, 'profile'])
+      assert.deepEqual([of('u-both').locator, of('u-both').source], ['/p/own-picture', 'profile'], '_picturePath has priority')
+      for (const mid of ['u-bad-json', 'u-no-field', 'u-empty-field', 'u-number-field', 'u-json-null', 'u-no-detail', 'u-unknown']) {
+        const got = of(mid)
+        assert.deepEqual([got.locator, got.source], [null, null], mid)
+      }
+      // a 1:1 chat takes the same path (chatAvatarSource -> profileSource)
+      const peerA = linedb.chatAvatarSource(con, 'u-peer-a')
+      assert.deepEqual([peerA.locator, peerA.source], [PIC79, 'profile'])
+      assert.equal(linedb.chatAvatarSource(con, 'u-peer-b').locator, '/p/peer-b')
+    } finally { con.close() }
+  } finally { s.cleanup() }
+})
+
+test('profile source: locators of the _picturePath shape (leading slash, 79 and 166 characters) taken from _targetProfileDetail pass the unchanged safeImageUrl — the avatar cache requests the profile CDN URL for them, exactly as for the same string read from _picturePath', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'avatar-safe-url-'))
+  try {
+    const fetchBefore = fetchCalls
+    const asked = []
+    const cache = createAvatarCache({ dataDir: root, fetchImpl: async (url) => { asked.push(url); throw new Error('offline') } })
+    const spec = {
+      chats: [{ id: 'c-room-0' }],
+      contacts: [
+        { mid: 'u-d79', picture: null, detail: detailOf(PIC79) }, { mid: 'u-d166', picture: null, detail: detailOf(PIC166) },
+        { mid: 'u-p79', picture: PIC79, detail: null }, { mid: 'u-p166', picture: PIC166, detail: null }
+      ],
+      messages: []
+    }
+    const s = stage(spec)
+    try {
+      const con = openLineCon(s.src)
+      try {
+        for (const mid of ['u-d79', 'u-d166', 'u-p79', 'u-p166']) {
+          const source = linedb.senderAvatarSource(con, 'c-room-0', mid)
+          await cache.get({ identity: mid, locator: source.locator })
+        }
+      } finally { con.close() }
+    } finally { s.cleanup() }
+    const url = (path) => `https://profile.line-scdn.net${path}`
+    assert.deepEqual(asked, [url(PIC79), url(PIC166), url(PIC79), url(PIC166)], 'safeImageUrl accepted all four (a rejected locator would never reach fetch)')
+    assert.equal(fetchCalls, fetchBefore, 'and the global fetch was never used')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('upgrade: a backfill saved in the retired chats phase continues with the messages — no chat is stored, the links are made, and the round ends', async () => {
+  const spec = { chats: chatsOf(2), contacts: people(4), messages: { count: 200, outEvery: 5 } }
   const s = stage(spec)
   const db = appDbWith({ chats: [] })
   try {
-    seedAppFromLine(db, s.src, { chats: spec.chats.map((c) => c.id) })
-    assert.equal(db.prepare('SELECT chat_id FROM chats ORDER BY rowid LIMIT 1').get().chat_id, 'c-aaa-bad', 'the unreadable chat is the first one the phase asks for')
-    const flag = { fail: true }
-    const h = {}
-    const { backfill, probe } = backfillOver(s.src, db, {
-      openSource: async () => {
-        h.probe.opens += 1
-        const real = openLineCon(s.src)
-        const con = {
-          pragma: real.pragma,
-          close: real.close,
-          prepare: (sql) => {
-            const statement = real.prepare(sql)
-            if (!flag.fail || !/_groupChat/.test(sql)) return statement
-            return { get: (...params) => { if (params.includes(bad.id)) throw new Error('transient read failure'); return statement.get(...params) }, all: (...params) => statement.all(...params) }
-          }
-        }
-        return { con, cleanup: () => { h.probe.cleanups += 1; con.close() }, shouldYield: () => false }
-      }
-    })
-    h.probe = probe
-    backfill.start()
-    await until(() => backfill.status().errors >= 2, { message: 'the unreadable chat to fail twice' })
-    const records = () => db.prepare('SELECT chat_id AS c, locator AS l FROM line_chat_avatar ORDER BY chat_id').all().map((r) => [r.c, r.l])
-    assert.deepEqual(records(), [['c-room-0', '/p/room-0'], ['c-room-1', '/p/room-1']], 'the readable chats have their record; the unreadable one has none (not even an empty one)')
-    assert.notEqual(backfill.status().phase, 'messages', 'the chats phase waits for the unreadable chat')
-    flag.fail = false
+    const seeded = seedAppFromLine(db, s.src, { chats: spec.chats.map((c) => c.id) })
+    for (const [k, v] of [['backfill_version', String(AVATAR_BACKFILL_VERSION)], ['backfill_phase', 'chats'], ['backfill_started_at', new Date().toISOString()]]) db.prepare('INSERT INTO line_avatar_meta(key,value) VALUES (?,?)').run(k, v)
+    const { backfill, probe } = backfillOver(s.src, db)
     await runToDone(backfill)
     await backfill.dispose()
-    assert.deepEqual(records(), [['c-aaa-bad', '/p/bad'], ['c-room-0', '/p/room-0'], ['c-room-1', '/p/room-1']], 'a later burst retried the chat and read it for real')
-    assert.equal(probe.opens, probe.cleanups)
+    assert.equal(probe.slices.some((x) => x.phase === 'chats'), false)
+    assert.equal(rowsOf(db, 'line_chat_avatar'), 0)
+    assert.equal(rowsOf(db, 'line_message_sender'), seeded.expected.length)
   } finally { db.close(); s.cleanup() }
 })

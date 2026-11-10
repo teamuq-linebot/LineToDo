@@ -16,7 +16,6 @@ export interface LineImportItem {
 
 /** Avatar metadata read from the LINE DB that is already open for this batch (opt-in: `avatarMeta`). Main-process only. */
 export interface LineImportAvatarMeta {
-  chats: Array<{ chatId: string; source: LineAvatarSource }>
   senders: Array<{ chatId: string; senderMid: string; source: LineAvatarSource }>
 }
 
