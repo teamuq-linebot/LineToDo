@@ -32,6 +32,7 @@ const SENDER_ID_CACHE_MAX = 5000
 export type AvatarMetaKey =
   | 'schema_version' | 'backfill_phase' | 'backfill_cursor' | 'backfill_version' | 'backfill_scanned'
   | 'backfill_linked' | 'backfill_started_at' | 'backfill_done_at' | 'backfill_round_at' | 'link_watermark'
+  | 'entity_schema_version' | 'contact_sync_version' | 'contact_sync_sig' | 'contact_sync_done_at' | 'contact_sync_counts'
 
 const TABLES = ['line_avatar_meta', 'line_chat_avatar', 'line_sender_profile', 'line_message_sender']
 const readyCache = new WeakMap<object, true>()
