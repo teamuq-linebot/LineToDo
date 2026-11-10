@@ -321,6 +321,96 @@ test('real img error switches to text fallback and failed source is not retried 
   }
 })
 
+test('avatar zoom: a photo avatar (message sender, chat header) opens a big photo with the name; Esc, backdrop and the close button close it and focus returns; letter avatars and the chat list stay inert', async () => {
+  const chatId = 'm-zoom-fixture'
+  const letterChatId = 'm-zoom-letter-fixture'
+  const ts = Date.UTC(2026, 9, 30, 4, 0, 0)
+  const chat = { chatId, name: '放大測試群', isGroup: true, firstSeenAt: new Date(ts).toISOString(), lastSeenAt: new Date(ts).toISOString() }
+  const letterChat = { chatId: letterChatId, name: '字母群', isGroup: true, firstSeenAt: new Date(ts - 1000).toISOString(), lastSeenAt: new Date(ts - 1000).toISOString() }
+  const row = (msgId, sender) => ({ msgId, chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender, text: `zoom ${msgId}`, contentType: 0, processed: true, ingestedAt: new Date(ts).toISOString(), origFilename: null, fileSize: null, unsent: false })
+  const photoMessage = row('i:z1', '有照片的成員')
+  const letterMessage = row('i:z2', '無照片成員')
+  const { api } = plugin({
+    ...settingsHandlers(),
+    'db.chats.list': () => [chat, letterChat],
+    'db.messages.list': () => [],
+    'db.messages.recentByChat': (id) => id === chatId ? [photoMessage, letterMessage] : [],
+    'media.avatar.prepareChats': () => ({ paths: { [chatId]: 'avatar-cache/zoom-chat.jpg' }, names: { [chatId]: chat.name } }),
+    'media.avatar.prepareMessages': () => ({ paths: { 'i:z1': 'avatar-cache/zoom-member.jpg' }, names: { 'i:z1': photoMessage.sender, 'i:z2': letterMessage.sender } }),
+    'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 })
+  })
+  const hasClass = (element, name) => (element.getAttribute('class') ?? '').split(/\s+/).includes(name)
+  const triggers = (scene) => walk(scene.container).filter((el) => el.localName === 'button' && hasClass(el, 'avatar-zoom-trigger'))
+  const dialog = () => walk(dom.document.body).find((el) => el.getAttribute('role') === 'dialog' && hasClass(el, 'avatar-zoom-backdrop')) ?? null
+  const keyEvent = (key) => ({ key, preventDefault() {}, stopPropagation() {} })
+  const clickEvent = (target, currentTarget = target) => ({ target, currentTarget, preventDefault() {}, stopPropagation() {} })
+  let scene
+  try {
+    scene = ui.mount(ui.messageStreamScene(api))
+    await until(() => triggers(scene).length === 2, { message: 'header and sender photo avatars are buttons' })
+    const [headerTrigger, senderTrigger] = triggers(scene)
+    assert.equal(headerTrigger.getAttribute('aria-label'), chat.name)
+    assert.equal(senderTrigger.getAttribute('aria-label'), photoMessage.sender)
+    assert.equal(dialog(), null, 'nothing is open before a click')
+
+    // the chat list avatar is not a button: clicking a list row only selects the chat
+    const listItem = walk(scene.container).find((el) => hasClass(el, 'chat-list-item') && el.textContent.includes(chat.name))
+    assert.ok(listItem)
+    assert.equal(walk(listItem).some((el) => el.localName === 'button' && hasClass(el, 'avatar-zoom-trigger')), false)
+    assert.equal(walk(listItem).filter((el) => el.localName === 'img').length, 1, 'the list still shows its photo')
+
+    // the sender without a photo stays a letter: no button, no click handler, no pointer-cursor class
+    const letterRow = walk(scene.container).find((el) => hasClass(el, 'chat-message') && el.textContent.includes(letterMessage.text))
+    const letterAvatar = walk(letterRow).find((el) => hasClass(el, 'chat-message-avatar'))
+    assert.ok(letterAvatar)
+    assert.equal(letterAvatar.localName, 'span')
+    assert.equal(hasClass(letterAvatar, 'avatar-zoom-trigger'), false)
+    assert.equal(reactProps(letterAvatar).onClick, undefined)
+    assert.equal(letterAvatar.textContent, '無')
+
+    // 1. sender photo: big photo (same file) + name; focus moves in
+    reactProps(senderTrigger).onClick()
+    await until(() => dialog() !== null, { message: 'sender zoom opened' })
+    let box = dialog()
+    const photo = walk(box).find((el) => el.localName === 'img')
+    assert.equal(photo.getAttribute('src'), 'tuqplugin://tuqdev.line-todo/data/avatar-cache/zoom-member.jpg')
+    assert.ok(hasClass(photo, 'avatar-zoom-photo'))
+    assert.equal(walk(box).find((el) => hasClass(el, 'avatar-zoom-name')).textContent, photoMessage.sender)
+    const closeButton = walk(box).find((el) => el.localName === 'button')
+    assert.equal(closeButton.getAttribute('aria-label'), '關閉')
+    assert.equal(box.textContent.replace(photoMessage.sender, '').replace('×', ''), '', 'the dialog carries no other text')
+    await until(() => dom.document.activeElement === closeButton, { message: 'focus moved into the dialog' })
+
+    // 2a. Esc closes and returns focus to the avatar
+    reactProps(box).onKeyDown(keyEvent('Escape'))
+    await until(() => dialog() === null, { message: 'Esc closes' })
+    assert.equal(dom.document.activeElement, senderTrigger)
+
+    // 2b. backdrop click closes; a click that lands on the photo does not
+    reactProps(senderTrigger).onClick()
+    await until(() => dialog() !== null, { message: 'reopened' })
+    box = dialog()
+    reactProps(box).onClick(clickEvent(walk(box).find((el) => el.localName === 'img'), box))
+    assert.notEqual(dialog(), null, 'a click on the photo keeps it open')
+    reactProps(box).onClick(clickEvent(box))
+    await until(() => dialog() === null, { message: 'backdrop click closes' })
+    assert.equal(dom.document.activeElement, senderTrigger)
+
+    // 2c. the close button closes; header avatar shows the chat name and its own photo
+    reactProps(headerTrigger).onClick()
+    await until(() => dialog() !== null, { message: 'header zoom opened' })
+    box = dialog()
+    assert.equal(walk(box).find((el) => el.localName === 'img').getAttribute('src'), 'tuqplugin://tuqdev.line-todo/data/avatar-cache/zoom-chat.jpg')
+    assert.equal(walk(box).find((el) => hasClass(el, 'avatar-zoom-name')).textContent, chat.name)
+    reactProps(walk(box).find((el) => el.localName === 'button')).onClick()
+    await until(() => dialog() === null, { message: 'close button closes' })
+    assert.equal(dom.document.activeElement, headerTrigger)
+  } finally {
+    scene?.unmount()
+    api.dispose()
+  }
+})
+
 test('avatar fixture keeps readable fallback labels when source images are unavailable', async () => {
   const chatId = 'm-no-avatar-fixture'
   const ts = Date.UTC(2026, 9, 30, 4, 0, 0)
