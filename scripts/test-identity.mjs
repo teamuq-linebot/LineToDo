@@ -25,6 +25,8 @@ import { EXTRACT_JSON_SCHEMA, validateExtractResult } from '../src/main/llm/sche
 import { extractTodos } from '../src/main/llm/extractor.ts'
 
 const NOW='2026-10-28T05:00:00.000Z'
+// Fixture timestamps are small epoch offsets; the 7-day extract window is measured from a clock pinned just after them.
+const FIXTURE_WINDOW_MS=2_000
 const SESSION=createHash('sha256').update('identity-test-session-v1').digest('hex')
 const stored=(id)=>`i:${id}`
 
@@ -369,7 +371,7 @@ test('production automatic runOnce and historical backfill both require the iden
   const live=openFixture();const liveDb=live.db
   try{
     const liveId=addMessage(liveDb,'run-once-identity',1000,'alpha beta service action')
-    const result=await runOnce({db:liveDb,watchSource:async()=>({messages:[],bridge:'ok'}),extractFn:async(input)=>identityExtractor(input)})
+    const result=await runOnce({db:liveDb,windowNowMs:FIXTURE_WINDOW_MS,watchSource:async()=>({messages:[],bridge:'ok'}),extractFn:async(input)=>identityExtractor(input)})
     assert.equal(result.chatsProcessed,1)
     assert.equal(result.todosCreated,1)
     assert.equal(liveDb.prepare('SELECT processed FROM messages WHERE msg_id=?').get(liveId).processed,1)
@@ -482,7 +484,7 @@ test('production ExtractQueue pulls the trusted candidate context and commits id
   const queue=new ExtractQueue({db,getConfig:getPipelineDefaults})
   try{
     const msgId=addMessage(db,'queue-identity',1000,'alpha beta queue action')
-    const cycle=await runOnce({db,watchSource:async()=>({messages:[],bridge:'ok'}),extractFn:async()=>{throw new Error('sink path must not call local extractor')},extractSink:queue})
+    const cycle=await runOnce({db,windowNowMs:FIXTURE_WINDOW_MS,watchSource:async()=>({messages:[],bridge:'ok'}),extractFn:async()=>{throw new Error('sink path must not call local extractor')},extractSink:queue})
     assert.equal(cycle.chatsSkipped,1)
     const pull=queue.pull({max:1})
     assert.equal(pull.items.length,1)
@@ -506,7 +508,7 @@ test('ExtractQueue refreshes historical candidates between bounded parts after e
       addMessage(db,'queue-part-2',1100,'alpha beta shared task update '+('b'.repeat(2600))),
       addMessage(db,'queue-part-3',1200,'alpha beta distinct follow-up '+('c'.repeat(2600)))
     ]
-    await runOnce({db,watchSource:async()=>({messages:[],bridge:'ok'}),extractFn:async()=>{throw new Error('sink path must not call local extractor')},extractSink:queue})
+    await runOnce({db,windowNowMs:FIXTURE_WINDOW_MS,watchSource:async()=>({messages:[],bridge:'ok'}),extractFn:async()=>{throw new Error('sink path must not call local extractor')},extractSink:queue})
     const firstPull=queue.pull({max:1});assert.equal(firstPull.items.length,1)
     const firstMsg=JSON.parse(firstPull.items[0].user).newMessages[0].msgId
     assert.equal(firstMsg,ids[0])

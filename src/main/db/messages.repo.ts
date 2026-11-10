@@ -6,6 +6,7 @@ import type { RawLineMessage } from '../line/types'
 import { upsertChat } from './chats.repo'
 import { readChatSourceState, sharedSourceRows, type AppendBatch } from './sourceCache'
 import { chatTodoPrefsReady } from './chatTodoPrefs.repo'
+import { TODO_EXTRACT_WINDOW_DAYS } from '../config/defaults'
 
 /**
  * messages.repo — LINE 引擎（in-process TS watchEngine，經 watcher.ts emit）進來的訊息落庫 + 查詢。
@@ -350,7 +351,7 @@ export function countMessages(chatId?: string, db: Database = getDb()): number {
  * 長期沒有新訊息，永遠不會被抽取。只回一個整數，不回任何聊天室名稱或訊息內容。
  */
 export function countChatsWithRecentMessages(
-  days = 7,
+  days = TODO_EXTRACT_WINDOW_DAYS,
   db: Database = getDb()
 ): number {
   const d = Math.min(Math.max(Math.floor(days), 1), 365)
@@ -366,28 +367,40 @@ export function countChatsWithRecentMessages(
 }
 
 /**
- * 取「未處理（processed=0）且該 chat 待辦開關開啟」的訊息，依 ts 由舊到新。
+ * 取「未處理（processed=0）、訊息時間在近 TODO_EXTRACT_WINDOW_DAYS 天內、且該 chat 待辦開關開啟」的訊息。
  * pipeline runOnce 用：這是本輪要送 LLM 抽取的候選（§8 步驟 4）。
+ *
+ * 排序與取樣：先依 chat 編號（每個 chat 內由舊到新），再依 ts。每個 chat 的最舊待抽取訊息
+ * 先佔名額，之後才輪到每個 chat 的第二則……。因此即使某些 chat 在 offer 後一直 deferred
+ * 或失敗（列維持 processed=0），只要同時待抽取的 chat 數不超過 limit，其他 chat 的新訊息每輪都能入選，
+ * 不會被整個視窗卡死。超過 7 天的列不進來，所以舊列也不會擋住新列。
+ *
  * 待辦開關關閉的 chat 訊息仍鏡像在 messages（可追溯），但這裡過濾掉。
  * 另保留 blocked=0：一次性遷移尚未完成（或失敗）時，舊的忽略聊天室不得被送 AI；遷移成功後 blocked 全為 0，無害。
- * limit 防單輪暴量（預設 2000）。
+ * limit 防單輪暴量（預設 2000）。nowMs 為視窗的基準時間（測試注入用，預設現在）。
  */
 export function getUnprocessedForPipeline(
   limit = 2000,
-  db: Database = getDb()
+  db: Database = getDb(),
+  nowMs: number = Date.now()
 ): MessageDTO[] {
   const n = Math.min(Math.max(limit, 1), 10000)
+  const base = Number.isFinite(nowMs) ? nowMs : Date.now()
+  const sinceMs = base - TODO_EXTRACT_WINDOW_DAYS * 24 * 60 * 60 * 1000
   const todoGate = chatTodoPrefsReady(db)
   const selected = db
     .prepare(
-      'SELECT m.chat_id,m.msg_id FROM messages m ' +
+      'SELECT chat_id, msg_id FROM (' +
+      'SELECT m.chat_id, m.msg_id, m.ts, ' +
+      'ROW_NUMBER() OVER (PARTITION BY m.chat_id ORDER BY m.ts ASC, m.msg_id ASC) AS rn ' +
+      'FROM messages m ' +
       'JOIN chats c ON c.chat_id = m.chat_id ' +
       (todoGate ? 'LEFT JOIN chat_todo_preferences tp ON tp.chat_id = m.chat_id ' : '') +
-      'WHERE m.processed = 0 AND c.blocked = 0 ' +
+      'WHERE m.processed = 0 AND c.blocked = 0 AND m.ts >= ? ' +
       (todoGate ? 'AND COALESCE(tp.extract_enabled,1) = 1 ' : '') +
-      'ORDER BY m.ts ASC LIMIT ?'
+      ') ORDER BY rn ASC, ts ASC, msg_id ASC LIMIT ?'
     )
-    .all(n) as Array<{ chat_id: string; msg_id: string }>
+    .all(sinceMs, n) as Array<{ chat_id: string; msg_id: string }>
   const idsByChat = new Map<string, string[]>()
   for (const row of selected) {
     const ids = idsByChat.get(row.chat_id) ?? []

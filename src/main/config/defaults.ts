@@ -38,6 +38,12 @@ export const DEFAULT_BLOCKLIST: BlocklistRules = {
  */
 export const TODO_NEW_MIN_CONFIDENCE = 0.4
 
+/**
+ * 抽取只處理訊息時間（ts）在這個天數內的未處理訊息。超過的未處理列不再進入抽取、
+ * 也不擋住新訊息；它們的 processed 旗標保持原樣（不做大量 UPDATE）。
+ */
+export const TODO_EXTRACT_WINDOW_DAYS = 7
+
 export const DEFAULTS: PipelineDefaults = {
   pollIntervalSec: 30,
   concurrency: 2,

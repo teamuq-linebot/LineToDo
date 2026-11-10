@@ -38,7 +38,8 @@ import { createMockTuqAi } from '../lib/mock-tuq-ai.mjs'
 // ───────────── helpers ─────────────
 
 function raw(i, { chatId = 'u-alice', chat = 'Alice', isGroup = false, text, ts } = {}) {
-  const t = ts ?? 1_700_000_000_000 + i * 1000
+  // Default times sit a few days before the wall clock so the 7-day extract window (measured from the live clock) includes them.
+  const t = ts ?? Date.now() - 3 * 86_400_000 + i * 1000
   return { msgId: `m${i}`, chat, chatId, isGroup, ts: t, time: new Date(t).toISOString(), direction: 'in', sender: chat, text: text ?? `請幫我處理第 ${i} 件事情，明天要交`, contentType: 0 }
 }
 

@@ -31,6 +31,10 @@ export function openFixture() {
   return openDatabase({ dbPath: ':memory:', engine })
 }
 
+// The 7-day extract window is measured from a clock of its own (windowNowMs). Fixture timestamps are small
+// epoch offsets (ms), so that clock is pinned just after them. The payload's `now` (NOW_ISO) stays unchanged.
+export const FIXTURE_WINDOW_MS = 2_000
+
 export function rawMessage(id, chatId, ts, text, direction = 'in') {
   return { msgId: id, chat: `Group ${chatId}`, chatId, isGroup: true, ts, time: new Date(ts).toISOString().slice(0, 19), direction, sender: 'Alice', text, contentType: 0 }
 }
@@ -52,7 +56,7 @@ const noSecrets = { isEncryptionAvailable: () => false, encryptString: () => { t
 
 /** 只含舊 API 的 runOnce 供料：訊息已在 DB 裡（未處理），watchSource 回空。 */
 export async function feedQueue(db, queue) {
-  return runOnce({ db, now: () => NOW_ISO, watchSource: async () => ({ messages: [], bridge: 'ok' }), extractFn: async () => { throw new Error('sink mode never calls extractFn') }, extractSink: queue })
+  return runOnce({ db, now: () => NOW_ISO, windowNowMs: FIXTURE_WINDOW_MS, watchSource: async () => ({ messages: [], bridge: 'ok' }), extractFn: async () => { throw new Error('sink mode never calls extractFn') }, extractSink: queue })
 }
 
 const noiseReply = () => ({ importance: 'noise', newTodos: [], identityDecisions: [], resolved: [], updates: [] })

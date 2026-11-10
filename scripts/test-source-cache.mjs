@@ -278,7 +278,8 @@ test('Todo and GroupTopics preserve their independent selector IDs while sharing
     }, { sourceEpoch: 1, appendSeq: 105 })
 
     const cache = sharedSourceRows(db)
-    const todoPending = getUnprocessedForPipeline(200, db)
+    // Fixture timestamps are small epoch offsets; measure the extract window from just after them.
+    const todoPending = getUnprocessedForPipeline(200, db, 1_000)
     assert.deepEqual(todoPending.map((row) => row.msgId), batch.map((row) => storedId(row.msgId)))
     const recent = getRecentByChat('chat-a', 10, db)
     assert.deepEqual(recent.map((row) => row.msgId), batch.slice(-10).map((row) => storedId(row.msgId)))
@@ -296,7 +297,7 @@ test('Todo and GroupTopics preserve their independent selector IDs while sharing
     const sourceEpoch = readChatSourceState(db, 'chat-a').sourceEpoch
     assert.equal(markProcessed([storedId('raw-006')], db), 1)
     assert.equal(readChatSourceState(db, 'chat-a').sourceEpoch, sourceEpoch)
-    assert.equal(getUnprocessedForPipeline(200, db).some((row) => row.msgId === storedId('raw-006')), false)
+    assert.equal(getUnprocessedForPipeline(200, db, 1_000).some((row) => row.msgId === storedId('raw-006')), false)
     assert.equal(loadPendingMessages(db, 'chat-a', 20, 100).some((row) => row.msgId === storedId('raw-006')), true)
 
     const scopeBefore = readChatSourceState(db, 'chat-a').scopeRevision

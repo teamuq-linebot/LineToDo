@@ -77,6 +77,8 @@ export interface RunOnceDeps {
   onChatSucceeded?: (chatId: string) => void
   db?: Database
   now?: () => string
+  /** 抽取視窗（近 TODO_EXTRACT_WINDOW_DAYS 天）的基準毫秒。不給＝由 now 推得（預設即現在）。僅供測試注入時鐘，與 now 分開，payload 的 now 字串不受影響。 */
+  windowNowMs?: number
   config?: PipelineDefaults
   correctionsForChat?: (chatId: string) => ChatExtractInput['classificationCorrections']
   onCorrectionsPayloadBuilt?: (chatId: string, messageIds: string[], rules: NonNullable<ChatExtractInput['classificationCorrections']>) => void
@@ -475,7 +477,7 @@ export async function runOnce(deps: RunOnceDeps): Promise<RunOnceResult> {
   result.newMsgs = ins.inserted
 
   // ── 4. 取未處理且待辦開關開啟的訊息，按 chatId 分組 ─────────
-  const unprocessed = getUnprocessedForPipeline(2000, db)
+  const unprocessed = getUnprocessedForPipeline(2000, db, deps.windowNowMs ?? Date.parse(nowFn()))
   const byChat = new Map<string, MessageDTO[]>()
   for (const m of unprocessed) {
     const arr = byChat.get(m.chatId)

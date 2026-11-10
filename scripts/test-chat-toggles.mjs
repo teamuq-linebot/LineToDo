@@ -43,7 +43,7 @@ function fixture({ prefs = true } = {}) {
 const n = (db, sql, ...params) => db.prepare(sql).get(...params).n
 const processedOf = (db, id) => db.prepare('SELECT processed FROM messages WHERE msg_id=?').get(id).processed
 const scopeOf = (db, chatId) => readChatSourceState(db, chatId).scopeRevision
-const pipelineIds = (db, limit = 100) => getUnprocessedForPipeline(limit, db).map((row) => row.msgId).sort()
+const pipelineIds = (db, limit = 100) => getUnprocessedForPipeline(limit, db, NOW_MS).map((row) => row.msgId).sort()
 
 // ───────────────────────── 資料層 ─────────────────────────
 
