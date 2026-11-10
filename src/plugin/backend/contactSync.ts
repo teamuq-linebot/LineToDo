@@ -22,7 +22,7 @@ import type { Db, KeysetCursor, KeysetPage } from '../../main/line/engine/linedb
  * 日誌與狀態都不含 MID、locator 或顯示名。
  */
 
-export const CONTACT_SYNC_VERSION = 1
+export const CONTACT_SYNC_VERSION = 2
 export const CONTACT_SYNC_MIN_INTERVAL_MS = 5 * 60_000
 export const CONTACT_SYNC_POLL_MS = 15_000
 

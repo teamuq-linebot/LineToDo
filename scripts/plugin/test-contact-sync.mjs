@@ -441,6 +441,15 @@ test('X-1 extraction: contactLocator and contactName agree with production profi
   } finally { await h.stop() }
 })
 
+test('X-1b locator priority: _targetProfileDetail.picturePath first, _picturePath only when the detail has none (both differ / picture only / detail only / broken JSON)', () => {
+  const detail = (picturePath) => JSON.stringify({ profileName: 'x', picturePath })
+  assert.equal(linedb.contactLocator({ _picturePath: '/p/stale', _targetProfileDetail: detail('/d/current') }), '/d/current', 'both, different (lulu)')
+  assert.equal(linedb.contactLocator({ _picturePath: '/p/only', _targetProfileDetail: null }), '/p/only', 'picture only (TeamUpQuick)')
+  assert.equal(linedb.contactLocator({ _picturePath: null, _targetProfileDetail: detail('/d/only') }), '/d/only', 'detail only (Garry)')
+  assert.equal(linedb.contactLocator({ _picturePath: '/p/fallback', _targetProfileDetail: '{broken json' }), '/p/fallback', 'broken JSON')
+  assert.equal(linedb.contactLocator({ _picturePath: '/p/fallback', _targetProfileDetail: detail('   ') }), '/p/fallback', 'blank detail path')
+})
+
 test('X-2 own MID: it is never written, whatever table it sits in; and when the source cannot say who we are nothing at all is written and the state is account_unknown', async () => {
   const spec = { ...spec49(), contacts: [...manyContacts(5), { mid: ME, name: 'Me', picture: '/p/me' }], groups: [{ mid: ME, name: 'also me', picture: '/g/me' }, { mid: 'c-1', name: 'G', picture: '/g/1' }] }
   const h = await started(spec)
@@ -476,7 +485,7 @@ test('Y-1 first scan: contacts, groups and Square chats are all there with the r
     assert.deepEqual({ l: byMid(h.db, 'group', 'c-2').locator, n: byMid(h.db, 'group', 'c-2').display_name, s: byMid(h.db, 'group', 'c-2').source }, { l: '/g/2', n: 'Group 2', s: 'profile' })
     assert.equal(h.probe.sql.some((q) => /_squareMember/.test(q)), false)
     assert.equal(h.sync.status().phase, 'done')
-    assert.equal(h.db.prepare("SELECT value FROM line_avatar_meta WHERE key='contact_sync_version'").get().value, '1')
+    assert.equal(h.db.prepare("SELECT value FROM line_avatar_meta WHERE key='contact_sync_version'").get().value, '2')
   } finally { await h.stop() }
 })
 
@@ -510,14 +519,14 @@ test('Y-3 one change: changing one person\'s _picturePath writes exactly that on
   } finally { await h.stop() }
 })
 
-test('Y-4 Garry: with _picturePath NULL the picture comes from _targetProfileDetail; once _picturePath shows up it wins', async () => {
+test('Y-4 Garry: with _picturePath NULL the picture comes from _targetProfileDetail; once _picturePath shows up the detail picture still wins', async () => {
   const h = await started({ contacts: [{ mid: 'u-garry', name: 'Garry', detail: JSON.stringify({ picturePath: '/d/garry', profileName: 'Garry' }) }] })
   try {
     assert.equal(byMid(h.db, 'contact', 'u-garry').locator, '/d/garry')
     assert.equal(byMid(h.db, 'contact', 'u-garry').source, 'profile')
     h.line((w) => w.prepare("UPDATE _contact SET _picturePath='/p/garry' WHERE _mid='u-garry'").run())
     await h.scan()
-    assert.equal(byMid(h.db, 'contact', 'u-garry').locator, '/p/garry')
+    assert.equal(byMid(h.db, 'contact', 'u-garry').locator, '/d/garry')
   } finally { await h.stop() }
 })
 
@@ -646,7 +655,23 @@ test('T-1 trigger: openSource is called 0 times while the signature is unchanged
     h.db.prepare("UPDATE line_avatar_meta SET value='0' WHERE key='contact_sync_version'").run()
     await until(() => h.sync.status().scans >= 3, { message: 'version mismatch scans at once' })
     assert.equal(opens(), base + 1, 'a version mismatch is not held back by the interval')
-    assert.equal(h.db.prepare("SELECT value FROM line_avatar_meta WHERE key='contact_sync_version'").get().value, '1')
+    assert.equal(h.db.prepare("SELECT value FROM line_avatar_meta WHERE key='contact_sync_version'").get().value, '2')
+  } finally { await h.stop() }
+})
+
+test('T-1b upgrade: a row stored with the old locator (_picturePath) is rewritten to the detail picturePath on the first scan after the version bump, although the signature is unchanged and the minimum interval has not passed', async () => {
+  const contacts = [{ mid: 'lulu', name: 'Lulu', picture: '/p/stale', detail: JSON.stringify({ picturePath: '/d/current' }) }, { mid: 'plain', name: 'Plain', picture: '/p/plain' }]
+  const h = await started({ contacts }, { noStart: true, entityRows: [{ entity: person('lulu', '/p/stale', 'Lulu') }, { entity: person('plain', '/p/plain', 'Plain') }] })
+  try {
+    const meta = h.db.prepare('INSERT OR REPLACE INTO line_avatar_meta(key,value) VALUES (?,?)')
+    meta.run('contact_sync_version', '1')
+    meta.run('contact_sync_sig', h.probe.sig)
+    meta.run('contact_sync_done_at', String(h.probe.wall))
+    assert.equal(byMid(h.db, 'contact', 'lulu').locator, '/p/stale')
+    await h.firstScan()
+    assert.equal(byMid(h.db, 'contact', 'lulu').locator, '/d/current', 'updated on the first scan')
+    assert.equal(byMid(h.db, 'contact', 'plain').locator, '/p/plain', 'picture-only row unchanged')
+    assert.equal(h.db.prepare("SELECT value FROM line_avatar_meta WHERE key='contact_sync_version'").get().value, '2')
   } finally { await h.stop() }
 })
 
