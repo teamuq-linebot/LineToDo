@@ -1080,6 +1080,8 @@ test('static: the sender MID table and column are named only in lineAvatar.repo.
   const owner = 'lineAvatar.repo.ts'
   const holders = files.filter((f) => /line_sender_profile|sender_mid/.test(readFileSync(join(root, f), 'utf8'))).map((f) => f.split(/[\\/]/).pop())
   assert.deepEqual(holders, [owner])
+  const entityHolders = files.filter((f) => /line_entity|entity_mid/.test(readFileSync(join(root, f), 'utf8'))).map((f) => f.split(/[\\/]/).pop())
+  assert.deepEqual(entityHolders, ['lineEntity.repo.ts'], 'the address-book table and its MID column are named only in lineEntity.repo.ts')
   for (const f of ['plugin/backend/assemble.ts', 'plugin/backend/invokeTrace.ts']) {
     assert.equal(/senderMid|sender_mid|line_sender_profile/.test(readFileSync(join(root, f), 'utf8')), false, `${f} never names the sender MID`)
   }
