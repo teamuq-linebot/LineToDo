@@ -16,7 +16,10 @@ function rowToDTO(r: ChatRow): ChatDTO {
     name: r.name,
     isGroup: r.is_group === 1,
     firstSeenAt: r.first_seen_at,
-    lastSeenAt: r.last_seen_at
+    lastSeenAt: r.last_seen_at,
+    latestMessageTs: typeof (r as ChatRow & { latest_message_ts?: number | null }).latest_message_ts === 'number'
+      ? (r as ChatRow & { latest_message_ts: number }).latest_message_ts
+      : null
   }
 }
 
@@ -60,7 +63,8 @@ export function getChat(chatId: string, db: Database = getDb()): ChatDTO | null 
 /** 列出聊天室，依 last_seen_at 由新到舊。 */
 export function listChats(db: Database = getDb()): ChatDTO[] {
   const rows = db
-    .prepare('SELECT * FROM chats ORDER BY last_seen_at DESC')
+    .prepare(`SELECT c.*, (SELECT MAX(m.ts) FROM messages m WHERE m.chat_id = c.chat_id) AS latest_message_ts
+              FROM chats c ORDER BY c.last_seen_at DESC`)
     .all() as ChatRow[]
   return rows.map(rowToDTO)
 }

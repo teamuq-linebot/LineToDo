@@ -480,7 +480,7 @@ code {
   width: 100%;
   min-width: 0;
   gap: 11px;
-  padding: 10px 4px 10px 0;
+  padding: 10px 0;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -494,20 +494,6 @@ code {
 }
 .chat-list-item.active {
   background: transparent;
-}
-.chat-selection-marker {
-  display: inline-grid;
-  flex: 0 0 18px;
-  width: 18px;
-  height: 18px;
-  place-items: center;
-  margin-left: 4px;
-  border: 1px solid var(--accent);
-  border-radius: 50%;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
 }
 .chat-list-item:focus-visible {
   outline: 2px solid var(--accent);
@@ -796,7 +782,7 @@ code {
 .chat-message-avatar {
   width: 28px;
   height: 28px;
-  margin-bottom: 19px;
+  margin-bottom: 0;
   background: var(--chip-bg);
   color: var(--text);
   font-size: 11px;
@@ -806,6 +792,7 @@ code {
   flex-direction: column;
   align-items: flex-start;
   min-width: 0;
+  width: max-content;
   max-width: min(82%, 640px);
 }
 .chat-message.outgoing .chat-message-content {
@@ -821,6 +808,9 @@ code {
   white-space: nowrap;
 }
 .chat-message-bubble {
+  flex: 0 1 auto;
+  width: fit-content;
+  min-width: 0;
   max-width: 100%;
   padding: 8px 12px;
   border: 1px solid var(--chat-message-border);
@@ -859,10 +849,22 @@ code {
   font-size: 11px;
 }
 .chat-message-time {
-  margin: 3px 8px 0;
+  flex: 0 0 auto;
+  margin: 0 2px 3px;
   color: var(--muted);
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chat-message-bottom-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+.chat-message.outgoing .chat-message-time {
+  order: -1;
 }
 .chat-date-divider {
   align-self: center;

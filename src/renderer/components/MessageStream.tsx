@@ -8,6 +8,7 @@ import { formatCallRecord } from '../lib/callRecord'
 import { hasSavedMessageText, mergeMessageCopies, recalledMessageNotice, recalledMessageText } from '../lib/recalledMessage'
 import { useLineTodoApi } from '../platform/LineTodoApi'
 import { displayChatName } from '../lib/displayChatName'
+import { chatMessageTimeLabel, compareChatMessageTimes } from '../lib/chatList'
 import { GroupTopicsPanel } from '../features/groupTopics/GroupTopicsPanel'
 import { ChatRefreshControl } from '../features/chatRefresh/ChatRefreshControl'
 import { ChatTodosPanel } from '../features/chatTodos/ChatTodosPanel'
@@ -23,7 +24,7 @@ interface ConversationEntry {
   chatId: string
   name: string
   isGroup: boolean
-  lastSeenAt: string
+  latestMessageTs: number | null
   latest: RawLineMessage | null
   loadedCount: number
 }
@@ -93,14 +94,13 @@ function formatSize(bytes: number | null | undefined): string {
   return `${(kb / 1024).toFixed(1)} MB`
 }
 
+function chatTimeLabel(chat: ConversationEntry): string {
+  return chatMessageTimeLabel(chat.latestMessageTs ?? null)
+}
+
 function messageTimeLabel(message: RawLineMessage): string {
   const time = message.time ?? ''
   return time.length >= 16 ? time.slice(11, 16) : time || '--:--'
-}
-
-function chatTimeLabel(chat: ConversationEntry): string {
-  if (chat.latest) return messageTimeLabel(chat.latest)
-  return chat.lastSeenAt.length >= 16 ? chat.lastSeenAt.slice(11, 16) : '--:--'
 }
 
 function compareMessages(a: RawLineMessage, b: RawLineMessage): number {
@@ -405,13 +405,15 @@ function MessageRow({
       )}
       <div className="chat-message-content">
         <span className="chat-message-sender">{sender}</span>
-        <div className="chat-message-bubble">
-          {m.unsent && <span className="unsent-badge">🚫 已收回</span>}
-          <div className="chat-message-body">
-            <MessageContent m={m} onOpenLightbox={onOpenLightbox} />
+        <div className="chat-message-bottom-row">
+          <div className="chat-message-bubble">
+            {m.unsent && <span className="unsent-badge">🚫 已收回</span>}
+            <div className="chat-message-body">
+              <MessageContent m={m} onOpenLightbox={onOpenLightbox} />
+            </div>
           </div>
+          <time className="chat-message-time">{messageTimeLabel(m)}</time>
         </div>
-        <time className="chat-message-time">{messageTimeLabel(m)}</time>
       </div>
     </li>
   )
@@ -587,7 +589,7 @@ export function MessageStream(): JSX.Element {
         chatId: chat.chatId,
         name: displayChatName(chatDisplayNames[chat.chatId] ?? chat.name, chat.chatId, chat.isGroup),
         isGroup: chat.isGroup,
-        lastSeenAt: chat.lastSeenAt,
+        latestMessageTs: chat.latestMessageTs ?? null,
         latest: null,
         loadedCount: 0
       })
@@ -599,7 +601,7 @@ export function MessageStream(): JSX.Element {
           chatId: message.chatId,
           name: displayChatName(message.chat, message.chatId, message.isGroup),
           isGroup: message.isGroup,
-          lastSeenAt: message.time,
+          latestMessageTs: message.ts,
           latest: null,
           loadedCount: 0
         }
@@ -608,14 +610,13 @@ export function MessageStream(): JSX.Element {
       entry.loadedCount += 1
       if (!entry.latest || compareMessages(message, entry.latest) > 0) {
         entry.latest = message
-        entry.lastSeenAt = message.time
+        if (entry.latestMessageTs === null || message.ts > entry.latestMessageTs) entry.latestMessageTs = message.ts
         if (!chatById.has(message.chatId) && message.chat) entry.name = message.chat
       }
     }
     return [...byChat.values()].sort((a, b) => {
-      const aTs = a.latest?.ts ?? (Date.parse(a.lastSeenAt) || 0)
-      const bTs = b.latest?.ts ?? (Date.parse(b.lastSeenAt) || 0)
-      return bTs - aTs || a.name.localeCompare(b.name)
+      const byMessageTime = compareChatMessageTimes(a.latestMessageTs, b.latestMessageTs)
+      return byMessageTime || a.name.localeCompare(b.name)
     })
   }, [chatById, chatDisplayNames, chats, loadedMessages])
 
@@ -1062,7 +1063,6 @@ export function MessageStream(): JSX.Element {
                           : '尚無已載入訊息'}
                       </span>
                     </span>
-                    {active && <span className="chat-selection-marker" aria-hidden="true">✓</span>}
                   </button>
                 </li>
               )

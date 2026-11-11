@@ -45,6 +45,8 @@ export interface ChatDTO {
   isGroup: boolean
   firstSeenAt: string
   lastSeenAt: string
+  /** Epoch milliseconds of the newest stored message; null when the chat has none. */
+  latestMessageTs?: number | null
 }
 
 /** Renderer-safe results from on-demand avatar lookups; values are host-owned asset URLs. */
