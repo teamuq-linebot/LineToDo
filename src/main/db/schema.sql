@@ -1,4 +1,4 @@
--- schema.sql (user_version = 10)
+-- schema.sql (user_version = 11)
 -- Readable reference for the app-owned sidecar SQLite schema.
 -- Runtime DDL is embedded in src/main/db/schema.ts; keep this generated reference aligned.
 PRAGMA journal_mode = WAL;
@@ -29,6 +29,12 @@ CREATE TABLE IF NOT EXISTS messages (
   key_material   TEXT,
   orig_filename  TEXT,
   file_size      INTEGER,
+  media_oid TEXT,
+  media_sid TEXT,
+  shared_contact_mid TEXT,
+  shared_contact_display_name TEXT,
+  sticker_id TEXT,
+  sticker_package_id TEXT,
   media_backed_up INTEGER NOT NULL DEFAULT 0,
   unsent INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (chat_id) REFERENCES chats(chat_id)

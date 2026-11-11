@@ -429,6 +429,8 @@ export interface BackfillMediaKeysResult {
   scanned: number
   /** 既有列被補上媒體欄的筆數（取自 insertMessages 回傳的 media 補欄計數）。 */
   mediaBackfilled: number
+  /** Existing message rows receiving selected LINE identifiers. */
+  metadataBackfilled: number
 }
 
 export interface BackfillMediaKeysDeps {
@@ -441,8 +443,8 @@ export interface BackfillMediaKeysDeps {
 }
 
 /**
- * 輕量 backfill：重讀「近 days 天」LINE 訊息並落庫，只補既有列的媒體欄
- * （key_material/orig_filename/file_size）。**不跑 LLM 抽取、不需 qwen 金鑰**，
+ * 輕量 backfill：重讀「近 days 天」LINE 訊息並落庫，補存媒體欄與識別 metadata。
+ * **不跑 LLM 抽取、不需 qwen 金鑰**，
  * 與 reviewLastDays（會跑 LLM、有 API 成本）不同。
  *
  * 重用 reviewLastDays 的窗口來源 fetchSinceWindow（getMessagesSince 時間窗口，
@@ -477,12 +479,13 @@ export async function backfillMediaKeys(
   }
 
   const ins = importWindow
-    ? { mediaBackfilled: importWindow.commits.reduce((sum, commit) => sum + commit.mediaBackfilled, 0) }
+    ? { mediaBackfilled: importWindow.commits.reduce((sum, commit) => sum + commit.mediaBackfilled, 0), metadataBackfilled: importWindow.commits.reduce((sum, commit) => sum + commit.metadataBackfilled, 0) }
     : insertMessages(win.messages, db)
   // mediaBackfilled 取自 insertMessages 回傳（BF-1 並行批新增的 media 補欄計數）。
   const mediaBackfilled = (ins as { mediaBackfilled?: number }).mediaBackfilled ?? 0
+  const metadataBackfilled = (ins as { metadataBackfilled?: number }).metadataBackfilled ?? 0
 
-  return { scanned: win.messages.length, mediaBackfilled }
+  return { scanned: win.messages.length, mediaBackfilled, metadataBackfilled }
 }
 
 export interface ScanRecentUnsentResult {

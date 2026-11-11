@@ -90,12 +90,12 @@ export function registerPipelineIpc(
     async (
       _e,
       args?: { days?: number }
-    ): Promise<{ ok: boolean; scanned?: number; mediaBackfilled?: number; error?: string }> => {
+      ): Promise<{ ok: boolean; scanned?: number; mediaBackfilled?: number; metadataBackfilled?: number; error?: string }> => {
       const days =
         typeof args?.days === 'number' && args.days > 0 ? Math.floor(args.days) : 7
       try {
         const r = await backfillMediaKeys(days)
-        return { ok: true, scanned: r.scanned, mediaBackfilled: r.mediaBackfilled }
+        return { ok: true, scanned: r.scanned, mediaBackfilled: r.mediaBackfilled, metadataBackfilled: r.metadataBackfilled }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
       }

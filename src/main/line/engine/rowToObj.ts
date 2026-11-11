@@ -105,6 +105,77 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+/** Read a top-level JSON property without converting numeric IDs through Number. */
+function opaqueJsonField(raw: string | null, key: string): string | null {
+  if (!raw) return null
+  try { JSON.parse(raw) } catch { return null }
+  let i = 0
+  const ws = (): void => { while (/\s/.test(raw[i] ?? '')) i++ }
+  const string = (): string | null => {
+    const start = i++
+    while (i < raw.length) {
+      if (raw[i] === '\\') { i += 2; continue }
+      if (raw[i++] === '"') {
+        try { return JSON.parse(raw.slice(start, i)) as string } catch { return null }
+      }
+    }
+    return null
+  }
+  const skip = (): string | null => {
+    ws()
+    const start = i
+    if (raw[i] === '"') { string(); return raw.slice(start, i) }
+    if (raw[i] === '{') {
+      i++; ws()
+      while (i < raw.length && raw[i] !== '}') {
+        if (raw[i] !== '"') return null
+        string(); ws()
+        if (raw[i++] !== ':') return null
+        if (skip() === null) return null
+        ws()
+        if (raw[i] === ',') { i++; ws(); continue }
+        break
+      }
+      if (raw[i++] !== '}') return null
+      return raw.slice(start, i)
+    }
+    if (raw[i] === '[') {
+      i++; ws()
+      while (i < raw.length && raw[i] !== ']') {
+        if (skip() === null) return null
+        ws()
+        if (raw[i] === ',') { i++; ws(); continue }
+        break
+      }
+      if (raw[i++] !== ']') return null
+      return raw.slice(start, i)
+    }
+    while (i < raw.length && !/[\s,}\]]/.test(raw[i])) i++
+    return raw.slice(start, i)
+  }
+  ws()
+  if (raw[i++] !== '{') return null
+  let matches = 0
+  let matchedToken: string | null = null
+  while (i < raw.length) {
+    ws()
+    if (raw[i] === '}') break
+    if (raw[i] !== '"') return null
+    const field = string()
+    ws()
+    if (raw[i++] !== ':') return null
+    const token = skip()
+    if (field === key) { matches++; matchedToken = token }
+    ws()
+    if (raw[i] === ',') { i++; continue }
+    if (raw[i] === '}') break
+    return null
+  }
+  if (matches !== 1 || !matchedToken) return null
+  if (matchedToken[0] === '"') { try { return JSON.parse(matchedToken) as string } catch { return null } }
+  return /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(matchedToken) ? matchedToken : null
+}
+
 /**
  * py `int(x)`（十進位、tolerant）的對等：接受數字或可轉整數的字串，
  * 失敗回 null。用於 `FILE_SIZE`（字串）與 `CAUSE`/`DURATION`。
@@ -189,13 +260,14 @@ export function mediaFields(
   text: string | null,
 ): MediaFields {
   if (ct !== 1 && ct !== 14) return { ...MEDIA_NULL }
+  const meta = parseJsonTolerant(cmetaRaw)
+  const metaObj = isPlainObject(meta) ? meta : {}
+  const oid = opaqueJsonField(cmetaRaw, 'OID')
+  const sid = opaqueJsonField(cmetaRaw, 'SID')
   const info = parseJsonTolerant(cinfoRaw)
-  if (!isPlainObject(info)) return { ...MEDIA_NULL }
+  if (!isPlainObject(info)) return { ...MEDIA_NULL, oid, sid }
   const keyMaterial = info['keyMaterial']
-  if (!keyMaterial) return { ...MEDIA_NULL } // 非 E2EE / 不可解 -> 維持 null
-  let meta = parseJsonTolerant(cmetaRaw)
-  if (!isPlainObject(meta)) meta = {}
-  const metaObj = meta as Record<string, unknown>
+  if (!keyMaterial) return { ...MEDIA_NULL, oid, sid } // identifiers remain useful on non-E2EE media
   // fileName: 僅檔案(ct=14)；_contentInfo.fileName 優先，否則 _text。
   // 圖片無原名。絕不讀 _contentMetadata.FILE_NAME（實測為空）。
   let fileName: string | null = null
@@ -213,14 +285,12 @@ export function mediaFields(
   if (rawSize !== undefined && rawSize !== null) {
     fileSize = toInt(rawSize)
   }
-  const oid = metaObj['OID']
-  const sid = metaObj['SID']
   return {
     keyMaterial: keyMaterial as string,
     fileName,
     fileSize,
-    oid: oid === undefined ? null : (oid as string | null),
-    sid: sid === undefined ? null : (sid as string | null),
+    oid,
+    sid,
   }
 }
 
@@ -249,6 +319,14 @@ export function rowToObj(row: MessageRow, ctx: RowContext): RawLineMessage {
   }
   const direction: 'in' | 'out' = row.from === ctx.myMid ? 'out' : 'in'
   const media = mediaFields(row.contentMetadata, row.contentInfo, ct, text)
+  const contactMeta = ct === 13 ? {
+    sharedContactMid: opaqueJsonField(row.contentMetadata, 'mid'),
+    sharedContactDisplayName: opaqueJsonField(row.contentMetadata, 'displayName'),
+  } : {}
+  const stickerMeta = ct === 7 ? {
+    stickerId: opaqueJsonField(row.contentMetadata, 'STKID'),
+    stickerPackageId: opaqueJsonField(row.contentMetadata, 'STKPKGID'),
+  } : {}
   const c = row.chatId
   return {
     msgId: row.id !== null && row.id !== undefined ? String(row.id) : null,
@@ -269,5 +347,7 @@ export function rowToObj(row: MessageRow, ctx: RowContext): RawLineMessage {
     unsent: row.attribute === 1,
     // E2EE 媒體欄位 — null 除非 ct∈{1,14} 且有 keyMaterial。
     ...media,
+    ...contactMeta,
+    ...stickerMeta,
   }
 }

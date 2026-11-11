@@ -22,6 +22,7 @@
     "test:line-import": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-line-import.mjs",
     "test:source-cache": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/test-source-cache.mjs",
     "test:schema-v10": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/test-schema-v10.mjs",
+    "test:line-metadata": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/test-line-metadata.mjs",
     "test:identity": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/test-identity.mjs",
     "test:group-topics": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-group-topics.mjs",
     "test:combined-extract": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-combined-extract.mjs",

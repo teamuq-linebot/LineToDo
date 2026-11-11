@@ -648,7 +648,7 @@ export interface LineTodoApi {
     refreshChat(chatId: string, days: number): Promise<ChatRefreshResultView>
     /** 聊天室的重新整理排隊狀態：畫面掛載、切換聊天室時查；排隊中或執行中時定時再查。 */
     refreshChatStatus(chatId: string): Promise<ChatRefreshQueueStatus>
-    backfillMediaKeys(days?: number): Promise<{ ok: boolean; scanned?: number; mediaBackfilled?: number; error?: string }>
+    backfillMediaKeys(days?: number): Promise<{ ok: boolean; scanned?: number; mediaBackfilled?: number; metadataBackfilled?: number; error?: string }>
     /** 外掛版：長任務的狀態（G-05）；standalone 不提供。 */
     longTaskStatus?(): Promise<LongTaskStatusView>
     setRunning(running: boolean): Promise<PipelineStatus>; testQwen(): Promise<QwenTestResult>; testAiProvider(): Promise<ProviderHealth>

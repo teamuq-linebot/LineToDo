@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto'
  *
  * SCHEMA_VERSION 對應 PRAGMA user_version；migrate.ts 以此決定要不要建表/升級。
  */
-export const SCHEMA_VERSION = 10
+export const SCHEMA_VERSION = 11
 
 /**
  * message_participants 的建表 DDL。ensureLineImportSchema 與 migrate v10 的 M-P1（DROP 後重建）共用，
@@ -232,6 +232,12 @@ CREATE TABLE IF NOT EXISTS messages (
   key_material   TEXT,
   orig_filename  TEXT,
   file_size      INTEGER,
+  media_oid TEXT,
+  media_sid TEXT,
+  shared_contact_mid TEXT,
+  shared_contact_display_name TEXT,
+  sticker_id TEXT,
+  sticker_package_id TEXT,
   media_backed_up INTEGER NOT NULL DEFAULT 0,
   unsent INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
@@ -331,6 +337,12 @@ export interface MessageRow {
   key_material: string | null
   orig_filename: string | null
   file_size: number | null
+  media_oid: string | null
+  media_sid: string | null
+  shared_contact_mid: string | null
+  shared_contact_display_name: string | null
+  sticker_id: string | null
+  sticker_package_id: string | null
   media_backed_up: number
   unsent: number
 }

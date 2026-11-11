@@ -197,6 +197,14 @@ export function migrate(db: Database): { from: number; to: number } {
       maintenance = runStorageMaintenanceV10(db)
       v = 10
     }
+    // v10 -> v11: preserve selected LINE identifiers as opaque nullable text.
+    if (v < 11) {
+      const existing = new Set((db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>).map((column) => column.name))
+      for (const column of ['media_oid', 'media_sid', 'shared_contact_mid', 'shared_contact_display_name', 'sticker_id', 'sticker_package_id']) {
+        if (!existing.has(column)) db.exec(`ALTER TABLE messages ADD COLUMN ${column} TEXT;`)
+      }
+      v = 11
+    }
     db.pragma(`user_version = ${v}`)
     return v
   })

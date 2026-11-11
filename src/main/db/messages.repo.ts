@@ -50,6 +50,8 @@ export interface InsertMessagesResult {
   mediaBackfilled: number
   /** 對既有列補標已收回（unsent 由 0 改 1）的列數（UPDATE changes 加總）。不與 inserted 混計。 */
   unsentMarked: number
+  /** Existing rows whose selected LINE metadata was filled in. */
+  metadataBackfilled: number
   /** 本 batch 觸及的 chatId 集合（已 upsert 進 chats） */
   chatIds: string[]
 }
@@ -73,6 +75,7 @@ export function insertMessages(
       insertedMsgIds: [],
       mediaBackfilled: 0,
       unsentMarked: 0,
+      metadataBackfilled: 0,
       chatIds: []
     }
 
@@ -82,11 +85,24 @@ export function insertMessages(
   const insertMsg = db.prepare(
     `INSERT OR IGNORE INTO messages
        (msg_id, chat_id, ts, time_iso, direction, sender, text, content_type, processed, ingested_at,
-        key_material, orig_filename, file_size, unsent)
+        key_material, orig_filename, file_size, unsent,
+        media_oid, media_sid, shared_contact_mid, shared_contact_display_name, sticker_id, sticker_package_id)
      VALUES
        (@msgId, @chatId, @ts, @timeIso, @direction, @sender, @text, @contentType, 0, @ingestedAt,
-        @keyMaterial, @origFilename, @fileSize, @unsent)`
+        @keyMaterial, @origFilename, @fileSize, @unsent,
+        @mediaOid, @mediaSid, @sharedContactMid, @sharedContactDisplayName, @stickerId, @stickerPackageId)`
   )
+
+  const backfillMetadata = db.prepare(`UPDATE messages SET
+    media_oid=COALESCE(media_oid,@mediaOid), media_sid=COALESCE(media_sid,@mediaSid),
+    shared_contact_mid=COALESCE(shared_contact_mid,@sharedContactMid),
+    shared_contact_display_name=COALESCE(shared_contact_display_name,@sharedContactDisplayName),
+    sticker_id=COALESCE(sticker_id,@stickerId), sticker_package_id=COALESCE(sticker_package_id,@stickerPackageId)
+    WHERE msg_id=@msgId AND (
+      (media_oid IS NULL AND @mediaOid IS NOT NULL) OR (media_sid IS NULL AND @mediaSid IS NOT NULL) OR
+      (shared_contact_mid IS NULL AND @sharedContactMid IS NOT NULL) OR
+      (shared_contact_display_name IS NULL AND @sharedContactDisplayName IS NOT NULL) OR
+      (sticker_id IS NULL AND @stickerId IS NOT NULL) OR (sticker_package_id IS NULL AND @stickerPackageId IS NOT NULL))`)
 
   // 既有列補媒體欄（backfill）：INSERT OR IGNORE 會整列略過既有 msg_id，
   // 導致舊媒體列的 key_material/orig_filename/file_size 永遠停在 NULL。
@@ -132,6 +148,7 @@ export function insertMessages(
     const insertedMsgIds: string[] = []
     let mediaBackfilled = 0
     let unsentMarked = 0
+    let metadataBackfilled = 0
     const insertedRowsByChat = new Map<string, MessageDTO[]>()
     const seenInBatch = new Set<string>()
     let attempted = 0
@@ -157,7 +174,11 @@ export function insertMessages(
         keyMaterial,
         origFilename,
         fileSize,
-        unsent: m.unsent ? 1 : 0
+        unsent: m.unsent ? 1 : 0,
+        mediaOid: m.oid ?? null, mediaSid: m.sid ?? null,
+        sharedContactMid: m.sharedContactMid ?? null,
+        sharedContactDisplayName: m.sharedContactDisplayName ?? null,
+        stickerId: m.stickerId ?? null, stickerPackageId: m.stickerPackageId ?? null
       })
       inserted += info.changes
       // changes>0 代表此列非既有 msg_id（未被 INSERT OR IGNORE 略過）→ 記為本次新插入。
@@ -189,6 +210,9 @@ export function insertMessages(
       if (m.unsent === true) {
         unsentMarked += markUnsent.run({ msgId }).changes
       }
+      metadataBackfilled += backfillMetadata.run({ msgId, mediaOid: m.oid ?? null, mediaSid: m.sid ?? null,
+        sharedContactMid: m.sharedContactMid ?? null, sharedContactDisplayName: m.sharedContactDisplayName ?? null,
+        stickerId: m.stickerId ?? null, stickerPackageId: m.stickerPackageId ?? null }).changes
     }
     const appendBatches: Array<{ chatId: string; batch: AppendBatch }> = []
     for (const chatId of chatLatest.keys()) {
@@ -207,10 +231,10 @@ export function insertMessages(
         })
       }
     }
-    return { attempted, inserted, insertedMsgIds, mediaBackfilled, unsentMarked, appendBatches }
+    return { attempted, inserted, insertedMsgIds, mediaBackfilled, unsentMarked, metadataBackfilled, appendBatches }
   })
 
-  const { attempted, inserted, insertedMsgIds, mediaBackfilled, unsentMarked, appendBatches } = run(batch)
+  const { attempted, inserted, insertedMsgIds, mediaBackfilled, unsentMarked, metadataBackfilled, appendBatches } = run(batch)
   // A caller may wrap an import batch in a larger transaction. A nested
   // savepoint can return before that owner commits, so do not publish phantom
   // rows/events to process memory; the next selector will hydrate from SQLite.
@@ -225,8 +249,23 @@ export function insertMessages(
     insertedMsgIds,
     mediaBackfilled,
     unsentMarked,
+    metadataBackfilled,
     chatIds: [...chatLatest.keys()]
   }
+}
+
+/** Main-process-only raw identifier readback; intentionally excluded from DTO/IPC. */
+export function getMessageLineMetadata(msgId: string, db: Database = getDb()): {
+  msgId: string; mediaOid: string | null; mediaSid: string | null; sharedContactMid: string | null;
+  sharedContactDisplayName: string | null; stickerId: string | null; stickerPackageId: string | null
+} | null {
+  const row = db.prepare(`SELECT msg_id,media_oid,media_sid,shared_contact_mid,shared_contact_display_name,sticker_id,sticker_package_id FROM messages WHERE msg_id=?`).get(msgId) as {
+    msg_id: string; media_oid: string | null; media_sid: string | null; shared_contact_mid: string | null;
+    shared_contact_display_name: string | null; sticker_id: string | null; sticker_package_id: string | null
+  } | undefined
+  return row ? { msgId: row.msg_id, mediaOid: row.media_oid, mediaSid: row.media_sid,
+    sharedContactMid: row.shared_contact_mid, sharedContactDisplayName: row.shared_contact_display_name,
+    stickerId: row.sticker_id, stickerPackageId: row.sticker_package_id } : null
 }
 
 /** 寫入單則（便利包裝；內部走 insertMessages）。 */

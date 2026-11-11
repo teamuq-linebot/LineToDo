@@ -45,8 +45,8 @@ function seedBulk(db, { messages, chats, blockedChats = 0 }) {
 test('fresh database builds the v10 index set: partial pending index in, the two superseded indexes out', () => {
   const opened = openFixture()
   try {
-    assert.equal(SCHEMA_VERSION, 10)
-    assert.equal(opened.db.pragma('user_version', { simple: true }), 10)
+    assert.equal(SCHEMA_VERSION, 11)
+    assert.equal(opened.db.pragma('user_version', { simple: true }), 11)
     const names = indexNames(opened.db)
     assert.ok(names.includes(PENDING_INDEX_NAME), names.join(','))
     assert.ok(names.includes('idx_messages_chat_ts_msg'))
@@ -68,9 +68,9 @@ test('migrate v8 to v10: creates the partial index first, then drops the two sup
     const before = db.prepare('SELECT msg_id, chat_id, ts, processed FROM messages ORDER BY msg_id').all()
     assert.deepEqual(indexNames(db).filter((name) => /pending|chat_ts$|unproc/u.test(name)), ['idx_messages_chat_ts', 'idx_messages_unproc'])
 
-    assert.deepEqual(migrate(db), { from: 8, to: 10 })
+    assert.deepEqual(migrate(db), { from: 8, to: 11 })
 
-    assert.equal(db.pragma('user_version', { simple: true }), 10)
+    assert.equal(db.pragma('user_version', { simple: true }), 11)
     const names = indexNames(db)
     assert.ok(names.includes(PENDING_INDEX_NAME))
     assert.ok(!names.includes('idx_messages_chat_ts'), 'M-I1 dropped it')
@@ -79,7 +79,7 @@ test('migrate v8 to v10: creates the partial index first, then drops the two sup
     const pending = db.prepare('SELECT COUNT(*) AS n FROM messages WHERE processed = 0').get().n
     const viaIndex = db.prepare(`SELECT COUNT(*) AS n FROM messages INDEXED BY ${PENDING_INDEX_NAME} WHERE processed = 0`).get().n
     assert.equal(viaIndex, pending, 'the partial index covers every pending row')
-    assert.deepEqual(migrate(db), { from: 10, to: 10 })
+    assert.deepEqual(migrate(db), { from: 11, to: 11 })
   } finally {
     opened.close()
   }
@@ -144,7 +144,7 @@ test('migrate v9 to v10: all three indexes are gone, message_participants is an 
     assert.deepEqual(OLD_INDEXES.concat(PARTICIPANTS_INDEX).filter((name) => !allIndexNames(db).includes(name)), [])
 
     const { result, warns } = quiet(() => migrate(db))
-    assert.deepEqual(result, { from: 9, to: 10 })
+    assert.deepEqual(result, { from: 9, to: 11 })
     assert.deepEqual(warns, [])
 
     const names = allIndexNames(db)
@@ -152,7 +152,7 @@ test('migrate v9 to v10: all three indexes are gone, message_participants is an 
     assert.ok(names.includes(PENDING_INDEX_NAME))
     assert.ok(names.includes('idx_messages_chat_ts_msg'))
     assert.equal(count(db, 'message_participants'), 0)
-    assert.equal(db.pragma('user_version', { simple: true }), 10)
+    assert.equal(db.pragma('user_version', { simple: true }), 11)
     assert.deepEqual(db.prepare('SELECT msg_id, chat_id, ts, processed FROM messages ORDER BY msg_id').all(), messagesBefore)
 
     const fresh = openFixture()
@@ -179,7 +179,7 @@ test('migrate v10 M-P1 is skipped as a whole when a keyed row exists; M-I1 and M
     const participantsBefore = db.prepare('SELECT * FROM message_participants ORDER BY msg_id').all()
 
     const { result, warns } = quiet(() => migrate(db))
-    assert.deepEqual(result, { from: 9, to: 10 })
+    assert.deepEqual(result, { from: 9, to: 11 })
     assert.equal(warns.length, 1, warns.join(' | '))
     assert.match(warns[0], /M-P1 skipped.*participant_key IS NOT NULL/u)
 
@@ -187,7 +187,7 @@ test('migrate v10 M-P1 is skipped as a whole when a keyed row exists; M-I1 and M
     const names = allIndexNames(db)
     assert.ok(names.includes(PARTICIPANTS_INDEX), 'M-I3 belongs to M-P1 and is skipped with it')
     for (const gone of OLD_INDEXES) assert.ok(!names.includes(gone), gone + ' still exists')
-    assert.equal(db.pragma('user_version', { simple: true }), 10)
+    assert.equal(db.pragma('user_version', { simple: true }), 11)
     assertHealthy(db)
   } finally {
     opened.close()
@@ -216,7 +216,7 @@ test('migrate v10 M-I2 is skipped while idx_messages_pending_ts does not exist; 
     const db = makeV9Database(opened)
     db.exec('DROP INDEX ' + PENDING_INDEX_NAME)
     const { result, warns } = quiet(() => migrate(db))
-    assert.deepEqual(result, { from: 9, to: 10 })
+    assert.deepEqual(result, { from: 9, to: 11 })
     assert.equal(warns.length, 1, warns.join(' | '))
     assert.match(warns[0], /M-I2 skipped.*idx_messages_pending_ts/u)
     const names = allIndexNames(db)
@@ -235,7 +235,7 @@ test('migrate v8 to v10 creates the partial index before M-I2 runs, so M-I2 is n
     const db = makeV9Database(opened)
     db.exec('DROP INDEX ' + PENDING_INDEX_NAME + '; PRAGMA user_version = 8;')
     const { result, warns } = quiet(() => migrate(db))
-    assert.deepEqual(result, { from: 8, to: 10 })
+    assert.deepEqual(result, { from: 8, to: 11 })
     assert.deepEqual(warns, [])
     assert.ok(allIndexNames(db).includes(PENDING_INDEX_NAME))
     assert.ok(!allIndexNames(db).includes('idx_messages_unproc'))
@@ -252,10 +252,10 @@ test('migrate v10 is idempotent: re-running it (also with user_version forced ba
     const afterFirst = schemaSnapshot(db)
     const rowsFirst = db.prepare('SELECT msg_id, processed FROM messages ORDER BY msg_id').all()
 
-    assert.deepEqual(quiet(() => migrate(db)).result, { from: 10, to: 10 })
+    assert.deepEqual(quiet(() => migrate(db)).result, { from: 11, to: 11 })
     db.pragma('user_version = 9')
     const again = quiet(() => migrate(db))
-    assert.deepEqual(again.result, { from: 9, to: 10 })
+    assert.deepEqual(again.result, { from: 9, to: 11 })
     assert.deepEqual(again.warns, [])
     assert.deepEqual(schemaSnapshot(db), afterFirst)
     assert.deepEqual(db.prepare('SELECT msg_id, processed FROM messages ORDER BY msg_id').all(), rowsFirst)
@@ -308,7 +308,7 @@ test('migrate v10 on a file database checkpoints the WAL afterwards (M-W) and th
 
     const second = quiet(() => openDatabase({ dbPath, engine })).result
     try {
-      assert.equal(second.db.pragma('user_version', { simple: true }), 10)
+      assert.equal(second.db.pragma('user_version', { simple: true }), 11)
       assert.equal(count(second.db, 'message_participants'), 0)
       const walPath = dbPath + '-wal'
       assert.ok(!existsSync(walPath) || statSync(walPath).size === 0, 'wal_checkpoint(TRUNCATE) left an empty WAL')

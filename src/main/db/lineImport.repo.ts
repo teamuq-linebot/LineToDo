@@ -49,6 +49,7 @@ export interface CommitLineImportResult {
   insertedMsgIds: string[]
   mediaBackfilled: number
   unsentMarked: number
+  metadataBackfilled: number
   chatIds: string[]
   receiptInserted: boolean
   keyedIdentityCount: number
@@ -139,6 +140,7 @@ export function commitLineImportBatch(
       observed: batch.observedAt, committed: committedAt }).changes > 0
     return { inserted: inserted.inserted, insertedMsgIds: inserted.insertedMsgIds,
       mediaBackfilled: inserted.mediaBackfilled, unsentMarked: inserted.unsentMarked,
+      metadataBackfilled: inserted.metadataBackfilled,
       chatIds: inserted.chatIds, receiptInserted, keyedIdentityCount, unknownIdentityCount }
   })
   return tx()

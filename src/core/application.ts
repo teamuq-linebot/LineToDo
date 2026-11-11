@@ -515,7 +515,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
               : undefined,
             commitImportBatch: (batch) => commitLineImportBatch(database.db, batch, ports.participantIdentity ?? unknownIdentity)
           })
-          return { ok: true, scanned: result.scanned, mediaBackfilled: result.mediaBackfilled }
+          return { ok: true, scanned: result.scanned, mediaBackfilled: result.mediaBackfilled, metadataBackfilled: result.metadataBackfilled }
         }
         catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) } }
       },
