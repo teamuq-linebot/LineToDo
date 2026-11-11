@@ -775,6 +775,7 @@ code {
 }
 .chat-message.incoming {
   justify-content: flex-start;
+  align-items: flex-start;
 }
 .chat-message.outgoing {
   justify-content: flex-end;
@@ -831,6 +832,14 @@ code {
   background: var(--chat-outgoing-bg);
   color: var(--chat-outgoing-text);
 }
+.chat-message.incoming .chat-message-bubble.attachment,
+.chat-message.outgoing .chat-message-bubble.attachment {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+}
 .chat-message-body {
   min-width: 0;
   white-space: pre-wrap;
@@ -838,6 +847,8 @@ code {
 .chat-message-body .sm-media {
   max-width: 100%;
 }
+.chat-message-bubble.photo-attachment { max-width: min(210px, 100%); }
+.chat-message-bubble.photo-attachment .chat-message-body { width: fit-content; max-width: 100%; }
 .chat-message-bubble .sm-file {
   min-width: 0;
   max-width: min(320px, 72cqw);
@@ -1907,19 +1918,24 @@ button:disabled {
    兼容 R3 將類名掛在 .sm-bubble 上或獨立容器兩種寫法。 */
 .sm-media,
 .sm-bubble.sm-media {
+  display: block;
+  width: fit-content;
+  max-width: min(210px, 100%);
   padding: 0;
   background: transparent;
   border: none;
   box-shadow: none;
   line-height: 0;
 }
-/* 縮圖：最大寬 ~210px、4:3 裁切、圓角、可點放大 */
+.chat-message-body > .sm-media { max-width: min(210px, 100%); }
+/* 單張圖片保留原始比例，只限制顯示尺寸；不裁切內容。 */
 .sm-thumb {
   display: block;
-  width: 210px;
-  max-width: 62%;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
+  width: auto;
+  height: auto;
+  max-width: min(210px, 100%);
+  max-height: 210px;
+  object-fit: contain;
   border-radius: 12px;
   border: 1px solid var(--border);
   cursor: pointer;
@@ -1935,9 +1951,9 @@ button:disabled {
 
 /* 未下載 / 失敗：灰態虛線佔位（置中小字，如「尚未下載」） */
 .sm-media-missing {
-  width: 210px;
-  max-width: 62%;
-  aspect-ratio: 4 / 3;
+  width: min(210px, 100%);
+  max-width: 100%;
+  min-height: 48px;
   border: 1px dashed var(--border);
   border-radius: 12px;
   background: var(--input-bg);
@@ -1949,6 +1965,39 @@ button:disabled {
   padding: 10px;
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* 精確同毫秒照片的畫面拼組：資料列與每張圖操作維持獨立。 */
+.chat-message-photo-group .chat-message-bubble.attachment {
+  width: fit-content;
+  max-width: min(260px, 64vw);
+}
+.chat-message-photo-grid {
+  display: grid;
+  gap: 3px;
+  width: min(260px, 64vw);
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+}
+.chat-message-photo-grid-two,
+.chat-message-photo-grid-three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.chat-message-photo-grid-many { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.chat-message-photo-grid .sm-media { display: block; width: 100%; max-width: 100%; }
+.chat-message-photo-grid .sm-thumb {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 180px;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 0;
+}
+.chat-message-photo-grid-three .sm-media:first-child { grid-column: 1 / -1; }
+.chat-message-photo-grid-three .sm-media:first-child .sm-thumb { aspect-ratio: 16 / 9; }
+@media (max-width: 480px) {
+  .chat-message-photo-group .chat-message-bubble.attachment,
+  .chat-message-photo-grid { width: min(260px, 60vw); }
 }
 
 /* 檔案卡：橫向 icon + 檔名 + 大小 + 動作鈕 */

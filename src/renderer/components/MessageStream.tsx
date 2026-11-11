@@ -19,6 +19,7 @@ import { AvatarZoomDialog } from './AvatarZoomDialog'
 import { HeaderStatus } from './HeaderStatusSlot'
 import { focusFirstMenuItem, useContextMenuKeys } from '../hooks/useContextMenuKeys'
 import { layoutScale, placeFixedMenu, type MenuPlacement } from '../lib/zoom'
+import { groupConsecutivePhotoMessages } from '../lib/photoMessageGroups'
 
 interface ConversationEntry {
   chatId: string
@@ -394,6 +395,7 @@ function MessageRow({
 }): JSX.Element {
   const incoming = m.direction === 'in'
   const sender = senderOverride || m.sender || (incoming ? '對方' : '我')
+  const attachment = Boolean(m.msgId && (m.contentType === 1 || m.contentType === 14))
   return (
     <li
       className={`chat-message ${incoming ? 'incoming' : 'outgoing'}`}
@@ -404,15 +406,44 @@ function MessageRow({
         <ZoomableAvatar url={avatarUrl} label={sender} name={sender} isGroup={false} className="chat-message-avatar" title={sender} />
       )}
       <div className="chat-message-content">
-        <span className="chat-message-sender">{sender}</span>
+        {incoming && <span className="chat-message-sender">{sender}</span>}
         <div className="chat-message-bottom-row">
-          <div className="chat-message-bubble">
+          <div className={`chat-message-bubble${attachment ? ' attachment' : ''}${m.contentType === 1 ? ' photo-attachment' : ''}`}>
             {m.unsent && <span className="unsent-badge">🚫 已收回</span>}
             <div className="chat-message-body">
               <MessageContent m={m} onOpenLightbox={onOpenLightbox} />
             </div>
           </div>
           <time className="chat-message-time">{messageTimeLabel(m)}</time>
+        </div>
+      </div>
+    </li>
+  )
+}
+
+function PhotoGroupRow({ messages, onOpenLightbox, avatarUrls, displayNames }: {
+  messages: RawLineMessage[]
+  onOpenLightbox: (url: string) => void
+  avatarUrls: Record<string, string>
+  displayNames: Record<string, string>
+}): JSX.Element {
+  const first = messages[0]
+  const incoming = first.direction === 'in'
+  const sender = displayNames[first.msgId!] || first.sender
+  return (
+    <li className={`chat-message ${incoming ? 'incoming' : 'outgoing'} chat-message-photo-group`} data-photo-count={messages.length}>
+      {incoming && (
+        <ZoomableAvatar url={avatarUrls[first.msgId!]} label={sender} name={sender} isGroup={false} className="chat-message-avatar" title={sender} />
+      )}
+      <div className="chat-message-content">
+        {incoming && <span className="chat-message-sender">{sender}</span>}
+        <div className="chat-message-bottom-row">
+          <div className="chat-message-bubble attachment">
+            <div className={`chat-message-photo-grid chat-message-photo-grid-${messages.length === 3 ? 'three' : messages.length === 2 ? 'two' : 'many'}`}>
+              {messages.map((message) => <MediaImage key={message.msgId} msgId={message.msgId!} as="div" onOpenLightbox={onOpenLightbox} />)}
+            </div>
+          </div>
+          <time className="chat-message-time">{messageTimeLabel(first)}</time>
         </div>
       </div>
     </li>
@@ -656,6 +687,7 @@ export function MessageStream(): JSX.Element {
     if (!activeChatId) return []
     return loadedMessages.filter((message) => message.chatId === activeChatId).sort(compareMessages)
   }, [activeChatId, loadedMessages])
+  const activeMessageGroups = useMemo(() => groupConsecutivePhotoMessages(activeMessages), [activeMessages])
   const activeAvatarMessageIds = useMemo(
     () => activeMessages.filter((message) => message.direction === 'in' && message.msgId?.startsWith('i:')).slice(-200).map((message) => message.msgId as string),
     [activeMessages],
@@ -1151,13 +1183,16 @@ export function MessageStream(): JSX.Element {
                       <p className="chat-history-status muted">這個聊天室目前沒有已載入的訊息。</p>
                     )}
                     <ol className="chat-message-list">
-                      {activeMessages.map((message, index) => {
+                      {activeMessageGroups.map((group, index) => {
+                        const message = group[0]
                         const day = localDayKey(message.ts)
-                        const previousDay = index > 0 ? localDayKey(activeMessages[index - 1].ts) : ''
+                        const previousDay = index > 0 ? localDayKey(activeMessageGroups[index - 1][0].ts) : ''
                         return (
                           <Fragment key={messageKey(message)}>
                             {day && day !== previousDay && <li className="chat-date-divider"><span>{dayDividerLabel(day)}</span></li>}
-                            <MessageRow m={message} onOpenLightbox={setLightboxSrc} avatarUrl={message.msgId ? messageAvatarUrls[message.msgId] : undefined} senderOverride={message.msgId ? messageDisplayNames[message.msgId] : undefined} />
+                            {group.length > 1
+                              ? <PhotoGroupRow messages={group} onOpenLightbox={setLightboxSrc} avatarUrls={messageAvatarUrls} displayNames={messageDisplayNames} />
+                              : <MessageRow m={message} onOpenLightbox={setLightboxSrc} avatarUrl={message.msgId ? messageAvatarUrls[message.msgId] : undefined} senderOverride={message.msgId ? messageDisplayNames[message.msgId] : undefined} />}
                           </Fragment>
                         )
                       })}
