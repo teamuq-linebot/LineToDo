@@ -39,6 +39,7 @@ import { ensureChatTodoPrefsSchema, isTodoExtractEnabled, migrateIgnoredChats, s
 import { ensureChatListPrefsSchema, listChatPrefs, setChatHidden, setChatIgnored, setChatPinned } from '../main/db/chatListPrefs.repo'
 import { createGroupTopicsService } from '../main/features/groupTopics/service'
 import { GROUP_TOPICS_BUNDLE_ENABLED } from '../main/features/groupTopics/prompts/bundle'
+import type { ChatProfileSnapshot } from '../shared/chatProfiles'
 
 export interface LineTodoApplicationPorts {
   dataDir: string
@@ -66,6 +67,8 @@ export interface LineTodoApplicationPorts {
   providers: { resolveProvider(): ReturnType<typeof import('../main/llm/provider').resolveProvider>; resolveBackgroundProvider?(): ReturnType<typeof import('../main/llm/provider').resolveProvider> }
   /** 議題背景分析的診斷事件（不含訊息內容）。 */
   topicBackgroundLog?(event: string, detail?: Record<string, unknown>): void
+  /** Optional host supplied profile resolver shared by standalone and combined extraction. */
+  resolveChatProfile?(chatId: string): ChatProfileSnapshot
   makeExtract(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null
   /** 「重新整理最近 N 天」專用的抽取函式（外掛：直接用 ExtractQueue，不經回顧帳本）；省略＝沿用 makeExtract。 */
   makeRefreshExtract?(): ((input: ChatExtractInput) => Promise<ExtractResult>) | null
@@ -277,7 +280,7 @@ export async function createLineTodoApplication(ports: LineTodoApplicationPorts)
   try {
     if (!GROUP_TOPICS_BUNDLE_ENABLED) throw new Error('prompt_bundle_invalid')
     ensureGroupTopicsSchema(database.db)
-    groupTopicsService = createGroupTopicsService(database.db, { isCombinedActive: () => ports.combinedExtractActive?.() === true })
+    groupTopicsService = createGroupTopicsService(database.db, { isCombinedActive: () => ports.combinedExtractActive?.() === true, resolveProfile: ports.resolveChatProfile })
     if (ports.providers.resolveBackgroundProvider) {
       topicBackground = createTopicBackground({
         db: database.db,

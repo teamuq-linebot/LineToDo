@@ -400,6 +400,14 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
         reset: (chatId, expectedRevision) => call('settings.chatPrompt.reset', { chatId, expectedRevision }),
         list: async () => (await call<{ items: ChatPromptSummary[] }>('settings.chatPrompt.list')).items
       },
+      profiles: {
+        getConfig: () => call('settings.profiles.getConfig'),
+        saveConfig: (config, expectedRevision) => call('settings.profiles.saveConfig', { config, expectedRevision }),
+        getChat: (chatId) => call('settings.profiles.getChat', { chatId }),
+        saveChat: (chatId, value, expectedRevision) => call('settings.profiles.saveChat', { chatId, value, expectedRevision }),
+        resolve: (chatId) => call('settings.profiles.resolve', { chatId }),
+        suggestRule: (chatId, kind, goal, expectedProfileRevision, options) => call('settings.profiles.suggestRule', { chatId, kind, goal, expectedProfileRevision, ...(options ?? {}) })
+      },
       getOptions: () => call('ai.options'),
       getSelection: async () => normalizeHostAiSelection((await call<{ pluginAi?: HostAiSelection }>('settings.get')).pluginAi),
       setSelection: async (selection) => normalizeHostAiSelection((await call<{ pluginAi?: HostAiSelection }>('settings.update', { pluginAi: normalizeHostAiSelection(selection) })).pluginAi)

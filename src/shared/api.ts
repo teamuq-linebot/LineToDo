@@ -592,6 +592,7 @@ export interface DraftReplyResult {
 
 export interface LineTodoApi {
   hostAi?: HostAiControl
+  profiles?: import('./hostAi').ChatProfilesControl
   ping(): Promise<{ ok: boolean; ts: number; version: string }>
   messages: { recent(): Promise<RawLineMessage[]> }
   line: {

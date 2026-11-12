@@ -19,6 +19,7 @@ import { AiPortError } from '../../core/aiPort'
 import type { AiPort } from '../../core/aiPort'
 import { validateExtractResult } from '../../shared/extractResult'
 import { validateCombinedEnvelope } from '../../main/features/groupTopics/combined'
+import { projectAiInputSafely } from '../../shared/aiInputSafety'
 import type { Clock } from './hostAi'
 import { SYSTEM_CLOCK, codeOf, isTransientAiCode, worstCaseItemMs } from './hostAi'
 import type { ExtractQueue } from './extractQueue'
@@ -111,7 +112,10 @@ export function createExtractWorker(deps: ExtractWorkerDeps): ExtractWorker {
     }
     heartbeat=clock.setTimeout(keepAlive,30_000)
     try {
-      const result = await deps.port.complete({ system: item.topics ? deps.system(item.chatId, { topics: true }) : deps.system(item.chatId), user: item.user, conversationScope: { kind: 'line-chat', chatId: item.chatId, taskKind: item.topics ? 'extractTopics' : 'extract', ...(item.sessionEpoch!==undefined?{epoch:item.sessionEpoch}:{}) }, ...(item.onAdditionalUserPayload?{onAdditionalUserPayload:item.onAdditionalUserPayload}:{}), expectJson: true, validate: item.topics ? validateCombined : validate, priority: 'background' })
+      const safeSystem=projectAiInputSafely(item.topics ? deps.system(item.chatId, { topics: true }) : deps.system(item.chatId))
+      const safeUser=projectAiInputSafely(item.user)
+      if(safeSystem.status==='blocked'||safeUser.status==='blocked'||!safeSystem.payload||!safeUser.payload) throw new AiPortError('payload_unavailable')
+      const result = await deps.port.complete({ system: safeSystem.payload, user: safeUser.payload, conversationScope: { kind: 'line-chat', chatId: item.chatId, taskKind: item.topics ? 'extractTopics' : 'extract', ...(item.sessionEpoch!==undefined?{epoch:item.sessionEpoch}:{}) }, ...(item.onAdditionalUserPayload?{onAdditionalUserPayload:(serialized)=>{const safe=projectAiInputSafely(serialized);return safe.status!=='blocked'&&Boolean(safe.payload)&&item.onAdditionalUserPayload!(safe.payload!)}}:{}), expectJson: true, validate: item.topics ? validateCombined : validate, priority: 'background' })
       if (stopped) return null
       const committed = deps.queue.commit({ results: [{ itemId: item.itemId, ok: true, result: result.value }] })
       const status = committed.results[0]?.status

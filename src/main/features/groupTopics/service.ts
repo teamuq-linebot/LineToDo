@@ -10,6 +10,8 @@ import { listChats } from '../../db/chats.repo'
 import { isTodoExtractEnabled } from '../../db/chatTodoPrefs.repo'
 import { advanceIdentityIndex, beginIdentitySourceAttempt, captureIdentitySnapshot, recallTopicIdentityCandidates, recordIdentitySourceAttempt, releaseIdentitySourceAttempt } from '../../db/identity.repo'
 import { IDENTITY_QUERY_VERSION, type IdentityCandidate } from '../../../shared/identityDecision'
+import type { ChatProfileSnapshot } from '../../../shared/chatProfiles'
+import { projectAiInputSafely } from '../../../shared/aiInputSafety'
 
 const versions = { promptVersion: GROUP_TOPICS_PROMPT_VERSION, promptHash: GROUP_TOPICS_PROMPT_HASH, schemaVersion: GROUP_TOPICS_SCHEMA_VERSION, schemaHash: GROUP_TOPICS_SCHEMA_HASH, validatorVersion: GROUP_TOPICS_VALIDATOR_VERSION }
 export const GROUP_TOPICS_BATCH_SIZE = 20
@@ -142,6 +144,7 @@ function safeProviderCode(error:unknown):LlmErrorCode {
 export interface GroupTopicsServiceOptions {
   /** 合併整理（待辦＋議題一次 AI 呼叫）正在背景運作：analyze 與 pendingCount／backlogCount 只算集合 B（processed=1 且尚無議題決策）。 */
   isCombinedActive?: () => boolean
+  resolveProfile?: (chatId: string) => ChatProfileSnapshot
 }
 
 export function createGroupTopicsService(db: Database, options: GroupTopicsServiceOptions = {}): GroupTopicsService {
@@ -205,45 +208,55 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
       const candidateRevisions=recalled.candidateRevisions.filter((candidate)=>candidateIds.has(candidate.entityId))
       const identitySnapshot=captureIdentitySnapshot(db,chatId,sourceRows,fitted.candidateTruncated,candidateRevisions)
       if(!identitySnapshot) return {ok:false,reason:'source_changed'}
-      if (!opts.refreshMessages && completedInputExists(db, chatId, messages, versions)) return { ok: true, count: listTopics(db, chatId).length, analyzedCount: 0 }
-      const userPayload=fitted.user
+      const profile = options.resolveProfile?.(chatId)
+      const effectiveSystem = profile ? `${GROUP_TOPICS_PROMPT}\n\n【議題性質規則】\n${profile.topic.instruction}\n\n【profile revision】${profile.revision}` : GROUP_TOPICS_PROMPT
+      const effectiveVersions = profile ? { ...versions, promptHash: createHash('sha256').update(`${GROUP_TOPICS_PROMPT_HASH}:${profile.revision}:${effectiveSystem}`).digest('hex') } : versions
+      if (!opts.refreshMessages && completedInputExists(db, chatId, messages, effectiveVersions)) return { ok: true, count: listTopics(db, chatId).length, analyzedCount: 0 }
+      const safeSystem=projectAiInputSafely(effectiveSystem)
+      const safeUser=projectAiInputSafely(fitted.user)
+      if(safeSystem.status==='blocked'||safeUser.status==='blocked'||!safeSystem.payload||!safeUser.payload) return {ok:false,reason:'safety_blocked'}
+      const safeEffectiveSystem=safeSystem.payload
+      const userPayload=safeUser.payload
       if (providerResolveFailed) {
         const failure={stage:'provider_resolve' as const,path:null,code:'invalid_config' as const,reason:'provider_unavailable',providerKind:'unknown' as const}
-        try { recordFailure(db,chatId,messages,versions,failure) } catch { /* retryable; no source rows change */ }
+        try { recordFailure(db,chatId,messages,effectiveVersions,failure) } catch { /* retryable; no source rows change */ }
         return { ok: false, reason: 'provider_unavailable', failure:{stage:failure.stage,path:failure.path,code:failure.code} }
       }
       if (!provider) {
         const failure={stage:'provider_resolve' as const,path:null,code:'invalid_config' as const,reason:'provider_unavailable',providerKind:'unknown' as const}
-        try { recordFailure(db,chatId,messages,versions,failure) } catch { /* retryable; no source rows change */ }
+        try { recordFailure(db,chatId,messages,effectiveVersions,failure) } catch { /* retryable; no source rows change */ }
         return { ok: false, reason: 'provider_unavailable', failure:{stage:failure.stage,path:failure.path,code:failure.code} }
       }
       const providerKind=safeProviderKind(provider.kind)
       let effectiveProviderFingerprint:string|null=null
       try { effectiveProviderFingerprint=await provider.runtimeFingerprint?.()??null } catch { return {ok:false,reason:'provider_unavailable'} }
-      const lease=beginIdentitySourceAttempt(db,chatId,identitySnapshot,userPayload,createHash('sha256').update(JSON.stringify({provider:provider.id,kind:provider.kind,effectiveProviderFingerprint,prompt:GROUP_TOPICS_PROMPT_HASH,schema:GROUP_TOPICS_SCHEMA_HASH,query:IDENTITY_QUERY_VERSION})).digest('hex'),new Date(),'topic')
+      const lease=beginIdentitySourceAttempt(db,chatId,identitySnapshot,userPayload,createHash('sha256').update(JSON.stringify({provider:provider.id,kind:provider.kind,effectiveProviderFingerprint,prompt:effectiveVersions.promptHash,schema:GROUP_TOPICS_SCHEMA_HASH,query:IDENTITY_QUERY_VERSION})).digest('hex'),new Date(),'topic')
       if(!lease.lease) return {ok:false,reason:'identity_'+(lease.reason??'lease_unavailable')}
       let response
       try {
         response = await provider.complete({
-          system: GROUP_TOPICS_PROMPT,
+          system: safeEffectiveSystem,
           user: userPayload,
           temperature: 0,
           jsonSchema: { name: 'group_topics', schema: requestSchemaForBatch(messages,fitted.candidates) },
           conversation: { chatId, kind: 'groupTopics' },
-          onAdditionalUserPayload: (serializedUserPayload) => recordIdentitySourceAttempt(db,lease.lease!,serializedUserPayload,new Date(),false).ok
+          onAdditionalUserPayload: (serializedUserPayload) => {
+            const safe=projectAiInputSafely(serializedUserPayload)
+            return safe.status!=='blocked'&&Boolean(safe.payload)&&recordIdentitySourceAttempt(db,lease.lease!,safe.payload!,new Date(),false).ok
+          }
         })
       } catch (error) {
         releaseIdentitySourceAttempt(db,lease.lease,true)
         const code=safeProviderCode(error)
         const failure={stage:'provider_complete' as const,path:null,code,reason:code,providerKind}
-        try { recordFailure(db,chatId,messages,versions,failure) } catch { /* retryable; no source rows change */ }
+        try { recordFailure(db,chatId,messages,effectiveVersions,failure) } catch { /* retryable; no source rows change */ }
         return { ok:false,reason:'analysis_failed',failure:{stage:failure.stage,path:null,code} }
       }
       let raw:unknown
       try { raw=response.structured ?? JSON.parse(response.text) as unknown } catch {
         releaseIdentitySourceAttempt(db,lease.lease,true)
         const failure={stage:'response_decode' as const,path:null,code:'invalid_json' as const,reason:'invalid_json',providerKind}
-        try { recordFailure(db,chatId,messages,versions,failure) } catch { /* retryable; no source rows change */ }
+        try { recordFailure(db,chatId,messages,effectiveVersions,failure) } catch { /* retryable; no source rows change */ }
         return {ok:false,reason:'analysis_failed',failure:{stage:failure.stage,path:null,code:failure.code}}
       }
       let result

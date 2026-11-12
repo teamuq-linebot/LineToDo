@@ -43,6 +43,19 @@ const isJson = (value, depth = 0) => {
 }
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength
 
+test('adapter forwards optional visible draft and nature while preserving the legacy four argument wire shape', async () => {
+  const calls = []
+  const api = createPluginLineTodoApi({ host: { backend: { call: async (_method, params) => { calls.push(params); return { ok: true, value: { kind: 'todo' } } } }, assets: { url: String } }, events: { enabled: false }, busyRetry: { attempts: 0 } })
+  try {
+    await api.hostAi.profiles.suggestRule('synthetic-chat', 'todo', 'goal', 'revision', { draftRule: 'visible draft', natureId: 'time_schedule' })
+    await api.hostAi.profiles.suggestRule('synthetic-chat', 'topic', 'goal', 'revision')
+    assert.deepEqual(calls.map(call => call.args[0]), [
+      { chatId: 'synthetic-chat', kind: 'todo', goal: 'goal', expectedProfileRevision: 'revision', draftRule: 'visible draft', natureId: 'time_schedule' },
+      { chatId: 'synthetic-chat', kind: 'topic', goal: 'goal', expectedProfileRevision: 'revision' }
+    ])
+  } finally { api.dispose() }
+})
+
 /**
  * `backend`: anything with `call(method, params)`; swap it with `.target` to simulate a restart.
  *

@@ -23,6 +23,10 @@ import { PluginRootLayout } from '../../../src/plugin/ui/PluginRootLayout'
 import { UiStateProvider, createLocalUiState } from '../../../src/renderer/lib/uiState'
 import { createOverviewRefresher } from '../../../src/renderer/features/groupTopics/groupTopicsOverview'
 import { GroupTopicsPanel } from '../../../src/renderer/features/groupTopics/GroupTopicsPanel'
+import { ChatPromptPanel } from '../../../src/renderer/features/chatPrompt/ChatPromptPanel'
+import { ProfileMatrixSettings } from '../../../src/renderer/components/Settings/ProfileMatrixSettings'
+import type { ChatPromptControl, ChatPromptState } from '../../../src/shared/promptSettings'
+import type { ChatProfilesControl } from '../../../src/shared/hostAi'
 import { sharedRead } from '../../../src/renderer/lib/sharedRead'
 import { MEDIA_INDEX_BUILDING_TOKEN, createPluginLineTodoApi } from '../../../src/renderer/platform/pluginApi'
 import { BACKEND_METHOD_GROUPS } from '../../../src/shared/pluginWire'
@@ -31,6 +35,17 @@ export { BACKEND_METHOD_GROUPS, MEDIA_INDEX_BUILDING_TOKEN, createPluginLineTodo
 
 export function groupTopicsScene(api: Api): ReactElement {
   return <Host api={api}><GroupTopicsPanel hideTitle /></Host>
+}
+export function chatPromptScene(api: Api, chatId: string): ReactElement {
+  const control: ChatPromptControl = {
+    get: async (): Promise<ChatPromptState> => ({ promptSource: 'default', effectivePrompt: 'legacy default', overridePrompt: null, overrideName: null, defaultName: null, revision: 'legacy-r1', maxChars: 4000, maxNameChars: 80 }),
+    save: async () => { throw new Error('unused') }, reset: async () => { throw new Error('unused') }
+  }
+  return <Host api={api}><ChatPromptPanel chatId={chatId} chatName="合成聊天室" control={control} /></Host>
+}
+/** The real global profile matrix editor with an isolated synthetic host profile port. */
+export function profileMatrixScene(control: ChatProfilesControl): ReactElement {
+  return <section className="set-section"><ProfileMatrixSettings control={control} /></section>
 }
 
 export function mount(element: ReactElement): { container: HTMLElement; unmount(): void } {

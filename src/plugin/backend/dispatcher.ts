@@ -80,6 +80,7 @@ export const INTERNAL_API_PATHS: readonly string[] = Object.freeze([
   'events.open', 'events.pull', 'events.close',
   'settings.prompt.get', 'settings.prompt.save', 'settings.prompt.reset', 'settings.prompt.refine', 'settings.prompt.saveName',
   'settings.chatPrompt.get', 'settings.chatPrompt.save', 'settings.chatPrompt.reset', 'settings.chatPrompt.list',
+  'settings.profiles.getConfig', 'settings.profiles.saveConfig', 'settings.profiles.getChat', 'settings.profiles.saveChat', 'settings.profiles.resolve', 'settings.profiles.suggestRule',
   'ai.status', 'ai.options', 'extract.stats', 'review.status', 'tasks.status',
   'media.prepare', 'media.avatar.prepareChats', 'media.avatar.prepareMessages',
   'result.chunk', 'job.poll'
@@ -115,6 +116,7 @@ export interface DispatcherOptions {
   /** 背景執行的目前狀態（`backend.residency`；residency.ts）。同步讀已知的值，不會去問宿主；省略＝`supported:false`（舊 Core、單元測試）。 */
   residency?: () => ResidencySnapshot
   prompts?: PromptService
+  profiles?: { getConfig(): unknown; saveConfig(value: unknown, expected: unknown): unknown; getChat(chatId: string): unknown; saveChat(chatId: string, value: unknown, expected: unknown): unknown; resolve(chatId: string, natureId?: string): unknown }
   /** 媒體服務（`media.prepare`）；省略＝回 media_unavailable。 */
   media?: PluginMedia
   /** LINE profile/Square avatars; all locators remain backend-only. */
@@ -250,6 +252,23 @@ export class Dispatcher {
       case 'settings.chatPrompt.list':
         if (!this.opts.prompts) return fail('prompt_unavailable')
         try { return this.finalize({ items: this.opts.prompts.chatList() }) } catch (error) { return mapError(error) }
+      case 'settings.profiles.getConfig': return this.opts.profiles ? this.finalize(this.opts.profiles.getConfig()) : fail('profiles_unavailable')
+      case 'settings.profiles.saveConfig':
+        if (!this.opts.profiles || !plain(args[0])) return fail('invalid_args')
+        try { return this.finalize(this.opts.profiles.saveConfig(args[0].config, args[0].expectedRevision)) } catch (error) { return mapProfileError(error) }
+      case 'settings.profiles.getChat':
+        if (!this.opts.profiles || !plain(args[0]) || typeof args[0].chatId !== 'string') return fail('invalid_args')
+        try { return this.finalize(this.opts.profiles.getChat(args[0].chatId)) } catch (error) { return mapProfileError(error) }
+      case 'settings.profiles.saveChat':
+        if (!this.opts.profiles || !plain(args[0]) || typeof args[0].chatId !== 'string') return fail('invalid_args')
+        try { return this.finalize(this.opts.profiles.saveChat(args[0].chatId, args[0].value, args[0].expectedRevision)) } catch (error) { return mapProfileError(error) }
+      case 'settings.profiles.resolve':
+        if (!this.opts.profiles || !plain(args[0]) || typeof args[0].chatId !== 'string') return fail('invalid_args')
+        try { return this.finalize(this.opts.profiles.resolve(args[0].chatId)) } catch (error) { return mapProfileError(error) }
+      case 'settings.profiles.suggestRule':
+        if (!this.opts.prompts || !plain(args[0]) || typeof args[0].chatId !== 'string' || (args[0].kind !== 'todo' && args[0].kind !== 'topic') || typeof args[0].goal !== 'string' || typeof args[0].expectedProfileRevision !== 'string') return fail('invalid_args')
+        if (Object.hasOwn(args[0], 'draftRule') && typeof args[0].draftRule !== 'string' || Object.hasOwn(args[0], 'natureId') && typeof args[0].natureId !== 'string') return fail('invalid_args')
+        return this.settle(this.opts.prompts.suggestProfileRule(args[0].chatId, args[0].kind, args[0].goal, args[0].expectedProfileRevision, { ...(Object.hasOwn(args[0], 'draftRule') ? { draftRule: args[0].draftRule as string } : {}), ...(Object.hasOwn(args[0], 'natureId') ? { natureId: args[0].natureId as string } : {}) }))
       case 'ai.status': return this.aiStatus(args[0])
       case 'ai.options': return this.aiOptions()
       case 'extract.stats': return this.finalize(this.opts.queue.stats())
@@ -545,4 +564,9 @@ function mapError(error: unknown): Envelope {
   const message = (error instanceof Error ? error.message : String(error)).slice(0, 300)
   if (/runtime is (stopped|disposed|created)/i.test(message)) return fail('runtime_not_running', message)
   return fail('api_error', message)
+}
+
+function mapProfileError(error: unknown): Envelope {
+  const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : ''
+  return fail(['revision_conflict','storage_unavailable','corrupt_config','invalid_input'].includes(code) ? code : 'profiles_unavailable')
 }

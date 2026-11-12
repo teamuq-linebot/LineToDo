@@ -29,6 +29,7 @@ import { createQwenConfig } from '../../main/config/qwen'
 import { createSettingsStore } from '../../main/config/settings'
 import { createPromptService } from './promptService'
 import { createChatPromptStore } from './chatPromptStore'
+import { createChatProfileStore, createChatProfileService } from './chatProfileStore'
 import type { ChatPromptDatabase } from './chatPromptStore'
 import type { SettingsSecretStorage } from '../../main/config/settings'
 import type { AppDbEngine } from '../../main/db/appDbEngine'
@@ -451,7 +452,14 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   // 逐對話的 prompt／名字覆寫放在 app DB 的 app_settings；同樣用 lazy getter，DB 開起來之前讀寫都丟 chat_prompt_unavailable。
   const prompts = createPromptService(settings, aiPort, {
     chatStore: createChatPromptStore({ getDatabase: () => appDb }),
+    profiles: { resolve: (chatId) => profiles.resolve(chatId) },
     log: (event) => log(`[prompt] ${event}`)
+  })
+  const chatPromptStore = createChatPromptStore({ getDatabase: () => appDb })
+  const profiles = createChatProfileService({
+    store: createChatProfileStore(() => appDb),
+    legacy: (chatId) => { const read = chatPromptStore.get(chatId); return { chatPrompt: read.override.prompt, chatName: read.override.myName } },
+    global: () => ({ prompt: settings.get().pluginPrompt ?? null, myName: settings.get().pluginMyName ?? null })
   })
   // 草擬回覆／誤判分析／群組議題分析：core 照 standalone 的邏輯跑，provider.complete() 直接經 AI port 呼叫 host.ai.complete（使用者動作，排在背景抽取之前）。
   const aiProvider = createPortAiProvider(aiPort, { usable: () => { const state = aiPort.status().state; return state !== 'unavailable' && state !== 'revoked' && state !== 'stopped' } })
@@ -522,6 +530,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       pipelineConfig: { getDefaults, getQwenConfig, isProviderConfigured: () => true },
       // 舊的「補分析」只處理集合 B（processed=1 且尚無議題決策）：只在合併整理真的會跑的時候（外掛 backend、旗標開、bundle 可用）。
       combinedExtractActive: () => settings.get().pluginCombinedExtract === true && COMBINED_BUNDLE_ENABLED,
+      resolveChatProfile: (chatId) => profiles.resolve(chatId),
       providers: { resolveProvider: () => aiProvider, resolveBackgroundProvider: () => aiProviderBackground },
       topicBackgroundLog: (event, detail) => log(`[topic-bg] ${event} ${JSON.stringify(detail ?? {})}`),
       onSettingsChanged: () => {
@@ -671,6 +680,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     ai: aiRuntime,
     residency: () => residency.snapshot(),
     prompts,
+    profiles,
     media,
     avatars,
     review,
