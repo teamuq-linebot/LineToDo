@@ -1452,6 +1452,9 @@ button:disabled {
 
 /* 卡片 */
 .todo-card {
+  box-sizing: border-box;
+  height: 248px;
+  min-height: 248px;
   background: var(--card-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1459,6 +1462,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 7px;
+  overflow: hidden;
   cursor: grab;
   user-select: none;
 }
@@ -1492,7 +1496,35 @@ button:disabled {
   font-weight: 600;
   line-height: 1.4;
   word-break: break-word;
+  min-width: 0;
 }
+.todo-card:not(.editing) .card-top .card-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.card-chat-avatar {
+  display: inline-flex;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.card-chat-avatar.group {
+  background: var(--chip-bg);
+  color: var(--accent);
+}
+.card-chat-avatar > img { display: block; width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 .todo-card.done .card-title {
   text-decoration: line-through;
   color: var(--muted);
@@ -1524,6 +1556,28 @@ button:disabled {
   font-size: 11.5px;
   color: var(--muted);
 }
+.card-trigger-time {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.card-long-content {
+  min-height: 0;
+  overflow: auto;
+  color: var(--card-detail-text);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.card-long-content > summary {
+  width: fit-content;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+}
+.card-long-content[open] { flex: 1 1 auto; }
+.card-long-content .card-detail,
+.card-long-content .card-evidence { margin-top: 5px; }
 .card-chat {
   color: var(--accent);
   max-width: 100%;
@@ -1579,7 +1633,7 @@ button:disabled {
   flex-wrap: wrap;
   gap: 5px;
   align-items: center;
-  margin-top: 2px;
+  margin-top: auto;
 }
 .card-actions button {
   padding: 4px 9px;
@@ -1650,6 +1704,9 @@ button:disabled {
 
 /* ── 卡片編輯模式 ─────────────────────────────────── */
 .todo-card.editing {
+  height: auto;
+  min-height: 248px;
+  overflow: visible;
   border-color: var(--accent);
 }
 .edit-form {
@@ -1772,8 +1829,8 @@ button:disabled {
 /* ── 來源訊息 modal（過去 24 小時對話 + 往上分頁）────────
    沿用 .modal-backdrop / .modal 基底；色彩一律用主題變數，深/淺皆正確。 */
 .modal.source-modal {
-  width: min(560px, 92%);
-  max-height: 82%;
+  width: min(760px, 92%);
+  max-height: 88%;
   padding: 0;
   gap: 0;
   overflow: hidden;
@@ -1829,17 +1886,24 @@ button:disabled {
 }
 .sm-msg {
   display: flex;
-  flex-direction: column;
-  max-width: 82%;
+  flex-direction: row;
+  align-items: flex-start;
+  width: 100%;
+  max-width: 100%;
 }
 .sm-msg.other {
-  align-self: flex-start;
+  align-self: stretch;
   align-items: flex-start;
 }
 .sm-msg.self {
-  align-self: flex-end;
+  align-self: stretch;
+  justify-content: flex-end;
   align-items: flex-end;
 }
+.sm-msg .chat-message-content { max-width: min(82%, 640px); }
+.sm-msg .chat-message-bubble { max-width: 100%; }
+.sm-msg .chat-message-bottom-row { max-width: 100%; }
+.sm-msg .chat-message-avatar { width: 34px; height: 34px; }
 .sm-who {
   font-size: 11px;
   color: var(--muted);
@@ -1861,6 +1925,10 @@ button:disabled {
   background: var(--accent);
   color: #fff;
   border-bottom-right-radius: 4px;
+}
+.source-modal .chat-message.outgoing .chat-message-bubble {
+  background: var(--chat-outgoing-bg);
+  color: var(--chat-outgoing-text);
 }
 .sm-text {
   white-space: pre-wrap;

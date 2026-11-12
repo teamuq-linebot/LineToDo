@@ -95,6 +95,8 @@ export interface TodoDTO {
   priority: number
   dueAt: string | null
   sourceMsgIds: string[]
+  /** Earliest available timestamp among the first 100 stored source IDs; null when none are stored. */
+  sourceTriggeredAt?: number | null
   confidence: number
   completionEvidence: string | null
   createdAt: string
