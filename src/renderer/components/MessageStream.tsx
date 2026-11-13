@@ -176,7 +176,7 @@ function AvatarGlyph({ url, label, isGroup }: { url?: string; label: string; isG
 }
 
 /** 有照片時是可點的按鈕（點了放大，只顯示大頭貼與名字）；只有字母時維持原本不可點的圓形標記。 */
-function ZoomableAvatar({ url, label, name, isGroup, className, title, chatId }: {
+export function ZoomableAvatar({ url, label, name, isGroup, className, title, chatId }: {
   url?: string
   label: string
   name: string

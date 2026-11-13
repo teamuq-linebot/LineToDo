@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Re
 import type { TodoDTO } from '../../types/api'
 import type { CompleteTodoRegistry, CompleteTodoResult } from '../../store/completeTodo'
 import { SourceMessagesModal } from './SourceMessagesModal'
+import { todoTriggerLabel } from './sourceTime'
+import { ZoomableAvatar } from '../MessageStream'
 import {
   isSuggestedDone,
   priorityLabel,
@@ -9,12 +11,25 @@ import {
   isOverdue
 } from './buckets'
 import type { CardDnd } from './KanbanBoard'
-import { useHostCapabilities } from '../../platform/LineTodoApi'
+import { useHostCapabilities, useLineTodoApi } from '../../platform/LineTodoApi'
 import { undoInSettingsHint } from '../../../shared/teamuqPlaces'
 // 未儲存的編輯／關鍵字草稿保留多久（G-04：重新開啟畫面後還原；太舊的就丟掉）：7 天，定義在 uiState.ts 的 UI_DRAFT_RETENTION，
 // 看板啟動時與開著的期間每小時也會主動清掉過期的（review N1）。
 import { CARD_DRAFT_MAX_AGE_MS, useUiState } from '../../lib/uiState'
 import { layoutScale, placeFixedMenu } from '../../lib/zoom'
+
+const chatAvatarRequests = new Map<string, Promise<string | undefined>>()
+
+function loadChatAvatar(api: ReturnType<typeof useLineTodoApi>, chatId: string): Promise<string | undefined> {
+  const cached = chatAvatarRequests.get(chatId)
+  if (cached) return cached
+  const request = api.media?.avatarUrls
+      ? api.media.avatarUrls([chatId]).then((batch) => batch.urls[chatId])
+      : Promise.resolve(undefined)
+  chatAvatarRequests.set(chatId, request)
+  void request.catch(() => { if (chatAvatarRequests.get(chatId) === request) chatAvatarRequests.delete(chatId) })
+  return request
+}
 
 interface EditDraft { title: string; detail: string; bucket: TodoDTO['bucket']; priority: number; due: string }
 
@@ -178,6 +193,13 @@ export function TodoCard({
 }: Props): JSX.Element {
   const [showSources, setShowSources] = useState(false)
   const caps = useHostCapabilities()
+  const api = useLineTodoApi()
+  const [chatAvatarUrl, setChatAvatarUrl] = useState<string | undefined>()
+  useEffect(() => {
+    let active = true
+    void loadChatAvatar(api, todo.chatId).then((url) => { if (active) setChatAvatarUrl(url) }).catch(() => { if (active) setChatAvatarUrl(undefined) })
+    return () => { active = false }
+  }, [api, todo.chatId])
   const subscribeCompletion = useCallback(
     (listener: () => void) => actions.completion.subscribe(todo.id, listener),
     [actions.completion, todo.id]
@@ -488,6 +510,7 @@ export function TodoCard({
       onDragEnd={() => dnd.onDragEnd()}
     >
       <div className="card-top">
+        <ZoomableAvatar url={chatAvatarUrl} label={chatName ?? todo.chatId} name={chatName ?? todo.chatId} isGroup={isGroup} className={`card-chat-avatar${isGroup ? ' group' : ''}`} title={chatName ?? todo.chatId} chatId={todo.chatId} />
         <span className={`prio-badge ${prio.cls}`} title="優先級">
           {prio.text}
         </span>
@@ -520,17 +543,20 @@ export function TodoCard({
         )}
       </div>
 
-      {todo.detail && <div className="card-detail">{todo.detail}</div>}
+      <div className="card-trigger-time" title="觸發時間；沒有來源訊息時間時顯示建立時間">
+        {todoTriggerLabel(todo)}
+      </div>
 
-      {suggested && todo.completionEvidence && (
-        <div className="card-evidence" title="完成偵測依據">
-          建議完成依據：{todo.completionEvidence}
-        </div>
-      )}
-      {done && todo.completionEvidence && (
-        <div className="card-evidence" title="完成證據">
-          完成證據：{todo.completionEvidence}
-        </div>
+      {(todo.detail || todo.completionEvidence) && (
+        <details className="card-long-content">
+          <summary>完整內容</summary>
+          {todo.detail && <div className="card-detail">{todo.detail}</div>}
+          {todo.completionEvidence && (
+            <div className="card-evidence" title={suggested ? '完成偵測依據' : '完成證據'}>
+              {suggested ? '建議完成依據：' : done ? '完成證據：' : '相關線索：'}{todo.completionEvidence}
+            </div>
+          )}
+        </details>
       )}
 
       <div className="card-source">
