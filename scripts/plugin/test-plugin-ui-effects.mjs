@@ -91,7 +91,7 @@ const VIEW = {
   hasApiKey: true, apiKeySource: 'none', safeStorageAvailable: false,
 }
 
-test('message composer stays disabled in flow with active residency status and long synthetic history', async () => {
+test('free chat omits its disabled composer while the message reader and active residency status stay in flow', async () => {
   const chat = { chatId: 'composer-synthetic', name: '合成長訊息聊天室', isGroup: false, firstSeenAt: '2026-11-06T02:00:00.000Z', lastSeenAt: '2026-11-06T03:11:00.000Z' }
   const rows = Array.from({ length: 72 }, (_, index) => {
     const ts = Date.UTC(2026, 10, 6, 2, 0) + index * 60_000
@@ -128,28 +128,23 @@ test('message composer stays disabled in flow with active residency status and l
   const find = (name) => walk(scene.container).find((element) => hasClass(element, name))
   const paneButton = (label) => walk(scene.container).find((element) => element.localName === 'button' && element.textContent.trim() === label && element.hasAttribute('aria-pressed'))
   try {
-    await until(() => find('chat-message-composer') && find('residency-status-bar')?.textContent.includes('背景執行中') && scene.container.textContent.includes('synthetic last row 71'), { message: 'the active residency footer, composer and final synthetic message render together' })
+    await until(() => find('chat-message-view') && find('residency-status-bar')?.textContent.includes('背景執行中') && scene.container.textContent.includes('synthetic last row 71'), { message: 'the active residency footer, message reader and final synthetic message render together' })
     const layout = find('plugin-root-layout')
     const rendererSlot = find('plugin-renderer-slot')
     const footer = find('residency-status-bar')
+    const messageView = find('chat-message-view')
+    const messageLog = find('chat-message-log')
+    const sendingEntry = walk(scene.container).find((element) => element.localName === 'button' && element.textContent.trim() === '發送・進階')
     const latest = walk(scene.container).find((element) => hasClass(element, 'chat-message') && element.textContent.includes('synthetic last row 71'))
     assert.ok(layout && footer.parentNode === layout, 'the active footer is a direct row in the plugin root layout')
     assert.ok(rendererSlot && rendererSlot.parentNode === layout, 'the renderer has its own flex row above the footer')
     assert.equal(footer.getAttribute('data-residency-level'), 'resident', 'the active background state remains visible')
+    assert.ok(messageView && messageLog, 'the chat reader and its internal scroll area remain mounted')
+    assert.equal(find('chat-message-composer'), undefined, 'the disabled composer is absent instead of reserving a footer row')
+    assert.ok(sendingEntry && typeof reactProps(sendingEntry).onClick === 'function', 'the compact sending entry is an actionable caller')
+    assert.ok(scene.container.textContent.includes('發送・進階'), 'sending capability remains discoverable in the pane header')
     assert.ok(walk(latest).some((element) => element.localName === 'time' && element.textContent.trim()), 'the final synthetic message keeps its timestamp in the rendered row')
 
-    const composer = find('chat-message-composer')
-    const input = walk(composer).find((element) => element.localName === 'input')
-    const controls = walk(composer).filter((element) => element.localName === 'button')
-    assert.ok(input && reactProps(input).disabled === true, 'the composer input is natively disabled')
-    assert.equal(reactProps(input).onChange, undefined, 'typing has no event handler')
-    assert.equal(reactProps(input).onKeyDown, undefined, 'Enter and Ctrl+Enter have no send handler')
-    assert.equal(input.getAttribute('placeholder'), '訊息功能尚未開啟')
-    assert.equal(controls.length, 3, 'only the visible attachment, emoji and send affordances are present')
-    assert.ok(controls.every((button) => reactProps(button).disabled === true), 'all composer buttons are natively disabled')
-    assert.ok(controls.every((button) => reactProps(button).onClick === undefined), 'disabled buttons have no picker or send handlers')
-    assert.equal(walk(composer).some((element) => element.localName === 'form'), false, 'there is no Enter-submit form')
-    assert.ok(composer.textContent.includes('功能尚未開啟'), 'the unavailable state is visible without opening a tooltip')
     assert.deepEqual(backend.unknown, [], 'the synthetic UI made no unmocked backend call')
 
     snapshot = { supported: true, requested: true, level: 'on-demand', reason: 'resident_not_granted' }
@@ -159,19 +154,19 @@ test('message composer stays disabled in flow with active residency status and l
 
     reactProps(paneButton('議題與待辦')).onClick()
     await until(() => paneButton('議題與待辦')?.getAttribute('aria-pressed') === 'true', { message: 'the selected chat switches to its combined non-message pane' })
-    assert.equal(find('chat-message-composer'), undefined, 'the message composer is absent from the selected chat topics-and-todos pane')
+    assert.equal(find('chat-message-composer'), undefined, 'the message composer stays absent from the selected chat topics-and-todos pane')
     assert.ok(find('residency-status-bar')?.textContent.includes('背景執行尚未開啟'), 'the warning footer remains visible in other chat panes')
     reactProps(paneButton('訊息')).onClick()
-    await until(() => paneButton('訊息')?.getAttribute('aria-pressed') === 'true' && find('chat-message-composer'), { message: 'the disabled composer returns with the message view' })
+    await until(() => paneButton('訊息')?.getAttribute('aria-pressed') === 'true' && find('chat-message-log'), { message: 'the readable message view returns without a composer' })
 
     const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
     const residency = readFileSync(resolve(ROOT, 'src', 'plugin', 'ui', 'ResidencyStatus.tsx'), 'utf8')
     assert.match(css, /\.plugin-root-layout\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*height:\s*100%/s, 'the plugin root reserves separate vertical rows')
     assert.match(css, /\.plugin-renderer-slot\s*\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0/s, 'the renderer uses only the space above the footer')
     assert.match(css, /\.residency-status-bar\s*\{[^}]*flex:\s*0 0 auto[^}]*width:\s*100%/s, 'the residency message retains its own in-flow row')
-    assert.match(css, /\.chat-message-view\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*min-height:\s*0/s, 'the message view splits a scroll area from a fixed-height composer row')
+    assert.match(css, /\.chat-message-view\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*min-height:\s*0/s, 'the message view remains a bounded flex reader')
     assert.match(css, /\.chat-message-log\s*\{[^}]*flex:\s*1[^}]*overflow-y:\s*auto/s, 'the message list keeps its own vertical viewport')
-    assert.match(css, /\.chat-message-composer\s*\{[^}]*flex:\s*0 0 auto[^}]*border-top:/s, 'the composer reserves real layout height below the scroll viewport')
+    assert.doesNotMatch(css, /\.chat-message-composer\s*\{/, 'there is no composer footer style reserving blank chat height')
     assert.doesNotMatch(residency, /position:\s*['"]fixed['"]/, 'the status is no longer fixed over message content')
   } finally { scene.unmount(); api.dispose() }
 })
@@ -1061,7 +1056,7 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
 
       click(paneButton('議題與待辦'))
       await until(() => topicListQueries.includes(direct.chatId) && hasSwitch(view, '此聊天室的議題開關') && view.container.textContent.includes(directTodo.title), { message: 'the combined pane independently loads direct topics and todos from the selected chat' })
-      assert.ok(view.container.textContent.includes('聊天室近況') && view.container.textContent.includes('我的事項'), 'the combined pane names its two areas in plain words')
+      assert.ok(view.container.textContent.includes('討論紀錄') && view.container.textContent.includes('我的事項'), 'the combined pane names its two areas in plain words')
       assert.equal(view.container.textContent.includes('跨群語意候選'), false, 'direct topics do not expose cross-group controls')
       assert.ok(view.container.textContent.includes(directTodo.title), 'the todo remains visible beside the topic controls')
       assert.deepEqual(topicAnalyzeQueries, [], 'opening the topic pane does not auto-analyze')
@@ -1185,7 +1180,7 @@ test('chat topics and todos (effects): a topic read failure does not hide select
     assert.equal(hasClassName(topicCard, 'todo-card'), false, 'a topic card is not styled as a todo card')
     const pane = walk(view.container).find((element) => hasClassName(element, 'chat-topics-todos-content'))
     const headings = walk(pane).filter((element) => element.localName === 'h3').map((element) => element.textContent.trim())
-    assert.deepEqual(headings, ['聊天室近況', '我的事項'], 'the two areas carry the plain-language headings and nothing else')
+    assert.deepEqual(headings, ['討論紀錄', '我的事項'], 'the two areas carry the plain-language headings and nothing else')
     assert.equal(walk(pane).some((element) => element.localName === 'details' && hasClassName(element, 'group-topics-help')), false, 'the combined pane adds no explanatory block')
     assert.equal(walk(pane).filter((element) => element.localName === 'section' && (hasClassName(element, 'group-topics-panel') || hasClassName(element, 'chat-todos-content'))).length, 2, 'the pane holds exactly the two areas')
     assert.ok(walk(pane).some((element) => hasClassName(element, 'todo-card')), 'the todo area keeps task-style cards')
@@ -2228,10 +2223,10 @@ test('group-topics root tab: an old saved topics value opens the all-groups over
     const groupSelect = walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
     assert.ok(groupSelect, 'the chat filter stays available')
     reactProps(groupSelect).onChange({ target: { value: 'ov-group-1' } })
-    await until(() => log.some((entry) => entry.path === 'groupTopics.list' && entry.args[0] === 'ov-group-1') && view.container.textContent.includes('聊天室近況'), { message: 'choosing a group opens its existing topic controls' })
+    await until(() => log.some((entry) => entry.path === 'groupTopics.list' && entry.args[0] === 'ov-group-1') && view.container.textContent.includes('討論紀錄'), { message: 'choosing a group opens its existing topic controls' })
     const groupSwitch = switchByLabel(view, '此群組的議題開關')
     assert.ok(groupSwitch, 'the per-group start/stop switch renders next to the heading')
-    assert.ok(view.container.textContent.includes('聊天室近況'), 'the heading is the plain-language recap heading')
+    assert.ok(view.container.textContent.includes('討論紀錄'), 'the heading is the plain-language discussion heading')
     reactProps(tab('總覽')).onClick()
     await until(() => walk(view.container).some((element) => hasClassName(element, 'board-wrap')), { message: 'the existing overview board opens' })
     reactProps(tab('群組議題')).onClick()
@@ -2434,7 +2429,7 @@ test('topic list: one row per topic with its chat name, newest first; columns �
     assert.match(walk(topicRowEls(view)[0]).find((element) => hasClassName(element, 'topics-col-time')).textContent, /^\d\d\/\d\d \d\d:\d\d$/)
     assert.equal(topicRowEls(view).some((row) => row.textContent.includes('列表乙')), false, 'a group with no topics has no row')
     assert.equal(view.container.textContent.includes('此群已啟用'), false, 'no per-group sentence')
-    assert.equal(view.container.textContent.includes('尚無分析結果'), false, 'no per-group empty result line')
+    assert.equal(view.container.textContent.includes('尚無討論紀錄'), false, 'no per-group empty result line')
     assert.ok(chatFilter(view).textContent.includes('列表丙'), 'the chat dropdown still offers every group')
   } finally { view.unmount(); api.dispose() }
 })
@@ -2781,10 +2776,10 @@ test('F3b turning topics on never flashes the empty result text or the analyse b
     await until(() => s.topicSwitch('此群組的議題開關'), { message: 'the topic switch renders' })
     s.change(s.topicSwitch('此群組的議題開關'), true)
     await until(() => s.callsTo('groupTopics.setEnabled').length === 1 && typeof releaseList === 'function', { message: 'the refresh is pending' })
-    assert.ok(!s.view.container.textContent.includes('尚無分析結果'), 'no empty-result flash')
+    assert.ok(!s.view.container.textContent.includes('尚無討論紀錄'), 'no empty-result flash')
     assert.ok(!s.view.container.textContent.includes('分析最近'), 'no analyse button flash')
     releaseList()
-    await until(() => s.view.container.textContent.includes('尚無分析結果'), { message: 'the result area appears after the refresh' })
+    await until(() => s.view.container.textContent.includes('尚無討論紀錄'), { message: 'the result area appears after the refresh' })
   } finally { s.dispose() }
 })
 
@@ -2800,7 +2795,7 @@ test('F3 embedded 議題與待辦頁籤：不論 combined 與待辦開關為何�
       const label = `combined=${combined} 待辦=${todoOn ? '開' : '關'}`
       try {
         await openCombinedPane(s)
-        await until(() => hasSwitch(s.view, '此群組的議題開關') && s.view.container.textContent.includes('尚無分析結果'), { message: `${label}: the topics panel is rendered` })
+        await until(() => hasSwitch(s.view, '此群組的議題開關') && s.view.container.textContent.includes('尚無討論紀錄'), { message: `${label}: the topics panel is rendered` })
         assert.ok(!buttonTexts(s.view).includes('補分析舊訊息'), `${label}: no backfill button in the embedded panel`)
         assert.ok(!buttonTexts(s.view).includes('分析最近群組訊息'), `${label}: no legacy analyse button in the embedded panel`)
       } finally { s.dispose() }
@@ -2871,10 +2866,10 @@ test('U6 the topic switch label says group or chat according to the chat type, u
     await openCombinedPane(s)
     s.click(s.chatButton(group.name))
     await until(() => s.topicSwitch('此群組的議題開關'), { message: 'group switch label' })
-    assert.ok(s.view.container.textContent.includes('聊天室近況'))
+    assert.ok(s.view.container.textContent.includes('討論紀錄'))
     s.click(s.chatButton(direct.name))
     await until(() => s.topicSwitch('此聊天室的議題開關'), { message: 'direct switch label' })
-    assert.ok(s.view.container.textContent.includes('聊天室近況'))
+    assert.ok(s.view.container.textContent.includes('討論紀錄'))
     assert.equal(s.topicSwitch('此群組的議題開關'), undefined)
   } finally { s.dispose() }
 })

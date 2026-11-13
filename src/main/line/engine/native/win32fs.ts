@@ -19,6 +19,7 @@
  * 不做 PATH／PWD probing。預設用 `createRequire(import.meta.url)('koffi')`。
  */
 import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { dirname, join, win32 } from 'node:path'
 
@@ -62,6 +63,22 @@ const GENERIC_READ = 0x80000000
 const FILE_SHARE_ALL = 0x1 | 0x2 | 0x4 // READ | WRITE | DELETE
 const OPEN_EXISTING = 3
 const FILE_ATTRIBUTE_NORMAL = 0x80
+const FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+const FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+const FILE_READ_ATTRIBUTES = 0x80
+const FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
+const FILE_ATTRIBUTE_TAG_INFO_SIZE = 8
+const FILE_FULL_DIR_INFO_CLASS = 14
+const MAX_STICKER_VERSION_ENTRIES = 256
+const MAX_STICKER_CACHE_ENTRIES = 256
+const MAX_STICKER_CACHE_BYTES = 64 * 1024 * 1024
+const CREATE_NEW = 1
+const FILE_DISPOSITION_INFO_CLASS = 4
+const DELETE_ACCESS = 0x00010000
+const FILE_ADD_FILE = 0x2
+const FILE_LIST_DIRECTORY = 0x1
+const MOVEFILE_REPLACE_EXISTING = 0x1
+const MOVEFILE_WRITE_THROUGH = 0x8
 const TH32CS_SNAPPROCESS = 0x2
 const READ_CHUNK = 8 * 1024 * 1024
 /** FILETIME（1601-01-01，100ns）→ Unix epoch ns（與 `statSync(p,{bigint:true}).mtimeNs` 同一個換算）。 */
@@ -78,7 +95,13 @@ interface Win32Api {
   CreateFileW: (p: string, access: number, share: number, sec: null, disp: number, flags: number, tmpl: null) => unknown
   GetFileSizeEx: (h: unknown, out: number[]) => boolean
   ReadFile: (h: unknown, buf: Uint8Array, n: number, read: number[], ov: null) => boolean
+  WriteFile: (h: unknown, buf: Uint8Array, n: number, written: number[], ov: null) => boolean
   CloseHandle: (h: unknown) => boolean
+  SetFileInformationByHandle: (h: unknown, infoClass: number, info: unknown, size: number) => boolean
+  MoveFileExW: (existing: string, replacement: string, flags: number) => boolean
+  GetFileInformationByHandleEx: (h: unknown, infoClass: number, out: unknown, size: number) => boolean
+  GetFinalPathNameByHandleW: (h: unknown, buffer: unknown, length: number, flags: number) => number
+  DispositionInfo: unknown
   FindFirstFileW: (pattern: string, out: Record<string, unknown>) => unknown
   FindNextFileW: (h: unknown, out: Record<string, unknown>) => boolean
   FindClose: (h: unknown) => boolean
@@ -97,6 +120,8 @@ function bindApi(koffi: KoffiApi): Win32Api {
   if (cached) return cached
   const k32 = koffi.load('kernel32.dll')
   const FileTime = koffi.struct('LT_FILETIME', { dwLowDateTime: 'uint32_t', dwHighDateTime: 'uint32_t' })
+  koffi.struct('LT_FILE_ATTRIBUTE_TAG_INFO', { FileAttributes: 'uint32_t', ReparseTag: 'uint32_t' })
+  const DispositionInfo = koffi.struct('LT_FILE_DISPOSITION_INFO', { DeleteFile: 'uint8_t' })
   koffi.struct('LT_WIN32_FILE_ATTRIBUTE_DATA', {
     dwFileAttributes: 'uint32_t',
     ftCreationTime: FileTime,
@@ -143,7 +168,12 @@ function bindApi(koffi: KoffiApi): Win32Api {
     ReadFile: k32.func(
       'bool __stdcall ReadFile(void* hFile, _Out_ uint8_t* lpBuffer, uint32 nNumberOfBytesToRead, _Out_ uint32* lpNumberOfBytesRead, void* lpOverlapped)',
     ),
+    WriteFile: k32.func('bool __stdcall WriteFile(void* hFile, _In_ uint8_t* lpBuffer, uint32 nNumberOfBytesToWrite, _Out_ uint32* lpNumberOfBytesWritten, void* lpOverlapped)'),
     CloseHandle: k32.func('bool __stdcall CloseHandle(void* hObject)'),
+    SetFileInformationByHandle: k32.func('bool __stdcall SetFileInformationByHandle(void* hFile, int FileInformationClass, void* lpFileInformation, uint32 dwBufferSize)'),
+    MoveFileExW: k32.func('bool __stdcall MoveFileExW(str16 lpExistingFileName, str16 lpNewFileName, uint32 dwFlags)'),
+    GetFileInformationByHandleEx: k32.func('bool __stdcall GetFileInformationByHandleEx(void* hFile, int FileInformationClass, void* lpFileInformation, uint32 dwBufferSize)'),
+    GetFinalPathNameByHandleW: k32.func('uint32 __stdcall GetFinalPathNameByHandleW(void* hFile, _Out_ char16_t* lpszFilePath, uint32 cchFilePath, uint32 dwFlags)'),
     FindFirstFileW: k32.func('void* __stdcall FindFirstFileW(str16 lpFileName, _Out_ LT_WIN32_FIND_DATAW* lpFindFileData)'),
     FindNextFileW: k32.func('bool __stdcall FindNextFileW(void* hFindFile, _Out_ LT_WIN32_FIND_DATAW* lpFindFileData)'),
     FindClose: k32.func('bool __stdcall FindClose(void* hFindFile)'),
@@ -151,6 +181,7 @@ function bindApi(koffi: KoffiApi): Win32Api {
     Process32FirstW: k32.func('bool __stdcall Process32FirstW(void* hSnapshot, _Inout_ LT_PROCESSENTRY32W* lppe)'),
     Process32NextW: k32.func('bool __stdcall Process32NextW(void* hSnapshot, _Inout_ LT_PROCESSENTRY32W* lppe)'),
     GetLastError: k32.func('uint32 __stdcall GetLastError()'),
+    DispositionInfo,
     FindData,
     ProcessEntry,
   }
@@ -247,6 +278,83 @@ export class Win32LineFsPort implements LineFsPort {
     return out
   }
 
+  /** Bounded native listing for safety-sensitive sticker lookups; unlike shared readDir it stops as soon as `cap` is exceeded. */
+  private readDirBounded(dir: string, cap: number): LineDirEntry[] {
+    const api = this.api
+    const data: Record<string, unknown> = {}
+    const handle = api.FindFirstFileW(win32.join(dir, '*'), data)
+    if (isInvalidHandle(api.koffi, handle)) throw new Win32Error('FindFirstFileW', dir, api.GetLastError())
+    const out: LineDirEntry[] = []
+    try {
+      do {
+        const name = data.cFileName as string
+        if (name === '.' || name === '..') continue
+        if (out.length >= cap) throw new Error('sticker directory entry cap exceeded')
+        const attrs = data.dwFileAttributes as number
+        const isDir = (attrs & FILE_ATTRIBUTE_DIRECTORY) !== 0
+        const isReparse = (attrs & FILE_ATTRIBUTE_REPARSE_POINT) !== 0
+        const ft = data.ftLastWriteTime as { dwLowDateTime: number; dwHighDateTime: number }
+        out.push({
+          name,
+          isFile: !isReparse && !isDir,
+          isDirectory: !isReparse && isDir,
+          size: isDir ? 0 : findDataFileSize(data.nFileSizeHigh as number, data.nFileSizeLow as number),
+          mtimeNs: fileTimeToUnixNs(ft)
+        })
+      } while (api.FindNextFileW(handle, data))
+    } finally { api.FindClose(handle) }
+    return out
+  }
+
+  /** Enumerate through an already checked directory handle; path aliases cannot redirect this scan. */
+  private readDirBoundedHandle(directoryHandle: unknown, displayPath: string, cap: number): LineDirEntry[] {
+    const api = this.api
+    const out: LineDirEntry[] = []
+    const bufferSize = 8192
+    const buffer = Buffer.alloc(bufferSize)
+    while (true) {
+      buffer.fill(0)
+      const ok = api.GetFileInformationByHandleEx(directoryHandle, FILE_FULL_DIR_INFO_CLASS, buffer, bufferSize)
+      const error = ok ? 0 : api.GetLastError()
+      let offset = 0
+      let hadEntries = false
+      while (offset + 68 <= buffer.length) {
+        const nextOffset = buffer.readUInt32LE(offset)
+        const fileNameBytes = buffer.readUInt32LE(offset + 60)
+        if (fileNameBytes === 0) break
+        if ((fileNameBytes & 1) !== 0 || offset + 68 + fileNameBytes > buffer.length) throw new Error(`invalid native directory entry: ${displayPath}`)
+        hadEntries = true
+        const name = buffer.toString('utf16le', offset + 68, offset + 68 + fileNameBytes)
+        if (name !== '.' && name !== '..') {
+          if (out.length >= cap) throw new Error('sticker directory entry cap exceeded')
+          const attributes = buffer.readUInt32LE(offset + 56)
+          const isDirectory = (attributes & FILE_ATTRIBUTE_DIRECTORY) !== 0
+          const isReparse = (attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0
+          const rawSize = buffer.readBigInt64LE(offset + 40)
+          const rawWriteTime = buffer.readBigInt64LE(offset + 24)
+          const size = Number(rawSize)
+          if (!Number.isSafeInteger(size) || size < 0) throw new Error(`native directory entry size out of bounds: ${displayPath}`)
+          out.push({
+            name,
+            isFile: !isReparse && !isDirectory,
+            isDirectory: !isReparse && isDirectory,
+            size: isDirectory ? 0 : size,
+            mtimeNs: (rawWriteTime - FILETIME_UNIX_EPOCH_100NS) * 100n
+          })
+        }
+        if (nextOffset === 0) break
+        if (nextOffset < 68 + fileNameBytes || (nextOffset & 7) !== 0 || offset + nextOffset > buffer.length) throw new Error(`invalid native directory chain: ${displayPath}`)
+        offset += nextOffset
+      }
+      if (!ok) {
+        if (error === 18) break // ERROR_NO_MORE_FILES
+        if (error !== 234) throw new Win32Error('GetFileInformationByHandleEx(directory)', displayPath, error)
+      }
+      if (!hadEntries) break
+    }
+    return out
+  }
+
   stat(path: string): LineFileStat {
     const a = this.api
     const data: Record<string, number> = {}
@@ -282,6 +390,272 @@ export class Win32LineFsPort implements LineFsPort {
       return done === total ? buf : buf.subarray(0, done)
     } finally {
       a.CloseHandle(h)
+    }
+  }
+
+  /**
+   * Read a sticker PNG without following reparse points. Each component is opened with OPEN_REPARSE_POINT,
+   * its tag and final path are checked from that handle, and the final file is read from that same handle.
+   */
+  readUniqueChildDirectoryFile(root: string, packageId: string, fileName: string, maxBytes: number): { matches: number; bytes?: Buffer } {
+    if (!/^\d{1,20}$/.test(packageId) || !/^\d{1,20}\.png$/.test(fileName) || !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+      throw new Error('invalid sticker lookup')
+    }
+    const api = this.api
+    const handles: unknown[] = []
+    const openChecked = (path: string, directory: boolean, canonicalRoot?: string, share = FILE_SHARE_ALL): { handle: unknown; canonical: string } => {
+      const flags = FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL)
+      const handle = api.CreateFileW(path, FILE_READ_ATTRIBUTES | (directory ? FILE_LIST_DIRECTORY : GENERIC_READ), share, null, OPEN_EXISTING, flags, null)
+      if (isInvalidHandle(api.koffi, handle)) throw new Win32Error('CreateFileW', path, api.GetLastError())
+      handles.push(handle)
+      const tag = Buffer.alloc(FILE_ATTRIBUTE_TAG_INFO_SIZE)
+      if (!api.GetFileInformationByHandleEx(handle, FILE_ATTRIBUTE_TAG_INFO_CLASS, tag, FILE_ATTRIBUTE_TAG_INFO_SIZE)) throw new Win32Error('GetFileInformationByHandleEx', path, api.GetLastError())
+      const attributes = tag.readUInt32LE(0)
+      if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0 || Boolean(attributes & FILE_ATTRIBUTE_DIRECTORY) !== directory) throw new Error('unsafe sticker path component')
+      const capacity = 32768
+      const buffer = api.koffi.alloc('char16_t', capacity)
+      const length = api.GetFinalPathNameByHandleW(handle, buffer, capacity, 0)
+      if (!length || length >= capacity) throw new Error('canonical sticker path unavailable')
+      const canonical = String(api.koffi.decode(buffer, 'char16_t', length)).replace(/[\\/]+$/, '').toLowerCase()
+      if (canonicalRoot && !(canonical === canonicalRoot || canonical.startsWith(`${canonicalRoot}\\`))) throw new Error('sticker path escaped root')
+      return { handle, canonical }
+    }
+    const assertCanonical = (handle: unknown, path: string, expected: string): void => {
+      const capacity = 32768
+      const buffer = api.koffi.alloc('char16_t', capacity)
+      const length = api.GetFinalPathNameByHandleW(handle, buffer, capacity, 0)
+      if (!length || length >= capacity) throw new Error('canonical sticker path unavailable after enumeration')
+      const actual = String(api.koffi.decode(buffer, 'char16_t', length)).replace(/[\\/]+$/, '').toLowerCase()
+      if (actual !== expected) throw new Error(`sticker directory identity changed during enumeration: ${path}`)
+    }
+    const readHandle = (handle: unknown, path: string): Buffer => {
+      const sizeOut: number[] = [0]
+      if (!api.GetFileSizeEx(handle, sizeOut)) throw new Win32Error('GetFileSizeEx', path, api.GetLastError())
+      const total = Number(sizeOut[0])
+      if (!Number.isSafeInteger(total) || total < 1 || total > maxBytes) throw new Error('sticker bytes out of bounds')
+      const buf = Buffer.alloc(total)
+      let done = 0
+      while (done < total) {
+        const chunk = Buffer.alloc(Math.min(64 * 1024, total - done))
+        const read: number[] = [0]
+        if (!api.ReadFile(handle, chunk, chunk.length, read, null)) throw new Win32Error('ReadFile', path, api.GetLastError())
+        if (read[0] === 0) break
+        chunk.copy(buf, done, 0, read[0]); done += read[0]
+      }
+      if (done !== total) throw new Error('sticker file changed while reading')
+      return buf
+    }
+    try {
+      const directoryShare = FILE_SHARE_ALL & ~0x4
+      const rootInfo = openChecked(root, true, undefined, directoryShare)
+      const packagePath = win32.join(root, packageId)
+      const packageInfo = openChecked(packagePath, true, rootInfo.canonical, directoryShare)
+      const entries = this.readDirBoundedHandle(packageInfo.handle, packagePath, MAX_STICKER_VERSION_ENTRIES)
+      assertCanonical(rootInfo.handle, root, rootInfo.canonical)
+      assertCanonical(packageInfo.handle, packagePath, packageInfo.canonical)
+      let matches = 0
+      let matchedBytes: Buffer | undefined
+      for (const entry of entries) {
+        if (/^\d{1,20}$/.test(entry.name) && !entry.isDirectory && !entry.isFile) throw new Error('unsafe sticker reparse entry')
+        if (!entry.isDirectory || !/^\d{1,20}$/.test(entry.name)) continue
+        const versionPath = win32.join(packagePath, entry.name)
+        const versionInfo = openChecked(versionPath, true, packageInfo.canonical, directoryShare)
+        const targetPath = win32.join(versionPath, fileName)
+        let fileInfo: { handle: unknown; canonical: string }
+        try { fileInfo = openChecked(targetPath, false, versionInfo.canonical) } catch (error) {
+          if (error instanceof Win32Error && error.code === 'ENOENT') continue
+          throw error
+        }
+        const bytes = readHandle(fileInfo.handle, targetPath)
+        matches += 1
+        if (matches === 1) matchedBytes = bytes
+        else matchedBytes = undefined
+      }
+      return matches === 1 && matchedBytes ? { matches, bytes: matchedBytes } : { matches }
+    } finally {
+      for (const handle of handles.reverse()) api.CloseHandle(handle)
+    }
+  }
+
+  /** Read an app-owned cache file from its checked handle, rejecting a cache root, child directory or target reparse point. */
+  readAppOwnedFile(root: string, directoryName: string, fileName: string, maxBytes: number): Buffer | null {
+    if (!/^[a-z0-9-]{1,64}$/i.test(directoryName) || !/^[a-f0-9]{64}\.png$/i.test(fileName) || !Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('invalid app asset lookup')
+    const api = this.api
+    const handles: unknown[] = []
+    const openChecked = (path: string, isDirectory: boolean, canonicalRoot?: string, access = FILE_READ_ATTRIBUTES): { handle: unknown; canonical: string } => {
+      const flags = FILE_FLAG_OPEN_REPARSE_POINT | (isDirectory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL)
+      const handle = api.CreateFileW(path, access, FILE_SHARE_ALL, null, OPEN_EXISTING, flags, null)
+      if (isInvalidHandle(api.koffi, handle)) throw new Win32Error('CreateFileW', path, api.GetLastError())
+      handles.push(handle)
+      const tag = Buffer.alloc(FILE_ATTRIBUTE_TAG_INFO_SIZE)
+      if (!api.GetFileInformationByHandleEx(handle, FILE_ATTRIBUTE_TAG_INFO_CLASS, tag, FILE_ATTRIBUTE_TAG_INFO_SIZE)) throw new Win32Error('GetFileInformationByHandleEx', path, api.GetLastError())
+      const attributes = tag.readUInt32LE(0)
+      if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0 || Boolean(attributes & FILE_ATTRIBUTE_DIRECTORY) !== isDirectory) throw new Error('unsafe app asset path component')
+      const capacity = 32768
+      const buffer = api.koffi.alloc('char16_t', capacity)
+      const length = api.GetFinalPathNameByHandleW(handle, buffer, capacity, 0)
+      if (!length || length >= capacity) throw new Error('canonical app asset path unavailable')
+      const canonical = String(api.koffi.decode(buffer, 'char16_t', length)).replace(/[\\/]+$/, '').toLowerCase()
+      if (canonicalRoot && !(canonical === canonicalRoot || canonical.startsWith(`${canonicalRoot}\\`))) throw new Error('app asset path escaped root')
+      return { handle, canonical }
+    }
+    try {
+      const rootInfo = openChecked(root, true)
+      const directoryPath = win32.join(root, directoryName)
+      const directoryInfo = openChecked(directoryPath, true, rootInfo.canonical)
+      const targetPath = win32.join(directoryPath, fileName)
+      let target: { handle: unknown; canonical: string }
+      try { target = openChecked(targetPath, false, directoryInfo.canonical, GENERIC_READ | FILE_READ_ATTRIBUTES) }
+      catch (error) {
+        if (error instanceof Win32Error && error.code === 'ENOENT') return null
+        throw error
+      }
+      const sizeOut: number[] = [0]
+      if (!api.GetFileSizeEx(target.handle, sizeOut)) throw new Win32Error('GetFileSizeEx', targetPath, api.GetLastError())
+      const total = Number(sizeOut[0])
+      if (!Number.isSafeInteger(total) || total < 1 || total > maxBytes) throw new Error('app asset bytes out of bounds')
+      const bytes = Buffer.alloc(total)
+      let done = 0
+      while (done < total) {
+        const chunk = Buffer.alloc(Math.min(64 * 1024, total - done))
+        const read: number[] = [0]
+        if (!api.ReadFile(target.handle, chunk, chunk.length, read, null)) throw new Win32Error('ReadFile', targetPath, api.GetLastError())
+        if (read[0] === 0) break
+        chunk.copy(bytes, done, 0, read[0]); done += read[0]
+      }
+      if (done !== total) throw new Error('app asset changed while reading')
+      return bytes
+    } finally {
+      for (const handle of handles.reverse()) api.CloseHandle(handle)
+    }
+  }
+
+  /** Bounded atomic app-owned cache write, with rename relative to the opened directory handle (never a path re-resolution). */
+  writeAppOwnedFileAtomic(root: string, directoryName: string, fileName: string, bytes: Buffer): void {
+    if (!/^[a-z0-9-]{1,64}$/i.test(directoryName) || !/^[a-f0-9]{64}\.png$/i.test(fileName) || bytes.length < 1 || bytes.length > 1024 * 1024) throw new Error('invalid app asset write')
+    const api = this.api
+    const handles: unknown[] = []
+    const openChecked = (path: string, isDirectory: boolean, canonicalRoot: string | undefined, disposition: number, access: number, share = FILE_SHARE_ALL): { handle: unknown; canonical: string } => {
+      const flags = FILE_FLAG_OPEN_REPARSE_POINT | (isDirectory ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL)
+      const handle = api.CreateFileW(path, access, share, null, disposition, flags, null)
+      if (isInvalidHandle(api.koffi, handle)) throw new Win32Error('CreateFileW', path, api.GetLastError())
+      handles.push(handle)
+      const tag = Buffer.alloc(FILE_ATTRIBUTE_TAG_INFO_SIZE)
+      if (!api.GetFileInformationByHandleEx(handle, FILE_ATTRIBUTE_TAG_INFO_CLASS, tag, FILE_ATTRIBUTE_TAG_INFO_SIZE)) throw new Win32Error('GetFileInformationByHandleEx', path, api.GetLastError())
+      const attributes = tag.readUInt32LE(0)
+      if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) !== 0 || Boolean(attributes & FILE_ATTRIBUTE_DIRECTORY) !== isDirectory) throw new Error('unsafe app asset path component')
+      const capacity = 32768
+      const buffer = api.koffi.alloc('char16_t', capacity)
+      const length = api.GetFinalPathNameByHandleW(handle, buffer, capacity, 0)
+      if (!length || length >= capacity) throw new Error('canonical app asset path unavailable')
+      const canonical = String(api.koffi.decode(buffer, 'char16_t', length)).replace(/[\\/]+$/, '').toLowerCase()
+      if (canonicalRoot && !(canonical === canonicalRoot || canonical.startsWith(`${canonicalRoot}\\`))) throw new Error('app asset path escaped root')
+      return { handle, canonical }
+    }
+    let temporary: { handle: unknown; canonical: string } | null = null
+    let committed = false
+    try {
+      // Pin checked directory identities against rename/delete through the commit.
+      const rootInfo = openChecked(root, true, undefined, OPEN_EXISTING, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL & ~0x4)
+      const directoryPath = win32.join(root, directoryName)
+      const directoryInfo = openChecked(directoryPath, true, rootInfo.canonical, OPEN_EXISTING, FILE_READ_ATTRIBUTES | FILE_ADD_FILE | 0x1 | DELETE_ACCESS, FILE_SHARE_ALL & ~0x4)
+      // Reclaim only our strict random temporary naming scheme, via no-follow regular-file handles.
+      // This maintenance scan has its own cap so stale temps cannot consume the hashed-cache cap.
+      const tempData: Record<string, unknown> = {}
+      const tempSearch = api.FindFirstFileW(win32.join(directoryPath, '._sticker-*.tmp'), tempData)
+      if (!isInvalidHandle(api.koffi, tempSearch)) {
+        const maxStaleTemps = MAX_STICKER_CACHE_ENTRIES
+        let scannedTempEntries = 0
+        try {
+          do {
+            // Count every wildcard result before validation/continue so malformed
+            // matching names cannot make this maintenance pass unbounded.
+            scannedTempEntries += 1
+            if (scannedTempEntries > maxStaleTemps) throw new Error('sticker stale-temp entry cap exceeded')
+            const staleName = String(tempData.cFileName ?? '')
+            if (!/^\._sticker-[a-f0-9]{32}\.tmp$/i.test(staleName)) continue
+            const attrs = Number(tempData.dwFileAttributes ?? 0)
+            if ((attrs & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) !== 0) throw new Error('unsafe sticker temp entry')
+            const stale = openChecked(win32.join(directoryPath, staleName), false, directoryInfo.canonical, OPEN_EXISTING, FILE_READ_ATTRIBUTES | DELETE_ACCESS)
+            const sizeOut: number[] = [0]
+            if (!api.GetFileSizeEx(stale.handle, sizeOut)) throw new Win32Error('GetFileSizeEx', staleName, api.GetLastError())
+            const size = Number(sizeOut[0])
+            if (!Number.isSafeInteger(size) || size < 0 || size > MAX_STICKER_CACHE_BYTES) throw new Error('sticker stale-temp size out of bounds')
+            const disposition = api.koffi.alloc('uint8_t', api.koffi.sizeof(api.DispositionInfo))
+            api.koffi.encode(disposition, api.DispositionInfo, { DeleteFile: 1 })
+            if (!api.SetFileInformationByHandle(stale.handle, FILE_DISPOSITION_INFO_CLASS, disposition, api.koffi.sizeof(api.DispositionInfo))) throw new Win32Error('SetFileInformationByHandle', staleName, api.GetLastError())
+          } while (api.FindNextFileW(tempSearch, tempData))
+        } finally { api.FindClose(tempSearch) }
+      }
+      const entries = this.readDirBounded(directoryPath, MAX_STICKER_CACHE_ENTRIES)
+      const targetPath = win32.join(directoryPath, fileName)
+      try {
+        const target = openChecked(targetPath, false, directoryInfo.canonical, OPEN_EXISTING, FILE_READ_ATTRIBUTES)
+        api.CloseHandle(target.handle)
+        handles.splice(handles.indexOf(target.handle), 1)
+      } catch (error) { if (!(error instanceof Win32Error && error.code === 'ENOENT')) throw error }
+
+      const cached = entries
+        .filter((entry) => entry.isFile && /^[a-f0-9]{64}\.png$/i.test(entry.name) && entry.name.toLowerCase() !== fileName.toLowerCase())
+        .map((entry) => ({ name: entry.name, size: entry.size ?? 0, mtimeNs: entry.mtimeNs ?? 0n }))
+        .sort((a, b) => a.mtimeNs < b.mtimeNs ? -1 : a.mtimeNs > b.mtimeNs ? 1 : a.name.localeCompare(b.name))
+      let cacheBytes = 0
+      for (const item of cached) {
+        const candidate = openChecked(win32.join(directoryPath, item.name), false, directoryInfo.canonical, OPEN_EXISTING, FILE_READ_ATTRIBUTES)
+        const sizeOut: number[] = [0]
+        if (!api.GetFileSizeEx(candidate.handle, sizeOut)) throw new Win32Error('GetFileSizeEx', item.name, api.GetLastError())
+        item.size = Number(sizeOut[0])
+        if (!Number.isSafeInteger(item.size) || item.size < 0) throw new Error('sticker cache entry size invalid')
+        cacheBytes += item.size
+      }
+      const pruneTarget = Math.floor(MAX_STICKER_CACHE_BYTES * 0.8)
+      for (const item of cached) {
+        if (cacheBytes <= pruneTarget) break
+        const candidate = openChecked(win32.join(directoryPath, item.name), false, directoryInfo.canonical, OPEN_EXISTING, FILE_READ_ATTRIBUTES | DELETE_ACCESS)
+        const disposition = api.koffi.alloc('uint8_t', api.koffi.sizeof(api.DispositionInfo))
+        api.koffi.encode(disposition, api.DispositionInfo, { DeleteFile: 1 })
+        if (!api.SetFileInformationByHandle(candidate.handle, FILE_DISPOSITION_INFO_CLASS, disposition, api.koffi.sizeof(api.DispositionInfo))) {
+          throw new Win32Error('SetFileInformationByHandle', item.name, api.GetLastError())
+        }
+        cacheBytes -= item.size
+      }
+      if (cacheBytes > pruneTarget) throw new Error('sticker cache quota cannot be met safely')
+
+      const temporaryName = `._sticker-${randomBytes(16).toString('hex')}.tmp`
+      const temporaryPath = win32.join(directoryPath, temporaryName)
+      temporary = openChecked(temporaryPath, false, directoryInfo.canonical, CREATE_NEW, GENERIC_READ | 0x40000000 | DELETE_ACCESS | FILE_READ_ATTRIBUTES)
+      let done = 0
+      while (done < bytes.length) {
+        const chunk = bytes.subarray(done, Math.min(bytes.length, done + 64 * 1024))
+        const written: number[] = [0]
+        if (!api.WriteFile(temporary.handle, chunk, chunk.length, written, null) || written[0] !== chunk.length) throw new Win32Error('WriteFile', temporaryPath, api.GetLastError())
+        done += written[0]
+      }
+      // Relative FILE_RENAME_INFO with RootDirectory has failed with ERROR_INVALID_PARAMETER
+      // on the target Windows runtime. The checked root and child handles deny FILE_SHARE_DELETE
+      // through this transaction, preventing path component replacement while MoveFileExW
+      // resolves the paths and atomically replaces the target.
+      if (!api.MoveFileExW(temporaryPath, targetPath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) throw new Win32Error('MoveFileExW', targetPath, api.GetLastError())
+      committed = true
+      // Confirm the committed handle remains beneath the still-pinned checked directory.
+      const capacity = 32768
+      const finalBuffer = api.koffi.alloc('char16_t', capacity)
+      const finalLength = api.GetFinalPathNameByHandleW(temporary.handle, finalBuffer, capacity, 0)
+      if (!finalLength || finalLength >= capacity) throw new Error('canonical app asset path unavailable after rename')
+      const finalPath = String(api.koffi.decode(finalBuffer, 'char16_t', finalLength)).replace(/[\\/]+$/, '').toLowerCase()
+      const expectedPrefix = `${directoryInfo.canonical}\\`
+      if (!finalPath.startsWith(expectedPrefix) || !finalPath.endsWith(`\\${fileName.toLowerCase()}`)) throw new Error('atomic app asset rename escaped its directory')
+    } finally {
+      if (temporary && !committed) {
+        const disposition = api.koffi.alloc('uint8_t', api.koffi.sizeof(api.DispositionInfo))
+        api.koffi.encode(disposition, api.DispositionInfo, { DeleteFile: 1 })
+        if (!api.SetFileInformationByHandle(temporary.handle, FILE_DISPOSITION_INFO_CLASS, disposition, api.koffi.sizeof(api.DispositionInfo))) {
+          const cleanupError = new Win32Error('SetFileInformationByHandle(delete temp)', temporary.canonical, api.GetLastError())
+          for (const handle of handles.reverse()) api.CloseHandle(handle)
+          throw cleanupError
+        }
+      }
+      for (const handle of handles.reverse()) api.CloseHandle(handle)
     }
   }
 

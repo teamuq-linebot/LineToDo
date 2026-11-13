@@ -289,6 +289,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   const hub = new EventHub(options.hub)
   const mediaFs = options.media?.fs ?? options.linePorts?.fs
   const dbDir = options.linePorts?.dbDir
+  const stickerRoot = dbDir && basename(dirname(dbDir)).toLowerCase() === 'data' ? join(dirname(dbDir), 'Sticker') : undefined
   const cacheDir = options.media?.cacheDir
     ?? (dbDir && basename(dirname(dbDir)).toLowerCase() === 'data' ? join(dirname(dirname(dbDir)), 'Cache') : undefined)
   // 圖片索引（mediaIndex.ts）：LINE Cache 的 size → 路徑存在 app DB，背景切片掃描；`media.prepare` 只查索引。沒有 Cache 目錄＝沒有索引。
@@ -320,6 +321,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     getDb: () => appDbForMedia,
     decryptor,
     index: mediaIndex,
+    stickerRoot,
+    stickerFs: mediaFs,
     maxCacheBytes: options.media?.maxCacheBytes
   })
   const avatarCache = createAvatarCache({ dataDir })

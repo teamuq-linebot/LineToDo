@@ -511,7 +511,7 @@ export function todoRefs(db: Database, topicId: string): Array<{todoId:string;st
     .map(({todo,matched})=>({todoId:todo.id,status:todo.status,bucket:todo.bucket,matchedMsgIds:matched}))
 }
 
-export const GROUP_TOPICS_VALIDATOR_VERSION='group-topics-validator-v4'
+export const GROUP_TOPICS_VALIDATOR_VERSION='group-topics-validator-v5'
 function completionDigest(input:TopicMessageInput[],versions:AnalysisVersions):string {
   return createHash('sha256').update(JSON.stringify({messages:input.map((m)=>[m.msgId,m.ts,m.direction,m.text]),promptVersion:versions.promptVersion,promptHash:versions.promptHash,schemaVersion:versions.schemaVersion,schemaHash:versions.schemaHash,validatorVersion:versions.validatorVersion}),'utf8').digest('hex')
 }

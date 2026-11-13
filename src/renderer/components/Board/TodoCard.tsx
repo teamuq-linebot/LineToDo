@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Re
 import type { TodoDTO } from '../../types/api'
 import type { CompleteTodoRegistry, CompleteTodoResult } from '../../store/completeTodo'
 import { SourceMessagesModal } from './SourceMessagesModal'
-import { todoTriggerLabel } from './sourceTime'
 import { ZoomableAvatar } from '../MessageStream'
 import {
   isSuggestedDone,
@@ -17,6 +16,7 @@ import { undoInSettingsHint } from '../../../shared/teamuqPlaces'
 // 看板啟動時與開著的期間每小時也會主動清掉過期的（review N1）。
 import { CARD_DRAFT_MAX_AGE_MS, useUiState } from '../../lib/uiState'
 import { layoutScale, placeFixedMenu } from '../../lib/zoom'
+import { todoTriggerLabel } from './sourceTime'
 
 const chatAvatarRequests = new Map<string, Promise<string | undefined>>()
 
@@ -543,7 +543,7 @@ export function TodoCard({
         )}
       </div>
 
-      <div className="card-trigger-time" title="觸發時間；沒有來源訊息時間時顯示建立時間">
+      <div className="card-trigger-time" title={todo.sourceTriggeredAt != null ? '來源訊息觸發時間（多來源取最早可用時間）' : '沒有可用的來源訊息時間，以下顯示建立時間'}>
         {todoTriggerLabel(todo)}
       </div>
 

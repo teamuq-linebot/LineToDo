@@ -10,6 +10,7 @@ export interface TopicRow {
   chatId: string
   chatName: string
   topic: GroupTopicDTO
+  overviewCompacted?: boolean
 }
 
 export const relevanceText: Record<GroupTopicDTO['relevance'], string> = {
@@ -25,7 +26,7 @@ export function buildTopicRows(groups: GroupTopicsOverviewEntry[]): TopicRow[] {
     if (group.status !== 'enabled') continue
     const chatName = group.chat.name ?? '未命名群組'
     for (const topic of group.topics) {
-      rows.push({ key: `${group.chat.chatId}\u0000${topic.topicId}`, chatId: group.chat.chatId, chatName, topic })
+      rows.push({ key: `${group.chat.chatId}\u0000${topic.topicId}`, chatId: group.chat.chatId, chatName, topic, ...(group.compacted ? { overviewCompacted: true } : {}) })
     }
   }
   return rows

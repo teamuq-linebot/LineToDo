@@ -3,6 +3,7 @@ import type { GroupTopicDTO } from '../../../shared/api'
 import { ChatSwitch } from '../../components/ChatSwitch'
 import { useHostCapabilities, useLineTodoApi } from '../../platform/LineTodoApi'
 import { createOverviewRefresher, loadGroupTopicsOverview, overviewToEntries, type GroupTopicsOverviewChat, type GroupTopicsOverviewEntry } from './groupTopicsOverview'
+import { TopicOverviewOmissionNotice } from './TopicOverviewOmissionNotice'
 import { TopicsTable } from './TopicsTable'
 import { buildTopicRows, filterTopicRows, formatTopicTime, sortTopicRows, type TopicSortDir, type TopicSortKey } from './topicRows'
 
@@ -364,7 +365,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
         <summary>議題分析說明與群組設定</summary>
         <p>議題分析需逐群啟用。已開啟「議題與待辦合併整理」時，新訊息的議題會在「立即整理」與背景整理時一併產生，舊訊息可用「補分析舊訊息」手動補上；否則需手動執行分析。所有群組總覽只讀取各群既有結果，不會自動啟用或分析群組。熱度、趨勢與觀測完整性尚未校準，會保持不確定。</p>
       </details>}
-      {(embedded || chatId) && <div className="group-topics-head"><h3>聊天室近況</h3>{chatId && api && !loading && !loadError && <ChatSwitch label={`${topicsTitle}開關`} checked={enabled} busy={busy} onChange={(value) => void toggleEnabled(value)} testId="topics-switch" />}</div>}
+      {(embedded || chatId) && <div className="group-topics-head"><h3>討論紀錄</h3>{chatId && api && !loading && !loadError && <ChatSwitch label={`${topicsTitle}開關`} checked={enabled} busy={busy} onChange={(value) => void toggleEnabled(value)} testId="topics-switch" />}</div>}
       {!api && <p className="muted">此版本未提供議題分析功能。</p>}
       {embedded && !chatId && <p className="muted">目前沒有選取中的聊天室。</p>}
       {error && !chatId && <p className="group-topics-error" role="alert">{error}</p>}
@@ -372,6 +373,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
         <section className="group-topics-list set-section" aria-label="群組議題列表">
           {overviewError && <p className="group-topics-error" role="alert">{overviewError}</p>}
           {overviewLoading && <p className="muted" role="status">載入中…</p>}
+          {!overviewLoading && !overviewError && <TopicOverviewOmissionNotice groups={overviewGroups} />}
           {!overviewLoading && overviewGroups.filter((group) => group.status === 'failed').map((group) => (
             <p key={group.chat.chatId} className="group-topics-error" role="alert">讀取「{group.chat.name ?? '未命名群組'}」議題失敗：{group.error ?? '未知錯誤'}</p>
           ))}
@@ -420,10 +422,10 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
               </div>}
               {enabled && !settling && !globalMode && (
                 <div className="group-topics-results">
-                  {topics.length === 0 ? <p className="muted">尚無分析結果。</p> : topics.map((topic) => (
+                  {topics.length === 0 ? <p className="muted">尚無討論紀錄。</p> : topics.map((topic) => (
                     <article key={topic.topicId} className="group-topic-card">
                       <strong>{topic.title}</strong>
-                      <p>{topic.summary}</p>
+                      <p className="topic-minutes-summary">{topic.summary}</p>
                       <small className="group-topic-meta" data-testid="group-topic-meta">{topicMetaText(topic)}</small>
                       {caps.openOriginalChat && <button type="button" className="ghost" onClick={() => void openSourceChat(chatId)}>開啟來源聊天室</button>}
                     </article>

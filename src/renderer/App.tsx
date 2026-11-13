@@ -8,6 +8,8 @@ import { useHostCapabilities } from './platform/LineTodoApi'
 import { APP_VERSION } from './lib/appVersion'
 import { useTheme } from './lib/theme'
 import { parseOneOf, usePersistentState } from './lib/uiState'
+import { useLayoutEffect, useRef, useState } from 'react'
+import { PurchasePage, type PurchasePackageId } from './components/PurchasePage'
 
 /**
  * App（M3：待辦看板）。
@@ -21,16 +23,33 @@ import { parseOneOf, usePersistentState } from './lib/uiState'
  * 目前分頁（G-04）：外掛版存進 UI 狀態（lib/uiState.ts），view 重新建立後回到同一個分頁；standalone 不保存（與原本相同）。
  */
 
-type Tab = 'board' | 'stream' | 'topics' | 'settings'
-const parseTab = parseOneOf<Tab>(['board', 'stream', 'topics', 'settings'])
+type Tab = 'board' | 'stream' | 'topics' | 'settings' | 'purchase'
+const parseTab = parseOneOf<Tab>(['board', 'stream', 'topics', 'settings', 'purchase'])
 
 function AppShell(): JSX.Element {
   const caps = useHostCapabilities()
   const [savedTab, setTab] = usePersistentState<Tab>('app.tab', 'board', parseTab)
+  const [purchasePackage, setPurchasePackage] = useState<PurchasePackageId>('line')
+  const purchaseSourceRef = useRef<HTMLElement | null>(null)
+  const chatTabRef = useRef<HTMLButtonElement>(null)
   // 存起來的「設定」分頁在沒有設定分頁的宿主退回看板。
   const tab: Tab = savedTab === 'settings' && !caps.settingsTab ? 'board' : savedTab
   const { theme, toggle: toggleTheme, followsSystem } = useTheme(caps.host === 'plugin' ? 'system' : 'dark')
   const themeTitle = `${theme === 'dark' ? '切換為淺色主題' : '切換為深色主題'}${followsSystem ? '（目前跟隨系統外觀）' : ''}`
+
+  useLayoutEffect(() => {
+    if (tab !== 'stream') return
+    const source = purchaseSourceRef.current
+    if (source?.isConnected) source.focus()
+    else chatTabRef.current?.focus()
+    purchaseSourceRef.current = null
+  }, [tab])
+
+  const openPurchase = (packageId: PurchasePackageId, source: HTMLElement): void => {
+    purchaseSourceRef.current = source
+    setPurchasePackage(packageId)
+    setTab('purchase')
+  }
 
   return (
     <div className="app-shell">
@@ -46,10 +65,14 @@ function AppShell(): JSX.Element {
             總覽
           </button>
           <button
+            ref={chatTabRef}
             className={`tab ${tab === 'stream' ? 'active' : ''}`}
             onClick={() => setTab('stream')}
           >
             聊天
+          </button>
+          <button className={`tab ${tab === 'purchase' ? 'active' : ''}`} onClick={() => setTab('purchase')}>
+            購買
           </button>
           <button
             className={`tab ${tab === 'topics' ? 'active' : ''}`}
@@ -79,7 +102,12 @@ function AppShell(): JSX.Element {
 
       <main className={`app-main ${tab === 'stream' ? 'stream-main' : ''}`}>
         {tab === 'board' && <OverviewPage />}
-        {tab === 'stream' && <MessageStream />}
+        {(tab === 'stream' || tab === 'purchase') && (
+          <div className="app-chat-retained" hidden={tab !== 'stream'} aria-hidden={tab !== 'stream'}>
+            <MessageStream onPurchase={openPurchase} />
+          </div>
+        )}
+        {tab === 'purchase' && <PurchasePage selectedPackage={purchasePackage} onBack={() => setTab('stream')} />}
         {tab === 'topics' && <GroupTopicsPanel />}
         {tab === 'settings' && caps.settingsTab && <SettingsPanel operations />}
       </main>

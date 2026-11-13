@@ -91,15 +91,38 @@ test('settings: the in-app settings tab (operations) adds only the 整理 block;
   for (const gone of ['降噪', '黑名單', '已忽略', '忽略對話', '恢復對話']) assert.equal(renderSettingsOps(PLUGIN, VIEW).includes(gone), false, gone)
 })
 
-test('board: plugin and standalone both expose the five main tabs including group topics', async () => {
+test('board: plugin and standalone both expose the five main tabs including group topics and purchase', async () => {
   const { renderApp, PLUGIN, STANDALONE } = await renderer()
   const tabs = (html) => [...html.matchAll(/<button class="tab[^"]*">([^<]+)<\/button>/g)].map((m) => m[1])
   // App reads the theme from the DOM on first render; a server render has no DOM
   globalThis.document = { documentElement: { dataset: {} } }
   try {
-    assert.deepEqual(tabs(renderApp(STANDALONE)), ['總覽', '聊天', '群組議題', '設定'])
-    assert.deepEqual(tabs(renderApp(PLUGIN)), ['總覽', '聊天', '群組議題', '設定'])
+    assert.deepEqual(tabs(renderApp(STANDALONE)), ['總覽', '聊天', '購買', '群組議題', '設定'])
+    assert.deepEqual(tabs(renderApp(PLUGIN)), ['總覽', '聊天', '購買', '群組議題', '設定'])
   } finally { delete globalThis.document }
+})
+
+test('group topics: actual table renders readable multiline notes by default and keeps todo/source controls in a closed disclosure', async () => {
+  const { renderTopicMinutesTable } = await renderer()
+  const summary = '背景：群組討論活動場地\n討論重點：比較交通與容量\n共識／結論：未定\n待釐清：預算\n演進：新增候選'
+  const html = renderTopicMinutesTable(summary, true)
+  assert.ok(html.includes('topic-minutes-summary'), 'the summary receives the multiline reading style')
+  assert.ok(html.includes('背景：群組討論活動場地') && html.includes('待釐清：預算'), 'the note sections are rendered in the default table view')
+  assert.ok(html.includes('總覽內容已縮短；開啟聊天室的單群議題可閱讀完整紀錄。'))
+  assert.ok(html.includes('<details class="topics-disclosure">') && !html.includes('<details class="topics-disclosure" open>'), 'source and todo operations remain collapsed initially')
+  assert.ok(html.includes('檢查既有待辦關聯'))
+})
+
+test('group topics: actual overview omission notice names affected group and topic counts even when a group has no remaining topic rows', async () => {
+  const { renderTopicOverviewOmissionNotice } = await renderer()
+  const html = renderTopicOverviewOmissionNotice([
+    { chat: { chatId: 'g1', name: 'Alpha' }, status: 'enabled', topics: [], topicCount: 30, compacted: true },
+    { chat: { chatId: 'g2', name: 'Beta' }, status: 'enabled', topics: [], topicCount: 10, compacted: true, omittedGroupCount: 3, omittedTopicCount: 12 }
+  ])
+  assert.match(html, /role="status"/)
+  assert.match(html, /省略 52 則議題/)
+  assert.match(html, /涉及 5 個群組/)
+  assert.match(html, /其中 3 個群組整筆省略/)
 })
 
 test('header: the title row shows the plugin version, taken from package.json (the manifest/backend source), in plugin and standalone', async () => {
@@ -122,7 +145,7 @@ test('media: file open / save-as buttons are hidden in the plugin; images ask th
   assert.ok(standalone.includes('開啟') && standalone.includes('另存'))
   assert.equal(renderFileActions(PLUGIN), '', 'no buttons for saveAs / open in the plugin')
   assert.match(renderImage(true, PLUGIN), /載入中/, 'with a host assetUrl the image waits for the URL')
-  assert.match(renderImage(false, PLUGIN), /尚未下載/, 'a host without assetUrl shows 尚未下載 (the component never invents a linemedia:// URL)')
+  assert.match(renderImage(false, PLUGIN), /class="advanced-entry-button"/, 'a missing image exposes the compact advanced entry (the component never invents a linemedia:// URL)')
   assert.ok(!renderImage(false, STANDALONE).includes('linemedia'))
 })
 
@@ -270,16 +293,38 @@ test('production bundle: root group-topics tab and one chat tab wire their topic
   assert.ok(files['main.js'].includes('議題 ▾') && files['main.js'].includes('代辦 ▾') && files['main.js'].includes('chat-insights-overlay'), 'the built chat pane exposes separate floating topics and todos menus')
 })
 
-test('production bundle: the disabled message composer and residency footer are wired into the plugin view', async () => {
+test('production bundle: free chat omits the disabled composer, exposes the purchase tab and keeps the residency footer', async () => {
   const { files, metafiles } = await getBuilt()
   const inputs = [...new Set(metafiles.flatMap((m) => Object.keys(m.inputs).map((i) => i.replaceAll(String.fromCharCode(92), '/'))))]
   assert.ok(inputs.includes('src/plugin/ui/main.tsx'), 'the plugin entry is part of the board bundle')
   assert.ok(inputs.includes('src/plugin/ui/PluginRootLayout.tsx'), 'the plugin uses its flow layout wrapper')
   assert.ok(inputs.includes('src/plugin/ui/ResidencyStatus.tsx'), 'the visible residency status remains wired')
   assert.ok(inputs.includes('src/renderer/components/MessageStream.tsx'), 'the message view is part of the board bundle')
-  assert.ok(files['main.js'].includes('訊息功能尚未開啟') && files['main.js'].includes('附加檔案功能尚未開啟') && files['main.js'].includes('傳送功能尚未開啟'), 'the bundle contains only explicitly disabled composer controls')
+  assert.ok(!files['main.js'].includes('訊息功能尚未開啟') && !files['main.js'].includes('附加檔案功能尚未開啟') && !files['main.js'].includes('傳送功能尚未開啟'), 'the composer controls are removed from the production UI')
+  for (const copy of ['購買', '購買方案', '目前尚未開放購買', '價格與付款方式尚未提供', 'LINE 進階功能包', '排程發送擴充包', '一次買斷', '未來規劃', '升級不保證補回過去未保存']) assert.ok(files['main.js'].includes(copy), `production UI includes truthful purchase copy: ${copy}`)
   assert.ok(files['main.js'].includes('residency-status-bar') && files['main.js'].includes('plugin-root-layout'), 'the status and renderer are connected through the root layout')
-  assert.ok(files['main.css'].includes('.chat-message-view') && files['main.css'].includes('.chat-message-composer') && files['main.css'].includes('.residency-status-bar'), 'the production stylesheet reserves space for both rows')
+  assert.ok(files['main.css'].includes('.chat-message-view') && files['main.css'].includes('.residency-status-bar'), 'the production stylesheet keeps the message reader and host residency footer')
+})
+
+test('free chat renders compact exact-type advanced entries and the internal purchase tab', async () => {
+  const { renderAppWithState, renderImage, renderMessageContent, PLUGIN } = await renderer()
+  const purchase = renderAppWithState(PLUGIN, { 'app.tab': 'purchase' })
+  assert.match(purchase, /購買方案/)
+  assert.match(purchase, /LINE 進階功能包/)
+  assert.match(purchase, /排程發送擴充包/)
+  assert.match(purchase, /一次買斷/)
+  assert.match(purchase, /目前尚未開放購買/)
+  assert.match(purchase, /返回聊天/)
+  assert.doesNotMatch(purchase, /NT\$|https?:\/\/|已購|付款成功|功能已解鎖/)
+  const missing = renderImage(false, PLUGIN)
+  assert.match(missing, /class="advanced-entry-button"/)
+  assert.doesNotMatch(missing, /尚未下載/)
+  const loading = renderImage(true, PLUGIN)
+  assert.match(loading, /載入中…/)
+  assert.doesNotMatch(loading, /advanced-entry-button/)
+  assert.match(renderMessageContent(7, '[sticker]'), /貼圖・進階/)
+  assert.match(renderMessageContent(0, '[sticker]'), /\[sticker\]/)
+  assert.doesNotMatch(renderMessageContent(0, '[sticker]'), /貼圖・進階/)
 })
 
 test('the bundle guard really flags forbidden content (it is not vacuous)', () => {

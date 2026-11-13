@@ -332,6 +332,8 @@ code {
 .stream-diag-body > div { display: flex; flex-wrap: wrap; gap: 4px 8px; }
 .stream-diag-body dt { color: var(--muted); }
 .stream-diag-body dd { margin: 0; overflow-wrap: anywhere; }
+.stream-diag-photo-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; }
+.stream-diag-photo-tools textarea { flex: 1 1 100%; max-width: 100%; font: 11px/1.35 monospace; }
 .chat-load-error { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 
 /* 聊天頁的橋接狀態列在最上面的標題列：插槽與狀態列本身都不產生外框（點、文字、重試、診斷直接排在標題列裡）；診斷展開時獨占下一行。 */
@@ -751,63 +753,6 @@ code {
   overscroll-behavior: contain;
   scroll-behavior: smooth;
 }
-.chat-message-composer {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  min-width: 0;
-  gap: 8px;
-  padding: 8px 14px;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
-}
-.chat-composer-actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 5px;
-}
-.chat-composer-control {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 34px;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: var(--bg);
-  color: var(--muted);
-  font-size: 17px;
-}
-.chat-composer-control:hover { filter: none; }
-.chat-composer-control:disabled { cursor: not-allowed; opacity: .58; }
-.chat-composer-input {
-  flex: 1 1 auto;
-  width: 100%;
-  min-width: 0;
-  height: 36px;
-  margin: 0;
-  padding: 8px 14px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  outline: none;
-  background: var(--input-bg);
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-}
-.chat-composer-input:disabled { cursor: not-allowed; opacity: 1; }
-.chat-composer-status {
-  flex: 0 0 auto;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: var(--chip-bg);
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.3;
-  white-space: nowrap;
-}
 .chat-message-list {
   display: flex;
   flex-direction: column;
@@ -898,8 +843,17 @@ code {
 .chat-message-body .sm-media {
   max-width: 100%;
 }
+/* Outgoing photo content shares a fixed right edge; the image and its time
+   stay intrinsic-width within that anchor, so portrait photos remain narrow. */
+.chat-message.outgoing.chat-message-photo .chat-message-content {
+  width: 210px;
+  max-width: 100%;
+}
 .chat-message-bubble.photo-attachment { max-width: min(210px, 100%); }
 .chat-message-bubble.photo-attachment .chat-message-body { width: fit-content; max-width: 100%; }
+.chat-message.outgoing.chat-message-sticker .chat-message-content { width: 210px; max-width: 100%; }
+.chat-message-bubble.sticker-attachment { max-width: min(210px, 100%); }
+.chat-message-bubble.sticker-attachment .chat-message-body { width: fit-content; max-width: 100%; }
 .chat-message-bubble .sm-file {
   min-width: 0;
   max-width: min(320px, 72cqw);
@@ -2066,6 +2020,21 @@ button:disabled {
   cursor: pointer;
   transition: filter 0.12s ease;
 }
+.sm-sticker-img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(210px, 100%);
+  max-height: 210px;
+  object-fit: contain;
+  cursor: pointer;
+}
+.sm-sticker-missing {
+  display: inline-block;
+  max-width: 210px;
+  color: var(--muted);
+  font-size: 12px;
+}
 .sm-thumb:hover {
   filter: brightness(1.06);
 }
@@ -2076,20 +2045,74 @@ button:disabled {
 
 /* 未下載 / 失敗：灰態虛線佔位（置中小字，如「尚未下載」） */
 .sm-media-missing {
-  width: min(210px, 100%);
+  width: fit-content;
   max-width: 100%;
-  min-height: 48px;
-  border: 1px dashed var(--border);
-  border-radius: 12px;
-  background: var(--input-bg);
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--muted);
   display: flex;
   align-items: center;
   justify-content: center;
   text-align: center;
-  padding: 10px;
+  padding: 0;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.app-chat-retained { flex: 1 1 auto; min-width: 0; min-height: 0; height: 100%; }
+.app-chat-retained[hidden] { display: none !important; }
+.advanced-entry { display: inline-flex; align-items: center; max-width: 100%; }
+.advanced-entry-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--chip-bg);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.advanced-entry-button:hover { color: var(--text); filter: none; }
+.advanced-entry-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.advanced-entry-tooltip {
+  position: fixed;
+  z-index: 2000;
+  display: block;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-pop);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.purchase-page { min-height: 100%; max-width: 1000px; margin: 0 auto; }
+.purchase-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+.purchase-page-header h2 { margin: 0 0 8px; font-size: 21px; }
+.purchase-availability { margin: 0; color: var(--warn); font-size: 14px; }
+.purchase-return { flex: 0 0 auto; min-height: 40px; }
+.purchase-plan-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+.purchase-plan { min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); overflow-wrap: anywhere; }
+.purchase-plan h3 { margin: 0 0 8px; font-size: 17px; }
+.purchase-plan p { line-height: 1.65; }
+.purchase-plan-billing { color: var(--muted); font-size: 13px; }
+@media (max-width: 480px) {
+  .purchase-page-header { flex-direction: column; }
+  .purchase-return { width: 100%; }
+  .purchase-plan-list { grid-template-columns: minmax(0, 1fr); }
+  .advanced-entry-button { min-width: 40px; padding-inline: 7px; }
 }
 
 /* 精確同毫秒照片的畫面拼組：資料列與每張圖操作維持獨立。 */
@@ -2130,7 +2153,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-width: 240px;
+  min-width: 0;
   max-width: 320px;
   background: var(--card-bg);
   border: 1px solid var(--border);
@@ -2152,7 +2175,7 @@ button:disabled {
   line-height: 1;
 }
 .sm-file-name {
-  flex: 1;
+  display: block;
   min-width: 0;
   font-size: 13px;
   font-weight: 600;
@@ -2162,9 +2185,17 @@ button:disabled {
   text-overflow: ellipsis;
 }
 .sm-file-size {
+  display: block;
   flex: 0 0 auto;
   font-size: 11.5px;
   color: var(--muted);
+}
+.sm-file-details {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
 }
 .sm-file-actions {
   flex: 0 0 auto;
@@ -3071,3 +3102,23 @@ summary:focus-visible,
 .set-notice ul li {
   margin: 1px 0;
 }
+
+/* Topic summaries carry labeled, multi-line meeting notes. Keep the full text readable at narrow widths. */
+.topic-minutes-summary {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.topic-overview-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.chat-profile-assist { margin: 1rem 0; padding: 1rem; border: 1px solid var(--border, #d8dce3); border-radius: .75rem; }
+.chat-template-import { margin: 1rem 0; padding: 1rem; border: 1px solid var(--border, #d8dce3); border-radius: .75rem; min-width: 0; }
+.chat-template-import > .btn { margin-bottom: .5rem; }
+.chat-profile-assist h5 { margin: 0 0 .5rem; font-size: 1rem; }
+.chat-profile-preview { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #d8dce3); }
+.chat-profile-preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.chat-profile-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; padding: .75rem; background: var(--surface-muted, #f4f5f7); border-radius: .5rem; font: inherit; }
+@media (max-width: 640px) { .chat-profile-preview-grid { grid-template-columns: 1fr; } }

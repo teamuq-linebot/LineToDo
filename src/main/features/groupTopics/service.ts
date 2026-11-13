@@ -47,6 +47,9 @@ export interface GroupTopicsOverviewRow {
   topics: ReturnType<typeof listTopics>
   topicCount?: number
   compacted?: boolean
+  /** 因總覽預算整群移除時，附在保留列的全域省略數量。 */
+  omittedGroupCount?: number
+  omittedTopicCount?: number
   pendingCount: number
   backlogCount: number
 }
@@ -110,6 +113,8 @@ export function fitOverviewToBudget(rows:GroupTopicsOverviewRow[],limit:number):
     return changed?{...row,topics,compacted:true}:row
   })
   let size=byteLength(fitted)
+  let omittedGroupCount=0
+  let omittedTopicCount=0
   while (size>limit) {
     let victim=-1
     for (let i=0;i<fitted.length;i+=1) {
@@ -119,14 +124,21 @@ export function fitOverviewToBudget(rows:GroupTopicsOverviewRow[],limit:number):
     }
     if (victim<0) break
     const topics=fitted[victim].topics
-    size-=byteLength(topics[topics.length-1])+1
-    fitted=fitted.map((row,i)=>i===victim?{...row,topics:topics.slice(0,-1)}:row)
+    fitted=fitted.map((row,i)=>i===victim?{...row,topics:topics.slice(0,-1),compacted:true}:row)
+    size=byteLength(fitted)
   }
-  while (size>limit && fitted.length>0) {
+  while (size>limit && fitted.length>1) {
     let drop=fitted.findIndex((row)=>!row.enabled)
     if (drop<0) drop=fitted.length-1
-    size-=byteLength(fitted[drop])+1
+    omittedGroupCount+=1
+    omittedTopicCount+=fitted[drop].topicCount ?? fitted[drop].topics.length
     fitted=fitted.filter((_,i)=>i!==drop)
+    if (fitted.length>0) {
+      fitted=fitted.map((row,i)=>i===0?{...row,omittedGroupCount,omittedTopicCount}:row)
+      size=byteLength(fitted)
+    } else {
+      size=0
+    }
   }
   return fitted
 }
@@ -266,16 +278,16 @@ export function createGroupTopicsService(db: Database, options: GroupTopicsServi
         const path=validation?.path ?? '$'
         const code:TopicValidationReason=validation?.reason ?? 'invalid_shape'
         const failure={stage:'domain_validate' as const,path,code:'invalid_output' as const,reason:code,providerKind}
-        try { recordFailure(db,chatId,messages,versions,failure) } catch { /* retryable; no source rows change */ }
+        try { recordFailure(db,chatId,messages,effectiveVersions,failure) } catch { /* retryable; no source rows change */ }
         return {ok:false,reason:'analysis_failed',failure:{stage:failure.stage,path,code}}
       }
       let saved:boolean|'inactive'
       try {
-        saved = saveAnalysis(db, chatId, messages, result, versions,{snapshot:identitySnapshot,sourceLease:lease.lease,candidates:fitted.candidates,candidatesTruncated:fitted.candidateTruncated})
+        saved = saveAnalysis(db, chatId, messages, result, effectiveVersions,{snapshot:identitySnapshot,sourceLease:lease.lease,candidates:fitted.candidates,candidatesTruncated:fitted.candidateTruncated})
       } catch {
         releaseIdentitySourceAttempt(db,lease.lease,true)
         const failure={stage:'persist' as const,path:null,code:'persistence_failed' as const,reason:'persistence_failed',providerKind}
-        try { recordFailure(db,chatId,messages,versions,failure) } catch { /* failed transaction keeps input retryable */ }
+        try { recordFailure(db,chatId,messages,effectiveVersions,failure) } catch { /* failed transaction keeps input retryable */ }
         return {ok:false,reason:'analysis_failed',failure:{stage:failure.stage,path:null,code:failure.code}}
       }
         if (saved === 'inactive') {

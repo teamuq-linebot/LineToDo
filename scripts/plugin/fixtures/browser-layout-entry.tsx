@@ -9,6 +9,11 @@ import { BackendStatusBar } from '../../../src/plugin/ui/BackendStatusBar'
 import { ResidencyStatusBar } from '../../../src/plugin/ui/ResidencyStatus'
 import { RendererRoot } from '../../../src/renderer/RendererRoot'
 import { SettingsPanel } from '../../../src/renderer/components/Settings/SettingsPanel'
+import { ProfileMatrixSettings } from '../../../src/renderer/components/Settings/ProfileMatrixSettings'
+import { ChatPromptPanel } from '../../../src/renderer/features/chatPrompt/ChatPromptPanel'
+import type { ChatPromptControl } from '../../../src/shared/promptSettings'
+import type { ChatProfilesControl } from '../../../src/shared/hostAi'
+import type { ChatProfileConfig } from '../../../src/shared/chatProfiles'
 import { installZoom } from '../../../src/renderer/lib/zoom'
 import { browserUiState, UiStateProvider } from '../../../src/renderer/lib/uiState'
 
@@ -31,10 +36,12 @@ const todos = [
   ...(new URLSearchParams(location.search).get('many') === '1' ? Array.from({ length: 800 }, (_, i) => row(1000 + i, 'todo', 'done')) : [])
 ]
 const svg = 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200"><rect width="1600" height="1200" fill="#9ec2f5"/><text x="800" y="600" font-size="120" text-anchor="middle">IMG</text></svg>')
-const msgs = (chatId: string) => Array.from({ length: 30 }, (_, i) => ({
+const photoFixture = (window as unknown as { __actualPhotoFixture?: { rows: unknown[]; urls: Record<string, string> } }).__actualPhotoFixture
+const msgs = (chatId: string) => photoFixture && chatId === 'c0' && new URLSearchParams(location.search).has('photo-cache') ? photoFixture.rows : Array.from({ length: 30 }, (_, i) => ({
   msgId: `${chatId}:m${i}`, chatId, ts: Date.UTC(2026, 10, 7, 1, i), timeIso: iso(30 - i), direction: i % 3 === 0 ? 'out' : 'in', sender: i % 3 === 0 ? null : '王小明',
   text: i === 5 ? null : i % 4 === 0 ? '這是一段很長很長的訊息內容 '.repeat(8) + 'https://example.com/a/very/long/url/that/never/breaks/' + 'x'.repeat(60) : `訊息 ${i}`, contentType: i === 5 ? 1 : 0, processed: true, ingestedAt: iso(1), origFilename: null, fileSize: null, unsent: false
 }))
+const messageRows = (chatId: unknown) => photoFixture && new URLSearchParams(location.search).has('photo-cache') ? photoFixture.rows : msgs(String(chatId))
 const settings = {
   pollIntervalSec: 60, concurrency: 2, recentContextLimit: 20, blocklist: { chatNames: ['廣告群'], senderNames: [], keywords: ['促銷'], patterns: [] } as never, chatIgnoreKeywords: { c0: ['貼圖', '早安'] }, openAtLogin: false, reconcile: { enabled: true, scopeMonths: 3 },
   aiBaseUrl: '', aiProvider: 'http', claudeCli: {} as never, codexCli: {} as never, pluginAi: { providerId: null, modelId: null, effort: null }, pluginPrompt: null, pluginMyName: '小明', pluginCombinedExtract: true, driverPost: {} as never, hasApiKey: true, apiKeySource: 'safeStorage', safeStorageAvailable: true
@@ -46,7 +53,7 @@ const table: Record<string, (...a: unknown[]) => unknown> = {
   'ping': () => ({ ok: true, ts: 0, version: '0.2.17' }),
   'db.chats.listPrefs': () => ({ prefsReady: true, topicsAvailable: true, pinned: ['c1'], hidden: [], todoOff: ['c5'], topicsOn: [] }),
   'db.chats.list': () => chats, 'db.chats.get': (id) => chats.find((c) => c.chatId === id) ?? null, 'db.chats.todoExtractEnabled': () => true,
-  'db.messages.list': (q) => msgs(String((q as { chatId?: string })?.chatId ?? 'c0')), 'db.messages.recentByChat': (id) => msgs(String(id)), 'db.messages.byChatSince': (id) => msgs(String(id)), 'db.messages.count': () => 30,
+  'db.messages.list': (q) => messageRows((q as { chatId?: string })?.chatId ?? 'c0'), 'db.messages.recentByChat': (id) => messageRows(id), 'db.messages.byChatSince': (id) => messageRows(id), 'db.messages.count': () => 30,
   'db.todos.list': () => todos, 'db.todos.openByChat': (id) => todos.filter((t) => t.chatId === id), 'db.todos.listNotMine': () => [], 'db.todos.listNotMineCorrections': () => [],
   'db.todos.moveColumn': () => null, 'db.todos.draftReply': () => ({ ok: true, draft: '好的，我會在週五之前寄出。' }),
   'line.status': () => ({ state: 'running', lastMessageAt: iso(1), messageCount: 1234, lastError: null, restarts: 2 }),
@@ -55,7 +62,18 @@ const table: Record<string, (...a: unknown[]) => unknown> = {
   'pipeline.longTaskStatus': () => ({ review: null, mediaBackfill: null }),
   'settings.get': () => settings, 'settings.hasSafeStorageKey': () => true,
   'groupTopics.overview': () => overview, 'groupTopics.list': (id) => ({ ok: true, topics: [topic(1, String(id)), topic(2, String(id))] }), 'groupTopics.pendingCount': () => 0, 'groupTopics.todoRefs': () => [],
-  'media.assetUrl': () => svg, 'media.assetLookup': () => ({ url: svg, indexing: false }), 'media.avatarUrls': () => ({ urls: {}, names: {} }), 'media.messageAvatarUrls': () => ({ urls: {}, names: {} })
+  'media.assetUrl': () => svg, 'media.assetLookup': (id) => {
+    const state = window as unknown as { __actualPhotoMediaLookups?: { supplied: boolean }[] }
+    state.__actualPhotoMediaLookups ??= []
+    const url = photoFixture?.urls[String(id)]
+    state.__actualPhotoMediaLookups.push({ supplied: Boolean(url) })
+    return { url: url ?? svg, indexing: false }
+  }, 'media.avatarUrls': () => ({ urls: {}, names: {} }), 'media.messageAvatarUrls': (chatId, ids) => {
+    const state = window as unknown as { __actualPhotoAvatarRequests?: { chatId: unknown; ids: unknown }[] }
+    state.__actualPhotoAvatarRequests ??= []
+    state.__actualPhotoAvatarRequests.push({ chatId, ids })
+    return { urls: {}, names: {} }
+  }
 }
 // One stable proxy per path: panels list api objects in effect deps, a fresh proxy on every read would restart their effects forever.
 const proxies = new Map<string, unknown>()
@@ -63,7 +81,7 @@ function mk(path: string): unknown {
   const cached = proxies.get(path)
   if (cached) return cached
   const proxy = new Proxy(function () { /* */ }, {
-    get(_t, prop: string) { return prop === 'then' ? undefined : mk(path ? `${path}.${prop}` : prop) },
+    get(_t, prop: string) { return prop === 'then' ? undefined : prop === 'call' ? Function.prototype.call : mk(path ? `${path}.${prop}` : prop) },
     apply(_t, _this, args) {
       const last = path.split('.').pop() as string
       if (/^on[A-Z]/.test(last)) return () => undefined
@@ -76,9 +94,29 @@ function mk(path: string): unknown {
 }
 const promptState = { initialPrompt: '預設提示 '.repeat(60), activePrompt: '預設提示 '.repeat(60), customized: false, revision: 'r1', maxChars: 12000, outputFormat: '{"todos":[{"title":"...","detail":"..."}]}', topicAppendix: '已啟用議題的群組，系統會另外附加固定段落。', myName: '小明', nameRevision: 'n1', maxNameChars: 40 }
 const chatState = (chatId: string) => ({ chatId, revision: 'c1', overridePrompt: null, overrideName: null, effectivePrompt: '預設提示 '.repeat(40), effectiveName: '小明', promptSource: 'default', nameSource: 'default', defaultName: '小明', maxChars: 12000, maxNameChars: 40, corrupt: false })
+const fixtureKinds = ['group', 'non_group', 'unknown'] as const
+const fixtureNatures = [
+  ['work_project', '工作／專案協作'], ['time_schedule', '時間／行程協調'], ['announcement_event', '公告／活動資訊'],
+  ['social_life', '社交／生活互動'], ['mixed_unclassified', '混合／未分類'], ['custom_weekend_trip', '週末旅行規劃']
+]
+const profileMatrix = Object.fromEntries(fixtureKinds.map((kind) => [kind, Object.fromEntries(fixtureNatures.map(([id]) => [id, { todoInstruction: `${kind}待辦規則：${id}`, topicInstruction: `${kind}議題規則：${id}` }]))])) as ChatProfileConfig['matrix']
+let profileConfig: ChatProfileConfig = { schemaVersion: 1, revision: 'fixture-profile-r1', customNatures: [{ id: 'custom_weekend_trip', label: '週末旅行規劃' }], matrix: profileMatrix, updatedAt: '2026-01-01T00:00:00.000Z' }
+const profileControl: ChatProfilesControl = {
+  getConfig: async () => profileConfig,
+  saveConfig: async (config, expectedRevision) => {
+    if (expectedRevision !== profileConfig.revision) throw new Error('revision_conflict')
+    profileConfig = { ...config, revision: `fixture-profile-r${Number(profileConfig.revision.slice(-1)) + 1}` }
+    return profileConfig
+  },
+  getChat: async () => null,
+  saveChat: async (_id, value) => ({ ...value, revision: 'fixture-chat-r2', resetLegacyTodo: Boolean(value.resetLegacyTodo) }),
+  resolve: async (chatId) => ({ chatId, chatKind: 'group', natureId: 'work_project', natureLabel: '工作／專案協作', todo: { instruction: '合成目前待辦規則', source: 'matrix' }, topic: { instruction: '合成目前議題規則', source: 'matrix' }, myName: { value: null, source: 'none' }, revision: 'fixture-chat-r1', archivedNature: false }),
+  suggestRule: async (_chatId, kind) => ({ kind, chatKind: 'group', natureId: 'work_project', baseRule: kind === 'todo' ? '合成目前待辦規則' : '合成目前議題規則', baseProfileRevision: 'fixture-chat-r1', draftRule: '合成 AI 建議草稿', changes: ['增加具體判斷條件'], modelId: 'synthetic-fixture' })
+}
+const chatPromptControl: ChatPromptControl = { get: async (chatId) => ({ chatId, revision: 'prompt-r1', overridePrompt: null, overrideName: null, effectivePrompt: '合成抽取規則', effectiveName: null, promptSource: 'default', nameSource: 'none', defaultName: null, maxChars: 12000, maxNameChars: 40, corrupt: false }), save: async () => { throw new Error('unused') }, reset: async () => { throw new Error('unused') }, list: async () => [] }
 const hostAiCtl = { getOptions: async () => hostAiOptions, getSelection: async () => ({ providerId: null, modelId: null, effort: null }), setSelection: async (s: unknown) => s,
   prompts: { get: async () => promptState, save: async () => promptState, reset: async () => promptState, saveName: async () => promptState, refine: async () => ({ prompt: 'x', changes: ['a'], modelId: null }) },
-  chatPrompts: { get: async (id: string) => chatState(id), save: async (id: string) => chatState(id), reset: async (id: string) => chatState(id), list: async () => [] } }
+  chatPrompts: { get: async (id: string) => chatState(id), save: async (id: string) => chatState(id), reset: async (id: string) => chatState(id), list: async () => [] }, profiles: profileControl }
 const base = mk('') as Record<string, unknown>
 const api = new Proxy({} as Record<string, unknown>, { get: (_t, p: string) => (p === 'then' ? undefined : p === 'hostAi' ? hostAiCtl : p === 'plugin' ? pluginSource : base[p]) })
 const phase = new URLSearchParams(location.search).get('phase') === 'timeout' ? 'timeout' : 'ready'
@@ -93,7 +131,11 @@ w.tuqPlugin = { presentation: { get: async () => ({ mode: 'tab' }), request: asy
 const src = { backendLink: () => ({ state: 'ok', code: null }) as never, onBackendLink: noop, residency: async () => ({ supported: false }) as never, onResidency: noop }
 const mode = new URLSearchParams(location.search).get('mode') ?? 'board'
 const root = createRoot(document.getElementById('root')!)
-if (mode === 'settings') {
+if (mode === 'chat-profile-assist') {
+  root.render(<LineTodoApiProvider api={api as never} capabilities={PLUGIN_CAPABILITIES}><div className="settings-wrap"><ChatPromptPanel chatId="synthetic-profile-chat" chatName="合成聊天室" control={chatPromptControl} /></div></LineTodoApiProvider>)
+} else if (mode === 'profile-matrix') {
+  root.render(<div className="settings-wrap"><ProfileMatrixSettings control={profileControl} /></div>)
+} else if (mode === 'settings') {
   root.render(<LineTodoApiProvider api={api as never} capabilities={PLUGIN_CAPABILITIES}><UiStateProvider value={browserUiState()}><div className="app-shell"><main className="app-main"><SettingsPanel /></main></div></UiStateProvider></LineTodoApiProvider>)
 } else {
   root.render(

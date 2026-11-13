@@ -680,6 +680,8 @@ export interface LineTodoApi {
      * (`indexing: true`: the image may well be in the Cache, the index just has not seen it yet — ask again later). `indexing: false` with a null url is "not available / not downloaded yet".
      */
     assetLookup?(msgId: string): Promise<{ url: string | null; indexing: boolean }>
+    /** Plugin-host-only local CT=7 sticker PNG. The backend keeps sticker IDs and LINE paths private. */
+    stickerAssetUrl?(msgId: string): Promise<string | null>
     /** Plugin-host-only, on-demand chat avatars. Source locators and LINE MIDs stay in the backend. */
     avatarUrls?(chatIds: string[], options?: AvatarRequestOptions): Promise<AvatarUrlBatchDTO>
     /** Plugin-host-only, on-demand sender avatars for the given imported message ids. */
@@ -727,6 +729,9 @@ export interface GroupTopicsOverviewDTO {
   topicCount?: number
   /** true：為控制回應大小，topics 內的標題、摘要或證據 id 已縮短；完整內容請進單群詳情。 */
   compacted?: boolean
+  /** 為遵守總覽回應預算而整群移除的數量（全域數字附於一筆保留列）。 */
+  omittedGroupCount?: number
+  omittedTopicCount?: number
   pendingCount: number
   backlogCount: number
 }

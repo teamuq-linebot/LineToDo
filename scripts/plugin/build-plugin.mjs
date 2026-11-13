@@ -85,6 +85,7 @@ export async function collectPackageFiles({ workDir }) {
   add('LICENSES/better-sqlite3-LICENSE.txt', fs.readFileSync(nodeModule('better-sqlite3-plugin', 'LICENSE')), 'asset')
   add('LICENSES/zod-LICENSE.txt', fs.readFileSync(nodeModule('zod', 'LICENSE')), 'asset')
   add('LICENSES/react-LICENSE.txt', fs.readFileSync(nodeModule('react', 'LICENSE')), 'asset')
+  add('LICENSES/pngjs-LICENSE.txt', fs.readFileSync(nodeModule('pngjs', 'LICENSE')), 'asset')
 
   return {
     files,

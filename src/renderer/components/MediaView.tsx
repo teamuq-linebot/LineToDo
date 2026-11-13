@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import type { PurchasePackageId } from './PurchasePage'
 import { useHostCapabilities, useLineTodoApi } from '../platform/LineTodoApi'
 
 /**
@@ -60,20 +61,68 @@ export function useMediaUrl(msgId: string): MediaUrlState {
 }
 
 /** 圖片縮圖（點開 lightbox）；載入失敗／尚未下載 → 「尚未下載」。 */
-export function MediaImage({ msgId, as: Tag = 'span', onOpenLightbox }: {
+export function MediaImage({ msgId, as: Tag = 'span', onOpenLightbox, onPurchase }: {
   msgId: string
   as?: 'span' | 'div'
   onOpenLightbox: (url: string) => void
+  onPurchase?: (packageId: PurchasePackageId, source: HTMLElement) => void
 }): JSX.Element {
   const media = useMediaUrl(msgId)
   const [failed, setFailed] = useState(false)
-  if (failed || media.status === 'missing') return <Tag className="sm-media-missing">尚未下載</Tag>
+  if (failed || media.status === 'missing') return <Tag className="sm-media-missing">{onPurchase ? <MissingMediaEntry onPurchase={onPurchase} /> : '尚未下載'}</Tag>
   if (media.status === 'loading') return <Tag className="sm-media-missing">載入中…</Tag>
   if (media.status === 'indexing') return <Tag className="sm-media-missing">索引建立中…</Tag>
   return (
     <Tag className="sm-media">
       <img className="sm-thumb" src={media.url} alt="圖片" onClick={() => onOpenLightbox(media.url)} onError={() => setFailed(true)} />
     </Tag>
+  )
+}
+
+/** CT=7 local sticker: the plugin backend resolves private metadata to a safe host asset URL. */
+export function StickerImage({ msgId, onOpenLightbox }: { msgId: string; onOpenLightbox: (url: string) => void }): JSX.Element {
+  const api = useLineTodoApi()
+  const [url, setUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    let alive = true
+    setUrl(null)
+    setFailed(false)
+    const resolve = api.media.stickerAssetUrl
+    if (!resolve) { setFailed(true); return () => { alive = false } }
+    void resolve.call(api.media, msgId).then((value) => {
+      if (alive) {
+        if (value) setUrl(value)
+        else setFailed(true)
+      }
+    }, () => { if (alive) setFailed(true) })
+    return () => { alive = false }
+  }, [api, msgId])
+  if (!url || failed) return <span className="sm-sticker-missing" role="img" aria-label="貼圖目前無法顯示">貼圖目前無法顯示</span>
+  return <img className="sm-sticker-img" src={url} alt="貼圖" loading="lazy" decoding="async" onClick={() => onOpenLightbox(url)} onError={() => setFailed(true)} />
+}
+
+function MissingMediaEntry({ onPurchase }: { onPurchase: (packageId: PurchasePackageId, source: HTMLElement) => void }): JSX.Element {
+  const tooltipId = useId()
+  const rootRef = useRef<HTMLSpanElement>(null)
+  const tipRef = useRef<HTMLSpanElement>(null)
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState({ left: 8, top: 8 })
+  useLayoutEffect(() => {
+    if (!open || !rootRef.current || !tipRef.current) return
+    const anchor = rootRef.current.getBoundingClientRect()
+    const tip = tipRef.current.getBoundingClientRect()
+    const left = Math.max(8, Math.min(anchor.left + anchor.width / 2 - tip.width / 2, window.innerWidth - tip.width - 8))
+    const top = anchor.top - tip.height - 8 >= 8 ? anchor.top - tip.height - 8 : Math.min(anchor.bottom + 8, window.innerHeight - tip.height - 8)
+    setPosition({ left, top: Math.max(8, top) })
+  }, [open])
+  return (
+    <span className="advanced-entry" ref={rootRef} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button type="button" className="advanced-entry-button" aria-label="進階：自動保存圖片" aria-describedby={open ? tooltipId : undefined}
+        onFocus={() => setOpen(true)} onBlur={() => setOpen(false)} onKeyDown={(event) => { if (event.key === 'Escape') { setOpen(false); event.currentTarget.blur() } }}
+        onClick={(event) => onPurchase('line', event.currentTarget)}>進階</button>
+      {open && <span id={tooltipId} ref={tipRef} role="tooltip" className="advanced-entry-tooltip" style={{ left: position.left, top: position.top }}>自動保存圖片屬進階功能｜查看方案</span>}
+    </span>
   )
 }
 

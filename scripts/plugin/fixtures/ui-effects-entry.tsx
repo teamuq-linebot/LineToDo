@@ -68,13 +68,13 @@ export function mediaImageScene(api: Api, msgId: string): ReactElement {
   return <Host api={api}><MediaImage msgId={msgId} onOpenLightbox={() => undefined} /></Host>
 }
 export function messageStreamScene(api: Api): ReactElement {
-  return <Host api={api}><MessageStream /></Host>
+  return <Host api={api}><MessageStream onPurchase={() => undefined} /></Host>
 }
 /** Actual plugin flow layout with an active residency status row and a synthetic chat stream. */
 export function messageWithResidencyScene(api: Api, source: ResidencyViewSource): ReactElement {
   return (
     <PluginRootLayout footer={<ResidencyStatusBar source={source} />}>
-      <Host api={api}><MessageStream /></Host>
+      <Host api={api}><MessageStream onPurchase={() => undefined} /></Host>
     </PluginRootLayout>
   )
 }

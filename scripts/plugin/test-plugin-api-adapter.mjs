@@ -745,6 +745,27 @@ test('media: assetUrl() asks the backend to decrypt into dataDir and returns the
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
+test('sticker: optional asset URL uses the private backend route and host assets.url; failure remains a readable UI fallback', async () => {
+  const fake = scriptedHost({
+    'media.prepareSticker': (args, n) => {
+      if (n === 1) {
+        assert.deepEqual(args, ['i:639965811251347972'])
+        return { value: { path: `sticker-cache/${'b'.repeat(64)}.png` } }
+      }
+      return { value: null }
+    }
+  })
+  const api = apiFor(fake)
+  try {
+    const url = await api.media.stickerAssetUrl('i:639965811251347972')
+    assert.equal(url, `tuqplugin://tuqdev.line-todo/data/sticker-cache/${'b'.repeat(64)}.png`)
+    assert.equal(await api.media.stickerAssetUrl('i:639965811251347972'), url)
+    assert.equal(fake.count('media.prepareSticker'), 1, 'successful opaque URL is cached by message ID in the plugin adapter')
+    assert.equal(await api.media.stickerAssetUrl('i:missing'), null)
+    assert.deepEqual(fake.state.calls.find((call) => call.path === 'media.prepareSticker'), { path: 'media.prepareSticker', at: fake.state.calls[0].at })
+  } finally { api.dispose() }
+})
+
 test('review: when the AI cannot work reviewLastDays answers "not connected" at once with the reason (it would otherwise wait 15 minutes for results nobody delivers); otherwise it rides the job channel while the backend worker answers', async () => {
   await withBackend({ setup: (ai) => ai.control.set({ providerState: 'not_logged_in' }) }, async ({ api, mock }) => {
     const t0 = Date.now()
@@ -813,9 +834,9 @@ function scriptedHost(script = {}) {
 const TIGHT = { coreMs: 60, pingMs: 200, bulkMs: 80, longMs: 400 }
 const apiFor = (fake, options = {}) => createPluginLineTodoApi({ host: fake.host, events: { ...FAST_EVENTS, enabled: false }, busyRetry: { attempts: 0 }, ...options })
 
-test('WP-C lanes: ping / status / db / messages / settings / pipeline / groupTopics / job / result are core; media.prepare, media.avatar.*, ai.status, ai.options are bulk; events.* are events (events.close stays core)', () => {
+test('WP-C lanes: ping / status / db / messages / settings / pipeline / groupTopics / job / result are core; media.prepare, media.prepareSticker, media.avatar.*, ai.status, ai.options are bulk; events.* are events (events.close stays core)', () => {
   for (const path of ['ping', 'line.status', 'db.chats.list', 'db.messages.list', 'db.todos.list', 'messages.recent', 'settings.get', 'pipeline.status', 'groupTopics.list', 'result.chunk', 'job.poll', 'backend.info', 'events.close']) assert.equal(laneFor(path), 'core', path)
-  for (const path of ['media.prepare', 'media.avatar.prepareChats', 'media.avatar.prepareMessages', 'ai.status', 'ai.options']) assert.equal(laneFor(path), 'bulk', path)
+  for (const path of ['media.prepare', 'media.prepareSticker', 'media.avatar.prepareChats', 'media.avatar.prepareMessages', 'ai.status', 'ai.options']) assert.equal(laneFor(path), 'bulk', path)
   for (const path of ['events.open', 'events.pull']) assert.equal(laneFor(path), 'events', path)
 })
 

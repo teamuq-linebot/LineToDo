@@ -82,7 +82,7 @@ export const INTERNAL_API_PATHS: readonly string[] = Object.freeze([
   'settings.chatPrompt.get', 'settings.chatPrompt.save', 'settings.chatPrompt.reset', 'settings.chatPrompt.list',
   'settings.profiles.getConfig', 'settings.profiles.saveConfig', 'settings.profiles.getChat', 'settings.profiles.saveChat', 'settings.profiles.resolve', 'settings.profiles.suggestRule',
   'ai.status', 'ai.options', 'extract.stats', 'review.status', 'tasks.status',
-  'media.prepare', 'media.avatar.prepareChats', 'media.avatar.prepareMessages',
+  'media.prepare', 'media.prepareSticker', 'media.avatar.prepareChats', 'media.avatar.prepareMessages',
   'result.chunk', 'job.poll'
 ])
 
@@ -276,6 +276,7 @@ export class Dispatcher {
       // 長任務的狀態（G-05）：回顧與補媒體金鑰；backend 重新啟動後由狀態檔讀回（taskStatus.ts、reviewRun.ts）。
       case 'tasks.status': return this.finalize({ review: this.opts.review ? this.opts.review.status() : null, mediaBackfill: this.opts.mediaBackfill ? this.opts.mediaBackfill.status() : null })
       case 'media.prepare': return this.mediaPrepare(args[0])
+      case 'media.prepareSticker': return this.mediaPrepareSticker(args[0])
       case 'media.avatar.prepareChats': return this.opts.avatars ? this.settle(this.opts.avatars.prepareChats(args[0])) : fail('avatar_unavailable')
       case 'media.avatar.prepareMessages': return this.opts.avatars ? this.settle(this.opts.avatars.prepareMessages(args[0], args[1])) : fail('avatar_unavailable')
       case 'result.chunk': return this.chunk(args[0])
@@ -356,6 +357,12 @@ export class Dispatcher {
   private mediaPrepare(raw: unknown): Envelope {
     if (!this.opts.media) return fail('media_unavailable', 'media is not available in this build')
     const result = this.opts.media.prepare(plain(raw) ? raw.msgId : raw)
+    return result.ok ? this.finalize(result) : fail(result.code, result.message)
+  }
+
+  private mediaPrepareSticker(raw: unknown): Envelope {
+    if (!this.opts.media) return fail('media_unavailable', '本機貼圖服務目前無法使用')
+    const result = this.opts.media.prepareSticker(plain(raw) ? raw.msgId : raw)
     return result.ok ? this.finalize(result) : fail(result.code, result.message)
   }
 

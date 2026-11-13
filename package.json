@@ -1,6 +1,6 @@
 {
   "name": "line-todo",
-  "version": "0.2.17",
+  "version": "0.2.20",
   "description": "LINE 新訊息語意抽取代辦看板（Electron + qwen）",
   "main": "out/main/index.js",
   "author": "",
@@ -87,12 +87,14 @@
     "better-sqlite3-multiple-ciphers": "^11.10.0",
     "koffi": "^3.1.0",
     "openai": "^4",
+    "pngjs": "^7.0.0",
     "zod": "^3"
   },
   "devDependencies": {
     "@electron/rebuild": "^3",
     "@types/better-sqlite3": "^7",
     "@types/node": "^20",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@vitejs/plugin-react": "^4",

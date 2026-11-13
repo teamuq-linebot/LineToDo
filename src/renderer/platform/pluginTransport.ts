@@ -24,7 +24,7 @@
  *
  * 通道（lane）與等待上限（0.2.9）：總名額仍是 3，但分三條通道，讓聊天室清單與連線狀態不會被輔助呼叫佔滿名額而排不到——
  *   - `core`：其餘所有路徑（ping、line.status、db.*、messages.recent、settings.get、pipeline.status、groupTopics.*、result.chunk、job.poll…），優先出隊；
- *   - `bulk`（同時 ≤ `max(1, 預算 - 2)`，預算 3 格時 1 格）：`media.prepare`、`media.avatar.*`、`ai.status`、`ai.options`（可以慢、可以放棄的輔助資料）。
+ *   - `bulk`（同時 ≤ `max(1, 預算 - 2)`，預算 3 格時 1 格）：`media.prepare`、`media.prepareSticker`、`media.avatar.*`、`ai.status`、`ai.options`（可以慢、可以放棄的輔助資料）。
  *     一個 bulk 呼叫從開始到結束（含它的 `job.poll`／`result.chunk`）都佔著同一個 bulk 名額，超過上限的排在 bulk 佇列（不佔 core 名額）；
  *     `invoke(path, args, { signal })` 在還沒拿到名額前 abort 會把它丟掉（`cancelled`，不送給 backend），已經送出的不收回；
  *   - `events`（同時 ≤1）：`events.*` 長輪詢（`events.close` 例外走 core，維持關閉時立刻送出）。
@@ -274,7 +274,7 @@ export const MIN_LANES_BUDGET = 3
 /** bulk 通道永遠不碰的名額：事件長輪詢 1 ＋ 一般（core）請求 1。bulk 同時上限 = `max(1, 預算 - 2)`：預算 3 格時 1 格，預算 5 格時 3 格。 */
 export const RESERVED_FOREGROUND_CALLS = 2
 
-const BULK_PATHS: ReadonlySet<string> = new Set(['media.prepare', 'ai.status', 'ai.options'])
+const BULK_PATHS: ReadonlySet<string> = new Set(['media.prepare', 'media.prepareSticker', 'ai.status', 'ai.options'])
 /** 狀態列只呈現 LINE 橋接與聊天室清單的狀態：只有這三條 path 的逾時會讓 phase 變成 `timeout`；狀態列的「重試」會重讀這三條。 */
 export const STATUS_TIMEOUT_PATHS: ReadonlySet<string> = new Set(['line.status', 'messages.recent', 'db.chats.list'])
 /** backend 本來就會執行到 soft deadline（20 s）才回 `pending` 的路徑（AI 草擬／分析、回顧、補金鑰…）：走 core，但等待上限用 `longMs`。 */

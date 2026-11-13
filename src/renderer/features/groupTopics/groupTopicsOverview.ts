@@ -11,6 +11,8 @@ export type GroupTopicsOverviewEntry = {
   topics: GroupTopicDTO[]
   topicCount?: number
   compacted?: boolean
+  omittedGroupCount?: number
+  omittedTopicCount?: number
   error?: string
 }
 
@@ -43,8 +45,19 @@ export function overviewToEntries(rows: GroupTopicsOverviewDTO[]): GroupTopicsOv
     status: row.enabled ? 'enabled' : 'disabled',
     topics: row.topics,
     topicCount: row.topicCount,
-    compacted: row.compacted
+    compacted: row.compacted,
+    omittedGroupCount: row.omittedGroupCount,
+    omittedTopicCount: row.omittedTopicCount
   }))
+}
+
+/** 預算裁切摘要，獨立於議題列，確保整群議題被省略時仍可見。 */
+export function overviewOmissionNotice(groups: GroupTopicsOverviewEntry[]): string | null {
+  const omittedGroups = groups.reduce((sum, group) => sum + (group.omittedGroupCount ?? 0), 0)
+  const omittedTopics = groups.reduce((sum, group) => sum + Math.max(0, (group.topicCount ?? group.topics.length) - group.topics.length) + (group.omittedTopicCount ?? 0), 0)
+  const groupsWithOmissions = groups.filter((group) => (group.topicCount ?? group.topics.length) > group.topics.length).length + omittedGroups
+  if (omittedTopics === 0 && omittedGroups === 0) return null
+  return `總覽因回應大小限制省略 ${omittedTopics} 則議題，涉及 ${groupsWithOmissions} 個群組${omittedGroups ? `（其中 ${omittedGroups} 個群組整筆省略）` : ''}；開啟單群議題可閱讀完整紀錄。`
 }
 
 export const OVERVIEW_REFRESH_MIN_INTERVAL_MS = 2000

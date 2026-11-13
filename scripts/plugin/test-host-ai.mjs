@@ -188,6 +188,36 @@ test('the AI port sends every turn (repair turns too) with the Task, and recreat
   } finally { host.close() }
 })
 
+test('host repair turn, callback and fixed error code never expose synthetic credential canaries', async () => {
+  const { createHostAiPort } = await import('../../src/plugin/backend/hostAi.ts')
+  const { AiPortError } = await import('../../src/core/aiPort.ts')
+  const host = newHost()
+  try {
+    host.ai.next({ events: [{ textDelta: 'password=synthetic-provider-error-canary is not json' }, 'completed'] })
+    host.ai.next({ events: [{ textDelta: 'password=synthetic-provider-error-canary is still not json' }, 'completed'] })
+    const callbacks = []
+    const port = createHostAiPort({ ai: host.backend.host.ai })
+    const error = await port.complete({
+      system: 'API-key=synthetic-host-system-canary. Output JSON.',
+      user: JSON.stringify({ text: 'password=synthetic-host-user-canary; Project Orion' }),
+      expectJson: true,
+      priority: 'user',
+      onAdditionalUserPayload: (payload) => { callbacks.push(payload); return true }
+    }).then(() => null, (failure) => failure)
+    assert.ok(error instanceof AiPortError)
+    assert.ok(['invalid_json', 'invalid_result'].includes(error.code))
+    assert.equal(error.message.includes('synthetic-provider-error-canary'), false)
+    const calls = host.calls('backend:ai.complete').map((call) => JSON.stringify(call.args))
+    const sent = JSON.stringify(calls)
+    assert.equal(sent.includes('synthetic-host-system-canary'), false)
+    assert.equal(sent.includes('synthetic-host-user-canary'), false)
+    assert.equal(callbacks.length, 1, 'one repair request is reported through the callback')
+    assert.equal(callbacks[0].includes('synthetic-host-user-canary'), false)
+    assert.equal(callbacks[0].includes('synthetic-provider-error-canary'), false)
+    assert.match(callbacks[0], /\[REDACTED:CREDENTIAL\]/)
+  } finally { host.close() }
+})
+
 // ───────────── per-chat system (A13): a changed system for one chat sends one new rule document to the SAME Host session ─────────────
 
 function sessionAwareHost(options = {}) {

@@ -142,6 +142,16 @@ test('the package bytes depend on the commit, not on the checkout: authored text
   } finally { rmQuiet(dir) }
 })
 
+test('pngjs decoder dependency is present in the backend package with its upstream MIT license and notice', async () => {
+  const { a } = await getBuilt()
+  const license = a.files.find((file) => file.path === 'LICENSES/pngjs-LICENSE.txt')
+  assert.ok(license)
+  assert.equal(license.data.toString('utf8'), readFileSync(join(ROOT, 'node_modules', 'pngjs', 'LICENSE'), 'utf8'))
+  const notices = a.files.find((file) => file.path === 'LICENSES/THIRD_PARTY_NOTICES.md')?.data.toString('utf8') ?? ''
+  assert.match(notices, /pngjs \| 7\.0\.0 \| MIT \| bundled into `backend\/index\.mjs`/)
+  assert.match(license.data.toString('utf8'), /Permission is hereby granted, free of charge/)
+})
+
 test('the tool\'s review (verify, same reviewArtifact as Core) for TeamUQ 1.8.10: unsigned, all integrity / manifest / native / icon checks pass; tampering, Core 1.7.0, Core 1.7.12 and another platform are refused', async () => {
   const { file } = await getBuilt()
   const verdict = await verifyArtifact({ file })

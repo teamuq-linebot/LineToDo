@@ -161,6 +161,10 @@ export function listTodos(
 
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
   const orderBy = buildListTodosOrderBy(query)
+  // Source timestamps are resolved only through each todo's explicit IDs. The
+  // first 100 references cap work per card; the messages primary-key lookup
+  // avoids scanning chat history. MIN gives multi-source todos a stable first
+  // trigger time, while missing/deleted source rows remain null.
   const rows = db
     .prepare(`SELECT todos.*,
       CASE WHEN json_valid(todos.source_msg_ids) THEN (

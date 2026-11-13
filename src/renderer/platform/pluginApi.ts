@@ -166,6 +166,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
   // ── 媒體 URL（成功的才快取；not_cached 之類之後可能成功）──
   // backend 的 not_cached 訊息帶 MEDIA_INDEX_BUILDING_TOKEN＝LINE Cache 索引還在建立（圖片可能已經在 Cache 裡，只是索引還沒看到）；沒帶＝LINE 還沒下載。
   const assetUrls = new Map<string, string>()
+  const stickerAssetUrls = new Map<string, string>()
   const assetLookup = async (msgId: string): Promise<{ url: string | null; indexing: boolean }> => {
     const known = assetUrls.get(msgId)
     if (known) return { url: known, indexing: false }
@@ -181,6 +182,18 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
     }
   }
   const assetUrl = async (msgId: string): Promise<string | null> => (await assetLookup(msgId)).url
+  const stickerAssetUrl = async (msgId: string): Promise<string | null> => {
+    const known = stickerAssetUrls.get(msgId)
+    if (known) return known
+    try {
+      const prepared = await call<{ path?: unknown }>('media.prepareSticker', msgId)
+      if (!prepared || typeof prepared.path !== 'string') return null
+      const url = host.assets?.url(prepared.path)
+      if (!url) return null
+      stickerAssetUrls.set(msgId, url)
+      return url
+    } catch { return null }
+  }
 
   // ── 頭像（view 端把關：去重、已知結果快取、合併進行中的相同請求、不再需要時丟掉尚未送出的請求）──
   // 頭像在 backend 很貴（每次讀來源資料庫；實測 media.avatar.prepare* 平均 2.5 s），而 view 的 host 呼叫預算只有 3 格、先進先出：
@@ -425,6 +438,7 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       saveAs: (msgId) => orUnsupported(() => call('media.saveAs', msgId), (e) => ({ ok: false, error: unsupportedText(e) })),
       assetUrl,
       assetLookup,
+      stickerAssetUrl,
       avatarUrls: (chatIds, options) => avatarUrlBatch('media.avatar.prepareChats', [], 'chat', chatIds, options),
       messageAvatarUrls: (chatId, msgIds, options) => avatarUrlBatch('media.avatar.prepareMessages', [chatId], `message:${chatId}`, msgIds, options)
     },

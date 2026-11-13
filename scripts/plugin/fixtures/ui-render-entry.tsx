@@ -8,9 +8,13 @@ import type { HostCapabilities } from '../../../src/renderer/platform/capabiliti
 import { SettingsPanel } from '../../../src/renderer/components/Settings/SettingsPanel'
 import { MediaFileActions, MediaImage } from '../../../src/renderer/components/MediaView'
 import App from '../../../src/renderer/App'
+import { MessageContent } from '../../../src/renderer/components/MessageStream'
 import { NO_UI_STATE, UiStateProvider, createLocalUiState } from '../../../src/renderer/lib/uiState'
 import { BackendStatusBar } from '../../../src/plugin/ui/BackendStatusBar'
 import { GroupTopicsPanel } from '../../../src/renderer/features/groupTopics/GroupTopicsPanel'
+import { TopicsTable } from '../../../src/renderer/features/groupTopics/TopicsTable'
+import { TopicOverviewOmissionNotice } from '../../../src/renderer/features/groupTopics/TopicOverviewOmissionNotice'
+import type { GroupTopicDTO } from '../../../src/shared/api'
 
 const never = (): Promise<never> => new Promise(() => undefined)
 
@@ -72,9 +76,13 @@ export function renderFileActions(caps: HostCapabilities): string {
 export function renderImage(withAssetUrl: boolean, caps: HostCapabilities): string {
   return renderToStaticMarkup(
     <LineTodoApiProvider api={stubApi({ assetUrl: withAssetUrl })} capabilities={caps}>
-      <MediaImage msgId="i:m1" onOpenLightbox={() => undefined} />
+      <MediaImage msgId="i:m1" onOpenLightbox={() => undefined} onPurchase={() => undefined} />
     </LineTodoApiProvider>
   )
+}
+
+export function renderMessageContent(contentType: number, text: string): string {
+  return renderToStaticMarkup(<MessageContent m={{ msgId: 'i:fixture', chat: '工程群', chatId: 'fixture-chat', isGroup: true, ts: 1, time: '', direction: 'in', sender: '成員', text, contentType }} onOpenLightbox={() => undefined} onPurchase={() => undefined} />)
 }
 
 // ───────────── plugin developer guide conformance (G-02 / G-03 / G-04) ─────────────
@@ -114,4 +122,23 @@ export function renderGroupTopicsFirstPaint(caps: HostCapabilities): string {
       <GroupTopicsPanel hideTitle />
     </LineTodoApiProvider>
   )
+}
+
+/** Render the real topic-reading table with fixture data, without reading the app database or invoking AI. */
+export function renderTopicMinutesTable(summary: string, compacted = false): string {
+  const topic: GroupTopicDTO = {
+    topicId: 'fixture-topic', chatId: 'fixture-chat', title: '活動場地討論', summary,
+    lastSourceTs: 1_794_312_300_000, evidenceCount: 3, evidenceMsgIds: ['m1', 'm2', 'm3'],
+    participantLowerBound: null, userParticipation: 'unknown', relevance: 'unknown', relevanceEvidenceMsgIds: [],
+    relevanceEvidence: [], observation: 'unknown', heat: 'unvalidated', trend: 'unknown'
+  }
+  return renderToStaticMarkup(<TopicsTable
+    rows={[{ key: 'fixture-chat\u0000fixture-topic', chatId: topic.chatId, chatName: '工程群', topic, ...(compacted ? { overviewCompacted: true } : {}) }]}
+    sortKey="updated" sortDir="desc" onSort={() => undefined} resetKey="fixture" canOpenChat={false}
+    onOpenChat={() => undefined} onShowTodoRefs={() => undefined}
+  />)
+}
+
+export function renderTopicOverviewOmissionNotice(groups: Parameters<typeof TopicOverviewOmissionNotice>[0]['groups']): string {
+  return renderToStaticMarkup(<TopicOverviewOmissionNotice groups={groups} />)
 }

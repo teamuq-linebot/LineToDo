@@ -91,7 +91,8 @@ export function TopicsTable({ rows, sortKey, sortDir, onSort, resetKey, canOpenC
               <td className="topics-col-chat">{row.chatName}</td>
               <td className="topics-col-topic">
                 <strong className="card-title">{topic.title}</strong>
-                {topic.summary && <p className="card-detail">{topic.summary}</p>}
+                {topic.summary && <p className="card-detail topic-minutes-summary">{topic.summary}</p>}
+                {row.overviewCompacted && <p className="topic-overview-note">總覽內容已縮短；開啟聊天室的單群議題可閱讀完整紀錄。</p>}
                 <details className="topics-disclosure">
                   <summary>細節（來源 {topic.evidenceMsgIds.length} 則）</summary>
                   <div className="card-meta">{qualityText(topic)}</div>

@@ -21,11 +21,17 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { PNG } from 'pngjs'
+import type { LineFsPort } from '../../main/line/engine/fsPort'
 import type { MediaDecryptor } from '../../main/media/decrypt'
 import { MEDIA_INDEX_OFF_STATUS } from './mediaIndex'
 import type { MediaIndex, MediaIndexStatus } from './mediaIndex'
 
 export const MEDIA_CACHE_DIR = 'media-cache'
+export const STICKER_CACHE_DIR = 'sticker-cache'
+const STICKER_MAX_BYTES = 1024 * 1024
+const STICKER_MAX_EDGE = 2048
+const STICKER_MAX_PIXELS = 4_000_000
 /** `not_cached` 的訊息裡固定帶這個字：索引還在建立（renderer 據此自動重試；錯誤碼維持 `not_cached`）。LINE 還沒下載時訊息不含它。 */
 export const MEDIA_INDEX_BUILDING_TOKEN = 'index_building'
 /** content_type：1 = 圖片。 */
@@ -63,10 +69,14 @@ export interface PluginMediaOptions {
   index: MediaIndex | null
   /** 快取上限（bytes）；預設 256 MiB。 */
   maxCacheBytes?: number
+  /** Fixed LINE Data/Sticker root plus native-only safe file access. */
+  stickerRoot?: string
+  stickerFs?: Pick<LineFsPort, 'readUniqueChildDirectoryFile' | 'readAppOwnedFile' | 'writeAppOwnedFileAtomic'>
 }
 
 export interface PluginMedia {
   prepare(msgId: unknown): MediaPrepareResult
+  prepareSticker(msgId: unknown): MediaPrepareResult
   stats(): { cacheFiles: number; cacheBytes: number; prepared: number; written: number; reindexes: number; index: MediaIndexStatus }
 }
 
@@ -81,6 +91,45 @@ export function createPluginMedia(options: PluginMediaOptions): PluginMedia {
   const dir = join(options.dataDir, MEDIA_CACHE_DIR)
   const cap = options.maxCacheBytes ?? 256 * 1024 * 1024
   const counters = { prepared: 0, written: 0, reindexes: 0 }
+  const stickerDir = join(options.dataDir, STICKER_CACHE_DIR)
+
+  const decodeSticker = (bytes: Buffer): boolean => {
+    try {
+      if (bytes.length < 45 || bytes.length > STICKER_MAX_BYTES || !bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return false
+      if (bytes.toString('ascii', 12, 16) !== 'IHDR') return false
+      const width = bytes.readUInt32BE(16)
+      const height = bytes.readUInt32BE(20)
+      if (!width || !height || width > STICKER_MAX_EDGE || height > STICKER_MAX_EDGE || width * height > STICKER_MAX_PIXELS) return false
+      // APNG has different animation semantics; this slice intentionally serves static PNG only.
+      let offset = 8
+      while (offset + 12 <= bytes.length) {
+        const length = bytes.readUInt32BE(offset)
+        if (length > bytes.length - offset - 12) return false
+        const type = bytes.toString('ascii', offset + 4, offset + 8)
+        if (type === 'acTL') return false
+        offset += length + 12
+        if (type === 'IEND') break
+      }
+      const image = PNG.sync.read(bytes, { checkCRC: true })
+      return image.width === width && image.height === height
+    } catch { return false }
+  }
+
+  const writeStickerCache = (msgId: string, bytes: Buffer): string | null => {
+    const name = `${createHash('sha256').update(msgId, 'utf8').digest('hex')}.png`
+    const appFs = options.stickerFs
+    try {
+      if (typeof appFs?.readAppOwnedFile !== 'function' || typeof appFs.writeAppOwnedFileAtomic !== 'function') return null
+      // mkdir only creates this one app-owned child; all reads/writes below reopen and verify it through native handles.
+      try { mkdirSync(stickerDir) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+      let current: Buffer | null
+      try { current = appFs.readAppOwnedFile(options.dataDir, STICKER_CACHE_DIR, name, STICKER_MAX_BYTES) }
+      catch { return null }
+      if (current && decodeSticker(current)) return `${STICKER_CACHE_DIR}/${name}`
+      appFs.writeAppOwnedFileAtomic(options.dataDir, STICKER_CACHE_DIR, name, bytes)
+      return `${STICKER_CACHE_DIR}/${name}`
+    } catch { return null }
+  }
 
   const existing = (stem: string): { name: string; ext: string; size: number } | null => {
     for (const ext of EXTS) {
@@ -172,6 +221,26 @@ export function createPluginMedia(options: PluginMediaOptions): PluginMedia {
       counters.written += 1
       prune(name)
       return { ok: true, path: `${MEDIA_CACHE_DIR}/${name}`, mime: EXT_TO_MIME[ext], size: res.bytes.length, cached: false }
+    },
+    prepareSticker(rawMsgId: unknown): MediaPrepareResult {
+      if (typeof rawMsgId !== 'string' || rawMsgId.length === 0 || rawMsgId.length > 200) return fail('invalid_args', '貼圖訊息無法辨識')
+      const db = options.getDb()
+      if (!db || !options.stickerRoot || typeof options.stickerFs?.readUniqueChildDirectoryFile !== 'function' || typeof options.stickerFs.readAppOwnedFile !== 'function' || typeof options.stickerFs.writeAppOwnedFileAtomic !== 'function') return fail('media_unavailable', '本機貼圖服務目前無法使用')
+      let row: { content_type: number; sticker_id: string | null; sticker_package_id: string | null } | undefined
+      try {
+        row = db.prepare('SELECT content_type, sticker_id, sticker_package_id FROM messages WHERE msg_id = ?').get(rawMsgId) as typeof row
+      } catch { return fail('media_unavailable', '無法讀取貼圖資訊') }
+      if (!row || row.content_type !== 7) return fail('not_found', '找不到貼圖訊息')
+      const validId = (value: unknown): value is string => typeof value === 'string' && /^\d{1,20}$/.test(value)
+      if (!validId(row.sticker_package_id) || !validId(row.sticker_id)) return fail('not_found', '貼圖資訊不完整')
+      let resolved: { matches: number; bytes?: Buffer }
+      try { resolved = options.stickerFs.readUniqueChildDirectoryFile(options.stickerRoot, row.sticker_package_id, `${row.sticker_id}.png`, STICKER_MAX_BYTES) }
+      catch { return fail('not_found', '找不到可用的本機貼圖') }
+      if (resolved.matches !== 1 || !resolved.bytes) return fail('not_found', '找不到唯一的本機貼圖')
+      if (!decodeSticker(resolved.bytes)) return fail('unsupported_format', '本機貼圖檔案無法解碼')
+      const path = writeStickerCache(rawMsgId, resolved.bytes)
+      if (!path) return fail('write_failed', '無法暫存本機貼圖')
+      return { ok: true, path, mime: 'image/png', size: resolved.bytes.length, cached: false }
     },
     stats() {
       const files = existsSync(dir) ? listCache() : []
