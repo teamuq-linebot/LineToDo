@@ -4,7 +4,7 @@ import { ChatSwitch } from '../../components/ChatSwitch'
 import { useHostCapabilities, useLineTodoApi } from '../../platform/LineTodoApi'
 import { createOverviewRefresher, loadGroupTopicsOverview, overviewToEntries, type GroupTopicsOverviewChat, type GroupTopicsOverviewEntry } from './groupTopicsOverview'
 import { TopicsTable } from './TopicsTable'
-import { buildTopicRows, filterTopicRows, formatTopicTime, relevanceText, sortTopicRows, type TopicSortDir, type TopicSortKey } from './topicRows'
+import { buildTopicRows, filterTopicRows, formatTopicTime, sortTopicRows, type TopicSortDir, type TopicSortKey } from './topicRows'
 
 const ALL_GROUPS = '__all_groups__'
 
@@ -425,13 +425,7 @@ export function GroupTopicsPanel({ chatId: scopedChatId, chatIsGroup = true, cha
                       <strong>{topic.title}</strong>
                       <p>{topic.summary}</p>
                       <small className="group-topic-meta" data-testid="group-topic-meta">{topicMetaText(topic)}</small>
-                      <details data-testid="group-topic-details">
-                        <summary>品質與來源細節（來源 {topic.evidenceCount} 則）</summary>
-                        <small>本人參與：{topic.userParticipation === 'i_participated' ? '來源含本人送出的訊息' : '不確定'}。模型相關性描述（未驗證）：{topic.relevanceEvidence.length ? topic.relevanceEvidence.map((item) => `${relevanceText[item.relevance]}（參照 ${item.evidenceMsgIds.length} 則）`).join('、') : relevanceText[topic.relevance]}。已連結訊息 {topic.evidenceCount} 則（可能含重貼）；已知參與者下界 {topic.participantLowerBound ?? '不明'}。觀測完整性未校準；熱度未校準；趨勢不確定。</small>
-                        {topic.evidenceMsgIds.length > 0 ? <ul>{topic.evidenceMsgIds.map((id) => <li key={id}><code>{id}</code></li>)}</ul> : <p className="muted">目前沒有可列出的來源訊息參照。</p>}
-                      </details>
                       {caps.openOriginalChat && <button type="button" className="ghost" onClick={() => void openSourceChat(chatId)}>開啟來源聊天室</button>}
-                      <button type="button" className="ghost" onClick={() => void showTodoRefs(topic)}>檢查既有待辦關聯</button>
                     </article>
                   ))}
                 </div>

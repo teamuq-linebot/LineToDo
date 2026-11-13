@@ -30,7 +30,8 @@ interface ConversationEntry {
   loadedCount: number
 }
 
-type PaneView = 'messages' | 'topicsTodos' | 'aiSettings'
+type PaneView = 'messages' | 'aiSettings'
+type ChatInsightMenu = 'topics' | 'todos' | null
 
 const HISTORY_PAGE_SIZE = 100
 
@@ -493,6 +494,9 @@ export function MessageStream(): JSX.Element {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [paneView, setPaneView] = useState<PaneView>('messages')
+  const [chatInsightMenu, setChatInsightMenu] = useState<ChatInsightMenu>(null)
+  const insightMenuRef = useRef<HTMLDivElement>(null)
+  const insightTriggerRefs = useRef<Record<'topics' | 'todos', HTMLButtonElement | null>>({ topics: null, todos: null })
   const [customizedChatIds, setCustomizedChatIds] = useState<ReadonlySet<string>>(new Set())
   const [mobileView, setMobileView] = useState<'list' | 'conversation'>('list')
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
@@ -671,6 +675,33 @@ export function MessageStream(): JSX.Element {
 
   const activeConversation = conversations.find((chat) => chat.chatId === selectedChatId) ?? null
   const activeChatId = activeConversation?.chatId ?? null
+  const previousInsightChatId = useRef(activeChatId)
+  useEffect(() => {
+    if (previousInsightChatId.current !== activeChatId) {
+      previousInsightChatId.current = activeChatId
+      setChatInsightMenu(null)
+    }
+  }, [activeChatId])
+
+  useEffect(() => {
+    if (!chatInsightMenu) return undefined
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !insightMenuRef.current?.contains(event.target)) setChatInsightMenu(null)
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setChatInsightMenu(null)
+        insightTriggerRefs.current[chatInsightMenu]?.focus()
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [chatInsightMenu])
 
   const chatPrompts = api.hostAi?.chatPrompts
   useEffect(() => {
@@ -1115,7 +1146,8 @@ export function MessageStream(): JSX.Element {
                 </div>
                 <div className="chat-pane-view-toggle" role="group" aria-label="聊天室檢視">
                   <button type="button" className={paneView === 'messages' ? 'selected' : ''} aria-pressed={paneView === 'messages'} onClick={() => setPaneView('messages')}>訊息</button>
-                  <button type="button" className={paneView === 'topicsTodos' ? 'selected' : ''} aria-pressed={paneView === 'topicsTodos'} onClick={() => setPaneView('topicsTodos')}>議題與待辦</button>
+                  <button ref={(node) => { insightTriggerRefs.current.topics = node }} type="button" className={chatInsightMenu === 'topics' ? 'selected' : ''} aria-expanded={chatInsightMenu === 'topics'} aria-controls="chat-insights-overlay" onClick={() => setChatInsightMenu((current) => current === 'topics' ? null : 'topics')}>議題 ▾</button>
+                  <button ref={(node) => { insightTriggerRefs.current.todos = node }} type="button" className={chatInsightMenu === 'todos' ? 'selected' : ''} aria-expanded={chatInsightMenu === 'todos'} aria-controls="chat-insights-overlay" onClick={() => setChatInsightMenu((current) => current === 'todos' ? null : 'todos')}>代辦 ▾</button>
                   {chatPrompts && (
                     <button type="button" className={paneView === 'aiSettings' ? 'selected' : ''} aria-pressed={paneView === 'aiSettings'} onClick={() => setPaneView('aiSettings')}>
                       AI 設定
@@ -1124,22 +1156,7 @@ export function MessageStream(): JSX.Element {
                   )}
                 </div>
               </header>
-              {paneView === 'topicsTodos' ? (
-                <div className="chat-topics-todos-content" data-testid="chat-topics-todos-content" aria-label={`${activeConversation.name}的議題與待辦`}>
-                  <ChatRefreshControl
-                    key={`refresh-${activeConversation.chatId}`}
-                    chatId={activeConversation.chatId}
-                    todoOn={!prefs.todoOff.includes(activeConversation.chatId)}
-                    topicsOn={prefs.topicsOn.includes(activeConversation.chatId)}
-                  />
-                  <GroupTopicsPanel key={`topics-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} embedded />
-                  <ChatTodosPanel
-                    key={`todos-${activeConversation.chatId}`}
-                    chatId={activeConversation.chatId}
-                    chatName={activeConversation.name}
-                  />
-                </div>
-              ) : paneView === 'aiSettings' && chatPrompts ? (
+              {paneView === 'aiSettings' && chatPrompts ? (
                 <ChatPromptPanel
                   key={activeConversation.chatId}
                   chatId={activeConversation.chatId}
@@ -1199,6 +1216,29 @@ export function MessageStream(): JSX.Element {
                     </ol>
                   </div>
                   <DisabledMessageComposer />
+                </div>
+              )}
+              {paneView === 'messages' && chatInsightMenu && (
+                <div ref={insightMenuRef} id="chat-insights-overlay" data-testid="chat-insights-overlay" className="chat-insights-overlay" role="region" aria-label={chatInsightMenu === 'topics' ? '聊天室議題' : '聊天室代辦'}>
+                  <div className="chat-insights-overlay-heading">
+                    <h3>{chatInsightMenu === 'topics' ? '議題' : '代辦'}</h3>
+                    <button type="button" className="chat-insights-close" aria-label="關閉" onClick={() => {
+                      const current = chatInsightMenu
+                      setChatInsightMenu(null)
+                      insightTriggerRefs.current[current]?.focus()
+                    }}>×</button>
+                  </div>
+                  <div className="chat-insights-overlay-scroll" key={`${activeConversation.chatId}-${chatInsightMenu}`}>
+                    {chatInsightMenu === 'topics' ? <>
+                      <ChatRefreshControl
+                        key={`refresh-${activeConversation.chatId}`}
+                        chatId={activeConversation.chatId}
+                        todoOn={!prefs.todoOff.includes(activeConversation.chatId)}
+                        topicsOn={prefs.topicsOn.includes(activeConversation.chatId)}
+                      />
+                      <GroupTopicsPanel key={`topics-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} embedded />
+                    </> : <ChatTodosPanel key={`todos-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} />}
+                  </div>
                 </div>
               )}
             </>

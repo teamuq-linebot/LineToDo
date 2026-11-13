@@ -1190,13 +1190,9 @@ test('chat topics and todos (effects): a topic read failure does not hide select
     assert.equal(walk(pane).filter((element) => element.localName === 'section' && (hasClassName(element, 'group-topics-panel') || hasClassName(element, 'chat-todos-content'))).length, 2, 'the pane holds exactly the two areas')
     assert.ok(walk(pane).some((element) => hasClassName(element, 'todo-card')), 'the todo area keeps task-style cards')
     assert.equal(walk(topicCard).some((element) => element.localName === 'input'), false, 'a topic card has no checkbox or task control')
-    const qualityDetails = byAttr(topicCard, 'data-testid', 'group-topic-details')
-    assert.ok(qualityDetails, 'quality and source details remain available')
-    assert.equal(qualityDetails.hasAttribute('open'), false, 'the quality details are collapsed by default')
-    assert.ok(walk(qualityDetails).some((element) => element.localName === 'summary' && element.textContent.includes('品質與來源細節')), 'the disclosure uses a native summary control that supports keyboard activation')
-    assert.match(qualityDetails.textContent, /模型相關性描述（未驗證）/)
-    assert.match(qualityDetails.textContent, /已知參與者下界/)
-    assert.match(qualityDetails.textContent, /觀測完整性未校準/)
+    assert.equal(byAttr(topicCard, 'data-testid', 'group-topic-details'), undefined, 'quality and source details are not rendered in the discussion list')
+    assert.equal(topicCard.textContent.includes('品質與來源細節'), false)
+    assert.equal(topicCard.textContent.includes('檢查既有待辦關聯'), false)
   } finally { view.unmount(); api.dispose() }
 })
 

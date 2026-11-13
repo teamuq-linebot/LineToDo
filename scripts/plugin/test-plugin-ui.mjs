@@ -267,7 +267,7 @@ test('production bundle: root group-topics tab and one chat tab wire their topic
   assert.ok(inputs.includes('src/renderer/features/groupTopics/GroupTopicsPanel.tsx'), 'the existing topics panel is imported into the production bundle')
   assert.ok(inputs.includes('src/renderer/features/chatTodos/ChatTodosPanel.tsx'), 'the existing todos panel is imported into the production bundle')
   assert.ok(files['main.js'].includes('群組議題'), 'the built board exposes the top-level group-topics entry')
-  assert.ok(files['main.js'].includes('議題與待辦') && files['main.js'].includes('chat-topics-todos-content'), 'the built chat pane contains one combined tab and its content container')
+  assert.ok(files['main.js'].includes('議題 ▾') && files['main.js'].includes('代辦 ▾') && files['main.js'].includes('chat-insights-overlay'), 'the built chat pane exposes separate floating topics and todos menus')
 })
 
 test('production bundle: the disabled message composer and residency footer are wired into the plugin view', async () => {

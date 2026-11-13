@@ -600,6 +600,7 @@ code {
 }
 
 .chat-pane {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -683,6 +684,55 @@ code {
   vertical-align: middle;
 }
 .chat-pane-header > .advanced-entry { flex: 0 0 auto; }
+
+.chat-insights-overlay {
+  position: absolute;
+  z-index: 20;
+  top: 72px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  width: min(440px, calc(100% - 24px));
+  max-height: calc(100% - 84px);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--text) 18%, transparent);
+}
+.chat-insights-overlay-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.chat-insights-overlay-heading h3 { margin: 0; font-size: 13px; }
+.chat-insights-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+}
+.chat-insights-overlay-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 10px;
+}
+.chat-insights-overlay-scroll > .group-topics-panel.embedded,
+.chat-insights-overlay-scroll > .chat-todos-content {
+  min-height: 0;
+  overflow: visible;
+  padding: 8px;
+}
+.chat-insights-overlay-scroll > .chat-todos-content { background: transparent; }
 
 .chat-message-view {
   display: flex;
@@ -977,6 +1027,10 @@ code {
 .chat-todos-heading > span { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .chat-todo-list { display: grid; gap: 8px; }
 .chat-todo-card { cursor: default; user-select: text; }
+.chat-insights-overlay-scroll > .chat-todos-content .chat-todo-card {
+  height: auto;
+  min-height: 0;
+}
 .chat-todo-card:active { cursor: default; }
 .chat-todo-details { font-size: 11px; line-height: 1.5; }
 .chat-todo-details summary { width: fit-content; color: var(--accent); cursor: pointer; }
@@ -1124,6 +1178,7 @@ code {
   .chat-pane-title h2 { font-size: 13px; }
   .chat-pane-view-toggle { gap: 1px; padding: 2px; }
   .chat-pane-view-toggle button { padding: 5px 7px; font-size: 10px; white-space: nowrap; }
+  .chat-insights-overlay { top: 106px; right: 8px; width: min(420px, calc(100% - 16px)); max-height: calc(100% - 116px); }
   .chat-back-button { font-size: 12px; }
   .chat-topics-todos-content { padding: 12px; }
   .group-topics-controls { align-items: flex-start; flex-direction: column; gap: 10px; }
