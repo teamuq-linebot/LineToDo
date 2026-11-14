@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { AutoDownloadStore, MAX_AUTO_DOWNLOAD_BYTES, MAX_SAVED_FILE_CHUNK_BYTES } from './linejsAutoDownload.mjs'
 import { installRegisterGuard, lineJsContextAbortError, lineJsContextSignal, runInLineJsContext } from './linejsObs'
+import { loginWithNamedQR } from './linejsLoginName'
 
 const MAX_BYTES = MAX_AUTO_DOWNLOAD_BYTES
 const TOKEN_KEY = 'linejs-auth-token'
@@ -224,7 +225,8 @@ export class LineJsMediaService {
     this.file = path.join(dataDir, 'linejs-session.json')
     // X2b: the v1 download path is off — the v1 ledger is a read-only record (export of old files, X4 backfill, the one-time v2 import)
     this.store = new AutoDownloadStore(path.join(dataDir, 'linejs-downloads'), { frozen: true })
-    this.qrLogin = adapters.loginWithQR ?? (async (...args: Parameters<typeof loginWithQR>) => (await import('@evex-dev/linejs')).loginWithQR(...args))
+    // The QR login sends LINE_LOGIN_DEVICE_NAME as the device name (linejsLoginName.ts); the device type stays ANDROIDSECONDARY.
+    this.qrLogin = adapters.loginWithQR ?? loginWithNamedQR
     this.tokenLogin = adapters.loginWithAuthToken ?? (async (...args: Parameters<typeof loginWithAuthToken>) => (await import('@evex-dev/linejs')).loginWithAuthToken(...args))
     this.encodeQr = adapters.encodeQr ?? ((value) => QRCode.toDataURL(value, { width: 240, margin: 1 }))
     this.loginTimeoutMs = adapters.loginTimeoutMs ?? LOGIN_TIMEOUT_MS

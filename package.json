@@ -42,6 +42,7 @@
     "test:plugin-api-adapter": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/plugin/test-plugin-api-adapter.mjs",
     "test:result-expiry": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/plugin/test-result-expiry.mjs",
     "test:linejs-outbound": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-linejs-outbound.mjs scripts/plugin/test-linejs-session-fencing.mjs",
+    "test:linejs-login-name": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-linejs-login-name.mjs",
     "test:chat-composer-ui": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-chat-composer-ui.mjs",
     "test:plugin-ui": "node --experimental-strip-types --test scripts/plugin/test-plugin-ui.mjs scripts/plugin/test-plugin-ui-effects.mjs scripts/plugin/test-plugin-zoom.mjs",
     "test:plugin-guide": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-plugin-guide.mjs",
