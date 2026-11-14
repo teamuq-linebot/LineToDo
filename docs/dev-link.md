@@ -1,6 +1,6 @@
 # 開發連結：把開發中的看板接進 TeamUQ
 
-這個功能把外掛的內容更新到一個固定資料夾，讓 TeamUQ 直接從那裡載入。資料夾裡的 manifest 與正式打包的內容完全相同，外掛 id 也相同（`tuqdev.line-todo`），所以連結後它會取代已安裝的 LINE 待辦看板。每次重新建置，TeamUQ 就會看到變更。
+這個功能把外掛的內容更新到一個固定資料夾，讓 TeamUQ 直接從那裡載入。資料夾裡的 manifest 與正式打包的內容完全相同，外掛 id 也相同（pro 版為 `tuqdev.line-todo.pro`，顯示名稱「LINE 待辦 Pro」），所以連結後它是一個獨立的外掛，與免費版 `tuqdev.line-todo` 並存、不會取代免費版；pro 使用自己的新資料夾，不會複製免費版資料。每次重新建置，TeamUQ 就會看到變更。
 
 資料夾位置：`C:\teamuq\teamuq-plugins\line-todo\dist\dev-link\`
 
@@ -8,7 +8,7 @@
 
 ## 連結與解除連結
 
-- 連結後，TeamUQ 會用這個資料夾裡的看板，取代原本安裝的 LINE 待辦看板。
+- 連結後，TeamUQ 會用這個資料夾裡的看板，取代原本安裝的 LINE 待辦 Pro 看板。
 - 看板的資料沿用，不會因為連結而清空。
 - 要回到原本的安裝版，在 TeamUQ 解除連結即可，安裝版會回來運作。
 

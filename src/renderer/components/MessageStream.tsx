@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ChatDTO, ChatListPrefsDTO, MessageDTO, RawLineMessage, LineBridgeStatus } from '../../shared/api'
 import { useBackendPhase, useLineStream } from '../hooks/useLineStream'
 import type { BackendPhaseSource } from '../hooks/useLineStream'
@@ -13,13 +13,18 @@ import { GroupTopicsPanel } from '../features/groupTopics/GroupTopicsPanel'
 import { ChatRefreshControl } from '../features/chatRefresh/ChatRefreshControl'
 import { ChatTodosPanel } from '../features/chatTodos/ChatTodosPanel'
 import { ChatPromptPanel } from '../features/chatPrompt/ChatPromptPanel'
-import { MediaFileActions, MediaImage } from './MediaView'
+import { ChatComposer } from '../features/chatComposer/ChatComposer'
+import { ChatOriginalsBar } from '../features/originalDownload/ChatOriginalsBar'
+import { useOriginalsStore } from '../features/originalDownload/useOriginals'
+import { MediaFileActions, MediaImage, MediaVideo, SavedFileInfo, StickerImage } from './MediaView'
+import type { PurchasePackageId } from './PurchasePage'
 import { ContextMenu, ContextMenuItem } from './ContextMenu'
 import { AvatarZoomDialog } from './AvatarZoomDialog'
 import { HeaderStatus } from './HeaderStatusSlot'
 import { focusFirstMenuItem, useContextMenuKeys } from '../hooks/useContextMenuKeys'
 import { layoutScale, placeFixedMenu, type MenuPlacement } from '../lib/zoom'
 import { groupConsecutivePhotoMessages } from '../lib/photoMessageGroups'
+import { collectPhotoDisplayDiagnostics } from '../lib/photoDisplayDiagnostics'
 
 interface ConversationEntry {
   chatId: string
@@ -30,7 +35,8 @@ interface ConversationEntry {
   loadedCount: number
 }
 
-type PaneView = 'messages' | 'topicsTodos' | 'aiSettings'
+type PaneView = 'messages' | 'aiSettings'
+type ChatInsightMenu = 'topics' | 'todos' | null
 
 const HISTORY_PAGE_SIZE = 100
 
@@ -176,7 +182,7 @@ function AvatarGlyph({ url, label, isGroup }: { url?: string; label: string; isG
 }
 
 /** 有照片時是可點的按鈕（點了放大，只顯示大頭貼與名字）；只有字母時維持原本不可點的圓形標記。 */
-function ZoomableAvatar({ url, label, name, isGroup, className, title, chatId }: {
+export function ZoomableAvatar({ url, label, name, isGroup, className, title, chatId }: {
   url?: string
   label: string
   name: string
@@ -235,6 +241,20 @@ function BackendDiagnosticsPanel({ source }: { source: BackendPhaseSource }): JS
   const [open, setOpen] = useState(false)
   const [snapshot, setSnapshot] = useState<BackendDiagnostics | null>(null)
   const [backend, setBackend] = useState<{ pid: number | null; uptimeMs: number | null } | 'unknown' | null>(null)
+  const [photoDiagnostics, setPhotoDiagnostics] = useState<string | null>(null)
+  const [photoDiagnosticsStatus, setPhotoDiagnosticsStatus] = useState('')
+
+  const collectAndCopyPhotoDiagnostics = async (): Promise<void> => {
+    const payload = JSON.stringify(collectPhotoDisplayDiagnostics(), null, 2)
+    setPhotoDiagnostics(payload)
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+      await navigator.clipboard.writeText(payload)
+      setPhotoDiagnosticsStatus('已複製圖片顯示資訊')
+    } catch {
+      setPhotoDiagnosticsStatus('無法自動複製；可手動複製下方文字')
+    }
+  }
 
   useEffect(() => {
     if (!open) return undefined
@@ -265,6 +285,11 @@ function BackendDiagnosticsPanel({ source }: { source: BackendPhaseSource }): JS
         <div><dt>最近錯誤</dt><dd data-diag="error">{snapshot === null ? '…' : snapshot.lastError ? `${snapshot.lastError.code}（${snapshot.lastError.path}）` : '無'}</dd></div>
         <div><dt>後端</dt><dd data-diag="backend">{backendText}</dd></div>
       </dl>
+      <div className="stream-diag-photo-tools">
+        <button type="button" className="link-btn" onClick={() => void collectAndCopyPhotoDiagnostics()}>收集／複製圖片顯示資訊</button>
+        {photoDiagnosticsStatus && <span role="status">{photoDiagnosticsStatus}</span>}
+        {photoDiagnostics && <textarea aria-label="圖片顯示資訊，可手動複製" readOnly value={photoDiagnostics} rows={8} />}
+      </div>
     </details>
   )
 }
@@ -272,15 +297,17 @@ function BackendDiagnosticsPanel({ source }: { source: BackendPhaseSource }): JS
 function previewText(message: RawLineMessage): string {
   if (message.unsent) return '已收回訊息'
   if (message.contentType === 1) return '圖片'
+  if (message.contentType === 2) return '影片'
+  if (message.contentType === 7) return '貼圖'
   if (message.contentType === 14) return message.origFilename || '檔案'
   return formatCallRecord(message.text)?.replace(/\s+/g, ' ').trim() || '訊息'
 }
 
-function fromMessageDTO(message: MessageDTO, chat: ChatDTO | undefined, chatNameOverride?: string): RawLineMessage {
+function fromMessageDTO(message: MessageDTO, chat: ChatDTO | undefined): RawLineMessage {
   return {
     msgId: message.msgId,
     chatId: message.chatId,
-    chat: displayChatName(chatNameOverride ?? chat?.name, message.chatId, chat?.isGroup ?? false),
+    chat: displayChatName(chat?.name, message.chatId, chat?.isGroup ?? false),
     isGroup: chat?.isGroup ?? false,
     ts: message.ts,
     time: message.timeIso,
@@ -342,17 +369,24 @@ function dayDividerLabel(key: string): string {
 }
 
 /** 依 contentType 渲染訊息內容，並沿用目前宿主提供的媒體能力。 */
-function MessageContent({
+export function MessageContent({
   m,
-  onOpenLightbox
+  onOpenLightbox,
+  onPurchase
 }: {
   m: RawLineMessage
   onOpenLightbox: (url: string) => void
+  /** 進階入口（免費版）；省略＝不顯示進階入口（Pro）。 */
+  onPurchase?: (packageId: PurchasePackageId, source: HTMLElement) => void
 }): JSX.Element {
   const [fileErr, setFileErr] = useState('')
 
   if (m.contentType === 1 && m.msgId) {
-    return <MediaImage msgId={m.msgId} as="div" onOpenLightbox={onOpenLightbox} />
+    return <MediaImage msgId={m.msgId} as="div" onOpenLightbox={onOpenLightbox} onPurchase={onPurchase} />
+  }
+
+  if (m.contentType === 2 && m.msgId) {
+    return <MediaVideo msgId={m.msgId} as="div" onPurchase={onPurchase} />
   }
 
   if (m.contentType === 14 && m.msgId) {
@@ -361,10 +395,13 @@ function MessageContent({
       <>
         <span className="sm-file">
           <span className="sm-file-icon">📎</span>
-          <span className="sm-file-name">{m.origFilename ?? '檔案'}</span>
-          <span className="sm-file-size">{formatSize(m.fileSize)}</span>
+          <span className="sm-file-details">
+            <span className="sm-file-name">{m.origFilename ?? '檔案'}</span>
+            <span className="sm-file-size">{formatSize(m.fileSize)}</span>
+          </span>
           <MediaFileActions msgId={id} onError={setFileErr} />
         </span>
+        <SavedFileInfo msgId={id} />
         {fileErr && <span className="chat-file-error" role="alert">{fileErr}</span>}
       </>
     )
@@ -372,6 +409,10 @@ function MessageContent({
 
   const text = recalledMessageText(m)
   const notice = recalledMessageNotice(m)
+  if (m.contentType === 7) {
+    if (m.msgId) return <StickerImage msgId={m.msgId} onOpenLightbox={onOpenLightbox} />
+    return <span className="sm-sticker-missing" role="img" aria-label="貼圖目前無法顯示">貼圖目前無法顯示</span>
+  }
   return (
     <>
       <span style={m.text.length > 0 && m.text.trim().length === 0 ? { whiteSpace: 'pre-wrap' } : undefined}>
@@ -382,23 +423,25 @@ function MessageContent({
   )
 }
 
-function MessageRow({
+const MessageRow = memo(function MessageRow({
   m,
   onOpenLightbox,
+  onPurchase,
   avatarUrl,
   senderOverride
 }: {
   m: RawLineMessage
   onOpenLightbox: (url: string) => void
+  onPurchase?: (packageId: PurchasePackageId, source: HTMLElement) => void
   avatarUrl?: string
   senderOverride?: string
 }): JSX.Element {
   const incoming = m.direction === 'in'
   const sender = senderOverride || m.sender || (incoming ? '對方' : '我')
-  const attachment = Boolean(m.msgId && (m.contentType === 1 || m.contentType === 14))
+  const attachment = Boolean(m.msgId && (m.contentType === 1 || m.contentType === 7 || m.contentType === 14))
   return (
     <li
-      className={`chat-message ${incoming ? 'incoming' : 'outgoing'}`}
+      className={`chat-message ${incoming ? 'incoming' : 'outgoing'}${m.contentType === 1 ? ' chat-message-photo' : ''}${m.contentType === 7 ? ' chat-message-sticker' : ''}`}
       data-avatar-message-id={incoming && m.msgId?.startsWith('i:') ? m.msgId : undefined}
       data-avatar-message-chat-id={incoming && m.msgId?.startsWith('i:') ? m.chatId : undefined}
     >
@@ -408,10 +451,10 @@ function MessageRow({
       <div className="chat-message-content">
         {incoming && <span className="chat-message-sender">{sender}</span>}
         <div className="chat-message-bottom-row">
-          <div className={`chat-message-bubble${attachment ? ' attachment' : ''}${m.contentType === 1 ? ' photo-attachment' : ''}`}>
+          <div className={`chat-message-bubble${attachment ? ' attachment' : ''}${m.contentType === 1 ? ' photo-attachment' : ''}${m.contentType === 7 ? ' sticker-attachment' : ''}`}>
             {m.unsent && <span className="unsent-badge">🚫 已收回</span>}
             <div className="chat-message-body">
-              <MessageContent m={m} onOpenLightbox={onOpenLightbox} />
+              <MessageContent m={m} onOpenLightbox={onOpenLightbox} onPurchase={onPurchase} />
             </div>
           </div>
           <time className="chat-message-time">{messageTimeLabel(m)}</time>
@@ -419,11 +462,12 @@ function MessageRow({
       </div>
     </li>
   )
-}
+})
 
-function PhotoGroupRow({ messages, onOpenLightbox, avatarUrls, displayNames }: {
+const PhotoGroupRow = memo(function PhotoGroupRow({ messages, onOpenLightbox, onPurchase, avatarUrls, displayNames }: {
   messages: RawLineMessage[]
   onOpenLightbox: (url: string) => void
+  onPurchase?: (packageId: PurchasePackageId, source: HTMLElement) => void
   avatarUrls: Record<string, string>
   displayNames: Record<string, string>
 }): JSX.Element {
@@ -431,7 +475,12 @@ function PhotoGroupRow({ messages, onOpenLightbox, avatarUrls, displayNames }: {
   const incoming = first.direction === 'in'
   const sender = displayNames[first.msgId!] || first.sender
   return (
-    <li className={`chat-message ${incoming ? 'incoming' : 'outgoing'} chat-message-photo-group`} data-photo-count={messages.length}>
+    <li
+      className={`chat-message ${incoming ? 'incoming' : 'outgoing'} chat-message-photo-group`}
+      data-photo-count={messages.length}
+      data-avatar-message-id={incoming && first.msgId?.startsWith('i:') ? first.msgId : undefined}
+      data-avatar-message-chat-id={incoming && first.msgId?.startsWith('i:') ? first.chatId : undefined}
+    >
       {incoming && (
         <ZoomableAvatar url={avatarUrls[first.msgId!]} label={sender} name={sender} isGroup={false} className="chat-message-avatar" title={sender} />
       )}
@@ -440,7 +489,7 @@ function PhotoGroupRow({ messages, onOpenLightbox, avatarUrls, displayNames }: {
         <div className="chat-message-bottom-row">
           <div className="chat-message-bubble attachment">
             <div className={`chat-message-photo-grid chat-message-photo-grid-${messages.length === 3 ? 'three' : messages.length === 2 ? 'two' : 'many'}`}>
-              {messages.map((message) => <MediaImage key={message.msgId} msgId={message.msgId!} as="div" onOpenLightbox={onOpenLightbox} />)}
+              {messages.map((message) => <MediaImage key={message.msgId} msgId={message.msgId!} as="div" onOpenLightbox={onOpenLightbox} onPurchase={onPurchase} />)}
             </div>
           </div>
           <time className="chat-message-time">{messageTimeLabel(first)}</time>
@@ -448,7 +497,7 @@ function PhotoGroupRow({ messages, onOpenLightbox, avatarUrls, displayNames }: {
       </div>
     </li>
   )
-}
+})
 
 /** 「LINE 橋接 ▶ 診斷」狀態列。聊天頁把它送到最上面的標題列（HeaderStatusSlot）；沒有標題列插槽時留在原位。 */
 function BridgeStatusBar({ st, status, phaseSource, onRetry }: {
@@ -468,7 +517,8 @@ function BridgeStatusBar({ st, status, phaseSource, onRetry }: {
   )
 }
 
-export function MessageStream(): JSX.Element {
+/** `onPurchase` 沒有＝不顯示任何購買導引（Pro 的 App 不接）；有＝免費版的「進階｜查看方案」入口。 */
+export function MessageStream({ onPurchase }: { onPurchase?: (packageId: PurchasePackageId, source: HTMLElement) => void }): JSX.Element {
   const api = useLineTodoApi()
   const { messages, status, error, retry: retryStream } = useLineStream()
   const { source: phaseSource, phase } = useBackendPhase()
@@ -493,6 +543,9 @@ export function MessageStream(): JSX.Element {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [paneView, setPaneView] = useState<PaneView>('messages')
+  const [chatInsightMenu, setChatInsightMenu] = useState<ChatInsightMenu>(null)
+  const insightMenuRef = useRef<HTMLDivElement>(null)
+  const insightTriggerRefs = useRef<Record<'topics' | 'todos', HTMLButtonElement | null>>({ topics: null, todos: null })
   const [customizedChatIds, setCustomizedChatIds] = useState<ReadonlySet<string>>(new Set())
   const [mobileView, setMobileView] = useState<'list' | 'conversation'>('list')
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
@@ -573,14 +626,14 @@ export function MessageStream(): JSX.Element {
   const loadedMessages = useMemo(() => {
     const byKey = new Map<string, RawLineMessage>()
     for (const message of recentRows) {
-      const raw = fromMessageDTO(message, chatById.get(message.chatId), chatDisplayNames[message.chatId])
+      const raw = fromMessageDTO(message, chatById.get(message.chatId))
       const key = messageKey(raw)
       const previous = byKey.get(key)
       byKey.set(key, previous ? mergeMessageCopies(previous, raw) : raw)
     }
     for (const rows of Object.values(historyByChat)) {
       for (const message of rows) {
-        const raw = fromMessageDTO(message, chatById.get(message.chatId), chatDisplayNames[message.chatId])
+        const raw = fromMessageDTO(message, chatById.get(message.chatId))
         const key = messageKey(raw)
         const previous = byKey.get(key)
         byKey.set(key, previous ? mergeMessageCopies(previous, raw) : raw)
@@ -593,7 +646,7 @@ export function MessageStream(): JSX.Element {
       byKey.set(key, previous ? mergeMessageCopies(previous, message) : message)
     }
     return [...byKey.values()].sort(compareMessages)
-  }, [chatById, chatDisplayNames, historyByChat, messages, recentRows])
+  }, [chatById, historyByChat, messages, recentRows])
 
   const loadedRowsByChat = useMemo(() => {
     const byChat = new Map<string, Map<string, MessageDTO>>()
@@ -630,7 +683,7 @@ export function MessageStream(): JSX.Element {
       if (!entry) {
         entry = {
           chatId: message.chatId,
-          name: displayChatName(message.chat, message.chatId, message.isGroup),
+          name: displayChatName(chatDisplayNames[message.chatId] ?? message.chat, message.chatId, message.isGroup),
           isGroup: message.isGroup,
           latestMessageTs: message.ts,
           latest: null,
@@ -671,8 +724,41 @@ export function MessageStream(): JSX.Element {
 
   const activeConversation = conversations.find((chat) => chat.chatId === selectedChatId) ?? null
   const activeChatId = activeConversation?.chatId ?? null
+  const previousInsightChatId = useRef(activeChatId)
+  useEffect(() => {
+    if (previousInsightChatId.current !== activeChatId) {
+      previousInsightChatId.current = activeChatId
+      setChatInsightMenu(null)
+    }
+  }, [activeChatId])
+
+  useEffect(() => {
+    if (!chatInsightMenu) return undefined
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !insightMenuRef.current?.contains(event.target)) setChatInsightMenu(null)
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setChatInsightMenu(null)
+        insightTriggerRefs.current[chatInsightMenu]?.focus()
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [chatInsightMenu])
+  const conversationIdsKey = conversations.map((chat) => chat.chatId).join('\u0000')
 
   const chatPrompts = api.hostAi?.chatPrompts
+  // 聊天室手動送出：只有 pro 外掛版的 api 有這個控制物件；沒有＝維持停用的輸入列佔位
+  const outbound = api.linejsOutbound
+  const login = api.linejsMedia
+  // Pro 下載原檔：App 只在 api.linejsMedia?.original 存在時掛 provider；沒有＝不出現批次列（作法同上面的 outbound）
+  const originals = useOriginalsStore()
   useEffect(() => {
     if (!chatPrompts || !activeChatId) return
     let cancelled = false
@@ -728,7 +814,7 @@ export function MessageStream(): JSX.Element {
     for (const node of nodes) observer.observe(node)
     publish()
     return () => observer.disconnect()
-  }, [activeChatId, activeAvatarMessageIds, conversations, prefs])
+  }, [activeChatId, activeAvatarMessageIds, conversationIdsKey, prefs])
 
   useEffect(() => {
     const prepare = api.media?.avatarUrls
@@ -1115,7 +1201,8 @@ export function MessageStream(): JSX.Element {
                 </div>
                 <div className="chat-pane-view-toggle" role="group" aria-label="聊天室檢視">
                   <button type="button" className={paneView === 'messages' ? 'selected' : ''} aria-pressed={paneView === 'messages'} onClick={() => setPaneView('messages')}>訊息</button>
-                  <button type="button" className={paneView === 'topicsTodos' ? 'selected' : ''} aria-pressed={paneView === 'topicsTodos'} onClick={() => setPaneView('topicsTodos')}>議題與待辦</button>
+                  <button ref={(node) => { insightTriggerRefs.current.topics = node }} type="button" className={chatInsightMenu === 'topics' ? 'selected' : ''} aria-expanded={chatInsightMenu === 'topics'} aria-controls="chat-insights-overlay" onClick={() => setChatInsightMenu((current) => current === 'topics' ? null : 'topics')}>議題 ▾</button>
+                  <button ref={(node) => { insightTriggerRefs.current.todos = node }} type="button" className={chatInsightMenu === 'todos' ? 'selected' : ''} aria-expanded={chatInsightMenu === 'todos'} aria-controls="chat-insights-overlay" onClick={() => setChatInsightMenu((current) => current === 'todos' ? null : 'todos')}>代辦 ▾</button>
                   {chatPrompts && (
                     <button type="button" className={paneView === 'aiSettings' ? 'selected' : ''} aria-pressed={paneView === 'aiSettings'} onClick={() => setPaneView('aiSettings')}>
                       AI 設定
@@ -1123,23 +1210,11 @@ export function MessageStream(): JSX.Element {
                     </button>
                   )}
                 </div>
+                {/* 「手動發送屬進階功能」：沒有購買導引（Pro）就不出現；有出站控制（已能傳送）也不出現 */}
+                {!outbound && onPurchase && <AdvancedEntry packageId="line" label="發送・進階" description="手動發送訊息屬進階功能｜查看方案" onPurchase={onPurchase} />}
+                {originals && paneView === 'messages' && <ChatOriginalsBar key={activeConversation.chatId} chatId={activeConversation.chatId} messages={activeMessages} />}
               </header>
-              {paneView === 'topicsTodos' ? (
-                <div className="chat-topics-todos-content" data-testid="chat-topics-todos-content" aria-label={`${activeConversation.name}的議題與待辦`}>
-                  <ChatRefreshControl
-                    key={`refresh-${activeConversation.chatId}`}
-                    chatId={activeConversation.chatId}
-                    todoOn={!prefs.todoOff.includes(activeConversation.chatId)}
-                    topicsOn={prefs.topicsOn.includes(activeConversation.chatId)}
-                  />
-                  <GroupTopicsPanel key={`topics-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} embedded />
-                  <ChatTodosPanel
-                    key={`todos-${activeConversation.chatId}`}
-                    chatId={activeConversation.chatId}
-                    chatName={activeConversation.name}
-                  />
-                </div>
-              ) : paneView === 'aiSettings' && chatPrompts ? (
+              {paneView === 'aiSettings' && chatPrompts ? (
                 <ChatPromptPanel
                   key={activeConversation.chatId}
                   chatId={activeConversation.chatId}
@@ -1191,14 +1266,38 @@ export function MessageStream(): JSX.Element {
                           <Fragment key={messageKey(message)}>
                             {day && day !== previousDay && <li className="chat-date-divider"><span>{dayDividerLabel(day)}</span></li>}
                             {group.length > 1
-                              ? <PhotoGroupRow messages={group} onOpenLightbox={setLightboxSrc} avatarUrls={messageAvatarUrls} displayNames={messageDisplayNames} />
-                              : <MessageRow m={message} onOpenLightbox={setLightboxSrc} avatarUrl={message.msgId ? messageAvatarUrls[message.msgId] : undefined} senderOverride={message.msgId ? messageDisplayNames[message.msgId] : undefined} />}
+                              ? <PhotoGroupRow messages={group} onOpenLightbox={setLightboxSrc} onPurchase={onPurchase} avatarUrls={messageAvatarUrls} displayNames={messageDisplayNames} />
+                              : <MessageRow m={message} onPurchase={onPurchase} onOpenLightbox={setLightboxSrc} avatarUrl={message.msgId ? messageAvatarUrls[message.msgId] : undefined} senderOverride={message.msgId ? messageDisplayNames[message.msgId] : undefined} />}
                           </Fragment>
                         )
                       })}
                     </ol>
                   </div>
-                  <DisabledMessageComposer />
+                  {/* pro：有出站控制就是可用的輸入列；沒有（standalone／舊 backend）則同免費版不顯示停用的佔位輸入列 */}
+                  {outbound && <ChatComposer key={activeConversation.chatId} chatId={activeConversation.chatId} chatName={activeConversation.name} isGroup={activeConversation.isGroup} control={outbound} login={login} />}
+                </div>
+              )}
+              {paneView === 'messages' && chatInsightMenu && (
+                <div ref={insightMenuRef} id="chat-insights-overlay" data-testid="chat-insights-overlay" className="chat-insights-overlay" role="region" aria-label={chatInsightMenu === 'topics' ? '聊天室議題' : '聊天室代辦'}>
+                  <div className="chat-insights-overlay-heading">
+                    <h3>{chatInsightMenu === 'topics' ? '議題' : '代辦'}</h3>
+                    <button type="button" className="chat-insights-close" aria-label="關閉" onClick={() => {
+                      const current = chatInsightMenu
+                      setChatInsightMenu(null)
+                      insightTriggerRefs.current[current]?.focus()
+                    }}>×</button>
+                  </div>
+                  <div className="chat-insights-overlay-scroll" key={`${activeConversation.chatId}-${chatInsightMenu}`}>
+                    {chatInsightMenu === 'topics' ? <>
+                      <ChatRefreshControl
+                        key={`refresh-${activeConversation.chatId}`}
+                        chatId={activeConversation.chatId}
+                        todoOn={!prefs.todoOff.includes(activeConversation.chatId)}
+                        topicsOn={prefs.topicsOn.includes(activeConversation.chatId)}
+                      />
+                      <GroupTopicsPanel key={`topics-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} chatIsGroup={activeConversation.isGroup} embedded />
+                    </> : <ChatTodosPanel key={`todos-${activeConversation.chatId}`} chatId={activeConversation.chatId} chatName={activeConversation.name} />}
+                  </div>
                 </div>
               )}
             </>
@@ -1248,28 +1347,31 @@ export function MessageStream(): JSX.Element {
   )
 }
 
-function DisabledMessageComposer(): JSX.Element {
+function AdvancedEntry({ packageId, label, description, onPurchase }: {
+  packageId: PurchasePackageId
+  label: string
+  description: string
+  onPurchase: (packageId: PurchasePackageId, source: HTMLElement) => void
+}): JSX.Element {
+  const tooltipId = useId()
+  const rootRef = useRef<HTMLSpanElement>(null)
+  const tipRef = useRef<HTMLSpanElement>(null)
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState<{ left: number; top: number }>({ left: 8, top: 8 })
+  useLayoutEffect(() => {
+    if (!open || !rootRef.current || !tipRef.current) return
+    const anchor = rootRef.current.getBoundingClientRect()
+    const tip = tipRef.current.getBoundingClientRect()
+    const left = Math.max(8, Math.min(anchor.left + anchor.width / 2 - tip.width / 2, window.innerWidth - tip.width - 8))
+    const top = anchor.top - tip.height - 8 >= 8 ? anchor.top - tip.height - 8 : Math.min(anchor.bottom + 8, window.innerHeight - tip.height - 8)
+    setPosition({ left, top: Math.max(8, top) })
+  }, [open])
   return (
-    <div className="chat-message-composer" role="group" aria-label="訊息輸入區；功能尚未開啟">
-      <div className="chat-composer-actions">
-        <button type="button" className="chat-composer-control" disabled aria-label="附加檔案功能尚未開啟" title="功能尚未開啟">
-          <span aria-hidden="true">＋</span>
-        </button>
-        <button type="button" className="chat-composer-control" disabled aria-label="表情符號功能尚未開啟" title="功能尚未開啟">
-          <span aria-hidden="true">☺</span>
-        </button>
-      </div>
-      <input
-        type="text"
-        className="chat-composer-input"
-        disabled
-        aria-label="訊息輸入功能尚未開啟"
-        placeholder="訊息功能尚未開啟"
-      />
-      <button type="button" className="chat-composer-control chat-composer-send" disabled aria-label="傳送功能尚未開啟" title="功能尚未開啟">
-        <span aria-hidden="true">➤</span>
-      </button>
-      <span className="chat-composer-status">功能尚未開啟</span>
-    </div>
+    <span className="advanced-entry" ref={rootRef} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button type="button" className="advanced-entry-button" aria-label={label} aria-describedby={open ? tooltipId : undefined}
+        onFocus={() => setOpen(true)} onBlur={() => setOpen(false)} onKeyDown={(event) => { if (event.key === 'Escape') { setOpen(false); event.currentTarget.blur() } }}
+        onClick={(event) => onPurchase(packageId, event.currentTarget)}>{label}</button>
+      {open && <span id={tooltipId} ref={tipRef} role="tooltip" className="advanced-entry-tooltip" style={{ left: position.left, top: position.top }}>{description}</span>}
+    </span>
   )
 }

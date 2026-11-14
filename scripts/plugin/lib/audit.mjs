@@ -6,7 +6,16 @@ const sha256 = (data) => crypto.createHash('sha256').update(data).digest('hex')
 
 const SCRIPT_EXT = /\.(?:ps1|psm1|psd1|bat|cmd|vbs|wsf|sh|exe|msi|scr|com|dll|so|dylib)$/i
 const NATIVE_EXT = /\.node$/i
-const PRIVATE_KEY_MARKERS = ['PRIVATE KEY', 'privatePkcs8', 'BEGIN OPENSSH']
+const PRIVATE_KEY_BLOCK = /-----BEGIN ((?:(?:RSA|EC|OPENSSH|DSA|ENCRYPTED) )?PRIVATE KEY)-----[\t\r\n ]+([A-Za-z0-9+/=]{16,}(?:[\t\r\n ]+[A-Za-z0-9+/=]{1,})*)[\t\r\n ]+-----END \1-----/
+
+function containsPrivateKeyMaterial(data) {
+  const text = data.toString('utf8')
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\x2d/gi, '-')
+    .replace(/\\u002d/gi, '-')
+  return PRIVATE_KEY_BLOCK.test(text)
+}
 
 /**
  * @param entries   [{ path, data: Buffer }] every file of the package (including manifest.json / integrity.json / signature.json)
@@ -28,7 +37,7 @@ export function auditPackage(entries, { allowedNative = {}, standalone11Sha256 =
     if (lower.includes('better-sqlite3-multiple-ciphers')) problems.push(`${name}: better-sqlite3-multiple-ciphers in the file name`)
     if (/(^|\/)dev-key[^/]*$/i.test(name) || /\.(?:key|pem)$/i.test(name)) problems.push(`${name}: looks like a key file`)
     if (data.includes(Buffer.from('better-sqlite3-multiple-ciphers'))) problems.push(`${name}: the text "better-sqlite3-multiple-ciphers" appears in the content`)
-    for (const marker of PRIVATE_KEY_MARKERS) if (data.includes(Buffer.from(marker))) problems.push(`${name}: private-key marker "${marker}" appears in the content`)
+    if (containsPrivateKeyMaterial(data)) problems.push(`${name}: private-key material appears in the content`)
     for (const needle of secretNeedles) if (needle.length >= 16 && data.includes(needle)) problems.push(`${name}: the development signing key material appears in the content`)
     if (NATIVE_EXT.test(name)) {
       const digest = sha256(data)

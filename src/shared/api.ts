@@ -1,4 +1,24 @@
 import type { HostAiControl, HostAiSelection } from './hostAi'
+import type { LineJsLoginControl, LineJsOutboundControl } from './linejsOutbound'
+import type { OriginalBatchStartView, OriginalItemView, OriginalStatusView } from './linejsOriginals'
+
+/**
+ * Pro「舊訊息下載原檔」（X6 backend 的 `linejsMedia.original.*`；X7 畫面）。每個方法一次 backend 呼叫，參數是單一 plain object（dispatcher 逐欄驗證）。
+ * `status` 只讀本地（ledger、檔案系統），畫面可以每 1.5 s 輪詢；一次最多 `ORIGINALS_LIMITS.statusMax`（200）個 msgId。
+ */
+export interface LineJsOriginalsControl {
+  request(msgId: string): Promise<OriginalItemView>
+  status(msgIds: string[]): Promise<OriginalStatusView>
+  cancel(msgId: string): Promise<OriginalItemView>
+  /** 最多 `ORIGINALS_LIMITS.batchMax`（50）格進批次，其餘回 truncated；全域同時只有一個批次（另一個進行中 → `batch_active`）。 */
+  batchStart(chatId: string, msgIds: string[]): Promise<OriginalBatchStartView>
+  batchCancel(batchId: string): Promise<{ cancelled: number }>
+}
+
+/** 聊天室「登入 LINE」＋（Pro）下載原檔。`original` 沒有＝畫面不出現任何「下載原檔」按鈕與批次列。 */
+export interface LineJsMediaControl extends LineJsLoginControl {
+  original?: LineJsOriginalsControl
+}
 
 export interface RawLineMessage {
   /** DB 主鍵（main 端由 deriveMsgId 衍生，含 'i:'/'d:' 前綴）；供 linemedia://media/<msgId> 顯圖與 media.open/saveAs。keyMaterial 絕不跨橋。 */
@@ -49,6 +69,9 @@ export interface ChatDTO {
   latestMessageTs?: number | null
 }
 
+/** `media.savedFile` 的畫面形狀：`absPath` 只供顯示與選取複製（宿主沒有開啟／另存能力）。 */
+export interface SavedFileInfoDTO { name: string; bytes: number; mime: string; absPath: string; previewUrl?: string }
+
 /** Renderer-safe results from on-demand avatar lookups; values are host-owned asset URLs. */
 export interface AvatarUrlBatchDTO {
   urls: Record<string, string>
@@ -95,6 +118,8 @@ export interface TodoDTO {
   priority: number
   dueAt: string | null
   sourceMsgIds: string[]
+  /** Earliest available timestamp among the first 100 stored source IDs; null when none are stored. */
+  sourceTriggeredAt?: number | null
   confidence: number
   completionEvidence: string | null
   createdAt: string
@@ -592,6 +617,11 @@ export interface DraftReplyResult {
 
 export interface LineTodoApi {
   hostAi?: HostAiControl
+  profiles?: import('./hostAi').ChatProfilesControl
+  /** 聊天室手動送出（文字／單張圖片／單一檔案）。只有 pro 外掛版提供；沒有＝聊天室輸入列維持停用佔位。 */
+  linejsOutbound?: LineJsOutboundControl
+  /** 聊天室「登入 LINE」按鈕與彈窗用（pro 外掛版）。沒有＝按鈕不出現，只剩文字提示。 */
+  linejsMedia?: LineJsMediaControl
   ping(): Promise<{ ok: boolean; ts: number; version: string }>
   messages: { recent(): Promise<RawLineMessage[]> }
   line: {
@@ -677,6 +707,14 @@ export interface LineTodoApi {
      * (`indexing: true`: the image may well be in the Cache, the index just has not seen it yet — ask again later). `indexing: false` with a null url is "not available / not downloaded yet".
      */
     assetLookup?(msgId: string): Promise<{ url: string | null; indexing: boolean }>
+    /** Plugin-host-only local CT=7 sticker PNG. The backend keeps sticker IDs and LINE paths private. */
+    stickerAssetUrl?(msgId: string): Promise<string | null>
+    /** Plugin-host-only (optional): the saved video of a ct=2 message (Pro keeps it under media-saved). Resolves null when it is not saved yet. */
+    videoAssetUrl?(msgId: string): Promise<string | null>
+    /** Plugin-host-only (optional): the saved-file record of a ct=14 message; null when there is none. `previewUrl` only for image, video and audio. */
+    savedFile?(msgId: string): Promise<SavedFileInfoDTO | null>
+    /** Plugin-host-only (optional, M4): drop this message's cached URLs and its 60 s "not saved yet" misses, so the next lookup asks the backend again. Synchronous. */
+    forget?(msgId: string): void
     /** Plugin-host-only, on-demand chat avatars. Source locators and LINE MIDs stay in the backend. */
     avatarUrls?(chatIds: string[], options?: AvatarRequestOptions): Promise<AvatarUrlBatchDTO>
     /** Plugin-host-only, on-demand sender avatars for the given imported message ids. */
@@ -724,6 +762,9 @@ export interface GroupTopicsOverviewDTO {
   topicCount?: number
   /** true：為控制回應大小，topics 內的標題、摘要或證據 id 已縮短；完整內容請進單群詳情。 */
   compacted?: boolean
+  /** 為遵守總覽回應預算而整群移除的數量（全域數字附於一筆保留列）。 */
+  omittedGroupCount?: number
+  omittedTopicCount?: number
   pendingCount: number
   backlogCount: number
 }

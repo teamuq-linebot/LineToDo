@@ -27,6 +27,8 @@ export const BACKEND_METHOD_GROUPS = Object.freeze([
   'settings',
   'app',
   'media',
+  'linejsMedia',
+  'linejsOutbound',
   'backend',
   'review',
   'tasks',

@@ -1,5 +1,15 @@
 import type { PluginBackendAiApiV1, PluginBackendAiCompleteInputV1 } from '@teamuq/plugin-sdk'
 import type { ChatPromptControl, PromptControl } from './promptSettings'
+import type { ChatProfileConfig, ChatProfileOverride, ChatProfileSnapshot, ChatProfileRuleKind, ChatProfileRuleSuggestion } from './chatProfiles'
+
+export interface ChatProfilesControl {
+  getConfig(): Promise<ChatProfileConfig>
+  saveConfig(config: ChatProfileConfig, expectedRevision: string): Promise<ChatProfileConfig>
+  getChat(chatId: string): Promise<ChatProfileOverride | null>
+  saveChat(chatId: string, value: Omit<ChatProfileOverride, 'revision'|'resetLegacyTodo'> & { resetLegacyTodo?: boolean }, expectedRevision: string): Promise<ChatProfileOverride>
+  resolve(chatId: string): Promise<ChatProfileSnapshot>
+  suggestRule(chatId: string, kind: ChatProfileRuleKind, goal: string, expectedProfileRevision: string, options?: { draftRule?: string; natureId?: string }): Promise<ChatProfileRuleSuggestion>
+}
 
 /** TeamUQ 的 AI 選項（backend 的 `context.host.ai.getOptions()`；設定頁經 backend 的 `ai.options` 取得）。 */
 export type HostAiOptions = Awaited<ReturnType<PluginBackendAiApiV1['getOptions']>>
@@ -27,6 +37,7 @@ export interface HostAiControl {
   prompts: PromptControl
   /** 逐對話的 prompt／名字覆寫；舊版 backend 或測試替身沒有時缺席，UI 隱藏對應入口。 */
   chatPrompts?: ChatPromptControl
+  profiles?: ChatProfilesControl
   getOptions(): Promise<HostAiOptions>
   getSelection(): Promise<HostAiSelection>
   setSelection(selection: HostAiSelection): Promise<HostAiSelection>

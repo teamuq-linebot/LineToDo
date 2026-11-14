@@ -29,6 +29,7 @@ import { bootBoard } from '../../src/plugin/ui/board.ts'
 import { describeBackendError } from '../../src/renderer/lib/backendError.ts'
 import { RESOURCES } from './lib/manifest.mjs'
 import { backendMethodFor } from '../../src/shared/pluginWire.ts'
+import { LINEJS_ORIGINALS_PATHS } from '../../src/shared/linejsOriginals.ts'
 
 // ───────────── the mock host ─────────────
 
@@ -42,6 +43,19 @@ const isJson = (value, depth = 0) => {
   return false // undefined, function, bigint, symbol
 }
 const bytes = (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength
+
+test('adapter forwards optional visible draft and nature while preserving the legacy four argument wire shape', async () => {
+  const calls = []
+  const api = createPluginLineTodoApi({ host: { backend: { call: async (_method, params) => { calls.push(params); return { ok: true, value: { kind: 'todo' } } } }, assets: { url: String } }, events: { enabled: false }, busyRetry: { attempts: 0 } })
+  try {
+    await api.hostAi.profiles.suggestRule('synthetic-chat', 'todo', 'goal', 'revision', { draftRule: 'visible draft', natureId: 'time_schedule' })
+    await api.hostAi.profiles.suggestRule('synthetic-chat', 'topic', 'goal', 'revision')
+    assert.deepEqual(calls.map(call => call.args[0]), [
+      { chatId: 'synthetic-chat', kind: 'todo', goal: 'goal', expectedProfileRevision: 'revision', draftRule: 'visible draft', natureId: 'time_schedule' },
+      { chatId: 'synthetic-chat', kind: 'topic', goal: 'goal', expectedProfileRevision: 'revision' }
+    ])
+  } finally { api.dispose() }
+})
 
 /**
  * `backend`: anything with `call(method, params)`; swap it with `.target` to simulate a restart.
@@ -732,6 +746,27 @@ test('media: assetUrl() asks the backend to decrypt into dataDir and returns the
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
+test('sticker: optional asset URL uses the private backend route and host assets.url; failure remains a readable UI fallback', async () => {
+  const fake = scriptedHost({
+    'media.prepareSticker': (args, n) => {
+      if (n === 1) {
+        assert.deepEqual(args, ['i:639965811251347972'])
+        return { value: { path: `sticker-cache/${'b'.repeat(64)}.png` } }
+      }
+      return { value: null }
+    }
+  })
+  const api = apiFor(fake)
+  try {
+    const url = await api.media.stickerAssetUrl('i:639965811251347972')
+    assert.equal(url, `tuqplugin://tuqdev.line-todo/data/sticker-cache/${'b'.repeat(64)}.png`)
+    assert.equal(await api.media.stickerAssetUrl('i:639965811251347972'), url)
+    assert.equal(fake.count('media.prepareSticker'), 1, 'successful opaque URL is cached by message ID in the plugin adapter')
+    assert.equal(await api.media.stickerAssetUrl('i:missing'), null)
+    assert.deepEqual(fake.state.calls.find((call) => call.path === 'media.prepareSticker'), { path: 'media.prepareSticker', at: fake.state.calls[0].at })
+  } finally { api.dispose() }
+})
+
 test('review: when the AI cannot work reviewLastDays answers "not connected" at once with the reason (it would otherwise wait 15 minutes for results nobody delivers); otherwise it rides the job channel while the backend worker answers', async () => {
   await withBackend({ setup: (ai) => ai.control.set({ providerState: 'not_logged_in' }) }, async ({ api, mock }) => {
     const t0 = Date.now()
@@ -800,9 +835,9 @@ function scriptedHost(script = {}) {
 const TIGHT = { coreMs: 60, pingMs: 200, bulkMs: 80, longMs: 400 }
 const apiFor = (fake, options = {}) => createPluginLineTodoApi({ host: fake.host, events: { ...FAST_EVENTS, enabled: false }, busyRetry: { attempts: 0 }, ...options })
 
-test('WP-C lanes: ping / status / db / messages / settings / pipeline / groupTopics / job / result are core; media.prepare, media.avatar.*, ai.status, ai.options are bulk; events.* are events (events.close stays core)', () => {
+test('WP-C lanes: ping / status / db / messages / settings / pipeline / groupTopics / job / result are core; media.prepare, media.prepareSticker, media.avatar.*, ai.status, ai.options are bulk; events.* are events (events.close stays core)', () => {
   for (const path of ['ping', 'line.status', 'db.chats.list', 'db.messages.list', 'db.todos.list', 'messages.recent', 'settings.get', 'pipeline.status', 'groupTopics.list', 'result.chunk', 'job.poll', 'backend.info', 'events.close']) assert.equal(laneFor(path), 'core', path)
-  for (const path of ['media.prepare', 'media.avatar.prepareChats', 'media.avatar.prepareMessages', 'ai.status', 'ai.options']) assert.equal(laneFor(path), 'bulk', path)
+  for (const path of ['media.prepare', 'media.prepareVideo', 'media.savedFile', 'media.prepareSticker', 'media.avatar.prepareChats', 'media.avatar.prepareMessages', 'ai.status', 'ai.options']) assert.equal(laneFor(path), 'bulk', path)
   for (const path of ['events.open', 'events.pull']) assert.equal(laneFor(path), 'events', path)
 })
 
@@ -1462,4 +1497,278 @@ test('avatar calls: abort drops a batch that waits for a background slot (never 
     assert.deepEqual(g.avatarCalls().map((c) => c.args[1]), [['i:1'], ['i:3']], 'i:2 never reached the host')
     assert.deepEqual(Object.keys((await api.media.messageAvatarUrls('c1', ['i:2'])).urls), ['i:2'], 'an aborted id is requested again later')
   } finally { api.dispose() }
+})
+
+// ───────────── fix2 (2026-11-13): the login status lane and late answers (pluginTransport.ts) ─────────────
+
+/** A host that holds every call except linejsMedia.status until `release()`; it counts the calls in flight per kind at the host. */
+function loginLaneHost({ statusDelayMs = 0, statusValue = { available: true, login: { status: 'authenticated' } } } = {}) {
+  const held = []
+  const state = { calls: [], other: 0, peakOther: 0, status: 0, peakStatus: 0 }
+  const host = {
+    backend: {
+      async call(_method, params) {
+        const path = params.path
+        state.calls.push({ path, at: Date.now() })
+        const isStatus = path === 'linejsMedia.status'
+        if (isStatus) { state.status += 1; state.peakStatus = Math.max(state.peakStatus, state.status) } else { state.other += 1; state.peakOther = Math.max(state.peakOther, state.other) }
+        try {
+          if (isStatus) {
+            if (statusDelayMs) await sleep(statusDelayMs)
+            return { ok: true, value: statusValue }
+          }
+          await new Promise((resolve) => held.push(resolve))
+          return { ok: true, value: path === 'events.pull' ? { events: [], seq: 0, gap: false, closed: false } : [] }
+        } finally { if (isStatus) state.status -= 1; else state.other -= 1 }
+      }
+    },
+    assets: { url: (path) => `tuqplugin://tuqdev.line-todo/data/${path}` }
+  }
+  return { host, state, release: () => { for (const resolve of held.splice(0)) resolve() } }
+}
+
+test('fix2 login lane: with every shared slot held (the events long poll + two hung core reads, a third read queued), linejsMedia.status still reaches the host at once; the shared budget of 3 is unchanged', async () => {
+  const fake = loginLaneHost()
+  const api = createPluginLineTodoApi({ host: fake.host, events: { ...FAST_EVENTS, enabled: false }, busyRetry: { attempts: 0 }, timeouts: { coreMs: 5000, pingMs: 5000, longMs: 5000, bulkMs: 5000 } })
+  try {
+    const background = [
+      api.plugin.invoke('events.pull', [{ sessionId: 's', afterSeq: 0, waitMs: 0 }]),
+      api.db.chats.list(), api.db.chats.list(), api.db.chats.list()
+    ].map((p) => p.catch(() => undefined))
+    await until(() => fake.state.other === 3, { message: 'the three shared slots are held at the host' })
+    assert.equal(api.plugin.transportStats().lanes.core.waiting, 1, 'the third core read waits for a shared slot')
+    const t0 = Date.now()
+    const status = await api.linejsMedia.status()
+    const waited = Date.now() - t0
+    assert.equal(status.login.status, 'authenticated')
+    assert.ok(waited < 1_000, `linejsMedia.status was sent and answered in ${waited} ms although every shared slot was held (coreMs 5,000: queued behind them it waits until one of them is given up)`)
+    assert.equal(fake.state.peakStatus, 1)
+    assert.equal(fake.state.peakOther, 3, 'the other lanes never went beyond the shared budget of 3')
+    assert.equal(api.plugin.transportStats().lanes.core.waiting, 1, 'the login lane did not hand a slot to the queued core read')
+    // drain: the queued core read starts (and is held) when a slot frees, so release until nothing is left
+    const drained = () => api.plugin.transportStats().active === 0 && api.plugin.transportStats().waiting === 0
+    for (let i = 0; i < 40 && !drained(); i += 1) { fake.release(); await sleep(15) }
+    assert.ok(drained(), 'everything drained')
+    await Promise.all(background)
+    assert.ok(fake.state.peakOther <= 3, `peak shared ${fake.state.peakOther}`)
+  } finally { fake.release(); api.dispose() }
+})
+
+test('fix2 late answer: a linejsMedia.status the view gave up on (view_call_timeout) still hands the backend answer that arrives later to onLate; failures and answers in time never call it', async () => {
+  const late = []
+  const slow = loginLaneHost({ statusDelayMs: 150 })
+  const api = createPluginLineTodoApi({ host: slow.host, events: { ...FAST_EVENTS, enabled: false }, busyRetry: { attempts: 0 }, timeouts: { ...TIGHT } })
+  try {
+    await assert.rejects(api.linejsMedia.status({ onLate: (value) => late.push(value) }), (e) => e instanceof PluginApiError && e.code === 'view_call_timeout' && e.path === 'linejsMedia.status')
+    assert.deepEqual(late, [], 'nothing late yet: the backend has not answered')
+    await until(() => late.length === 1, { timeout: 2_000, message: 'the late answer reached onLate' })
+    assert.deepEqual(late[0], { available: true, login: { status: 'authenticated' } })
+  } finally { api.dispose() }
+
+  const quick = loginLaneHost()
+  const api2 = createPluginLineTodoApi({ host: quick.host, events: { ...FAST_EVENTS, enabled: false }, busyRetry: { attempts: 0 }, timeouts: { ...TIGHT } })
+  try {
+    const value = await api2.linejsMedia.status({ onLate: (v) => late.push(['in-time', v]) })
+    assert.equal(value.login.status, 'authenticated')
+    await sleep(50)
+    assert.equal(late.length, 1, 'an answer in time is returned, never handed to onLate as well')
+  } finally { api2.dispose() }
+
+  const failing = { backend: { call: async () => { await sleep(150); throw new Error('plugin_backend_crashed') } }, assets: { url: String } }
+  const api3 = createPluginLineTodoApi({ host: failing, events: { ...FAST_EVENTS, enabled: false }, busyRetry: { attempts: 0 }, timeouts: { ...TIGHT } })
+  try {
+    await assert.rejects(api3.linejsMedia.status({ onLate: (v) => late.push(['failure', v]) }), (e) => e.code === 'view_call_timeout')
+    await sleep(250)
+    assert.equal(late.length, 1, 'a late failure is not an answer')
+  } finally { api3.dispose() }
+})
+
+test('M4 media.forget (adapter): drops one message\'s cached URL, video miss and file miss; the other messages keep theirs', async () => {
+  const calls = []
+  const api = createPluginLineTodoApi({
+    host: {
+      backend: { call: async (_method, params) => {
+        const id = params.args[0]
+        calls.push(`${params.path}:${id}`)
+        if (params.path === 'media.prepare') return { ok: true, value: { path: `media-cache/${id.replace(':', '-')}.png`, mime: 'image/png', size: 1, cached: false } }
+        if (params.path === 'media.prepareVideo') return { ok: false, code: 'not_cached', message: 'not saved yet' }
+        if (params.path === 'media.savedFile') return { ok: false, code: 'not_saved', message: 'not saved yet' }
+        return { ok: false, code: 'path_unknown', message: params.path }
+      } },
+      assets: { url: (path) => `tuqplugin://t/${path}` }
+    },
+    events: { enabled: false },
+    busyRetry: { attempts: 0 }
+  })
+  try {
+    assert.equal(await api.media.assetUrl('i:m1'), 'tuqplugin://t/media-cache/i-m1.png')
+    assert.equal(await api.media.assetUrl('i:m1'), 'tuqplugin://t/media-cache/i-m1.png')
+    assert.equal(await api.media.videoAssetUrl('i:v1'), null)
+    assert.equal(await api.media.videoAssetUrl('i:v2'), null)
+    assert.equal(await api.media.savedFile('i:f1'), null)
+    assert.equal(await api.media.savedFile('i:f2'), null)
+    assert.deepEqual(calls, ['media.prepare:i:m1', 'media.prepareVideo:i:v1', 'media.prepareVideo:i:v2', 'media.savedFile:i:f1', 'media.savedFile:i:f2'], 'the repeat of i:m1 and the misses are answered from the caches')
+
+    api.media.forget('i:m1')
+    api.media.forget('i:v1')
+    api.media.forget('i:f1')
+    assert.equal(await api.media.assetUrl('i:m1'), 'tuqplugin://t/media-cache/i-m1.png')
+    assert.equal(await api.media.videoAssetUrl('i:v1'), null)
+    assert.equal(await api.media.savedFile('i:f1'), null)
+    assert.equal(await api.media.videoAssetUrl('i:v2'), null)
+    assert.equal(await api.media.savedFile('i:f2'), null)
+    assert.deepEqual(calls.slice(5), ['media.prepare:i:m1', 'media.prepareVideo:i:v1', 'media.savedFile:i:f1'], 'the forgotten message is asked again; the other message stays cached')
+  } finally { api.dispose() }
+})
+
+test('M4 media.forget (adapter): a cached video URL is dropped too, so the next videoAssetUrl asks prepareVideo again', async () => {
+  const calls = []
+  const api = createPluginLineTodoApi({
+    host: {
+      backend: { call: async (_method, params) => {
+        calls.push(`${params.path}:${params.args[0]}`)
+        return { ok: true, value: { path: `media-saved/v${calls.length}.mp4` } }
+      } },
+      assets: { url: (path) => `tuqplugin://t/${path}` }
+    },
+    events: { enabled: false },
+    busyRetry: { attempts: 0 }
+  })
+  try {
+    assert.equal(await api.media.videoAssetUrl('i:v1'), 'tuqplugin://t/media-saved/v1.mp4')
+    assert.equal(await api.media.videoAssetUrl('i:v1'), 'tuqplugin://t/media-saved/v1.mp4')
+    assert.equal(calls.length, 1, 'the second lookup is answered from the URL cache')
+    api.media.forget('i:v1')
+    assert.equal(await api.media.videoAssetUrl('i:v1'), 'tuqplugin://t/media-saved/v2.mp4')
+    assert.deepEqual(calls, ['media.prepareVideo:i:v1', 'media.prepareVideo:i:v1'], 'after forget the video URL is asked again')
+  } finally { api.dispose() }
+})
+
+// M4 forget race: a lookup that is still in flight when media.forget runs must not write its (old) answer into any cache,
+// otherwise the provider's retry right after forget would be answered from that stale entry instead of asking the backend.
+/** an adapter whose backend answers only when the test says so; `calls` lists `path:msgId` in order */
+function heldBackendApi() {
+  const calls = []
+  const pending = []
+  const api = createPluginLineTodoApi({
+    host: {
+      backend: { call: (_method, params) => new Promise((resolve) => { calls.push(`${params.path}:${params.args[0]}`); pending.push(resolve) }) },
+      assets: { url: (path) => `tuqplugin://t/${path}` }
+    },
+    events: { enabled: false },
+    busyRetry: { attempts: 0 }
+  })
+  const answer = async (envelope) => {
+    await until(() => pending.length > 0, { timeout: 10_000, step: 2, message: 'a backend call to answer' })
+    pending.shift()(envelope)
+  }
+  return { api, calls, answer }
+}
+const M4_RACES = [
+  { kind: 'video miss', path: 'media.prepareVideo', lookup: (api, id) => api.media.videoAssetUrl(id), stale: { ok: false, code: 'not_cached', message: 'not saved yet' }, staleResult: null,
+    fresh: { ok: true, value: { path: 'media-saved/new.mp4' } }, freshResult: 'tuqplugin://t/media-saved/new.mp4' },
+  { kind: 'video URL', path: 'media.prepareVideo', lookup: (api, id) => api.media.videoAssetUrl(id), stale: { ok: true, value: { path: 'media-saved/old.mp4' } }, staleResult: 'tuqplugin://t/media-saved/old.mp4',
+    fresh: { ok: true, value: { path: 'media-saved/new.mp4' } }, freshResult: 'tuqplugin://t/media-saved/new.mp4' },
+  { kind: 'file miss', path: 'media.savedFile', lookup: (api, id) => api.media.savedFile(id), stale: { ok: false, code: 'not_saved', message: 'not saved yet' }, staleResult: null,
+    fresh: { ok: true, value: { name: 'a.pdf', bytes: 1, mime: 'application/pdf', absPath: 'C:/x/a.pdf' } }, freshResult: { name: 'a.pdf', bytes: 1, mime: 'application/pdf', absPath: 'C:/x/a.pdf' } },
+  { kind: 'image URL', path: 'media.prepare', lookup: (api, id) => api.media.assetUrl(id), stale: { ok: true, value: { path: 'media-cache/old.png', mime: 'image/png', size: 1, cached: false } }, staleResult: 'tuqplugin://t/media-cache/old.png',
+    fresh: { ok: true, value: { path: 'media-cache/new.png', mime: 'image/png', size: 1, cached: false } }, freshResult: 'tuqplugin://t/media-cache/new.png' }
+]
+
+for (const r of M4_RACES) {
+  test(`M4 media.forget race (adapter, ${r.kind}): an answer that lands after forget is returned to its caller but not cached; the retry asks the backend again`, async () => {
+    const { api, calls, answer } = heldBackendApi()
+    try {
+      const first = r.lookup(api, 'i:x1') // sent before the save finished
+      await until(() => calls.length === 1, { timeout: 10_000, step: 2, message: `${r.kind}: the first call` })
+      api.media.forget('i:x1') // provider: the save finished
+      await answer(r.stale) // the old answer lands after forget
+      assert.deepEqual(await first, r.staleResult, `${r.kind}: the first caller still gets its own answer`)
+      const retry = r.lookup(api, 'i:x1') // provider: retry
+      await answer(r.fresh)
+      assert.deepEqual(await retry, r.freshResult, `${r.kind}: the retry gets the new answer`)
+      assert.deepEqual(calls, [`${r.path}:i:x1`, `${r.path}:i:x1`], `${r.kind}: the retry after forget asked the backend again`)
+    } finally { api.dispose() }
+  })
+}
+
+test('M4 media.forget race (adapter): forget only stops the in-flight lookups of that message; a lookup with no forget in between is cached as before', async () => {
+  const { api, calls, answer } = heldBackendApi()
+  try {
+    // media lookups share one bulk slot: i:v1 is sent, i:v2 waits behind it; both are in flight when i:v1 is forgotten
+    const raced = api.media.videoAssetUrl('i:v1')
+    const other = api.media.videoAssetUrl('i:v2')
+    await until(() => calls.length === 1, { timeout: 10_000, step: 2, message: 'the i:v1 call' })
+    api.media.forget('i:v1')
+    await answer({ ok: false, code: 'not_cached', message: 'not saved yet' }) // i:v1 (stale)
+    await answer({ ok: false, code: 'not_cached', message: 'not saved yet' }) // i:v2
+    assert.equal(await other, null)
+    assert.equal(await raced, null)
+    const otherAgain = api.media.videoAssetUrl('i:v2')
+    await sleep(20)
+    assert.equal(calls.length, 2, 'i:v2 is answered from its cached miss, without a backend call')
+    assert.equal(await otherAgain, null)
+    const racedAgain = api.media.videoAssetUrl('i:v1')
+    await answer({ ok: true, value: { path: 'media-saved/v1.mp4' } })
+    assert.equal(await racedAgain, 'tuqplugin://t/media-saved/v1.mp4')
+    assert.deepEqual(calls, ['media.prepareVideo:i:v1', 'media.prepareVideo:i:v2', 'media.prepareVideo:i:v1'])
+  } finally { api.dispose() }
+})
+
+test('M4 media.forget race (adapter): when the forget record of a message is evicted (more than 4000 other messages forgotten), its in-flight answer still is not cached', async () => {
+  const { api, calls, answer } = heldBackendApi()
+  try {
+    const first = api.media.savedFile('i:f1')
+    await until(() => calls.length === 1, { timeout: 10_000, step: 2, message: 'the first call' })
+    api.media.forget('i:f1')
+    for (let i = 0; i < 4001; i += 1) api.media.forget(`i:other${i}`) // pushes i:f1 out of the bounded forget record
+    await answer({ ok: false, code: 'not_saved', message: 'not saved yet' })
+    assert.equal(await first, null)
+    const retry = api.media.savedFile('i:f1')
+    await answer({ ok: true, value: { name: 'a.pdf', bytes: 1, mime: 'application/pdf', absPath: 'C:/x/a.pdf' } })
+    assert.equal((await retry)?.name, 'a.pdf')
+    assert.deepEqual(calls, ['media.savedFile:i:f1', 'media.savedFile:i:f1'], 'the retry asked the backend again')
+  } finally { api.dispose() }
+})
+
+// ───────────── X7 linejsMedia.original.*（Pro 下載原檔的 adapter 方法；後端是真的 Dispatcher ＋假的 X6 服務）─────────────
+
+test('X7 linejsMedia.original.* (adapter): each method sends its path on the linejsMedia method with one plain object the real Dispatcher accepts; the paths are exactly LINEJS_ORIGINALS_PATHS and all go on the core lane', async () => {
+  const hub = new EventHub()
+  const seen = []
+  const service = {
+    request: async (msgId) => { seen.push(['request', msgId]); return { msgId, state: 'queued' } },
+    status: async (msgIds) => { seen.push(['status', msgIds]); return { items: msgIds.map((msgId) => ({ msgId, state: 'idle' })), batch: null, paused: null } },
+    cancel: async (msgId) => { seen.push(['cancel', msgId]); return { msgId, state: 'idle' } },
+    batchStart: async (chatId, msgIds) => { seen.push(['batchStart', chatId, msgIds]); return { batchId: 'b1', accepted: msgIds, skipped: [], truncated: 0 } },
+    batchCancel: async (batchId) => { seen.push(['batchCancel', batchId]); return { cancelled: 2 } }
+  }
+  const dispatcher = new Dispatcher({ getApi: () => ({}), hub, queue: {}, info: () => ({}), linejsOriginals: service })
+  const none = new Dispatcher({ getApi: () => ({}), hub, queue: {}, info: () => ({}) })
+  const wire = []
+  const hostFor = (target) => ({ backend: { call: async (method, params) => { wire.push({ method, path: params.path, args: params.args }); return target.call(method, params) } }, assets: { url: String } })
+  const api = createPluginLineTodoApi({ host: hostFor(dispatcher), events: { enabled: false }, busyRetry: { attempts: 0 } })
+  const off = createPluginLineTodoApi({ host: hostFor(none), events: { enabled: false }, busyRetry: { attempts: 0 } })
+  try {
+    const original = api.linejsMedia.original
+    assert.deepEqual(await original.request('i:1'), { msgId: 'i:1', state: 'queued' })
+    assert.deepEqual(await original.status(['i:1', 'i:2']), { items: [{ msgId: 'i:1', state: 'idle' }, { msgId: 'i:2', state: 'idle' }], batch: null, paused: null })
+    assert.deepEqual(await original.cancel('i:1'), { msgId: 'i:1', state: 'idle' })
+    assert.deepEqual(await original.batchStart('c1', ['i:1', 'i:2']), { batchId: 'b1', accepted: ['i:1', 'i:2'], skipped: [], truncated: 0 })
+    assert.deepEqual(await original.batchCancel('b1'), { cancelled: 2 })
+    assert.deepEqual(seen, [['request', 'i:1'], ['status', ['i:1', 'i:2']], ['cancel', 'i:1'], ['batchStart', 'c1', ['i:1', 'i:2']], ['batchCancel', 'b1']], 'the service got exactly the values the view passed')
+    assert.deepEqual(wire.map((w) => w.path), [...LINEJS_ORIGINALS_PATHS], 'one call per method, the X6 paths in order')
+    for (const w of wire) {
+      assert.equal(w.method, 'linejsMedia', `${w.path}: the linejsMedia method group (no new backendMethods)`)
+      assert.equal(backendMethodFor(w.path), 'linejsMedia')
+      assert.equal(w.args.length, 1, `${w.path}: one argument`)
+      assert.equal(Object.getPrototypeOf(w.args[0]), Object.prototype, `${w.path}: a plain object`)
+      assert.equal(laneFor(w.path), 'core', `${w.path}: core lane`)
+    }
+    // 200 msgIds is the most one status call may carry (the store never sends more); 201 is refused by the dispatcher
+    await original.status(Array.from({ length: 200 }, (_, i) => `i:${i}`))
+    await assert.rejects(original.status(Array.from({ length: 201 }, (_, i) => `i:${i}`)), (e) => e instanceof PluginApiError && e.code === 'invalid_args')
+    // no download service in the backend: the view gets linejs_originals_unavailable (the cells then show no button)
+    await assert.rejects(off.linejsMedia.original.status(['i:1']), (e) => e instanceof PluginApiError && e.code === 'linejs_originals_unavailable')
+  } finally { api.dispose(); off.dispose(); dispatcher.dispose(); none.dispose(); hub.dispose() }
 })

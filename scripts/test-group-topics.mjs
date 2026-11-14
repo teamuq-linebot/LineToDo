@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import NativeDatabase from 'better-sqlite3-plugin'
 import test from 'node:test'
 import { SCHEMA_DDL } from '../src/main/db/schema.ts'
-import { createGroupTopicsService, GROUP_TOPICS_OVERVIEW_BYTE_LIMIT, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT } from '../src/main/features/groupTopics/service.ts'
+import { createGroupTopicsService, fitOverviewToBudget, GROUP_TOPICS_OVERVIEW_BYTE_LIMIT, GROUP_TOPICS_OVERVIEW_TOPIC_LIMIT } from '../src/main/features/groupTopics/service.ts'
 import { ensureGroupTopicsSchema } from '../src/main/features/groupTopics/repository.ts'
 import { createTopicBackground } from '../src/main/features/groupTopics/background.ts'
 import { ensureChatTodoPrefsSchema, setTodoExtractEnabled } from '../src/main/db/chatTodoPrefs.repo.ts'
@@ -14,7 +14,7 @@ import { buildTopicSave, completedInputExists, countPendingMessages, GROUP_TOPIC
 import { COMBINED_BUNDLE_ENABLED, COMBINED_JSON_SCHEMA, COMBINED_PROMPT_HASH, COMBINED_PROMPT_VERSION, COMBINED_SCHEMA_HASH, COMBINED_SCHEMA_VERSION, COMBINED_TOPIC_SECTION, GROUP_TOPICS_BUNDLE_ENABLED, GROUP_TOPICS_JSON_SCHEMA, GROUP_TOPICS_PROMPT, GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_PROMPT_VERSION, GROUP_TOPICS_SCHEMA_HASH, GROUP_TOPICS_SCHEMA_VERSION } from '../src/main/features/groupTopics/prompts/bundle.ts'
 import { makeHttpProvider } from '../src/main/llm/provider/httpOpenAi.ts'
 import { LlmProviderError } from '../src/main/llm/provider/types.ts'
-import { loadGroupTopicsOverview } from '../src/renderer/features/groupTopics/groupTopicsOverview.ts'
+import { loadGroupTopicsOverview, overviewOmissionNotice, overviewToEntries } from '../src/renderer/features/groupTopics/groupTopicsOverview.ts'
 import { buildTopicRows, filterTopicRows, formatTopicTime, sortTopicRows } from '../src/renderer/features/groupTopics/topicRows.ts'
 
 function dbFixture(filename = ':memory:') {
@@ -95,6 +95,23 @@ test('group topic analysis is opt-in, chat-local, fail-closed, and never writes 
   db.close()
 })
 
+test('standalone provider and additional-payload callback receive only deep-redacted content', async () => {
+  const db=dbFixture()
+  db.prepare("UPDATE messages SET text=? WHERE msg_id='a1'").run('Authorization: Bearer synthetic-standalone-canary; Project Orion schedule')
+  const service=createGroupTopicsService(db,{resolveProfile:()=>({topic:{instruction:'Keep API-key=synthetic-profile-canary hidden',source:'default'},revision:'rev-canary'})})
+  const provider={kind:'http',complete:async(req)=>{
+    assert.equal(req.user.includes('synthetic-standalone-canary'),false)
+    assert.equal(req.system.includes('synthetic-profile-canary'),false)
+    assert.match(req.user,/Project Orion schedule/)
+    assert.equal(req.onAdditionalUserPayload(JSON.stringify({repair:'refresh_token=synthetic-callback-canary'})),true)
+    return {text:JSON.stringify(withIdentityDecisions(analysisA,req.user)),meta:{provider:'http',model:'mock',durationMs:0}}
+  },userPayloadLimit:()=>7500}
+  service.enable('group-a',true)
+  const result=await service.analyze('group-a',()=>provider)
+  assert.equal(result.ok,true)
+  db.close()
+})
+
 test('direct chat topics are opt-in, stay chat-local, retain todo references, and never enter group candidates', async () => {
   const db=dbFixture(); const service=createGroupTopicsService(db)
   const directResult={topics:[{ref:'direct-orion',title:'Project Orion in a private chat',summary:'A private discussion about the Orion launch.'}],assignments:[
@@ -145,6 +162,26 @@ test('direct chat topics are opt-in, stay chat-local, retain todo references, an
   assert.deepEqual(service.list('missing-chat'),{ok:false,topics:[]})
   assert.equal(service.pendingCount('missing-chat'),0)
   assert.deepEqual(await service.analyze('missing-chat',()=>{throw new Error('missing chat must not resolve a provider')}),{ok:false,reason:'unsupported_chat'})
+  db.close()
+})
+
+test('labeled summaries over the former 500-char ceiling round-trip through analysis/storage, and legacy summaries remain readable', async () => {
+  const db = dbFixture()
+  const service = createGroupTopicsService(db)
+  service.enable('group-a', true)
+  const summary = ['背景：'.concat('場地討論'.repeat(220)), '討論重點：交通與容量', '共識／結論：未定', '待釐清：預算', '演進：尚無新進展'].join('\n')
+  assert.ok(summary.length > 500 && summary.length <= 2000)
+  const analysis = {
+    topics:[{ref:'meeting',title:'活動場地',summary}],
+    assignments:[
+      {msgId:'a1',topicRef:'meeting',relation:'about',confidence:.9,relevance:'unknown',relevanceEvidenceMsgIds:[]},
+      {msgId:'a2',topicRef:'meeting',relation:'about',confidence:.8,relevance:'unknown',relevanceEvidenceMsgIds:[]}
+    ]
+  }
+  assert.deepEqual(await service.analyze('group-a',()=>fakeProvider(analysis)),{ok:true,count:1,analyzedCount:2})
+  assert.equal(service.list('group-a').topics[0].summary,summary)
+  db.prepare("UPDATE discussion_topics SET summary='舊版純摘要仍可讀' WHERE chat_id='group-a'").run()
+  assert.equal(service.list('group-a').topics[0].summary,'舊版純摘要仍可讀')
   db.close()
 })
 
@@ -208,12 +245,19 @@ test('authorized message reclassification atomically replaces old evidence and e
   db.close()
 })
 
-test('the topic prompt asks for noun-phrase titles and state summaries, never action sentences or to-dos', () => {
-  assert.ok(GROUP_TOPICS_PROMPT.includes('status note on what this chat has recently been talking about'))
-  assert.ok(GROUP_TOPICS_PROMPT.includes('Write each title as a noun phrase, never starting with a verb or a request'))
-  assert.ok(GROUP_TOPICS_PROMPT.includes('never as an action sentence'))
-  assert.ok(GROUP_TOPICS_PROMPT.includes('do not start a title with "please", "need to", "must", "remember"'))
-  assert.ok(GROUP_TOPICS_PROMPT.includes('Announcements are still topics'))
+test('the topic prompt groups by discussion subject without forcing every chat into meeting notes', () => {
+  assert.ok(!GROUP_TOPICS_PROMPT.includes('meeting-note style record'))
+  assert.ok(GROUP_TOPICS_PROMPT.includes('Group messages by the subject being discussed, not by individual action items'))
+  assert.ok(GROUP_TOPICS_PROMPT.includes('Do not invent people, dates, sources, decisions, or consensus'))
+  assert.ok(GROUP_TOPICS_PROMPT.includes('Announcements are topics too'))
+})
+
+test('topic summary validator accepts labeled meeting notes and rejects summaries beyond the shared 2000-char contract', async () => {
+  const { validateTopicAnalysis } = await import('../src/main/features/groupTopics/domain.ts')
+  const summary = ['背景：群組討論活動場地', '討論重點：比較交通與容量', '共識／結論：未定', '待釐清：預算', '演進：新增候選'].join('\\n')
+  const valid = { topics:[{ref:'meeting',title:'活動場地',summary}], assignments:[] }
+  assert.equal(validateTopicAnalysis(valid, []).topics[0].summary, summary)
+  assert.throws(() => validateTopicAnalysis({ ...valid, topics:[{ ...valid.topics[0], summary:'x'.repeat(2001) }] }, []), { reason:'invalid_value', path:'$.topics[*].summary' })
 })
 
 test('a prompt hash change does not requeue analyzed messages: decided messages are never selected again', async () => {
@@ -245,6 +289,23 @@ test('completion key changes when prompt or schema contract versions change', as
   assert.equal(completedInputExists(db,'group-a',input,{...key,schemaVersion:'revised'}),false)
   assert.equal(completedInputExists(db,'group-a',input,{...key,schemaHash:'revised'}),false)
   assert.equal(completedInputExists(db,'group-a',input,{...key,validatorVersion:'revised'}),false)
+  db.close()
+})
+
+test('standalone caller sends the shared profile rule and a changed profile revision invalidates completion dedupe', async () => {
+  const db=dbFixture(); let revision='rev-a'; let rule='topic rule A'; let sent=[]
+  const profile=()=>({chatId:'group-a',chatKind:'group',natureId:'work_project',natureLabel:'Work',todo:{instruction:'todo',source:'matrix'},topic:{instruction:rule,source:'matrix'},myName:{value:null,source:'none'},revision,archivedNature:false})
+  const service=createGroupTopicsService(db,{resolveProfile:profile}); service.enable('group-a',true)
+  const provider=fakeProvider(analysisA,(req)=>sent.push(req.system))
+  assert.equal((await service.analyze('group-a',()=>provider)).analyzedCount,2)
+  assert.ok(sent[0].includes('topic rule A')&&sent[0].includes('rev-a'))
+  db.prepare("DELETE FROM topic_message_decisions WHERE chat_id='group-a'").run()
+  revision='rev-b'; rule='topic rule B'
+  const next=fakeProvider(analysisA,(req)=>sent.push(req.system))
+  assert.equal((await service.analyze('group-a',()=>next)).analyzedCount,2)
+  assert.ok(sent[1].includes('topic rule B')&&sent[1].includes('rev-b'))
+  const run=db.prepare("SELECT prompt_hash FROM topic_analysis_runs WHERE chat_id='group-a' ORDER BY created_at DESC LIMIT 1").get()
+  assert.ok(run.prompt_hash)
   db.close()
 })
 
@@ -697,21 +758,19 @@ test('Phase 0: buildTopicSave().tx() writes exactly what saveAnalysis writes', (
   assert.equal(run('build'),run('save'))
 })
 
-test('Phase 2: the existing v4/v3 bundle exports are unchanged by the combined additions', async () => {
-  const { createHash } = await import('node:crypto')
+test('Phase 2: the generated v5/v4 bundle exports and topic schema are enabled', () => {
   assert.equal(GROUP_TOPICS_BUNDLE_ENABLED, true)
-  assert.equal(GROUP_TOPICS_PROMPT_VERSION, 'group-topics-v4')
-  assert.equal(GROUP_TOPICS_SCHEMA_VERSION, 'topic-output-v3')
-  assert.equal(GROUP_TOPICS_PROMPT_HASH, 'bf97033e6008aac6b93746f0a42b9b27c723dd15e5f62e27081890cf57c0c025')
-  assert.equal(GROUP_TOPICS_SCHEMA_HASH, '41ad5712b34c87ddec70b084e6757872e22bc73e2039e60388c6aee3673ddf9f')
-  assert.equal(createHash('sha256').update(GROUP_TOPICS_PROMPT).digest('hex'), 'd2912ccabd0080703ac5c861ebc7785fce5e68763fe0812756b704269404b190')
-  assert.equal(createHash('sha256').update(JSON.stringify(GROUP_TOPICS_JSON_SCHEMA)).digest('hex'), 'cdb0b8188f11901d9ed80ece6580ff544c1c7aaab0bdb3d5e91b63e13ea7ed33')
+  assert.equal(GROUP_TOPICS_PROMPT_VERSION, 'group-topics-v5')
+  assert.equal(GROUP_TOPICS_SCHEMA_VERSION, 'topic-output-v4')
+  assert.match(GROUP_TOPICS_PROMPT_HASH, /^[a-f0-9]{64}$/)
+  assert.match(GROUP_TOPICS_SCHEMA_HASH, /^[a-f0-9]{64}$/)
+  assert.equal(GROUP_TOPICS_JSON_SCHEMA.properties.topics.items.properties.summary.maxLength, 2000)
 })
 
 test('Phase 2: the combined bundle has its own versions and tracked hashes distinct from the topic bundle', () => {
   assert.equal(COMBINED_BUNDLE_ENABLED, true)
-  assert.equal(COMBINED_PROMPT_VERSION, 'extract-combined-v1')
-  assert.equal(COMBINED_SCHEMA_VERSION, 'extract-combined-schema-v1')
+  assert.equal(COMBINED_PROMPT_VERSION, 'extract-combined-v2')
+  assert.equal(COMBINED_SCHEMA_VERSION, 'extract-combined-schema-v2')
   assert.match(COMBINED_PROMPT_HASH, /^[a-f0-9]{64}$/)
   assert.match(COMBINED_SCHEMA_HASH, /^[a-f0-9]{64}$/)
   for (const hash of [COMBINED_PROMPT_HASH, COMBINED_SCHEMA_HASH]) assert.ok(![GROUP_TOPICS_PROMPT_HASH, GROUP_TOPICS_SCHEMA_HASH].includes(hash))
@@ -840,6 +899,41 @@ test('topic list rows: only enabled groups contribute rows, one row per topic, u
   ])
   assert.deepEqual(rows.map((row) => [row.chatName, row.topic.title]), [['Alpha', 'a1'], ['Alpha', 'a2'], ['未命名群組', 'e1']])
   assert.equal(new Set(rows.map((row) => row.key)).size, 3, 'row keys are unique')
+})
+
+test('topic list rows preserve a clear overview-compacted marker for each shortened note', () => {
+  const [row] = buildTopicRows([{ chat:{chatId:'g1',name:'Alpha'},status:'enabled',compacted:true,topics:[listTopic('t1','g1','planning',300)] }])
+  assert.equal(row.overviewCompacted,true)
+})
+
+test('overview whole-topic budget omission reaches a visible group/count notice when short notes cannot compact', () => {
+  const topic = (groupIndex, index) => ({
+    topicId: `t-${groupIndex}-${index}`, chatId: `g-${groupIndex}`, localRef: `r-${index}`, title: '短標題', summary: '短摘要',
+    createdAt: '2026-09-30', lastSourceTs: groupIndex * 1000 + index, evidenceCount: 2,
+    evidenceMsgIds: ['m-a', 'm-b'], relevance: 'action', relevanceEvidenceMsgIds: ['m-a'], relevanceEvidence: [],
+    userParticipation: 'unknown', participantLowerBound: 0, observation: 'unknown', heat: 'unvalidated', trend: 'unknown'
+  })
+  const source = Array.from({ length: 120 }, (_, groupIndex) => ({
+    chatId: `g-${groupIndex}`, name: `群 ${groupIndex}`, enabled: true,
+    topics: Array.from({ length: 30 }, (_, index) => topic(groupIndex, index)), topicCount: 30,
+    pendingCount: 0, backlogCount: 0
+  }))
+  const fitted = fitOverviewToBudget(source, GROUP_TOPICS_OVERVIEW_BYTE_LIMIT)
+  assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= GROUP_TOPICS_OVERVIEW_BYTE_LIMIT)
+  assert.ok(fitted.some((group) => group.topics.length === 0 && group.topicCount === 30), 'at least one group loses all its topics')
+  assert.ok(fitted.some((group) => group.topics.length < group.topicCount && group.compacted === true), 'whole-topic omission is marked even though short fields did not compact')
+  const entries = overviewToEntries(fitted)
+  const notice = overviewOmissionNotice(entries)
+  assert.match(notice, /省略 \d+ 則議題/)
+  assert.match(notice, /涉及 \d+ 個群組/)
+  assert.match(notice, /開啟單群議題可閱讀完整紀錄/)
+
+  const groupOverflow = fitOverviewToBudget(Array.from({ length: 600 }, (_, index) => ({
+    chatId: `empty-${index}`, name: `群 ${index}`, enabled: false, topics: [], topicCount: 0, pendingCount: 0, backlogCount: 0
+  })), GROUP_TOPICS_OVERVIEW_BYTE_LIMIT)
+  assert.ok(Buffer.byteLength(JSON.stringify(groupOverflow)) <= GROUP_TOPICS_OVERVIEW_BYTE_LIMIT)
+  assert.ok(groupOverflow[0].omittedGroupCount > 0, 'whole-group removal is carried in a surviving row')
+  assert.match(overviewOmissionNotice(overviewToEntries(groupOverflow)), /群組整筆省略/)
 })
 
 const listRows = () => buildTopicRows([

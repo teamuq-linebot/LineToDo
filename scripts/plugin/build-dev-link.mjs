@@ -4,7 +4,7 @@
 //   node scripts/plugin/build-dev-link.mjs --watch    build once, then rebuild on every save of a watched source (npm run dev:plugin:watch)
 //
 // The folder is updated in place (lib/devLink.mjs): unchanged files are not rewritten, a native .node that is locked by a running backend stops the build
-// with a plain message, and only files this build wrote before (and no longer writes) are removed. The manifest is the package manifest (id tuqdev.line-todo).
+// with a plain message, and only files this build wrote before (and no longer writes) are removed. The manifest is the package manifest (id tuqdev.line-todo.pro).
 // Watched (--watch): src/plugin and src/shared (UI, backend, notices, shared types), vendor/sqlite3mc-wasm, scripts/plugin/lib, and the three bundle
 // scripts build-ui.mjs / build-backend.mjs / build-plugin.mjs. dist/ is never watched, so the build's own writes cannot loop.
 import fs from 'node:fs'

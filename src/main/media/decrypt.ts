@@ -57,6 +57,31 @@ const HKDF_INFO = Buffer.from('FileEncryption')
 const HKDF_SALT = Buffer.alloc(32, 0)
 const HKDF_LEN = 76
 
+/** HKDF 衍生出的檔案金鑰（`derived` 是三者共用的底層 buffer；呼叫端用完可 `derived.fill(0)`）。 */
+export interface FileKeys {
+  /** AES-256 金鑰（32 B）。 */
+  encKey: Buffer
+  /** HMAC-SHA256 金鑰（32 B）。 */
+  macKey: Buffer
+  /** CTR 初始 counter／IV（16 B）：derived[64:76] ++ 0x00000000。 */
+  nonce: Buffer
+  derived: Buffer
+}
+
+/**
+ * 檔案金鑰衍生（與 LINEJS 3.6.4 `deriveKeyMaterial` 相同配方；HKDF 的空 salt 與 32×0x00 salt 等價，RFC 5869 §2.2）。
+ * 本機 `.eimg` 解密與 Pro 的 OBS 串流下載（plugin/backend/linejsMediaStream.ts）共用這一份。
+ */
+export function deriveFileKeys(keyMaterial: Buffer): FileKeys {
+  const derived = Buffer.from(hkdfSync('sha256', keyMaterial, HKDF_SALT, HKDF_INFO, HKDF_LEN))
+  return {
+    encKey: derived.subarray(0, 32),
+    macKey: derived.subarray(32, 64),
+    nonce: Buffer.concat([derived.subarray(64, 76), Buffer.alloc(4, 0)]),
+    derived
+  }
+}
+
 /** 預設快取根：`%LOCALAPPDATA%\LINE\Cache`（用 process.env.LOCALAPPDATA）。 */
 function defaultCacheDir(): string {
   return join(process.env.LOCALAPPDATA ?? '', 'LINE', 'Cache')
@@ -204,11 +229,8 @@ function decryptWithState(input: DecryptMediaInput, state: MediaCacheState, opti
     const fs = options.fs ?? getLineEnginePorts().fs
     const ikm = Buffer.from(input.keyMaterial, 'base64')
 
-    // 金鑰派生（HKDF-SHA256）
-    const derived = Buffer.from(hkdfSync('sha256', ikm, HKDF_SALT, HKDF_INFO, HKDF_LEN))
-    const encKey = derived.subarray(0, 32)
-    const macKey = derived.subarray(32, 64)
-    const nonce = Buffer.concat([derived.subarray(64, 76), Buffer.alloc(4, 0)]) // 16B CTR IV
+    // 金鑰派生（HKDF-SHA256）；nonce 為 16B CTR IV
+    const { encKey, macKey, nonce } = deriveFileKeys(ikm)
 
     // 定位：size == fileSize + 32 的候選（查記憶化索引；查無即 not-cached，不 rebuild）
     const targetSize = input.fileSize + HMAC_LEN

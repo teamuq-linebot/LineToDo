@@ -22,7 +22,7 @@
  * AI（0.2.0）：唯一的出口是 `context.host.ai`（TeamUQ 的 `ai:chat`；`complete` 需要 Core >=1.7.13，manifest 的 minCoreVersion 同步提高）。
  * 抽取、草擬回覆、誤判分析、群組議題分析、prompt 修正都在 backend 經它完成（assemble.ts 建立 AI port），所以看板不需要開著。
  *
- * 不 import electron、不 import child_process／worker_threads、不做網路 I/O、不直接呼叫任何 LLM 服務。
+ * 不 import electron、不 import child_process／worker_threads；LINE 附件下載與使用者在聊天室手動送出（linejsOutbound）僅經 linejsMedia 的限域 HTTPS fetch，AI 仍只走 host.ai。
  */
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'

@@ -9,6 +9,7 @@ import { ResidencyNotice } from './ResidencyStatus'
 import { useTheme } from '../../renderer/lib/theme'
 import { UiStateProvider, browserUiState } from '../../renderer/lib/uiState'
 import { installZoom } from '../../renderer/lib/zoom'
+import { LineJsMediaPanel } from './LineJsMediaPanel'
 
 /** 設定 view 跟隨 TeamUQ 宿主外觀（Electron nativeTheme → prefers-color-scheme）。 */
 function ThemeFollower(): null {
@@ -40,6 +41,7 @@ if (!boot) {
         <div className="app-shell">
           <main className="app-main">
             <SettingsPanel />
+            <LineJsMediaPanel plugin={boot.api.plugin} />
           </main>
         </div>
         </UiStateProvider>

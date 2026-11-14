@@ -29,6 +29,7 @@ import { createQwenConfig } from '../../main/config/qwen'
 import { createSettingsStore } from '../../main/config/settings'
 import { createPromptService } from './promptService'
 import { createChatPromptStore } from './chatPromptStore'
+import { createChatProfileStore, createChatProfileService } from './chatProfileStore'
 import type { ChatPromptDatabase } from './chatPromptStore'
 import type { SettingsSecretStorage } from '../../main/config/settings'
 import type { AppDbEngine } from '../../main/db/appDbEngine'
@@ -94,6 +95,15 @@ import type { ContactSyncBudget } from './contactSync'
 import { ReviewCoordinator, ReviewLedger } from './reviewRun'
 import { LongTaskTracker } from './taskStatus'
 import type { BackendDiagnostics, JsonValue, PluginBackendHandler, SessionChannel, SessionInfo } from './types'
+import { LineJsMediaService } from './linejsMedia'
+import { LineJsOutboundService } from './linejsOutbound'
+import type { OutboundSent } from './linejsOutbound'
+import { OriginalDownloadService, createDesktopRowReader } from './linejsOriginals'
+import type { OriginalsDesktopRow } from './linejsOriginals'
+import { LineJsReceiveService } from './linejsReceive'
+import { runBackfill } from './linejsMediaBackfill'
+import * as linejsAutoDownload from './linejsAutoDownload.mjs'
+import { myMid } from '../../main/line/engine/linedb'
 
 /** backend 不持有任何 AI 金鑰；settings store 只需要這個「不可用」的 secrets。 */
 const NO_SECRETS: SettingsSecretStorage = {
@@ -124,6 +134,9 @@ export interface PluginBackendOptions {
   pluginId: string
   version: string
   dataDir: string
+  lineJsMedia?: false
+  /** 聊天室手動送出（需要 LINEJS session 服務）；`false`＝關閉（dispatcher 回 linejs_outbound_unavailable，聊天室顯示無法使用）。 */
+  lineJsOutbound?: false
   /** LINE 引擎 ports（koffi fs + WASM 引擎 + dbDir）。省略＝不改動目前的引擎注入（測試／fake line 用）。 */
   linePorts?: LineEnginePorts
   /** 直接指定 LINE port（fake LINE source）。省略＝用 `LineWatcher` 讀 `linePorts` 指向的 LINE 資料。 */
@@ -242,6 +255,8 @@ function appDbInfo(db: { prepare(sql: string): { get(): unknown } } | null): Jso
 export async function createPluginBackend(options: PluginBackendOptions): Promise<PluginBackendHandler> {
   const startedAt = Date.now()
   const { dataDir } = options
+  // LINEJS is an optional secondary session. Initialization failures stay scoped to its inbox status.
+  const linejsMedia = options.lineJsMedia === false ? null : await LineJsMediaService.create(dataDir)
   const settings = createSettingsStore({ userDataDir: dataDir, secrets: NO_SECRETS })
   // env 傳 {}：backend 的行為不受環境變數影響（QWEN_*、LINE_* 都不讀）。
   const getDefaults = createPipelineConfig(() => settings.get(), {})
@@ -288,6 +303,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   const hub = new EventHub(options.hub)
   const mediaFs = options.media?.fs ?? options.linePorts?.fs
   const dbDir = options.linePorts?.dbDir
+  const stickerRoot = dbDir && basename(dirname(dbDir)).toLowerCase() === 'data' ? join(dirname(dbDir), 'Sticker') : undefined
   const cacheDir = options.media?.cacheDir
     ?? (dbDir && basename(dirname(dbDir)).toLowerCase() === 'data' ? join(dirname(dirname(dbDir)), 'Cache') : undefined)
   // 圖片索引（mediaIndex.ts）：LINE Cache 的 size → 路徑存在 app DB，背景切片掃描；`media.prepare` 只查索引。沒有 Cache 目錄＝沒有索引。
@@ -319,6 +335,8 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     getDb: () => appDbForMedia,
     decryptor,
     index: mediaIndex,
+    stickerRoot,
+    stickerFs: mediaFs,
     maxCacheBytes: options.media?.maxCacheBytes
   })
   const avatarCache = createAvatarCache({ dataDir })
@@ -372,6 +390,55 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   let lastUnsentScan = 0
   const recentLog: string[] = []
   const log = (line: string): void => { recentLog.push(line.slice(0, 300)); if (recentLog.length > 40) recentLog.shift() }
+  // 聊天室手動送出：用同一個 LINEJS session（linejsMedia）；收件目標必須是 app DB 的聊天室，登入帳號必須就是本機 LINE 帳號（fail-closed）。
+  const imageSniff = (linejsAutoDownload as unknown as { detectSupportedImageMime(bytes: Uint8Array): string | null }).detectSupportedImageMime
+  const localAccountMid = async (): Promise<string | null> => {
+    if (!lineAccess) return null
+    const opened = await lineAccess.open({ dbPath: null, policy: 'any', keyOpts })
+    if (!opened) return null
+    try { return myMid(opened.con) || null } finally { opened.cleanup() }
+  }
+  // Pro 舊訊息下載原檔（linejsOriginals.ts，`linejsMedia.original.*`）：同一個 LINEJS session、同一個帳號比對；共用唯一的 sink 與 ledger。
+  // 讀電腦版那一列（影片、缺 OID／SID 的舊列）只用 `any` snapshot；照片先試本機 LINE Cache（同一個解密器與索引，不連網）。
+  // 電腦版那一列經 createDesktopRowReader 讀（review-x6 F-8）：重用同一個 snapshot 連線（閒置或 snapshot 要求讓出時放掉）、參數化查詢。
+  const desktopReader = linejsMedia && lineAccess ? createDesktopRowReader(() => lineAccess.open({ dbPath: null, policy: 'any', keyOpts })) : null
+  const linejsOriginals = linejsMedia
+    ? new OriginalDownloadService({
+      dataDir,
+      session: linejsMedia,
+      localAccountMid,
+      getDb: () => appDbForMedia,
+      ...(desktopReader ? {
+        desktopRows: (chatId: string, createdTime: number): Promise<OriginalsDesktopRow[] | null> => desktopReader.rows(chatId, createdTime)
+      } : {}),
+      ...(decryptor && mediaIndex ? {
+        localImage: (input: { keyMaterial: string; fileSize: number }) => {
+          if (!mediaIndex.isAvailable()) return null
+          const res = decryptor.decrypt(input)
+          return res.status === 'ok' && res.bytes ? { bytes: res.bytes, mime: res.mime ?? '' } : null
+        }
+      } : {}),
+      log: (line) => log(`[originals] ${line}`),
+      trace: (phase, ms) => trace?.event('bg', { p: phase, ms })
+    })
+    : null
+  // 聊天室手動送出（建立在下載原檔服務之後）：X3 送出成功的照片／檔案經 onSent 交給同一個 sink 與 ledger（origin outbound，不重新下載；
+  // 不等待、錯誤只記 code，不影響送出結果）。
+  const linejsOutbound = linejsMedia && options.lineJsOutbound !== false
+    ? new LineJsOutboundService({
+      dataDir,
+      session: linejsMedia,
+      localAccountMid,
+      chatKnown: async (chatId) => {
+        if (disposed) return false
+        return (await runtime.api.db.chats.get(chatId)) !== null
+      },
+      imageSniff: (bytes) => imageSniff(bytes),
+      ...(linejsOriginals ? { onSent: (sent: OutboundSent) => linejsOriginals.saveOutbound(sent) } : {}),
+      log: (line) => log(line)
+    })
+    : null
+  await linejsOutbound?.init()
 
   // ── 背景執行（context.residency）：啟動時讀一次，之後只靠 onChange；變動時發 `residency` 事件給看板。降級時不做任何保活（residency.ts）。 ──
   const residency = createResidencyTracker(options.residency, (event, detail) => log(`[residency] ${event} ${JSON.stringify(detail ?? {})}`))
@@ -389,6 +456,9 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       limit: options.watcher?.limit ?? 500,
       dbWatchEnabled: false, // fs.watch 對 LINE 目錄在權限模型下沒意義：只用間隔輪詢（設計 v2 §4.1.2）
       drainBacklog: options.watcher?.drainBacklog ?? true,
+      // LINE QR 登入進行中（QR／PIN 顯示中、提交 session 中）暫緩 backlog 的連續讀取：每批讀取是同步的，一批接一批會讓 view 的
+      // linejsMedia.status 輪詢與 LINEJS 登入的網路回呼一直排在後面（實機首次登入：status 10 s 逾時、QR 很久才出現）。登入結束就接著讀。
+      deferDrain: () => linejsMedia?.loginActive() === true,
       // 第一輪 poll 延後到 activate() 回傳之後（real LINE）；fake／測試（沒有 linePorts）維持立即開始。
       ...(options.linePorts || options.watcher?.startupDelayMs !== undefined ? { startupDelayMs } : {}),
       engine: engineOptions
@@ -451,7 +521,14 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
   // 逐對話的 prompt／名字覆寫放在 app DB 的 app_settings；同樣用 lazy getter，DB 開起來之前讀寫都丟 chat_prompt_unavailable。
   const prompts = createPromptService(settings, aiPort, {
     chatStore: createChatPromptStore({ getDatabase: () => appDb }),
+    profiles: { resolve: (chatId) => profiles.resolve(chatId) },
     log: (event) => log(`[prompt] ${event}`)
+  })
+  const chatPromptStore = createChatPromptStore({ getDatabase: () => appDb })
+  const profiles = createChatProfileService({
+    store: createChatProfileStore(() => appDb),
+    legacy: (chatId) => { const read = chatPromptStore.get(chatId); return { chatPrompt: read.override.prompt, chatName: read.override.myName } },
+    global: () => ({ prompt: settings.get().pluginPrompt ?? null, myName: settings.get().pluginMyName ?? null })
   })
   // 草擬回覆／誤判分析／群組議題分析：core 照 standalone 的邏輯跑，provider.complete() 直接經 AI port 呼叫 host.ai.complete（使用者動作，排在背景抽取之前）。
   const aiProvider = createPortAiProvider(aiPort, { usable: () => { const state = aiPort.status().state; return state !== 'unavailable' && state !== 'revoked' && state !== 'stopped' } })
@@ -522,6 +599,7 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       pipelineConfig: { getDefaults, getQwenConfig, isProviderConfigured: () => true },
       // 舊的「補分析」只處理集合 B（processed=1 且尚無議題決策）：只在合併整理真的會跑的時候（外掛 backend、旗標開、bundle 可用）。
       combinedExtractActive: () => settings.get().pluginCombinedExtract === true && COMBINED_BUNDLE_ENABLED,
+      resolveChatProfile: (chatId) => profiles.resolve(chatId),
       providers: { resolveProvider: () => aiProvider, resolveBackgroundProvider: () => aiProviderBackground },
       topicBackgroundLog: (event, detail) => log(`[topic-bg] ${event} ${JSON.stringify(detail ?? {})}`),
       onSettingsChanged: () => {
@@ -651,6 +729,31 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     hub.publish(type, payload)
   }))
 
+  // X2b 自動接收（Q3 = 以電腦版訊息為準，linejsReceive.ts）：接收開啟時，每次落庫之後以 rowid 游標查新落庫的照片／影片／檔案列，
+  // 交給下載原檔服務（origin receive；同一套守門、每小時上限、429 暫停與共用限流）。LINEJS 的 'message' 事件不再下載。
+  // app DB 連線與 media／avatar 用的是同一個（onDatabase 設定）。
+  const linejsReceive = linejsMedia && linejsOriginals
+    ? new LineJsReceiveService({ dataDir, getDb: () => avatarDb, originals: linejsOriginals, session: linejsMedia, receiveSwitch: linejsMedia, log: (line) => log(line) })
+    : null
+  const offReceiveTriggers = linejsReceive && linejsMedia
+    ? [runtime.api.db.onMessagesPersisted(() => linejsReceive.notify()), linejsMedia.onSessionChange(() => linejsReceive.notify())]
+    : []
+  // X4 舊圖片回填與啟動對帳（linejsMediaBackfill.ts）：啟動後跑一次，把 v1 已完成的照片以 hard link 放進 media-saved（同一個 inode、
+  // 原檔保留），共用同一個 sink 與 ledger（origin backfill）；v1 沒變而且上次完成就不再掃描。dispose 時中止並等它收尾。
+  const backfillController = new AbortController()
+  let backfillTimer: ReturnType<typeof setTimeout> | null = null
+  let backfillRun: Promise<unknown> | null = null
+  const startBackfill = (): void => {
+    backfillTimer = null
+    if (disposed || !linejsOriginals) return
+    backfillRun = runBackfill({ dataDir, originals: linejsOriginals, signal: backfillController.signal, log: (line) => log(line) })
+  }
+  const stopBackfill = async (): Promise<void> => {
+    if (backfillTimer) { clearTimeout(backfillTimer); backfillTimer = null }
+    backfillController.abort()
+    await backfillRun?.catch(() => undefined)
+  }
+
   let disposed = false
   // 每個 backend 呼叫的開始／結束／耗時／結果碼與事件迴圈卡頓（invokeTrace.ts）。純觀測；寫入失敗只在 recentLog 留一行，不影響呼叫。
   trace = options.trace === false ? null : new InvokeTrace({
@@ -671,7 +774,11 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     ai: aiRuntime,
     residency: () => residency.snapshot(),
     prompts,
+    profiles,
     media,
+    linejsMedia: linejsMedia ?? undefined,
+    linejsOutbound: linejsOutbound ?? undefined,
+    linejsOriginals: linejsOriginals ?? undefined,
     avatars,
     review,
     mediaBackfill,
@@ -721,6 +828,11 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       backfill?.start()
       contactSync?.start()
       mediaIndex?.start()
+      // 接收的第一輪（接續重啟前的游標）：真實 LINE 來源時與第一輪 poll 一樣延後到 activate() 回傳之後
+      linejsReceive?.start(startupDelayMs)
+      if (linejsOriginals) {
+        if (startupDelayMs > 0) { backfillTimer = setTimeout(startBackfill, startupDelayMs); backfillTimer.unref?.() } else startBackfill()
+      }
       // 背景抽取：backend 啟動後就開始（不等看板）。沒有 host.ai（單元測試）就不啟動，項目留在佇列。
       // 真實 LINE 來源時與第一輪 poll 一樣延後到 activate() 回傳之後（boot-ack 先送出，host 才收得到我們對 host.ai 的第一個呼叫）。
       if (options.hostAi) {
@@ -742,6 +854,12 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
     offResidency()
     residency.dispose()
     dispatcher.dispose()
+    await linejsOutbound?.dispose()
+    for (const off of offReceiveTriggers) off()
+    await linejsReceive?.dispose()
+    await stopBackfill()
+    await linejsOriginals?.dispose()
+    desktopReader?.close()
     trace?.stop()
     hub.dispose()
     if (workerStartTimer) clearTimeout(workerStartTimer)
@@ -767,6 +885,17 @@ export async function createPluginBackend(options: PluginBackendOptions): Promis
       keyGuard.cancel()
       // 順序：先關入口（新的 call 拿到 backend_stopped）、解除等待中的長輪詢／同步抽取，再停 runtime（waitForCalls 才不會卡住）。
       dispatcher.dispose()
+      // 出站先停（不再接受送出、刪附件暫存），再停它所依賴的 LINEJS session
+      await linejsOutbound?.dispose()
+      // 自動接收先停（不再交新的列、游標寫回），再停它交付的下載原檔服務
+      for (const off of offReceiveTriggers) { try { off() } catch { /* 已解除 */ } }
+      await linejsReceive?.dispose()
+      // 回填中止並收尾（它用同一個 sink 與 ledger）
+      await stopBackfill()
+      // 下載原檔：中止進行中的下載（part 保留）、ledger 寫回，再停它依賴的 LINEJS session；電腦版連線（snapshot lease）在 snapshot store 關閉前放掉
+      await linejsOriginals?.dispose()
+      desktopReader?.close()
+      await linejsMedia?.dispose()
       offResidency()
       residency.dispose()
       for (const off of unsubscribers) { try { off() } catch { /* 已解除 */ } }

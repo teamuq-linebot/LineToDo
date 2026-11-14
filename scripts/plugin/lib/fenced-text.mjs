@@ -52,14 +52,14 @@ export const CORE_AI_CHAT_TITLE = '用你的 AI 對話額度回答你'
 /** The tab that shows the plugin's settings view once the plugin is opened (PluginDrawerHost.tsx TABS, both versions). */
 export const CORE_PLUGIN_SETTINGS_TAB_LABEL = '設定'
 /** The sidebar label of the board view = the manifest's views[board].title (Core labels plugin tabs with view.title: pluginTabs.ts). */
-export const BOARD_VIEW_TITLE = 'LINE 待辦'
+export const BOARD_VIEW_TITLE = 'LINE 待辦 Pro'
 
 /** shared/aiStatus.ts describeStatus('revoked') — ai:chat switched off */
 export const EXPECTED_AI_CHAT_REVOKED_TEXT = '已關閉此外掛的 AI 權限（ai:chat）；請到 TeamUQ 管理外掛的「外掛」頁打開這個外掛，在「它可以做的事」裡允許「用你的 AI 對話額度回答你」後，重新開啟看板'
 /** plugin/backend/aiProvider.ts toProviderError(access_revoked / not_granted / plugin_not_active).userMessage */
 export const EXPECTED_AI_CHAT_REVOKED_TASK_TEXT = '此外掛的 AI 權限（ai:chat）已被關閉，請到 TeamUQ 管理外掛的「外掛」頁打開這個外掛，在「它可以做的事」裡允許「用你的 AI 對話額度回答你」'
 /** plugin/ui/host.ts renderNotInHost (board and settings views opened outside TeamUQ) */
-export const EXPECTED_NOT_IN_HOST_TEXT = '這個頁面要在 TeamUQ 裡開啟：看板在 TeamUQ 側邊欄的「LINE 待辦」；外掛的選項在 TeamUQ 管理外掛的「外掛」頁打開這個外掛後的「設定」分頁。找不到 TeamUQ 提供的外掛橋接（window.tuqPlugin）。'
+export const EXPECTED_NOT_IN_HOST_TEXT = '這個頁面要在 TeamUQ 裡開啟：看板在 TeamUQ 側邊欄的「LINE 待辦 Pro」；外掛的選項在 TeamUQ 管理外掛的「外掛」頁打開這個外掛後的「設定」分頁。找不到 TeamUQ 提供的外掛橋接（window.tuqPlugin）。'
 /** renderer/components/Board/TodoCard.tsx (block chat / ignore by keyword): where to undo it — plugin host, then standalone (unchanged) */
 export const EXPECTED_UNDO_HINT_PLUGIN = '（可到 TeamUQ 管理外掛的「外掛」頁打開這個外掛後的「設定」分頁解除）'
 export const EXPECTED_UNDO_HINT_STANDALONE = '（可到設定頁解除）'
@@ -80,8 +80,8 @@ export const EXPECTED_RESIDENCY_RETRY_STEPS = `請到 ${PLACE}把這個外掛停
 export const EXPECTED_RESIDENCY_TEXT = Object.freeze({
   notRequested: { bar: '', detail: '背景執行：這個版本沒有要求在背景持續執行。TeamUQ 會在外掛閒置一段時間後停止背景程式，之後開啟看板會補整理新訊息' },
   resident: {
-    bar: '背景執行中：關閉看板後，LINE 待辦仍會在背景整理新訊息（只要 TeamUQ 還開著）',
-    detail: `背景執行中：關閉看板後，LINE 待辦仍會在背景整理新訊息（只要 TeamUQ 還開著）。${EXPECTED_RESIDENCY_STOP_STEPS}`,
+    bar: '背景執行中：關閉看板後，LINE 待辦 Pro 仍會在背景整理新訊息（只要 TeamUQ 還開著）',
+    detail: `背景執行中：關閉看板後，LINE 待辦 Pro 仍會在背景整理新訊息（只要 TeamUQ 還開著）。${EXPECTED_RESIDENCY_STOP_STEPS}`,
   },
   resident_not_granted: {
     bar: '背景執行尚未開啟：關閉看板一段時間後，TeamUQ 會停止背景程式，下次開啟看板時才會補整理新訊息',

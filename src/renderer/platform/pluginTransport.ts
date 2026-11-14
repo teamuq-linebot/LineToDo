@@ -24,11 +24,14 @@
  *
  * 通道（lane）與等待上限（0.2.9）：總名額仍是 3，但分三條通道，讓聊天室清單與連線狀態不會被輔助呼叫佔滿名額而排不到——
  *   - `core`：其餘所有路徑（ping、line.status、db.*、messages.recent、settings.get、pipeline.status、groupTopics.*、result.chunk、job.poll…），優先出隊；
- *   - `bulk`（同時 ≤ `max(1, 預算 - 2)`，預算 3 格時 1 格）：`media.prepare`、`media.avatar.*`、`ai.status`、`ai.options`（可以慢、可以放棄的輔助資料）。
+ *   - `bulk`（同時 ≤ `max(1, 預算 - 2)`，預算 3 格時 1 格）：`media.prepare`、`media.prepareVideo`、`media.savedFile`、`media.prepareSticker`、`media.avatar.*`、`ai.status`、`ai.options`（可以慢、可以放棄的輔助資料）。
  *     一個 bulk 呼叫從開始到結束（含它的 `job.poll`／`result.chunk`）都佔著同一個 bulk 名額，超過上限的排在 bulk 佇列（不佔 core 名額）；
  *     `invoke(path, args, { signal })` 在還沒拿到名額前 abort 會把它丟掉（`cancelled`，不送給 backend），已經送出的不收回；
  *   - `events`（同時 ≤1）：`events.*` 長輪詢（`events.close` 例外走 core，維持關閉時立刻送出）。
- *   總名額 3 ＝ core 至少永遠有 1 個。`maxConcurrentCalls` < 3（設定 view 用 1）時不分通道，維持單一 FIFO。
+ *   - `login`（fix2；同時 ≤1，**不計入**總名額）：登入彈窗的 `linejsMedia.status`（`LOGIN_STATUS_PATHS`）。共用名額全被佔住時仍立刻送出；等待上限同 core。
+ *   總名額 3 ＝ core 至少永遠有 1 個。`maxConcurrentCalls` < 3（設定 view 用 1）時不分通道，維持單一 FIFO（login 也排在同一個 FIFO）。
+ *   佇列中的等待**不**計入下面的等待上限：上限從拿到名額、真正送給 host 才開始算（所以排隊本身不會產生 `view_call_timeout`）。
+ *   `InvokeOptions.onLate`（fix2）：畫面端逾時之後 host 才送到的成功回覆交給呼叫端（只給狀態查詢用），不再一律丟掉。
  *   每個佔用名額的 host 呼叫都有等待上限，逾時就釋放名額並 reject `view_call_timeout`（host 那一端的呼叫取消不了，晚到的結果丟掉）。逾時**不**改變連線狀態
  *   （不會變成 `revoked`；那是 host 自己的隔離）。上限：core 10 s、ping 35 s（比 host 的 30 s 長，所以 ping 的結果以 host 為準）、bulk 15 s（靜默降級：
  *   呼叫端本來就把失敗當成「沒有圖片／狀態」處理，不影響 phase）、events 不設上限。AI 草擬／分析、回顧、補金鑰這類「backend 本來就要跑 20 s 才轉成 job」的路徑
@@ -132,26 +135,29 @@ export interface LimiterRunOptions {
 
 interface LaneWaiter { resume(): void; cancel(): void }
 
-export type CallLane = 'core' | 'bulk' | 'events'
-const LANE_ORDER: readonly CallLane[] = ['core', 'bulk', 'events']
+export type CallLane = 'login' | 'core' | 'bulk' | 'events'
+const LANE_ORDER: readonly CallLane[] = ['login', 'core', 'bulk', 'events']
 
 /**
- * 總名額 `max`、每條通道各有自己的上限與 FIFO 佇列。名額釋放時依 core → bulk → events 的順序接棒，所以 core 排隊者永遠先拿到名額；
+ * 總名額 `max`、每條通道各有自己的上限與 FIFO 佇列。名額釋放時依 login → core → bulk → events 的順序接棒，所以 core 排隊者永遠先於輔助通道拿到名額；
  * 輔助通道各自的上限（bulk／events 各 1）則保證總名額 3 時 core 永遠至少有 1 個。
+ * `outside` 裡的通道（login）只受自己的上限約束、不計入也不佔用總名額：共用名額全被佔住時它仍然能立刻送出（fix2）。
  */
 export class LaneLimiter {
-  private readonly active: Record<CallLane, number> = { core: 0, bulk: 0, events: 0 }
-  private readonly waiting: Record<CallLane, LaneWaiter[]> = { core: [], bulk: [], events: [] }
+  private readonly active: Record<CallLane, number> = { login: 0, core: 0, bulk: 0, events: 0 }
+  private readonly waiting: Record<CallLane, LaneWaiter[]> = { login: [], core: [], bulk: [], events: [] }
   private total = 0
   private readonly max: number
   private readonly caps: Record<CallLane, number>
-  constructor(max: number, caps: Record<CallLane, number>) {
+  private readonly outside: ReadonlySet<CallLane>
+  constructor(max: number, caps: Record<CallLane, number>, outside: ReadonlySet<CallLane> = new Set()) {
     this.max = Math.max(1, Math.floor(max))
     this.caps = caps
+    this.outside = outside
   }
 
-  private canStart(lane: CallLane): boolean { return this.total < this.max && this.active[lane] < this.caps[lane] }
-  private start(lane: CallLane): void { this.active[lane] += 1; this.total += 1 }
+  private canStart(lane: CallLane): boolean { return (this.outside.has(lane) || this.total < this.max) && this.active[lane] < this.caps[lane] }
+  private start(lane: CallLane): void { this.active[lane] += 1; if (!this.outside.has(lane)) this.total += 1 }
 
   async run<T>(lane: CallLane, task: () => Promise<T>, options?: LimiterRunOptions): Promise<T> {
     const signal = options?.signal
@@ -176,7 +182,7 @@ export class LaneLimiter {
       return await task()
     } finally {
       this.active[lane] -= 1
-      this.total -= 1
+      if (!this.outside.has(lane)) this.total -= 1
       this.pump()
     }
   }
@@ -191,9 +197,16 @@ export class LaneLimiter {
     }
   }
 
-  stats(): { active: number; waiting: number; lanes: Record<CallLane, { active: number; waiting: number }> } {
+  /** `active`／`waiting`：所有通道合計（含不計入總名額的 login）；`shared`：佔用總名額的在飛數。 */
+  stats(): { active: number; shared: number; waiting: number; lanes: Record<CallLane, { active: number; waiting: number }> } {
     const lane = (name: CallLane): { active: number; waiting: number } => ({ active: this.active[name], waiting: this.waiting[name].length })
-    return { active: this.total, waiting: LANE_ORDER.reduce((sum, name) => sum + this.waiting[name].length, 0), lanes: { core: lane('core'), bulk: lane('bulk'), events: lane('events') } }
+    const outsideActive = [...this.outside].reduce((sum, name) => sum + this.active[name], 0)
+    return {
+      active: this.total + outsideActive,
+      shared: this.total,
+      waiting: LANE_ORDER.reduce((sum, name) => sum + this.waiting[name].length, 0),
+      lanes: { login: lane('login'), core: lane('core'), bulk: lane('bulk'), events: lane('events') }
+    }
   }
   get limit(): number { return this.max }
 }
@@ -203,7 +216,7 @@ export class Limiter {
   private readonly inner: LaneLimiter
   constructor(max: number) {
     const cap = Math.max(1, Math.floor(max))
-    this.inner = new LaneLimiter(cap, { core: cap, bulk: cap, events: cap })
+    this.inner = new LaneLimiter(cap, { login: cap, core: cap, bulk: cap, events: cap })
   }
   run<T>(task: () => Promise<T>, options?: LimiterRunOptions): Promise<T> { return this.inner.run('core', task, options) }
   stats(): { active: number; waiting: number } { const { active, waiting } = this.inner.stats(); return { active, waiting } }
@@ -268,13 +281,19 @@ export interface InvokeOptions {
   signal?: AbortSignal
   /** 這次呼叫的 host 呼叫真正開始執行（拿到名額）時通知；用來分辨「還在排隊」與「已送出」。 */
   onStart?(): void
+  /**
+   * 畫面端已放棄等待（reject `view_call_timeout`）之後，host 才送到的**成功**回覆（`{ok:true,value}`，不含 pending／chunked）交給這裡（fix2）。
+   * 只給沒有副作用的狀態查詢用（登入狀態、輸入列狀態）：backend 其實已經回答了，畫面不該因為轉送太慢就永遠看不到。
+   * 失敗、在時限內回來的回覆、傳輸關閉之後才到的回覆都不會呼叫它。
+   */
+  onLate?(value: unknown): void
 }
 /** 只有總名額至少是這個數字才分通道（bulk／events 各佔 1，core 至少還有 1）；更小的預算（設定 view 的 1）維持單一 FIFO。 */
 export const MIN_LANES_BUDGET = 3
 /** bulk 通道永遠不碰的名額：事件長輪詢 1 ＋ 一般（core）請求 1。bulk 同時上限 = `max(1, 預算 - 2)`：預算 3 格時 1 格，預算 5 格時 3 格。 */
 export const RESERVED_FOREGROUND_CALLS = 2
 
-const BULK_PATHS: ReadonlySet<string> = new Set(['media.prepare', 'ai.status', 'ai.options'])
+const BULK_PATHS: ReadonlySet<string> = new Set(['media.prepare', 'media.prepareVideo', 'media.savedFile', 'media.prepareSticker', 'ai.status', 'ai.options'])
 /** 狀態列只呈現 LINE 橋接與聊天室清單的狀態：只有這三條 path 的逾時會讓 phase 變成 `timeout`；狀態列的「重試」會重讀這三條。 */
 export const STATUS_TIMEOUT_PATHS: ReadonlySet<string> = new Set(['line.status', 'messages.recent', 'db.chats.list'])
 /** backend 本來就會執行到 soft deadline（20 s）才回 `pending` 的路徑（AI 草擬／分析、回顧、補金鑰…）：走 core，但等待上限用 `longMs`。 */
@@ -283,8 +302,18 @@ export const LONG_CALL_PATHS: ReadonlySet<string> = new Set([
   'pipeline.runOnce', 'pipeline.reviewLastDays', 'pipeline.refreshChat', 'pipeline.backfillMediaKeys'
 ])
 
+/**
+ * 登入狀態查詢（fix2）：聊天室「登入 LINE」彈窗每秒一次的 `linejsMedia.status`。backend 端 0 ms 就回（不碰網路，見 linejsMedia.ts `status()`），
+ * 走自己的 `login` 通道：同時 ≤ `LOGIN_LANE_CALLS`，**不計入**共用的總名額，所以共用名額被長輪詢、卡住的 core 呼叫或輔助呼叫佔滿時，
+ * 登入狀態仍然立刻送出，不會排隊到別人逾時。代價：這個 view 最多同時 3 ＋ 1 個 host 呼叫（加上設定 view 的 1 個＝5，比 `maxSessions` 4 多 1；
+ * 這時 host 回忙碌，照常以退避重試；host 每個外掛的硬上限是 8）。設定 view（預算 1，不分通道）不受影響。
+ */
+export const LOGIN_STATUS_PATHS: ReadonlySet<string> = new Set(['linejsMedia.status'])
+export const LOGIN_LANE_CALLS = 1
+
 /** 路徑所屬的通道。`events.close` 走 core：它很短，不該排在還沒回來的長輪詢後面。 */
 export function laneFor(path: string): CallLane {
+  if (LOGIN_STATUS_PATHS.has(path)) return 'login'
   if (path === 'events.close') return 'core'
   if (path.startsWith('events.')) return 'events'
   if (BULK_PATHS.has(path) || path.startsWith('media.avatar.')) return 'bulk'
@@ -356,7 +385,9 @@ export class PluginTransport {
     this.host = options.host
     const budget = Math.max(1, Math.floor(options.maxConcurrentCalls ?? DEFAULT_MAX_CONCURRENT_CALLS))
     this.lanesEnabled = budget >= MIN_LANES_BUDGET
-    this.limiter = new LaneLimiter(budget, this.lanesEnabled ? { core: budget, bulk: Math.max(1, budget - RESERVED_FOREGROUND_CALLS), events: 1 } : { core: budget, bulk: budget, events: budget })
+    this.limiter = this.lanesEnabled
+      ? new LaneLimiter(budget, { login: LOGIN_LANE_CALLS, core: budget, bulk: Math.max(1, budget - RESERVED_FOREGROUND_CALLS), events: 1 }, new Set<CallLane>(['login']))
+      : new LaneLimiter(budget, { login: budget, core: budget, bulk: budget, events: budget })
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts }
     this.startingAfterMs = options.startingAfterMs ?? DEFAULT_STARTING_AFTER_MS
     this.jobWaitMs = Math.min(4000, Math.max(0, options.jobPollWaitMs ?? 3000))
@@ -436,7 +467,7 @@ export class PluginTransport {
     if (path === 'ping' && this.pingState !== 'ok') this.pingState = 'ok'
     if (path === 'line.status') this.statusAnswered = true
     if (path === 'db.chats.list') this.chatsAnswered = true
-    if (lane === 'core') {
+    if (lane === 'core' || lane === 'login') {
       this.timedOutPaths.delete(path)
       this.pingTimedOut = false
     }
@@ -530,10 +561,14 @@ export class PluginTransport {
     return LONG_CALL_PATHS.has(path) ? this.timeouts.longMs : this.timeouts.coreMs
   }
 
-  /** 對 host 發一次呼叫；超過 `limitMs` 就放棄等待（host 的呼叫取消不了，晚到的結果或錯誤丟掉）。 */
-  private hostCall(path: string, method: string, wire: unknown, limitMs: number | null): Promise<unknown> {
+  /**
+   * 對 host 發一次呼叫；超過 `limitMs` 就放棄等待（host 的呼叫取消不了，晚到的錯誤丟掉）。
+   * 晚到的成功回覆：有 `onLate` 時把 `{ok:true,value}` 的 value 交給它（fix2），否則丟掉。
+   */
+  private hostCall(path: string, method: string, wire: unknown, limitMs: number | null, onLate?: (value: unknown) => void): Promise<unknown> {
     return new Promise<unknown>((resolve, reject) => {
       let settled = false
+      let timedOut = false
       let timer: ReturnType<typeof setTimeout> | null = null
       const finish = (action: () => void): void => {
         if (settled) return
@@ -542,12 +577,17 @@ export class PluginTransport {
         action()
       }
       if (limitMs !== null) {
-        timer = setTimeout(() => finish(() => reject(new PluginApiError(VIEW_CALL_TIMEOUT, path, `no answer within ${Math.round(limitMs / 100) / 10} s`))), limitMs)
+        timer = setTimeout(() => finish(() => { timedOut = true; reject(new PluginApiError(VIEW_CALL_TIMEOUT, path, `no answer within ${Math.round(limitMs / 100) / 10} s`)) }), limitMs)
         this.timers.add(timer)
+      }
+      const late = (value: unknown): void => {
+        if (!timedOut || !onLate || this.closed) return
+        if (!isRecord(value) || value.ok !== true || value.pending === true || value.chunked === true) return
+        try { onLate(value.value) } catch { /* 呼叫端的錯誤不影響傳輸 */ }
       }
       let call: Promise<unknown>
       try { call = Promise.resolve(this.host.backend.call(method, wire)) } catch (error) { call = Promise.reject(error) }
-      call.then((value) => finish(() => resolve(value)), (error: unknown) => finish(() => reject(error)))
+      call.then((value) => { if (settled) late(value); else finish(() => resolve(value)) }, (error: unknown) => finish(() => reject(error)))
     })
   }
 
@@ -559,6 +599,8 @@ export class PluginTransport {
     const lane = laneOf(path, owner)
     const scheduled: CallLane = this.lanesEnabled ? lane : 'core'
     const limitMs = this.timeoutFor(path, lane)
+    // 晚到的回覆只交給「發出這次呼叫的那一層」：job.poll／result.chunk 與 bulk（held）不用
+    const onLate = !held && owner === path ? options?.onLate : undefined
     const cancelled = (): PluginApiError => new PluginApiError('cancelled', path, 'the call was cancelled before it started')
     const call: PendingCall = held ?? { path, lane, queuedAt: Date.now(), startedAt: null }
     if (!held) this.pending.add(call)
@@ -570,7 +612,7 @@ export class PluginTransport {
           const send = (): Promise<unknown> => {
             call.startedAt = Date.now()
             this.maxActive = Math.max(this.maxActive, this.limiter.stats().active)
-            return this.hostCall(path, method, wire, limitMs)
+            return this.hostCall(path, method, wire, limitMs, onLate)
           }
           const env = held ? await send() : await this.limiter.run(scheduled, () => { options?.onStart?.(); return send() }, options?.signal ? { signal: options.signal } : undefined)
           this.setLink('ok', null, false)

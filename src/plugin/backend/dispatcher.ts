@@ -41,6 +41,9 @@ import type { AiStatus } from '../../shared/aiStatus'
 import { RESIDENCY_UNSUPPORTED } from '../../shared/residency'
 import type { ResidencySnapshot } from '../../shared/residency'
 import type { ReviewLastDaysResult } from '../../shared/api'
+import { LINEJS_OUTBOUND_PATHS } from '../../shared/linejsOutbound'
+import type { OutboundAckRequest, OutboundBeginRequest, OutboundChunkRequest, OutboundDiscardRequest, OutboundJobRequest, OutboundSendRequest } from '../../shared/linejsOutbound'
+import { LINEJS_ORIGINALS_PATHS, ORIGINALS_LIMITS } from '../../shared/linejsOriginals'
 
 /** request/response 型、外掛版支援的 `LineTodoApi` 路徑（`on*` 訂閱走事件通道，不在這裡）。 */
 export const SUPPORTED_API_PATHS: readonly string[] = Object.freeze([
@@ -56,7 +59,10 @@ export const SUPPORTED_API_PATHS: readonly string[] = Object.freeze([
   'groupTopics.setEnabled', 'groupTopics.pendingCount',
   'groupTopics.list', 'groupTopics.overview', 'groupTopics.todoRefs',
   'pipeline.status', 'pipeline.loadStats', 'pipeline.runOnce', 'pipeline.reviewLastDays', 'pipeline.refreshChat', 'pipeline.refreshChatStatus', 'pipeline.backfillMediaKeys', 'pipeline.setRunning',
-  'settings.get', 'settings.update', 'settings.hasSafeStorageKey'
+  'settings.get', 'settings.update', 'settings.hasSafeStorageKey',
+  'linejsMedia.status', 'linejsMedia.startLogin', 'linejsMedia.cancelLogin', 'linejsMedia.setReceiveEnabled', 'linejsMedia.logout', 'linejsMedia.retry', 'linejsMedia.exportChunk',
+  ...LINEJS_ORIGINALS_PATHS,
+  ...LINEJS_OUTBOUND_PATHS
 ])
 
 /** 外掛版明確不提供的路徑。 */
@@ -80,8 +86,12 @@ export const INTERNAL_API_PATHS: readonly string[] = Object.freeze([
   'events.open', 'events.pull', 'events.close',
   'settings.prompt.get', 'settings.prompt.save', 'settings.prompt.reset', 'settings.prompt.refine', 'settings.prompt.saveName',
   'settings.chatPrompt.get', 'settings.chatPrompt.save', 'settings.chatPrompt.reset', 'settings.chatPrompt.list',
+  'settings.profiles.getConfig', 'settings.profiles.saveConfig', 'settings.profiles.getChat', 'settings.profiles.saveChat', 'settings.profiles.resolve', 'settings.profiles.suggestRule',
   'ai.status', 'ai.options', 'extract.stats', 'review.status', 'tasks.status',
-  'media.prepare', 'media.avatar.prepareChats', 'media.avatar.prepareMessages',
+  'media.prepare', 'media.prepareVideo', 'media.savedFile', 'media.prepareSticker', 'media.avatar.prepareChats', 'media.avatar.prepareMessages',
+  'linejsMedia.status', 'linejsMedia.startLogin', 'linejsMedia.cancelLogin', 'linejsMedia.setReceiveEnabled', 'linejsMedia.logout', 'linejsMedia.retry', 'linejsMedia.exportChunk',
+  ...LINEJS_ORIGINALS_PATHS,
+  'linejsOutbound.status', 'linejsOutbound.begin', 'linejsOutbound.stageChunk', 'linejsOutbound.send', 'linejsOutbound.job', 'linejsOutbound.discard', 'linejsOutbound.acknowledge',
   'result.chunk', 'job.poll'
 ])
 
@@ -115,8 +125,14 @@ export interface DispatcherOptions {
   /** 背景執行的目前狀態（`backend.residency`；residency.ts）。同步讀已知的值，不會去問宿主；省略＝`supported:false`（舊 Core、單元測試）。 */
   residency?: () => ResidencySnapshot
   prompts?: PromptService
+  profiles?: { getConfig(): unknown; saveConfig(value: unknown, expected: unknown): unknown; getChat(chatId: string): unknown; saveChat(chatId: string, value: unknown, expected: unknown): unknown; resolve(chatId: string, natureId?: string): unknown }
   /** 媒體服務（`media.prepare`）；省略＝回 media_unavailable。 */
   media?: PluginMedia
+  linejsMedia?: { status(): Promise<unknown>; startLogin(): Promise<unknown>; cancelLogin(): Promise<unknown>; setReceiveEnabled(enabled: boolean): Promise<unknown>; logout(): Promise<unknown>; retry(key: string): Promise<unknown>; exportChunk(key: string, offset: number, length: number): Promise<unknown> }
+  /** 聊天室手動送出（linejsOutbound.ts）；省略（lineJsOutbound:false、沒有 LINEJS session 服務）＝回 linejs_outbound_unavailable。服務只回值或 `{__fail, code, message}`。 */
+  linejsOutbound?: LineJsOutboundApi
+  /** Pro 舊訊息下載原檔（linejsOriginals.ts，`linejsMedia.original.*`）；省略（沒有 LINEJS session 服務）＝回 linejs_originals_unavailable。 */
+  linejsOriginals?: LineJsOriginalsApi
   /** LINE profile/Square avatars; all locators remain backend-only. */
   avatars?: PluginAvatars
   /** 回顧的續跑／single-flight／進度（`pipeline.reviewLastDays`、`review.status`）；省略＝直接呼叫 core（單元測試）。 */
@@ -143,6 +159,76 @@ export interface DispatcherOptions {
    * 有也不改變任何回應、逾時或 job 轉換。紀錄只含 method／path 名稱、序號、時間、耗時、結果碼與參數大小，沒有參數值。
    */
   trace?: InvokeTrace
+}
+
+/** dispatcher 看到的出站服務（LineJsOutboundService 的公開方法）。 */
+export interface LineJsOutboundApi {
+  status(query: { chatId?: string }): Promise<unknown>
+  begin(request: OutboundBeginRequest): Promise<unknown>
+  stageChunk(request: OutboundChunkRequest): Promise<unknown>
+  send(request: OutboundSendRequest): Promise<unknown>
+  job(request: OutboundJobRequest): Promise<unknown>
+  discard(request: OutboundDiscardRequest): Promise<unknown>
+  acknowledge(request: OutboundAckRequest): Promise<unknown>
+}
+
+/** dispatcher 看到的舊訊息下載原檔服務（OriginalDownloadService 的公開方法）。 */
+export interface LineJsOriginalsApi {
+  request(msgId: string): Promise<unknown>
+  status(msgIds: string[]): Promise<unknown>
+  cancel(msgId: string): Promise<unknown>
+  batchStart(chatId: string, msgIds: string[]): Promise<unknown>
+  batchCancel(batchId: string): Promise<unknown>
+}
+
+/** `linejsMedia.original.*` 的參數：恰好 1 個 plain object、欄位固定（多餘欄位 → invalid_args）、字串長度與陣列大小有上限。 */
+const ORIGINAL_MSG_ID_MAX = 64
+/** batchStart 收得下的 msgId 數（服務只取前 ORIGINALS_LIMITS.batchMax 個，其餘回報 truncated）。 */
+const ORIGINAL_BATCH_IDS_MAX = ORIGINALS_LIMITS.statusMax
+// (the parameter is not named `path`: test-invoke-trace.mjs reads the cases of the dispatcher's own `switch (path) {`)
+function originalArgs(route: string, args: unknown[]): Record<string, unknown> | null {
+  if (args.length !== 1 || !plain(args[0])) return null
+  const value = args[0]
+  const keys = Object.keys(value).sort().join(',')
+  const id = (v: unknown) => typeof v === 'string' && v.length > 0 && v.length <= ORIGINAL_MSG_ID_MAX
+  const ids = (v: unknown, max: number) => Array.isArray(v) && v.length <= max && v.every(id)
+  switch (route) {
+    case 'linejsMedia.original.request':
+    case 'linejsMedia.original.cancel': return keys === 'msgId' && id(value.msgId) ? value : null
+    case 'linejsMedia.original.status': return keys === 'msgIds' && ids(value.msgIds, ORIGINALS_LIMITS.statusMax) ? value : null
+    case 'linejsMedia.original.batchStart': return keys === 'chatId,msgIds' && typeof value.chatId === 'string' && value.chatId.length <= 256 && ids(value.msgIds, ORIGINAL_BATCH_IDS_MAX) ? value : null
+    case 'linejsMedia.original.batchCancel': return keys === 'batchId' && id(value.batchId) ? value : null
+    default: return null
+  }
+}
+
+type FieldRule = 'id' | 'chat' | 'kind' | 'name' | 'mime' | 'size' | 'offset' | 'hash' | 'data' | 'text' | 'flag'
+/** 每個出站路徑的參數欄位（恰好 1 個 plain object；`?` 結尾＝可省略）：型別與長度上限在進服務之前檢查，多餘欄位一律 invalid_args。 */
+const OUTBOUND_FIELDS: Readonly<Record<string, Readonly<Record<string, FieldRule>>>> = Object.freeze({
+  'linejsOutbound.status': { 'chatId?': 'chat' },
+  'linejsOutbound.begin': { requestId: 'id', chatId: 'chat', sessionId: 'id', kind: 'kind', filename: 'name', mime: 'mime', size: 'size', sha256: 'hash' },
+  'linejsOutbound.stageChunk': { stageId: 'id', requestId: 'id', sessionId: 'id', offset: 'offset', data: 'data', sha256: 'hash' },
+  'linejsOutbound.send': { requestId: 'id', chatId: 'chat', sessionId: 'id', kind: 'kind', 'text?': 'text', 'stageId?': 'id' },
+  'linejsOutbound.job': { requestId: 'id', chatId: 'chat', 'fence?': 'flag' },
+  'linejsOutbound.discard': { stageId: 'id', requestId: 'id' },
+  'linejsOutbound.acknowledge': { requestId: 'id', chatId: 'chat' }
+})
+const FIELD_MAX: Readonly<Record<string, number>> = { id: 64, chat: 256, kind: 8, name: 1024, mime: 255, hash: 64, data: 44_000, text: 20_000 }
+
+function outboundArgs(path: string, args: unknown[]): Record<string, unknown> | null {
+  const spec = OUTBOUND_FIELDS[path]
+  if (!spec || args.length !== 1 || !plain(args[0])) return null
+  const value = args[0]
+  const allowed = new Map(Object.entries(spec).map(([key, rule]) => [key.replace(/\?$/, ''), { rule, optional: key.endsWith('?') }]))
+  for (const key of Object.keys(value)) if (!allowed.has(key)) return null
+  for (const [key, { rule, optional }] of allowed) {
+    const field = value[key]
+    if (field === undefined) { if (optional) continue; return null }
+    if (rule === 'flag') { if (typeof field !== 'boolean') return null; continue }
+    if (rule === 'size' || rule === 'offset') { if (typeof field !== 'number' || !Number.isSafeInteger(field) || field < 0) return null; continue }
+    if (typeof field !== 'string' || field.length > FIELD_MAX[rule]) return null
+  }
+  return value
 }
 
 const DEADLINE = Symbol('deadline')
@@ -250,6 +336,23 @@ export class Dispatcher {
       case 'settings.chatPrompt.list':
         if (!this.opts.prompts) return fail('prompt_unavailable')
         try { return this.finalize({ items: this.opts.prompts.chatList() }) } catch (error) { return mapError(error) }
+      case 'settings.profiles.getConfig': return this.opts.profiles ? this.finalize(this.opts.profiles.getConfig()) : fail('profiles_unavailable')
+      case 'settings.profiles.saveConfig':
+        if (!this.opts.profiles || !plain(args[0])) return fail('invalid_args')
+        try { return this.finalize(this.opts.profiles.saveConfig(args[0].config, args[0].expectedRevision)) } catch (error) { return mapProfileError(error) }
+      case 'settings.profiles.getChat':
+        if (!this.opts.profiles || !plain(args[0]) || typeof args[0].chatId !== 'string') return fail('invalid_args')
+        try { return this.finalize(this.opts.profiles.getChat(args[0].chatId)) } catch (error) { return mapProfileError(error) }
+      case 'settings.profiles.saveChat':
+        if (!this.opts.profiles || !plain(args[0]) || typeof args[0].chatId !== 'string') return fail('invalid_args')
+        try { return this.finalize(this.opts.profiles.saveChat(args[0].chatId, args[0].value, args[0].expectedRevision)) } catch (error) { return mapProfileError(error) }
+      case 'settings.profiles.resolve':
+        if (!this.opts.profiles || !plain(args[0]) || typeof args[0].chatId !== 'string') return fail('invalid_args')
+        try { return this.finalize(this.opts.profiles.resolve(args[0].chatId)) } catch (error) { return mapProfileError(error) }
+      case 'settings.profiles.suggestRule':
+        if (!this.opts.prompts || !plain(args[0]) || typeof args[0].chatId !== 'string' || (args[0].kind !== 'todo' && args[0].kind !== 'topic') || typeof args[0].goal !== 'string' || typeof args[0].expectedProfileRevision !== 'string') return fail('invalid_args')
+        if (Object.hasOwn(args[0], 'draftRule') && typeof args[0].draftRule !== 'string' || Object.hasOwn(args[0], 'natureId') && typeof args[0].natureId !== 'string') return fail('invalid_args')
+        return this.settle(this.opts.prompts.suggestProfileRule(args[0].chatId, args[0].kind, args[0].goal, args[0].expectedProfileRevision, { ...(Object.hasOwn(args[0], 'draftRule') ? { draftRule: args[0].draftRule as string } : {}), ...(Object.hasOwn(args[0], 'natureId') ? { natureId: args[0].natureId as string } : {}) }))
       case 'ai.status': return this.aiStatus(args[0])
       case 'ai.options': return this.aiOptions()
       case 'extract.stats': return this.finalize(this.opts.queue.stats())
@@ -257,6 +360,34 @@ export class Dispatcher {
       // 長任務的狀態（G-05）：回顧與補媒體金鑰；backend 重新啟動後由狀態檔讀回（taskStatus.ts、reviewRun.ts）。
       case 'tasks.status': return this.finalize({ review: this.opts.review ? this.opts.review.status() : null, mediaBackfill: this.opts.mediaBackfill ? this.opts.mediaBackfill.status() : null })
       case 'media.prepare': return this.mediaPrepare(args[0])
+      case 'media.prepareVideo': return this.mediaPrepareVideo(args[0])
+      case 'media.savedFile': return this.mediaSavedFile(args[0])
+      case 'media.prepareSticker': return this.mediaPrepareSticker(args[0])
+      case 'linejsMedia.status': return this.opts.linejsMedia ? this.finalize(await this.opts.linejsMedia.status()) : fail('linejs_media_unavailable')
+      case 'linejsMedia.startLogin': return this.opts.linejsMedia ? this.finalize(await this.opts.linejsMedia.startLogin()) : fail('linejs_media_unavailable')
+      case 'linejsMedia.cancelLogin': return this.opts.linejsMedia ? this.finalize(await this.opts.linejsMedia.cancelLogin()) : fail('linejs_media_unavailable')
+      case 'linejsMedia.setReceiveEnabled': return this.opts.linejsMedia && typeof args[0] === 'boolean' ? this.finalize(await this.opts.linejsMedia.setReceiveEnabled(args[0])) : fail('invalid_args')
+      case 'linejsMedia.logout': return this.opts.linejsMedia ? this.finalize(await this.opts.linejsMedia.logout()) : fail('linejs_media_unavailable')
+      case 'linejsMedia.retry': return this.opts.linejsMedia && typeof args[0] === 'string' ? this.finalize(await this.opts.linejsMedia.retry(args[0])) : fail('invalid_args')
+      case 'linejsMedia.exportChunk':
+        if (!this.opts.linejsMedia || args.length !== 3 || typeof args[0] !== 'string' || !Number.isSafeInteger(args[1]) || !Number.isSafeInteger(args[2])) return fail('invalid_args')
+        try { return this.finalize(await this.opts.linejsMedia.exportChunk(args[0], args[1] as number, args[2] as number)) }
+        catch (error) {
+          const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : 'SAVED_FILE_UNAVAILABLE'
+          return fail(['INVALID_FILE_RANGE','SAVED_FILE_UNAVAILABLE','UNSAFE_PATH','LINEJS_MEDIA_UNAVAILABLE'].includes(code) ? code : 'SAVED_FILE_UNAVAILABLE')
+        }
+      case 'linejsMedia.original.request':
+      case 'linejsMedia.original.status':
+      case 'linejsMedia.original.cancel':
+      case 'linejsMedia.original.batchStart':
+      case 'linejsMedia.original.batchCancel': return this.linejsOriginals(path, args)
+      case 'linejsOutbound.status':
+      case 'linejsOutbound.begin':
+      case 'linejsOutbound.stageChunk':
+      case 'linejsOutbound.send':
+      case 'linejsOutbound.job':
+      case 'linejsOutbound.discard':
+      case 'linejsOutbound.acknowledge': return this.linejsOutbound(path, args)
       case 'media.avatar.prepareChats': return this.opts.avatars ? this.settle(this.opts.avatars.prepareChats(args[0])) : fail('avatar_unavailable')
       case 'media.avatar.prepareMessages': return this.opts.avatars ? this.settle(this.opts.avatars.prepareMessages(args[0], args[1])) : fail('avatar_unavailable')
       case 'result.chunk': return this.chunk(args[0])
@@ -298,6 +429,54 @@ export class Dispatcher {
     return this.settle(Promise.resolve().then(() => (kind ? runAs(kind, () => run(...args)) : run(...args))))
   }
 
+  // ── linejsMedia.original.*：Pro 舊訊息下載原檔 ──
+
+  /** 參數先在這裡驗證；服務萬一 throw 只回固定碼，不帶 message（不洩漏路徑或 id）。 */
+  private async linejsOriginals(path: string, args: unknown[]): Promise<Envelope> {
+    const service = this.opts.linejsOriginals
+    if (!service) return fail('linejs_originals_unavailable')
+    const request = originalArgs(path, args)
+    if (!request) return fail('invalid_args')
+    try {
+      switch (path) {
+        case 'linejsMedia.original.request': return this.finalize(await service.request(request.msgId as string))
+        case 'linejsMedia.original.status': return this.finalize(await service.status(request.msgIds as string[]))
+        case 'linejsMedia.original.cancel': return this.finalize(await service.cancel(request.msgId as string))
+        case 'linejsMedia.original.batchStart': {
+          const value = await service.batchStart(request.chatId as string, request.msgIds as string[]) as { error?: unknown }
+          if (value && typeof value === 'object' && typeof value.error === 'string') return fail(value.error === 'BATCH_ACTIVE' ? 'batch_active' : 'invalid_args')
+          return this.finalize(value)
+        }
+        default: return this.finalize(await service.batchCancel(request.batchId as string))
+      }
+    } catch (error) {
+      return fail((error as { code?: unknown })?.code === 'INVALID_ARGS' ? 'invalid_args' : 'linejs_originals_error')
+    }
+  }
+
+  // ── linejsOutbound.*：聊天室手動送出 ──
+
+  /** 參數先在這裡驗證；服務不 throw SDK 訊息（失敗是 `{__fail}` 固定碼），萬一 throw 也只回固定碼，不帶 message。 */
+  private async linejsOutbound(path: string, args: unknown[]): Promise<Envelope> {
+    const service = this.opts.linejsOutbound
+    if (!service) return fail('linejs_outbound_unavailable')
+    const request = outboundArgs(path, args)
+    if (!request) return fail('invalid_args')
+    try {
+      switch (path) {
+        case 'linejsOutbound.status': return this.finalize(await service.status(request as { chatId?: string }))
+        case 'linejsOutbound.begin': return this.finalize(await service.begin(request as unknown as OutboundBeginRequest))
+        case 'linejsOutbound.stageChunk': return this.finalize(await service.stageChunk(request as unknown as OutboundChunkRequest))
+        case 'linejsOutbound.send': return this.finalize(await service.send(request as unknown as OutboundSendRequest))
+        case 'linejsOutbound.job': return this.finalize(await service.job(request as unknown as OutboundJobRequest))
+        case 'linejsOutbound.discard': return this.finalize(await service.discard(request as unknown as OutboundDiscardRequest))
+        default: return this.finalize(await service.acknowledge(request as unknown as OutboundAckRequest))
+      }
+    } catch {
+      return fail('linejs_outbound_error')
+    }
+  }
+
   // ── ai.*：AI 整理的狀態與模型清單 ──
 
   private async aiStatus(raw: unknown): Promise<Envelope> {
@@ -337,6 +516,24 @@ export class Dispatcher {
   private mediaPrepare(raw: unknown): Envelope {
     if (!this.opts.media) return fail('media_unavailable', 'media is not available in this build')
     const result = this.opts.media.prepare(plain(raw) ? raw.msgId : raw)
+    return result.ok ? this.finalize(result) : fail(result.code, result.message)
+  }
+
+  private mediaPrepareVideo(raw: unknown): Envelope {
+    if (!this.opts.media) return fail('media_unavailable', 'media is not available in this build')
+    const result = this.opts.media.prepareVideo(plain(raw) ? raw.msgId : raw)
+    return result.ok ? this.finalize(result) : fail(result.code, result.message)
+  }
+
+  private mediaSavedFile(raw: unknown): Envelope {
+    if (!this.opts.media) return fail('media_unavailable', 'media is not available in this build')
+    const result = this.opts.media.savedFile(plain(raw) ? raw.msgId : raw)
+    return result.ok ? this.finalize(result) : fail(result.code, result.message)
+  }
+
+  private mediaPrepareSticker(raw: unknown): Envelope {
+    if (!this.opts.media) return fail('media_unavailable', '本機貼圖服務目前無法使用')
+    const result = this.opts.media.prepareSticker(plain(raw) ? raw.msgId : raw)
     return result.ok ? this.finalize(result) : fail(result.code, result.message)
   }
 
@@ -545,4 +742,9 @@ function mapError(error: unknown): Envelope {
   const message = (error instanceof Error ? error.message : String(error)).slice(0, 300)
   if (/runtime is (stopped|disposed|created)/i.test(message)) return fail('runtime_not_running', message)
   return fail('api_error', message)
+}
+
+function mapProfileError(error: unknown): Envelope {
+  const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : ''
+  return fail(['revision_conflict','storage_unavailable','corrupt_config','invalid_input'].includes(code) ? code : 'profiles_unavailable')
 }

@@ -91,7 +91,7 @@ const VIEW = {
   hasApiKey: true, apiKeySource: 'none', safeStorageAvailable: false,
 }
 
-test('message composer stays disabled in flow with active residency status and long synthetic history', async () => {
+test('free chat omits its disabled composer while the message reader and active residency status stay in flow', async () => {
   const chat = { chatId: 'composer-synthetic', name: '合成長訊息聊天室', isGroup: false, firstSeenAt: '2026-11-06T02:00:00.000Z', lastSeenAt: '2026-11-06T03:11:00.000Z' }
   const rows = Array.from({ length: 72 }, (_, index) => {
     const ts = Date.UTC(2026, 10, 6, 2, 0) + index * 60_000
@@ -123,33 +123,30 @@ test('message composer stays disabled in flow with active residency status and l
     backendLink: () => ({ state: 'connected', code: null }),
     onBackendLink: () => () => undefined
   }
-  const scene = ui.mount(ui.messageWithResidencyScene(api, source))
+  // The disabled placeholder is what the chat shows without the outbound control (standalone, or a build without linejsOutbound);
+  // the pro plugin's live composer is covered by test-chat-composer-ui.mjs.
+  const scene = ui.mount(ui.messageWithResidencyScene({ ...api, linejsOutbound: undefined }, source))
   const hasClass = (element, name) => (element.getAttribute('class') ?? '').split(/\s+/).includes(name)
   const find = (name) => walk(scene.container).find((element) => hasClass(element, name))
   const paneButton = (label) => walk(scene.container).find((element) => element.localName === 'button' && element.textContent.trim() === label && element.hasAttribute('aria-pressed'))
   try {
-    await until(() => find('chat-message-composer') && find('residency-status-bar')?.textContent.includes('背景執行中') && scene.container.textContent.includes('synthetic last row 71'), { message: 'the active residency footer, composer and final synthetic message render together' })
+    await until(() => find('chat-message-view') && find('residency-status-bar')?.textContent.includes('背景執行中') && scene.container.textContent.includes('synthetic last row 71'), { message: 'the active residency footer, message reader and final synthetic message render together' })
     const layout = find('plugin-root-layout')
     const rendererSlot = find('plugin-renderer-slot')
     const footer = find('residency-status-bar')
+    const messageView = find('chat-message-view')
+    const messageLog = find('chat-message-log')
+    const sendingEntry = walk(scene.container).find((element) => element.localName === 'button' && element.textContent.trim() === '發送・進階')
     const latest = walk(scene.container).find((element) => hasClass(element, 'chat-message') && element.textContent.includes('synthetic last row 71'))
     assert.ok(layout && footer.parentNode === layout, 'the active footer is a direct row in the plugin root layout')
     assert.ok(rendererSlot && rendererSlot.parentNode === layout, 'the renderer has its own flex row above the footer')
     assert.equal(footer.getAttribute('data-residency-level'), 'resident', 'the active background state remains visible')
+    assert.ok(messageView && messageLog, 'the chat reader and its internal scroll area remain mounted')
+    assert.equal(find('chat-message-composer'), undefined, 'the disabled composer is absent instead of reserving a footer row')
+    assert.ok(sendingEntry && typeof reactProps(sendingEntry).onClick === 'function', 'the compact sending entry is an actionable caller')
+    assert.ok(scene.container.textContent.includes('發送・進階'), 'sending capability remains discoverable in the pane header')
     assert.ok(walk(latest).some((element) => element.localName === 'time' && element.textContent.trim()), 'the final synthetic message keeps its timestamp in the rendered row')
 
-    const composer = find('chat-message-composer')
-    const input = walk(composer).find((element) => element.localName === 'input')
-    const controls = walk(composer).filter((element) => element.localName === 'button')
-    assert.ok(input && reactProps(input).disabled === true, 'the composer input is natively disabled')
-    assert.equal(reactProps(input).onChange, undefined, 'typing has no event handler')
-    assert.equal(reactProps(input).onKeyDown, undefined, 'Enter and Ctrl+Enter have no send handler')
-    assert.equal(input.getAttribute('placeholder'), '訊息功能尚未開啟')
-    assert.equal(controls.length, 3, 'only the visible attachment, emoji and send affordances are present')
-    assert.ok(controls.every((button) => reactProps(button).disabled === true), 'all composer buttons are natively disabled')
-    assert.ok(controls.every((button) => reactProps(button).onClick === undefined), 'disabled buttons have no picker or send handlers')
-    assert.equal(walk(composer).some((element) => element.localName === 'form'), false, 'there is no Enter-submit form')
-    assert.ok(composer.textContent.includes('功能尚未開啟'), 'the unavailable state is visible without opening a tooltip')
     assert.deepEqual(backend.unknown, [], 'the synthetic UI made no unmocked backend call')
 
     snapshot = { supported: true, requested: true, level: 'on-demand', reason: 'resident_not_granted' }
@@ -159,19 +156,19 @@ test('message composer stays disabled in flow with active residency status and l
 
     reactProps(paneButton('議題與待辦')).onClick()
     await until(() => paneButton('議題與待辦')?.getAttribute('aria-pressed') === 'true', { message: 'the selected chat switches to its combined non-message pane' })
-    assert.equal(find('chat-message-composer'), undefined, 'the message composer is absent from the selected chat topics-and-todos pane')
+    assert.equal(find('chat-message-composer'), undefined, 'the message composer stays absent from the selected chat topics-and-todos pane')
     assert.ok(find('residency-status-bar')?.textContent.includes('背景執行尚未開啟'), 'the warning footer remains visible in other chat panes')
     reactProps(paneButton('訊息')).onClick()
-    await until(() => paneButton('訊息')?.getAttribute('aria-pressed') === 'true' && find('chat-message-composer'), { message: 'the disabled composer returns with the message view' })
+    await until(() => paneButton('訊息')?.getAttribute('aria-pressed') === 'true' && find('chat-message-log'), { message: 'the readable message view returns without a composer' })
 
     const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
     const residency = readFileSync(resolve(ROOT, 'src', 'plugin', 'ui', 'ResidencyStatus.tsx'), 'utf8')
     assert.match(css, /\.plugin-root-layout\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*height:\s*100%/s, 'the plugin root reserves separate vertical rows')
     assert.match(css, /\.plugin-renderer-slot\s*\{[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0/s, 'the renderer uses only the space above the footer')
     assert.match(css, /\.residency-status-bar\s*\{[^}]*flex:\s*0 0 auto[^}]*width:\s*100%/s, 'the residency message retains its own in-flow row')
-    assert.match(css, /\.chat-message-view\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*min-height:\s*0/s, 'the message view splits a scroll area from a fixed-height composer row')
+    assert.match(css, /\.chat-message-view\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*min-height:\s*0/s, 'the message view remains a bounded flex reader')
     assert.match(css, /\.chat-message-log\s*\{[^}]*flex:\s*1[^}]*overflow-y:\s*auto/s, 'the message list keeps its own vertical viewport')
-    assert.match(css, /\.chat-message-composer\s*\{[^}]*flex:\s*0 0 auto[^}]*border-top:/s, 'the composer reserves real layout height below the scroll viewport')
+    assert.doesNotMatch(css, /\.chat-message-composer\s*\{/, 'there is no composer footer style reserving blank chat height')
     assert.doesNotMatch(residency, /position:\s*['"]fixed['"]/, 'the status is no longer fixed over message content')
   } finally { scene.unmount(); api.dispose() }
 })
@@ -1061,7 +1058,7 @@ test('chat todos (effects): direct and group panes stay scoped; loading, failure
 
       click(paneButton('議題與待辦'))
       await until(() => topicListQueries.includes(direct.chatId) && hasSwitch(view, '此聊天室的議題開關') && view.container.textContent.includes(directTodo.title), { message: 'the combined pane independently loads direct topics and todos from the selected chat' })
-      assert.ok(view.container.textContent.includes('聊天室近況') && view.container.textContent.includes('我的事項'), 'the combined pane names its two areas in plain words')
+      assert.ok(view.container.textContent.includes('討論紀錄') && view.container.textContent.includes('我的事項'), 'the combined pane names its two areas in plain words')
       assert.equal(view.container.textContent.includes('跨群語意候選'), false, 'direct topics do not expose cross-group controls')
       assert.ok(view.container.textContent.includes(directTodo.title), 'the todo remains visible beside the topic controls')
       assert.deepEqual(topicAnalyzeQueries, [], 'opening the topic pane does not auto-analyze')
@@ -1185,18 +1182,14 @@ test('chat topics and todos (effects): a topic read failure does not hide select
     assert.equal(hasClassName(topicCard, 'todo-card'), false, 'a topic card is not styled as a todo card')
     const pane = walk(view.container).find((element) => hasClassName(element, 'chat-topics-todos-content'))
     const headings = walk(pane).filter((element) => element.localName === 'h3').map((element) => element.textContent.trim())
-    assert.deepEqual(headings, ['聊天室近況', '我的事項'], 'the two areas carry the plain-language headings and nothing else')
+    assert.deepEqual(headings, ['討論紀錄', '我的事項'], 'the two areas carry the plain-language headings and nothing else')
     assert.equal(walk(pane).some((element) => element.localName === 'details' && hasClassName(element, 'group-topics-help')), false, 'the combined pane adds no explanatory block')
     assert.equal(walk(pane).filter((element) => element.localName === 'section' && (hasClassName(element, 'group-topics-panel') || hasClassName(element, 'chat-todos-content'))).length, 2, 'the pane holds exactly the two areas')
     assert.ok(walk(pane).some((element) => hasClassName(element, 'todo-card')), 'the todo area keeps task-style cards')
     assert.equal(walk(topicCard).some((element) => element.localName === 'input'), false, 'a topic card has no checkbox or task control')
-    const qualityDetails = byAttr(topicCard, 'data-testid', 'group-topic-details')
-    assert.ok(qualityDetails, 'quality and source details remain available')
-    assert.equal(qualityDetails.hasAttribute('open'), false, 'the quality details are collapsed by default')
-    assert.ok(walk(qualityDetails).some((element) => element.localName === 'summary' && element.textContent.includes('品質與來源細節')), 'the disclosure uses a native summary control that supports keyboard activation')
-    assert.match(qualityDetails.textContent, /模型相關性描述（未驗證）/)
-    assert.match(qualityDetails.textContent, /已知參與者下界/)
-    assert.match(qualityDetails.textContent, /觀測完整性未校準/)
+    assert.equal(byAttr(topicCard, 'data-testid', 'group-topic-details'), undefined, 'quality and source details are not rendered in the discussion list')
+    assert.equal(topicCard.textContent.includes('品質與來源細節'), false)
+    assert.equal(topicCard.textContent.includes('檢查既有待辦關聯'), false)
   } finally { view.unmount(); api.dispose() }
 })
 
@@ -2232,10 +2225,10 @@ test('group-topics root tab: an old saved topics value opens the all-groups over
     const groupSelect = walk(view.container).find((element) => element.localName === 'select' && hasClassName(element.parentNode, 'group-topics-group-select'))
     assert.ok(groupSelect, 'the chat filter stays available')
     reactProps(groupSelect).onChange({ target: { value: 'ov-group-1' } })
-    await until(() => log.some((entry) => entry.path === 'groupTopics.list' && entry.args[0] === 'ov-group-1') && view.container.textContent.includes('聊天室近況'), { message: 'choosing a group opens its existing topic controls' })
+    await until(() => log.some((entry) => entry.path === 'groupTopics.list' && entry.args[0] === 'ov-group-1') && view.container.textContent.includes('討論紀錄'), { message: 'choosing a group opens its existing topic controls' })
     const groupSwitch = switchByLabel(view, '此群組的議題開關')
     assert.ok(groupSwitch, 'the per-group start/stop switch renders next to the heading')
-    assert.ok(view.container.textContent.includes('聊天室近況'), 'the heading is the plain-language recap heading')
+    assert.ok(view.container.textContent.includes('討論紀錄'), 'the heading is the plain-language discussion heading')
     reactProps(tab('總覽')).onClick()
     await until(() => walk(view.container).some((element) => hasClassName(element, 'board-wrap')), { message: 'the existing overview board opens' })
     reactProps(tab('群組議題')).onClick()
@@ -2438,7 +2431,7 @@ test('topic list: one row per topic with its chat name, newest first; columns �
     assert.match(walk(topicRowEls(view)[0]).find((element) => hasClassName(element, 'topics-col-time')).textContent, /^\d\d\/\d\d \d\d:\d\d$/)
     assert.equal(topicRowEls(view).some((row) => row.textContent.includes('列表乙')), false, 'a group with no topics has no row')
     assert.equal(view.container.textContent.includes('此群已啟用'), false, 'no per-group sentence')
-    assert.equal(view.container.textContent.includes('尚無分析結果'), false, 'no per-group empty result line')
+    assert.equal(view.container.textContent.includes('尚無討論紀錄'), false, 'no per-group empty result line')
     assert.ok(chatFilter(view).textContent.includes('列表丙'), 'the chat dropdown still offers every group')
   } finally { view.unmount(); api.dispose() }
 })
@@ -2785,10 +2778,10 @@ test('F3b turning topics on never flashes the empty result text or the analyse b
     await until(() => s.topicSwitch('此群組的議題開關'), { message: 'the topic switch renders' })
     s.change(s.topicSwitch('此群組的議題開關'), true)
     await until(() => s.callsTo('groupTopics.setEnabled').length === 1 && typeof releaseList === 'function', { message: 'the refresh is pending' })
-    assert.ok(!s.view.container.textContent.includes('尚無分析結果'), 'no empty-result flash')
+    assert.ok(!s.view.container.textContent.includes('尚無討論紀錄'), 'no empty-result flash')
     assert.ok(!s.view.container.textContent.includes('分析最近'), 'no analyse button flash')
     releaseList()
-    await until(() => s.view.container.textContent.includes('尚無分析結果'), { message: 'the result area appears after the refresh' })
+    await until(() => s.view.container.textContent.includes('尚無討論紀錄'), { message: 'the result area appears after the refresh' })
   } finally { s.dispose() }
 })
 
@@ -2804,7 +2797,7 @@ test('F3 embedded 議題與待辦頁籤：不論 combined 與待辦開關為何�
       const label = `combined=${combined} 待辦=${todoOn ? '開' : '關'}`
       try {
         await openCombinedPane(s)
-        await until(() => hasSwitch(s.view, '此群組的議題開關') && s.view.container.textContent.includes('尚無分析結果'), { message: `${label}: the topics panel is rendered` })
+        await until(() => hasSwitch(s.view, '此群組的議題開關') && s.view.container.textContent.includes('尚無討論紀錄'), { message: `${label}: the topics panel is rendered` })
         assert.ok(!buttonTexts(s.view).includes('補分析舊訊息'), `${label}: no backfill button in the embedded panel`)
         assert.ok(!buttonTexts(s.view).includes('分析最近群組訊息'), `${label}: no legacy analyse button in the embedded panel`)
       } finally { s.dispose() }
@@ -2875,10 +2868,10 @@ test('U6 the topic switch label says group or chat according to the chat type, u
     await openCombinedPane(s)
     s.click(s.chatButton(group.name))
     await until(() => s.topicSwitch('此群組的議題開關'), { message: 'group switch label' })
-    assert.ok(s.view.container.textContent.includes('聊天室近況'))
+    assert.ok(s.view.container.textContent.includes('討論紀錄'))
     s.click(s.chatButton(direct.name))
     await until(() => s.topicSwitch('此聊天室的議題開關'), { message: 'direct switch label' })
-    assert.ok(s.view.container.textContent.includes('聊天室近況'))
+    assert.ok(s.view.container.textContent.includes('討論紀錄'))
     assert.equal(s.topicSwitch('此群組的議題開關'), undefined)
   } finally { s.dispose() }
 })
@@ -4051,4 +4044,1521 @@ test('board lazy render: without an IntersectionObserver the column draws everyt
     const cards = (col) => walk(s.view.container).filter((element) => hasClassName(element, 'todo-card') && ancestors(element).some((node) => node.nodeType === 1 && hasClassName(node, `col-${col}`))).length
     await until(() => cards('done') === 100 && cards('todo') === 70, { message: 'all cards drawn' })
   } finally { s.dispose(); if (previous !== undefined) globalThis.IntersectionObserver = previous }
+})
+
+// ───────────── M2：影片格與已保存檔案（免費版中性；Pro 有保存紀錄時才出現）─────────────
+
+const VIDEO_ID = 'i:v1'
+const videoMessage = { msgId: VIDEO_ID, chatId: 'c1', chat: '測試聊天', isGroup: false, ts: 1, time: '', direction: 'in', sender: '小明', text: '[video]', contentType: 2 }
+const fileMessage = { msgId: 'i:f1', chatId: 'c1', chat: '測試聊天', isGroup: false, ts: 1, time: '', direction: 'in', sender: '小明', text: '', contentType: 14, origFilename: 'report.pdf', fileSize: 1234 }
+const videoUrls = (container) => walk(container).filter((el) => el.localName === 'video').map((el) => el.getAttribute('src'))
+const advancedEntries = (container) => walk(container).filter((el) => el.localName === 'button' && el.getAttribute('class')?.includes('advanced-entry-button'))
+const neverAnswers = () => new Promise(() => undefined)
+
+test('M2 video: loading shows 載入中…, then a saved video plays from its asset URL; ct=2 is no longer shown as text', async () => {
+  const { api, backend } = plugin({ 'media.prepareVideo': () => ({ path: 'media-saved/clip.mp4', mime: 'video/mp4', size: 10, cached: true }) })
+  let scene
+  try {
+    scene = ui.mount(ui.mediaVideoScene(api, VIDEO_ID))
+    await until(() => videoUrls(scene.container).length === 1, { message: 'the video element' })
+    assert.deepEqual(videoUrls(scene.container), ['tuqplugin://tuqdev.line-todo/data/media-saved/clip.mp4'])
+    const video = walk(scene.container).find((el) => el.localName === 'video')
+    assert.equal(video.getAttribute('preload'), 'metadata')
+    assert.equal(video.hasAttribute('controls'), true)
+    assert.equal(scene.container.textContent.includes('影片尚未下載'), false)
+    assert.deepEqual(backend.unknown, [], 'only the media.prepareVideo path was asked')
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+test('M2 video: a loading video shows 載入中… until the backend answers', async () => {
+  const { api } = plugin({ 'media.prepareVideo': neverAnswers })
+  let scene
+  try {
+    scene = ui.mount(ui.mediaVideoScene(api, VIDEO_ID))
+    await sleep(30)
+    assert.equal(scene.container.textContent.includes('載入中…'), true)
+    assert.equal(videoUrls(scene.container).length, 0)
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+test('M2 video: not saved (not_cached), a backend error and a broken video element all show 影片尚未下載, with no advanced entry when there is no onPurchase', async () => {
+  const notSaved = plugin({ 'media.prepareVideo': () => { throw Object.assign(new Error('the video is not saved yet'), { code: 'not_cached' }) } })
+  const broken = plugin({ 'media.prepareVideo': () => { throw Object.assign(new Error('no such message'), { code: 'not_found' }) } })
+  const saved = plugin({ 'media.prepareVideo': () => ({ path: 'media-saved/x.webm', mime: 'video/webm', size: 1, cached: true }) })
+  const scenes = []
+  try {
+    for (const { api } of [notSaved, broken]) {
+      const scene = ui.mount(ui.mediaVideoScene(api, VIDEO_ID))
+      scenes.push(scene)
+      await until(() => scene.container.textContent.includes('影片尚未下載'), { message: '影片尚未下載' })
+      assert.equal(advancedEntries(scene.container).length, 0, 'Pro (no onPurchase): no advanced entry')
+    }
+    const scene = ui.mount(ui.mediaVideoScene(saved.api, VIDEO_ID))
+    scenes.push(scene)
+    await until(() => videoUrls(scene.container).length === 1, { message: 'the saved video' })
+    const video = walk(scene.container).find((el) => el.localName === 'video')
+    reactProps(video).onError({ currentTarget: video })
+    await until(() => scene.container.textContent.includes('影片尚未下載'), { message: 'a video that fails to play falls back to 影片尚未下載' })
+    assert.equal(videoUrls(scene.container).length, 0)
+  } finally { for (const s of scenes) s.unmount(); notSaved.api.dispose(); broken.api.dispose(); saved.api.dispose() }
+})
+
+test('M2 video (free version): a missing video with onPurchase shows 影片尚未下載 and the advanced entry that opens the purchase page', async () => {
+  const { api } = plugin({ 'media.prepareVideo': () => { throw Object.assign(new Error('not yet'), { code: 'not_cached' }) } })
+  let opened = null
+  let scene
+  try {
+    scene = ui.mount(ui.mediaVideoScene(api, VIDEO_ID, (packageId, source) => { opened = { packageId, source } }))
+    await until(() => advancedEntries(scene.container).length === 1, { message: 'the advanced entry' })
+    assert.equal(scene.container.textContent.includes('影片尚未下載'), true)
+    const entry = advancedEntries(scene.container)[0]
+    assert.equal(entry.getAttribute('aria-label'), '進階：自動保存影片')
+    reactProps(entry).onClick({ currentTarget: entry })
+    assert.equal(opened?.packageId, 'line')
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+test('M2 video (standalone): a host without videoAssetUrl shows 影片尚未下載 at once, asks nothing and does not fail', async () => {
+  const { api, backend } = plugin({})
+  const standalone = { ...api, media: { ...api.media, videoAssetUrl: undefined } }
+  let scene
+  try {
+    scene = ui.mount(ui.mediaVideoScene(standalone, VIDEO_ID))
+    await until(() => scene.container.textContent.includes('影片尚未下載'), { message: '影片尚未下載 (standalone)' })
+    await sleep(30)
+    assert.deepEqual(backend.unknown, [])
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+test('M2 file card: with a saved record the card shows 已保存 and the full path as selectable text; without one (free version) the card is unchanged', async () => {
+  const saved = plugin({ 'media.savedFile': () => ({ ok: true, name: 'report.pdf', bytes: 1234, mime: 'application/pdf', absPath: 'C:\\Users\\x\\saved-files\\chat\\report.pdf' }) })
+  const none = plugin({ 'media.savedFile': () => { throw Object.assign(new Error('the file has not been saved'), { code: 'not_saved' }) } })
+  const scenes = []
+  try {
+    const withRecord = ui.mount(ui.messageContentScene(saved.api, fileMessage))
+    scenes.push(withRecord)
+    await until(() => withRecord.container.textContent.includes('已保存'), { message: '已保存' })
+    assert.equal(withRecord.container.textContent.includes('C:\\Users\\x\\saved-files\\chat\\report.pdf'), true, 'the full path is shown')
+    assert.equal(walk(withRecord.container).some((el) => el.localName === 'button' && el.textContent === '在此預覽'), false, 'a PDF has no preview')
+    assert.equal(walk(withRecord.container).find((el) => el.getAttribute('class') === 'sm-file-path')?.textContent, 'C:\\Users\\x\\saved-files\\chat\\report.pdf')
+
+    const plain = ui.mount(ui.messageContentScene(none.api, fileMessage))
+    scenes.push(plain)
+    await sleep(40)
+    assert.equal(plain.container.textContent.includes('已保存'), false)
+    assert.equal(plain.container.textContent.includes('report.pdf'), true, 'the card is still there')
+  } finally { for (const s of scenes) s.unmount(); saved.api.dispose(); none.api.dispose() }
+})
+
+test('M2 file card: a saved image shows 在此預覽 and the preview appears after the click', async () => {
+  const { api } = plugin({ 'media.savedFile': () => ({ ok: true, name: 'a.png', bytes: 9, mime: 'image/png', absPath: 'C:\\x\\a.png', previewPath: 'saved-files/chat--1/a.png' }) })
+  let scene
+  try {
+    scene = ui.mount(ui.messageContentScene(api, { ...fileMessage, origFilename: 'a.png' }))
+    await until(() => walk(scene.container).some((el) => el.localName === 'button' && el.textContent === '在此預覽'), { message: '在此預覽' })
+    assert.equal(walk(scene.container).some((el) => el.localName === 'img'), false, 'no preview before the click')
+    const toggle = walk(scene.container).find((el) => el.localName === 'button' && el.textContent === '在此預覽')
+    reactProps(toggle).onClick()
+    await until(() => walk(scene.container).some((el) => el.localName === 'img'), { message: 'the preview image' })
+    assert.equal(walk(scene.container).find((el) => el.localName === 'img').getAttribute('src'), 'tuqplugin://tuqdev.line-todo/data/saved-files/chat--1/a.png')
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+test('M2 file card (standalone): a host without savedFile shows the card exactly as before and asks nothing', async () => {
+  const { api, backend } = plugin({})
+  const standalone = { ...api, media: { ...api.media, savedFile: undefined } }
+  let scene
+  try {
+    scene = ui.mount(ui.messageContentScene(standalone, fileMessage))
+    await sleep(30)
+    assert.equal(scene.container.textContent.includes('已保存'), false)
+    assert.equal(scene.container.textContent.includes('report.pdf'), true)
+    assert.deepEqual(backend.unknown, [])
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+test('M2: without onPurchase no message kind shows the advanced entry (image, video or file)', async () => {
+  const { api } = plugin({ 'media.prepareVideo': () => { throw Object.assign(new Error('x'), { code: 'not_cached' }) }, 'media.savedFile': () => { throw Object.assign(new Error('x'), { code: 'not_saved' }) } })
+  const scenes = []
+  try {
+    for (const message of [{ ...videoMessage }, { ...fileMessage }, { ...videoMessage, msgId: 'i:img', contentType: 1 }]) {
+      const scene = ui.mount(ui.messageContentScene(api, message))
+      scenes.push(scene)
+      await sleep(30)
+      assert.equal(advancedEntries(scene.container).length, 0, `content type ${message.contentType}`)
+      if (message.contentType === 2) await until(() => scene.container.textContent.includes('影片尚未下載'), { message: 'a video message renders its video cell' })
+    }
+  } finally { for (const s of scenes) s.unmount(); api.dispose() }
+})
+
+// ───────────── M2 負面快取（R-M02）：「尚未有檔」的結果 60 秒內不重打 backend，過期才再問（Pro 寫入新檔後最慢 60 秒就會顯示）─────────────
+
+const fail = (code) => () => { throw Object.assign(new Error(code), { code }) }
+/** 掛上一個影片格或檔案卡、等 backend 回覆後卸載（模擬捲動時泡泡反覆掛載）。 */
+async function mountOnce(scene, settled) {
+  const mounted = ui.mount(scene)
+  try { await until(settled(mounted), { message: 'the bubble settled' }) } finally { mounted.unmount() }
+}
+const videoMissing = (s) => () => s.container.textContent.includes('影片尚未下載')
+const fileCardShown = (s) => () => s.container.textContent.includes('report.pdf')
+
+test('M2 negative cache: within 60 s a video (not_cached) or file (not_saved, saved_missing) with no saved copy is asked once per msgId, however often its bubble mounts', async () => {
+  let clock = 1_000_000
+  const calls = { video: 0, 'i:f1': 0, 'i:f2': 0 }
+  const fileCodes = { 'i:f1': 'not_saved', 'i:f2': 'saved_missing' }
+  const { api } = plugin({
+    'media.prepareVideo': () => { calls.video += 1; fail('not_cached')() },
+    'media.savedFile': (msgId) => { calls[msgId] += 1; fail(fileCodes[msgId])() }
+  }, { now: () => clock })
+  try {
+    for (let round = 0; round < 3; round += 1) {
+      await mountOnce(ui.mediaVideoScene(api, VIDEO_ID), videoMissing)
+      for (const msgId of ['i:f1', 'i:f2']) {
+        await mountOnce(ui.messageContentScene(api, { ...fileMessage, msgId }), (s) => () => fileCardShown(s)() && calls[msgId] >= 1)
+        await sleep(10)
+      }
+      clock += 20_000 // 第 0、20、40 秒
+    }
+    clock = 1_000_000 + 59_999
+    await mountOnce(ui.mediaVideoScene(api, VIDEO_ID), videoMissing)
+    await mountOnce(ui.messageContentScene(api, { ...fileMessage, msgId: 'i:f1' }), fileCardShown)
+    await sleep(20)
+    assert.deepEqual(calls, { video: 1, 'i:f1': 1, 'i:f2': 1 }, 'one backend call per msgId within 60 s')
+  } finally { api.dispose() }
+})
+
+test('M2 negative cache: after 60 s the next mount asks again, so a video or file Pro saved in the meantime shows up', async () => {
+  let clock = 5_000_000
+  let saved = false
+  const calls = { video: 0, file: 0 }
+  const { api } = plugin({
+    'media.prepareVideo': () => { calls.video += 1; if (!saved) fail('not_cached')(); return { path: 'media-saved/clip.mp4', mime: 'video/mp4', size: 10, cached: true } },
+    'media.savedFile': () => { calls.file += 1; if (!saved) fail('not_saved')(); return { ok: true, name: 'report.pdf', bytes: 1234, mime: 'application/pdf', absPath: 'C:\\x\\report.pdf' } }
+  }, { now: () => clock })
+  try {
+    await mountOnce(ui.mediaVideoScene(api, VIDEO_ID), videoMissing)
+    await mountOnce(ui.messageContentScene(api, fileMessage), (s) => () => fileCardShown(s)() && calls.file >= 1)
+    assert.deepEqual(calls, { video: 1, file: 1 })
+    saved = true // Pro 寫入了
+    clock += 59_999 // 還在 60 秒內：沿用「尚未有檔」，不問
+    await mountOnce(ui.mediaVideoScene(api, VIDEO_ID), videoMissing)
+    await mountOnce(ui.messageContentScene(api, fileMessage), fileCardShown)
+    await sleep(20)
+    assert.deepEqual(calls, { video: 1, file: 1 }, 'not asked again before 60 s')
+    clock += 1 // 滿 60 秒
+    const video = ui.mount(ui.mediaVideoScene(api, VIDEO_ID))
+    const file = ui.mount(ui.messageContentScene(api, fileMessage))
+    try {
+      await until(() => videoUrls(video.container).length === 1, { message: 'the newly saved video plays' })
+      await until(() => file.container.textContent.includes('已保存'), { message: 'the newly saved file shows 已保存' })
+      assert.deepEqual(calls, { video: 2, file: 2 }, 'asked again once the 60 s passed')
+    } finally { video.unmount(); file.unmount() }
+  } finally { api.dispose() }
+})
+
+test('M2 negative cache: a saved video or file shows normally; a miss for one msgId does not hide another, and other failures (not_found, internal) are not cached', async () => {
+  const clock = 9_000_000
+  const calls = { 'i:v1': 0, 'i:v2': 0, 'i:v3': 0, 'i:f1': 0 }
+  const { api } = plugin({
+    'media.prepareVideo': (msgId) => {
+      calls[msgId] += 1
+      if (msgId === 'i:v1') fail('not_cached')()
+      if (msgId === 'i:v3') fail(calls[msgId] === 1 ? 'internal' : 'not_found')()
+      return { path: 'media-saved/v2.mp4', mime: 'video/mp4', size: 10, cached: true }
+    },
+    'media.savedFile': () => { calls['i:f1'] += 1; return { ok: true, name: 'report.pdf', bytes: 1234, mime: 'application/pdf', absPath: 'C:\\x\\report.pdf' } }
+  }, { now: () => clock })
+  try {
+    await mountOnce(ui.mediaVideoScene(api, 'i:v1'), videoMissing)
+    const other = ui.mount(ui.mediaVideoScene(api, 'i:v2'))
+    try { await until(() => videoUrls(other.container).length === 1, { message: 'a saved video plays next to a missing one' }) } finally { other.unmount() }
+    const file = ui.mount(ui.messageContentScene(api, fileMessage))
+    try { await until(() => file.container.textContent.includes('已保存'), { message: 'a saved file shows 已保存' }) } finally { file.unmount() }
+    await mountOnce(ui.mediaVideoScene(api, 'i:v1'), videoMissing) // 同一則 miss 再掛載：走快取
+    const again = ui.mount(ui.mediaVideoScene(api, 'i:v2'))
+    try { await until(() => videoUrls(again.container).length === 1, { message: 'the saved video still plays on remount' }) } finally { again.unmount() }
+    for (let i = 0; i < 2; i += 1) await mountOnce(ui.mediaVideoScene(api, 'i:v3'), videoMissing)
+    assert.equal(calls['i:v3'], 2, 'internal / not_found are not negatively cached')
+    assert.equal(calls['i:v1'], 1, 'the cached miss was not asked again')
+    assert.equal(calls['i:v2'], 1, 'the saved video keeps its known URL')
+  } finally { api.dispose() }
+})
+
+// R2-03：負面快取每種最多記 4000 則（SAVED_MEDIA_MISS_MAX），超過就丟最舊的；被丟掉的那則下次再問 backend，較新的仍走快取。
+test('R2-03 negative cache cap: past 4000 misses the oldest video and file msgIds are evicted and asked again, newer misses stay cached', async () => {
+  const clock = 11_000_000 // 固定時間：全程在 60 秒內，只有上限會讓快取失效
+  const calls = new Map()
+  const count = (key) => calls.get(key) ?? 0
+  const { api } = plugin({
+    'media.prepareVideo': (msgId) => { calls.set(`v ${msgId}`, count(`v ${msgId}`) + 1); fail('not_cached')() },
+    'media.savedFile': (msgId) => { calls.set(`f ${msgId}`, count(`f ${msgId}`) + 1); fail('not_saved')() }
+  }, { now: () => clock })
+  try {
+    for (const [kind, ask] of [['v', (id) => api.media.videoAssetUrl(id)], ['f', (id) => api.media.savedFile(id)]]) {
+      for (let i = 0; i < 4000; i += 1) assert.equal(await ask(`i:${kind}${i}`), null)
+      assert.equal(await ask(`i:${kind}0`), null) // 4000 則都在快取裡：最舊的那則也不再問
+      assert.equal(count(`${kind} i:${kind}0`), 1, `${kind}: at 4000 entries nothing is evicted yet`)
+      assert.equal(await ask(`i:${kind}4000`), null) // 第 4001 則：丟掉最舊的 i:${kind}0
+      assert.equal(await ask(`i:${kind}0`), null)
+      assert.equal(count(`${kind} i:${kind}0`), 2, `${kind}: the evicted oldest msgId is asked again`)
+      // 重新記入 i:${kind}0 又丟掉當時最舊的 i:${kind}1；i:${kind}2 與最新的 i:${kind}4000 仍在快取裡
+      assert.equal(await ask(`i:${kind}2`), null)
+      assert.equal(await ask(`i:${kind}4000`), null)
+      assert.equal(count(`${kind} i:${kind}2`), 1, `${kind}: a newer miss stays cached`)
+      assert.equal(count(`${kind} i:${kind}4000`), 1, `${kind}: the newest miss stays cached`)
+      assert.equal(await ask(`i:${kind}1`), null)
+      assert.equal(count(`${kind} i:${kind}1`), 2, `${kind}: re-noting the oldest evicts the next oldest`)
+    }
+  } finally { api.dispose() }
+})
+
+// ───────────── M4 中性插槽（main）：免費版（沒有 provider）的 DOM 與改動前逐字相同；有 provider 時「尚未下載」格子渲染插槽 ─────────────
+
+/** a mounted scene as HTML text (tags, attributes in insertion order, text): a changed attribute, an extra element or a changed text shows up */
+function domHtml(node) {
+  if (node.nodeType === 3) return node.nodeValue.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const attributes = [...node.attributes].map(([name, value]) => ` ${name}="${value}"`).join('')
+  return `<${node.localName}${attributes}>${node.childNodes.map(domHtml).join('')}</${node.localName}>`
+}
+const domOf = (scene) => scene.container.childNodes.map(domHtml).join('')
+const savedRecord = { ok: true, name: 'report.pdf', bytes: 1234, mime: 'application/pdf', absPath: 'C:\\Users\\x\\saved-files\\chat\\report.pdf' }
+const notSavedYet = () => Object.assign(new Error('the file has not been saved'), { code: 'not_saved' })
+/** the missing / saved states the snapshot covers; `settled` says the backend has answered and the cell has its final look */
+const M4_CASES = [
+  { name: 'imageMissing', handlers: { 'media.prepare': () => { throw NOT_DOWNLOADED() } }, scene: (api) => ui.mediaImageScene(api, 'i:m1'), settled: (c) => c.textContent.includes('尚未下載') },
+  { name: 'videoMissing', handlers: { 'media.prepareVideo': () => { throw NOT_DOWNLOADED() } }, scene: (api) => ui.mediaVideoScene(api, VIDEO_ID), settled: videoMissing },
+  { name: 'videoMissingFreeVersion', handlers: { 'media.prepareVideo': () => { throw NOT_DOWNLOADED() } }, scene: (api) => ui.mediaVideoScene(api, VIDEO_ID, () => undefined), settled: (c) => advancedEntries(c).length === 1 },
+  { name: 'fileCardNoRecord', handlers: { 'media.savedFile': notSavedYet }, scene: (api) => ui.messageContentScene(api, fileMessage), settled: fileCardShown },
+  { name: 'fileCardSaved', handlers: { 'media.savedFile': () => savedRecord }, scene: (api) => ui.messageContentScene(api, fileMessage), settled: (c) => c.textContent.includes('已保存') }
+]
+/** the DOM of every case with NO provider, as it is before M4 (captured on e3bfbf2) */
+const M4_BASELINE_DOM = {
+  imageMissing: "<span class=\"sm-media-missing\">尚未下載</span>",
+  videoMissing: "<span class=\"sm-media-missing\">影片尚未下載</span>",
+  videoMissingFreeVersion: "<span class=\"sm-media-missing\">影片尚未下載 <span class=\"advanced-entry\"><button type=\"button\" class=\"advanced-entry-button\" aria-label=\"進階：自動保存影片\">進階</button></span></span>",
+  fileCardNoRecord: "<span class=\"sm-file\"><span class=\"sm-file-icon\">📎</span><span class=\"sm-file-details\"><span class=\"sm-file-name\">report.pdf</span><span class=\"sm-file-size\">1.2 KB</span></span></span>",
+  fileCardSaved: "<span class=\"sm-file\"><span class=\"sm-file-icon\">📎</span><span class=\"sm-file-details\"><span class=\"sm-file-name\">report.pdf</span><span class=\"sm-file-size\">1.2 KB</span></span></span><span class=\"sm-file-saved\"><span class=\"sm-file-saved-label\">已保存</span><span class=\"sm-file-path\">C:\\Users\\x\\saved-files\\chat\\report.pdf</span></span>"
+}
+
+test('M4 no provider: the missing image, video and file card render the same DOM as before the change (snapshot)', async () => {
+  for (const c of M4_CASES) {
+    const { api } = plugin(c.handlers)
+    let scene
+    try {
+      scene = ui.mount(c.scene(api))
+      await until(() => c.settled(scene.container), { message: `${c.name} settled` })
+      await sleep(40)
+      assert.equal(domOf(scene), M4_BASELINE_DOM[c.name], `${c.name}: DOM changed`)
+    } finally { scene?.unmount(); api.dispose() }
+  }
+})
+
+test('M4 explicit null provider (the free version): the same cases render the same DOM as before the change (snapshot)', async () => {
+  for (const c of M4_CASES) {
+    const { api } = plugin(c.handlers)
+    let scene
+    try {
+      scene = ui.mount(ui.missingSlotScene(null, c.scene(api)))
+      await until(() => c.settled(scene.container), { message: `${c.name} settled` })
+      await sleep(40)
+      assert.equal(domOf(scene), M4_BASELINE_DOM[c.name], `${c.name}: DOM changed with a null provider`)
+    } finally { scene?.unmount(); api.dispose() }
+  }
+})
+
+const slotKinds = (container) => walk(container).filter((el) => el.localName === 'button' && el.getAttribute('class') === 'm4-slot').map((el) => el.getAttribute('data-kind'))
+
+test('M4 provider: a missing image, video and file card show the slot for that message; a loaded image, a playing video and a saved file card show none', async () => {
+  const renders = []
+  const provider = ui.slotProvider((info) => renders.push(info))
+  const image = plugin({ 'media.prepare': () => { throw NOT_DOWNLOADED() } })
+  const video = plugin({ 'media.prepareVideo': () => { throw NOT_DOWNLOADED() } })
+  const file = plugin({ 'media.savedFile': () => { throw notSavedYet() } })
+  const loaded = plugin({ 'media.prepare': () => ({ path: 'media-cache/a.png', mime: 'image/png', size: 10, cached: false }) })
+  const playing = plugin({ 'media.prepareVideo': () => ({ path: 'media-saved/clip.mp4', mime: 'video/mp4', size: 10, cached: true }) })
+  const saved = plugin({ 'media.savedFile': () => savedRecord })
+  const all = [image, video, file, loaded, playing, saved]
+  const scenes = []
+  try {
+    scenes.push(ui.mount(ui.missingSlotScene(provider, ui.mediaImageScene(image.api, 'i:m1'))))
+    scenes.push(ui.mount(ui.missingSlotScene(provider, ui.mediaVideoScene(video.api, VIDEO_ID))))
+    scenes.push(ui.mount(ui.missingSlotScene(provider, ui.messageContentScene(file.api, fileMessage))))
+    scenes.push(ui.mount(ui.missingSlotScene(provider, ui.mediaImageScene(loaded.api, 'i:m2'))))
+    scenes.push(ui.mount(ui.missingSlotScene(provider, ui.mediaVideoScene(playing.api, VIDEO_ID))))
+    scenes.push(ui.mount(ui.missingSlotScene(provider, ui.messageContentScene(saved.api, fileMessage))))
+    await until(() => slotKinds(scenes[0].container).length === 1 && slotKinds(scenes[1].container).length === 1 && slotKinds(scenes[2].container).length === 1, { message: 'the three slots' })
+    await until(() => imageSrcs(scenes[3].container).length === 1 && videoUrls(scenes[4].container).length === 1 && scenes[5].container.textContent.includes('已保存'), { message: 'the loaded cells' })
+    await sleep(40)
+    assert.deepEqual(slotKinds(scenes[0].container), ['image'])
+    assert.equal(scenes[0].container.textContent.includes('尚未下載'), true, 'the 尚未下載 text stays next to the slot')
+    assert.deepEqual(slotKinds(scenes[1].container), ['video'])
+    assert.deepEqual(slotKinds(scenes[2].container), ['file'])
+    assert.deepEqual(slotKinds(scenes[3].container), [])
+    assert.deepEqual(slotKinds(scenes[4].container), [])
+    assert.deepEqual(slotKinds(scenes[5].container), [], 'a saved file card has no slot')
+    assert.deepEqual([...new Set(renders.map((r) => `${r.kind}:${r.msgId}`))].sort(), ['file:i:f1', 'image:i:m1', 'video:i:v1'], 'only the three missing cells were offered a slot')
+  } finally { for (const s of scenes) s.unmount(); for (const p of all) p.api.dispose() }
+})
+
+test('M4 retry (image): the slot of a missing image asks media.prepare again when it calls retry, and shows the picture once the backend has it', async () => {
+  const renders = []
+  let calls = 0
+  const { api } = plugin({ 'media.prepare': () => {
+    calls += 1
+    if (calls === 1) throw NOT_DOWNLOADED()
+    return { path: 'media-cache/late.png', mime: 'image/png', size: 10, cached: false }
+  } })
+  let scene
+  try {
+    scene = ui.mount(ui.missingSlotScene(ui.slotProvider((info) => renders.push(info)), ui.mediaImageScene(api, 'i:m1')))
+    await until(() => renders.length >= 1, { message: 'the slot' })
+    assert.equal(calls, 1)
+    renders.at(-1).retry()
+    await until(() => imageSrcs(scene.container).length === 1, { message: 'the picture after retry' })
+    assert.equal(calls, 2, 'retry asked media.prepare once more')
+    assert.deepEqual(imageSrcs(scene.container), ['tuqplugin://tuqdev.line-todo/data/media-cache/late.png'])
+    assert.deepEqual(slotKinds(scene.container), [], 'the slot is gone once the picture shows')
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+test('M4 retry (video): inside the 60 s window retry alone asks nothing; after api.media.forget(msgId) it asks prepareVideo again and shows the video', async () => {
+  const renders = []
+  let calls = 0
+  const { api } = plugin({ 'media.prepareVideo': () => {
+    calls += 1
+    if (calls === 1) throw Object.assign(new Error('not saved yet'), { code: 'not_cached' })
+    return { path: 'media-saved/later.mp4', mime: 'video/mp4', size: 1, cached: true }
+  } })
+  let scene
+  try {
+    scene = ui.mount(ui.missingSlotScene(ui.slotProvider((info) => renders.push(info)), ui.mediaVideoScene(api, VIDEO_ID)))
+    await until(() => renders.length >= 1, { message: 'the slot' })
+    renders.at(-1).retry()
+    await until(() => renders.length >= 2, { message: 'the cell settled again after retry' })
+    await sleep(40)
+    assert.equal(calls, 1, 'the cached miss answers retry without a backend call')
+    api.media.forget(VIDEO_ID)
+    renders.at(-1).retry()
+    await until(() => videoUrls(scene.container).length === 1, { message: 'the video after forget and retry' })
+    assert.equal(calls, 2, 'after forget, retry asked prepareVideo again')
+    assert.deepEqual(videoUrls(scene.container), ['tuqplugin://tuqdev.line-todo/data/media-saved/later.mp4'])
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+test('M4 forget: after api.media.forget(msgId) the video and the file card of that message ask the backend again; another message stays cached', async () => {
+  const calls = { 'i:v1': 0, 'i:v2': 0, 'i:f1': 0 }
+  const { api } = plugin({
+    'media.prepareVideo': (msgId) => { calls[msgId] += 1; throw Object.assign(new Error('not saved'), { code: 'not_cached' }) },
+    'media.savedFile': (msgId) => { calls[msgId] += 1; throw Object.assign(new Error('not saved'), { code: 'not_saved' }) }
+  })
+  try {
+    await mountOnce(ui.mediaVideoScene(api, 'i:v1'), videoMissing)
+    await mountOnce(ui.mediaVideoScene(api, 'i:v2'), videoMissing)
+    await mountOnce(ui.messageContentScene(api, fileMessage), (s) => () => fileCardShown(s)() && calls['i:f1'] >= 1)
+    assert.deepEqual(calls, { 'i:v1': 1, 'i:v2': 1, 'i:f1': 1 })
+    await mountOnce(ui.mediaVideoScene(api, 'i:v1'), videoMissing)
+    assert.equal(calls['i:v1'], 1, 'inside the window the miss is not asked again')
+
+    api.media.forget('i:v1')
+    await mountOnce(ui.mediaVideoScene(api, 'i:v1'), (s) => () => videoMissing(s)() && calls['i:v1'] >= 2)
+    assert.equal(calls['i:v1'], 2, 'forget: the video is asked again')
+    await mountOnce(ui.mediaVideoScene(api, 'i:v2'), videoMissing)
+    assert.equal(calls['i:v2'], 1, 'another message keeps its cached miss')
+
+    api.media.forget('i:f1')
+    await mountOnce(ui.messageContentScene(api, fileMessage), (s) => () => fileCardShown(s)() && calls['i:f1'] >= 2)
+    assert.equal(calls['i:f1'], 2, 'forget: the file card is asked again (savedFile)')
+  } finally { api.dispose() }
+})
+
+test('M4 free version: with onPurchase and no provider, the missing image, video and file card show no 下載原檔 or 補抓 text', async () => {
+  const { api } = plugin({
+    'media.prepare': () => { throw NOT_DOWNLOADED() },
+    'media.prepareVideo': () => { throw NOT_DOWNLOADED() },
+    'media.savedFile': () => { throw notSavedYet() }
+  })
+  const purchase = () => undefined
+  const scenes = []
+  try {
+    for (const message of [{ ...videoMessage, msgId: 'i:img', contentType: 1 }, { ...videoMessage }, { ...fileMessage }]) {
+      const scene = ui.mount(ui.messageContentScene(api, message, purchase))
+      scenes.push(scene)
+      await sleep(40)
+      assert.equal(scene.container.textContent.includes('下載原檔'), false, `content type ${message.contentType}`)
+      assert.equal(scene.container.textContent.includes('補抓'), false, `content type ${message.contentType}`)
+    }
+    assert.equal(advancedEntries(scenes[0].container).length, 1, 'the advanced entry stays (the free version)')
+  } finally { for (const s of scenes) s.unmount(); api.dispose() }
+})
+
+test('M4 provider (file card): while savedFile has not answered the card offers no slot; the slot appears once the backend says not_saved', async () => {
+  const renders = []
+  let release
+  const answered = new Promise((resolve) => { release = resolve })
+  let calls = 0
+  const { api } = plugin({ 'media.savedFile': async () => { calls += 1; await answered; throw notSavedYet() } })
+  let scene
+  try {
+    scene = ui.mount(ui.missingSlotScene(ui.slotProvider((info) => renders.push(info)), ui.messageContentScene(api, fileMessage)))
+    await until(() => calls === 1 && fileCardShown(scene)(), { message: 'the file card with its savedFile lookup pending' })
+    await sleep(40)
+    assert.deepEqual(slotKinds(scene.container), [], 'no slot while the lookup is pending')
+    assert.equal(renders.length, 0, 'the provider was not asked to render yet')
+    release()
+    await until(() => slotKinds(scene.container).length === 1, { message: 'the slot after not_saved' })
+    assert.deepEqual(slotKinds(scene.container), ['file'])
+  } finally { release?.(); scene?.unmount(); api.dispose() }
+})
+
+test('M4 retry (image after img onError): a picture that fails to load shows the slot; forget + retry asks media.prepare again and shows the new picture', async () => {
+  const renders = []
+  let calls = 0
+  const { api } = plugin({ 'media.prepare': () => { calls += 1; return { path: `media-cache/p${calls}.png`, mime: 'image/png', size: 10, cached: false } } })
+  let scene
+  try {
+    scene = ui.mount(ui.missingSlotScene(ui.slotProvider((info) => renders.push(info)), ui.mediaImageScene(api, 'i:m1')))
+    await until(() => imageSrcs(scene.container).length === 1, { message: 'the picture' })
+    const img = walk(scene.container).find((el) => el.localName === 'img')
+    reactProps(img).onError({ currentTarget: img })
+    await until(() => slotKinds(scene.container).length === 1, { message: 'the slot after the picture failed to load' })
+    assert.deepEqual(imageSrcs(scene.container), [], 'the broken picture is gone')
+    api.media.forget('i:m1')
+    renders.at(-1).retry()
+    await until(() => imageSrcs(scene.container).length === 1, { message: 'the picture after forget and retry' })
+    assert.equal(calls, 2, 'forget + retry asked media.prepare once more')
+    assert.deepEqual(imageSrcs(scene.container), ['tuqplugin://tuqdev.line-todo/data/media-cache/p2.png'])
+    assert.deepEqual(slotKinds(scene.container), [], 'the slot is gone once the picture shows')
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+test('M4 retry (file card): the slot of a file card with no saved record asks savedFile again after forget + retry and then shows 已保存', async () => {
+  const renders = []
+  let calls = 0
+  const { api } = plugin({ 'media.savedFile': () => { calls += 1; if (calls === 1) throw notSavedYet(); return savedRecord } })
+  let scene
+  try {
+    scene = ui.mount(ui.missingSlotScene(ui.slotProvider((info) => renders.push(info)), ui.messageContentScene(api, fileMessage)))
+    await until(() => slotKinds(scene.container).length === 1, { message: 'the file slot' })
+    assert.equal(calls, 1)
+    api.media.forget('i:f1')
+    renders.at(-1).retry()
+    await until(() => scene.container.textContent.includes('已保存'), { message: 'the saved record after forget and retry' })
+    assert.equal(calls, 2, 'retry asked savedFile again')
+    assert.deepEqual(slotKinds(scene.container), [], 'a saved file card has no slot')
+  } finally { scene?.unmount(); api.dispose() }
+})
+
+// ───────────── X7 Pro 下載原檔：OriginalAction（格子）、ChatOriginalsBar（批次列）、useOriginals（狀態與輪詢）─────────────
+// history-download.md §7、implementation-plan-v2.md X7、Manager 裁決（批次含影片與檔案、forget 再 retry、1.5 s 輪詢、沿用登入對話框、只在 Pro、
+// 已收回沒有按鈕、預設開關）。後端是假的 X6 `linejsMedia.original.*`，透過真的 plugin adapter 與 Core 閘門替身呼叫。
+
+/** the store's knobs for tests: the same logic as the 1.5 s production timing, only faster */
+const X7_TIMING = { pollMs: 40, recheckMs: 40, recheckMax: 3, summaryMs: 150 }
+const X7_WAIT = { timeout: 15_000 }
+/** timers whose live handles the test can count (a handle is live from set until it fires or is cleared) */
+function trackedTimers() {
+  const live = new Set()
+  return {
+    live,
+    timers: {
+      set: (fn, ms) => { const handle = setTimeout(() => { live.delete(handle); fn() }, ms); live.add(handle); return handle },
+      clear: (handle) => { live.delete(handle); clearTimeout(handle) }
+    }
+  }
+}
+const x7Msg = (msgId, contentType, extra = {}) => ({
+  msgId, chatId: 'c1', chat: '測試聊天', isGroup: false, ts: 1, time: '', direction: 'in', sender: '小明', text: contentType === 14 ? '' : '[media]', contentType,
+  ...(contentType === 14 ? { origFilename: 'report.pdf', fileSize: 1234 } : {}), ...extra
+})
+const x7Row = (chatId, n, contentType, extra = {}) => {
+  const ts = Date.UTC(2026, 10, 6, 2, 0) + n * 60_000
+  return {
+    msgId: `i:${chatId}-${n}`, chatId, ts, timeIso: new Date(ts).toISOString(), direction: 'in', sender: '小明', text: contentType === 0 ? `文字 ${n}` : '',
+    contentType, processed: true, ingestedAt: new Date(ts).toISOString(), origFilename: contentType === 14 ? `檔案${n}.pdf` : null, fileSize: contentType === 14 ? 1234 : null,
+    unsent: false, ...extra
+  }
+}
+const x7StreamHandlers = (chats, rowsByChat) => ({
+  'db.chats.list': () => chats,
+  'db.messages.list': () => [],
+  'db.messages.recentByChat': (chatId) => rowsByChat[chatId] ?? [],
+  'messages.recent': () => [],
+  'line.status': () => ({ state: 'stopped', lastMessageAt: null, messageCount: 0, lastError: null, restarts: 0 }),
+  'media.avatar.prepareChats': () => ({ paths: {}, names: {} }),
+  'media.avatar.prepareMessages': () => ({ paths: {}, names: {} }),
+  'settings.chatPrompt.list': () => ({ items: [] }),
+  'groupTopics.list': () => ({ ok: true, topics: [] }),
+  'groupTopics.pendingCount': () => 0,
+  'db.chats.listPrefs': () => ({ prefsReady: true, topicsAvailable: true, pinned: [], hidden: [], todoOff: [], topicsOn: [] }),
+  'db.chats.todoExtractEnabled': () => true,
+  'db.todos.openByChat': () => []
+})
+const x7Chat = (chatId, name) => ({ chatId, name, isGroup: false, firstSeenAt: '2026-11-06T02:00:00.000Z', lastSeenAt: '2026-11-06T03:00:00.000Z' })
+
+/**
+ * A fake Pro backend: X6's original.* paths over a state table the test drives, and media.prepare / prepareVideo / savedFile that answer
+ * "not downloaded" until the test lands the file. Calls are logged in order (`log`); api.media.forget is wrapped into the same log.
+ */
+function x7Backend(options = {}) {
+  const states = new Map()
+  const landed = new Set()
+  const log = []
+  const calls = { request: [], status: [], cancel: [], batchStart: [], batchCancel: [] }
+  const hooks = { request: null, status: null, batchStart: null, prepare: null }
+  const view = (id) => ({ msgId: id, ...(states.get(id) ?? { state: 'idle' }) })
+  const p = plugin({
+    ...(options.handlers ?? {}),
+    'linejsMedia.original.request': async ({ msgId }) => {
+      calls.request.push(msgId); log.push(`request ${msgId}`)
+      if (hooks.request) return hooks.request(msgId)
+      const now = states.get(msgId)?.state ?? 'idle'
+      if (['idle', 'failed', 'failed_retry_exhausted', 'needs_login'].includes(now)) states.set(msgId, { state: 'queued' })
+      return view(msgId)
+    },
+    'linejsMedia.original.status': async ({ msgIds }) => {
+      calls.status.push(msgIds); log.push(`status ${msgIds.length}`)
+      if (hooks.status) { const answer = await hooks.status(msgIds); if (answer) return answer }
+      return { items: msgIds.map(view), batch: null, paused: null }
+    },
+    'linejsMedia.original.cancel': async ({ msgId }) => { calls.cancel.push(msgId); states.set(msgId, { state: 'idle' }); return view(msgId) },
+    'linejsMedia.original.batchStart': async ({ chatId, msgIds }) => {
+      calls.batchStart.push({ chatId, msgIds })
+      if (hooks.batchStart) return hooks.batchStart(chatId, msgIds)
+      for (const id of msgIds) states.set(id, { state: 'queued' })
+      return { batchId: 'b1', accepted: [...msgIds], skipped: [], truncated: 0 }
+    },
+    'linejsMedia.original.batchCancel': async ({ batchId }) => {
+      calls.batchCancel.push(batchId)
+      let cancelled = 0
+      for (const [id, s] of states) if (s.state === 'queued' || s.state === 'running') { states.set(id, { state: 'idle' }); cancelled += 1 }
+      return { cancelled }
+    },
+    'media.prepare': async (msgId) => {
+      log.push(`prepare ${msgId}`)
+      if (hooks.prepare) { const answer = await hooks.prepare(msgId); if (answer !== undefined) return answer }
+      if (!landed.has(msgId)) throw NOT_DOWNLOADED()
+      return { path: `media-saved/${msgId.replace(':', '-')}.jpg`, mime: 'image/jpeg', size: 10, cached: true }
+    },
+    'media.prepareVideo': async (msgId) => {
+      log.push(`prepareVideo ${msgId}`)
+      if (!landed.has(msgId)) throw Object.assign(new Error('not saved yet'), { code: 'not_cached' })
+      return { path: `media-saved/${msgId.replace(':', '-')}.mp4`, mime: 'video/mp4', size: 10, cached: true }
+    },
+    'media.savedFile': async (msgId) => {
+      log.push(`savedFile ${msgId}`)
+      if (!landed.has(msgId)) throw notSavedYet()
+      return savedRecord
+    }
+  })
+  const realForget = p.api.media.forget
+  p.api.media.forget = (msgId) => { log.push(`forget ${msgId}`); realForget(msgId) }
+  return {
+    ...p, states, landed, log, calls, hooks,
+    set: (id, state, extra = {}) => states.set(id, { state, ...extra }),
+    land: (id) => { landed.add(id); states.set(id, { state: 'done' }) },
+    forgets: (id) => log.filter((entry) => entry === `forget ${id}`).length
+  }
+}
+const cellOf = (scene, msgId) => walk(scene.container).find((el) => el.getAttribute('data-cell') === msgId) ?? null
+const actionsIn = (root) => (root ? walk(root).filter((el) => hasClassName(el, 'original-action')) : [])
+const actionOf = (scene, msgId) => actionsIn(cellOf(scene, msgId))[0] ?? null
+const actionText = (scene, msgId) => actionOf(scene, msgId)?.textContent ?? ''
+const buttonsIn = (root) => (root ? walk(root).filter((el) => el.localName === 'button').map((el) => (reactProps(el).disabled ? `${el.textContent}(disabled)` : el.textContent)) : [])
+function clickIn(root, label) {
+  const button = root && walk(root).find((el) => el.localName === 'button' && el.textContent === label)
+  assert.ok(button, `button ${label}`)
+  reactProps(button).onClick({ currentTarget: button })
+}
+const barOf = (scene) => walk(scene.container).find((el) => hasClassName(el, 'chat-originals-bar')) ?? null
+const barText = (scene) => barOf(scene)?.textContent ?? ''
+const chatButtonIn = (scene, name) => walk(scene.container).find((el) => hasClassName(el, 'chat-list-item') && el.textContent.includes(name))
+const shownImage = (scene, id) => imageSrcs(cellOf(scene, id)).length === 1
+
+test('X7 states: each cell state of HD §7.3 shows its own text and button (idle, needs_login, account_mismatch, queued, running with %, paused, failed with cooldown, expired, forbidden, undecryptable, done); unsupported shows nothing', async () => {
+  const be = x7Backend()
+  const now = Date.now()
+  const rows = [
+    ['i:s-idle', 1, { state: 'idle' }, '下載原檔', ['下載原檔']],
+    ['i:s-file-idle', 14, { state: 'idle' }, '原檔尚未下載下載原檔', ['下載原檔']],
+    ['i:s-login', 1, { state: 'needs_login', code: 'SESSION_NOT_READY' }, '需先登入 LINE登入 LINE', ['登入 LINE']],
+    ['i:s-mismatch', 1, { state: 'account_mismatch', code: 'ACCOUNT_MISMATCH' }, '登入的 LINE 帳號與電腦版不同，無法下載', []],
+    ['i:s-queued', 1, { state: 'queued' }, '排隊中…取消', ['取消']],
+    ['i:s-running', 1, { state: 'running' }, '下載中…取消', ['取消']],
+    ['i:s-running-video', 2, { state: 'running', bytesDone: 400, declaredBytes: 1000 }, '下載中… 40%取消', ['取消']],
+    ['i:s-running-file', 14, { state: 'running', bytesDone: 1, declaredBytes: 4 }, '下載中… 25%取消', ['取消']],
+    ['i:s-paused-limit', 1, { state: 'paused', code: 'rate_limited' }, '已暫停（LINE 限流），稍後自動繼續', []],
+    ['i:s-paused-hour', 1, { state: 'paused', code: 'hourly_limit' }, '已暫停（已達每小時上限），稍後自動繼續', []],
+    ['i:s-paused-disk', 1, { state: 'paused', code: 'disk_low' }, '已暫停（磁碟空間不足），空出空間後自動繼續', []],
+    ['i:s-paused-auth', 1, { state: 'paused', code: 'auth' }, '已暫停（需重新登入 LINE）', []],
+    ['i:s-paused-net', 1, { state: 'paused', code: 'retry' }, '已暫停（連線中斷），稍後自動繼續', []],
+    ['i:s-failed', 1, { state: 'failed', code: 'TRANSIENT', retryAt: now - 1000 }, '下載失敗，可以重試重試', ['重試']],
+    ['i:s-failed-cool', 1, { state: 'failed', code: 'TRANSIENT', retryAt: now + 60_000 }, /^下載失敗，\d+ 秒後可重試重試$/, ['重試(disabled)']],
+    ['i:s-exhausted', 1, { state: 'failed_retry_exhausted', code: 'RETRY_EXHAUSTED', retryAt: now - 1000 }, '下載失敗，可以重試重試', ['重試']],
+    ['i:s-expired', 1, { state: 'expired', code: 'EXPIRED' }, '已過期，無法下載', []],
+    ['i:s-forbidden', 1, { state: 'forbidden', code: 'FORBIDDEN' }, '沒有權限，無法下載', []],
+    ['i:s-undecryptable', 1, { state: 'undecryptable', code: 'HMAC' }, '無法解密，無法下載', []]
+  ]
+  for (const [id, , state] of rows) be.set(id, state.state, Object.fromEntries(Object.entries(state).filter(([k]) => k !== 'state')))
+  be.set('i:s-unsupported', 'unsupported', { code: 'CONTENT_TYPE_UNSUPPORTED' })
+  // done: the backend already has the file, the first media.prepare (before the status answer) still misses it
+  be.set('i:s-done', 'done')
+  let firstDone = true
+  be.hooks.prepare = (msgId) => { if (msgId === 'i:s-done') { if (firstDone) { firstDone = false; throw NOT_DOWNLOADED() } return { path: 'media-saved/done.jpg', mime: 'image/jpeg', size: 1, cached: true } } }
+  const messages = [...rows.map(([id, ct]) => x7Msg(id, ct)), x7Msg('i:s-unsupported', 1), x7Msg('i:s-done', 1), x7Msg('d:s-legacy', 1)]
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, messages, X7_TIMING))
+  try {
+    await until(() => rows.every(([id]) => actionOf(scene, id)) && shownImage(scene, 'i:s-done') && cellOf(scene, 'd:s-legacy')?.textContent === '尚未下載', { ...X7_WAIT, message: 'every cell shows its state' })
+    for (const [id, ct, , text, buttons] of rows) {
+      if (text instanceof RegExp) assert.match(actionText(scene, id), text, id)
+      else assert.equal(actionText(scene, id), text, id)
+      assert.deepEqual(buttonsIn(actionOf(scene, id)), buttons, `${id}: buttons`)
+      if (ct === 1) assert.ok(cellOf(scene, id).textContent.startsWith('尚未下載'), `${id}: the photo cell keeps its own 尚未下載`)
+    }
+    assert.equal(actionOf(scene, 'i:s-unsupported'), null, 'unsupported: no button, no text')
+    assert.equal(cellOf(scene, 'i:s-unsupported').textContent, '尚未下載', 'unsupported stays 尚未下載')
+    await sleep(X7_TIMING.pollMs * 2)
+    assert.equal(actionOf(scene, 'd:s-legacy'), null, "a 'd:' message (not a LINE id) has no button")
+    assert.equal(be.calls.status.flat().includes('d:s-legacy'), false, "a 'd:' message is never asked about")
+    assert.deepEqual(imageSrcs(cellOf(scene, 'i:s-done')), ['tuqplugin://tuqdev.line-todo/data/media-saved/done.jpg'], 'done: the picture shows in the cell')
+    assert.equal(actionOf(scene, 'i:s-done'), null, 'done: no slot once the picture shows')
+    assert.ok(be.log.indexOf('forget i:s-done') >= 0 && be.log.lastIndexOf('prepare i:s-done') > be.log.indexOf('forget i:s-done'), 'done: forget, then the cell asks again')
+  } finally { scene.unmount(); be.api.dispose() }
+})
+
+test('X7 click: 下載原檔 goes 排隊中 → 下載中 → the photo, video or saved file card appears (fake backend); done calls api.media.forget once, before the cell asks again', async () => {
+  const kinds = [
+    ['image', 1, 'prepare', (scene, id) => shownImage(scene, id)],
+    ['video', 2, 'prepareVideo', (scene, id) => videoUrls(cellOf(scene, id)).length === 1],
+    ['file', 14, 'savedFile', (scene, id) => cellOf(scene, id).textContent.includes('已保存')]
+  ]
+  for (const [kind, ct, ask, shown] of kinds) {
+    const id = `i:click-${kind}`
+    const be = x7Backend()
+    const scene = ui.mount(ui.originalsMessagesScene(be.api, [x7Msg(id, ct)], X7_TIMING))
+    try {
+      await until(() => actionText(scene, id).endsWith('下載原檔'), { ...X7_WAIT, message: `${kind}: 下載原檔` })
+      clickIn(actionOf(scene, id), '下載原檔')
+      await until(() => actionText(scene, id).startsWith('排隊中…'), { ...X7_WAIT, message: `${kind}: queued` })
+      assert.deepEqual(be.calls.request, [id], `${kind}: one request for this message`)
+      be.set(id, 'running', ct === 1 ? {} : { bytesDone: 50, declaredBytes: 100 })
+      await until(() => actionText(scene, id).startsWith('下載中…'), { ...X7_WAIT, message: `${kind}: running` })
+      if (ct !== 1) assert.equal(actionText(scene, id), '下載中… 50%取消', `${kind}: percent`)
+      const mark = be.log.length
+      be.land(id)
+      await until(() => shown(scene, id), { ...X7_WAIT, message: `${kind}: shown after done` })
+      const after = be.log.slice(mark)
+      const forgetAt = after.indexOf(`forget ${id}`)
+      const askAt = after.indexOf(`${ask} ${id}`)
+      assert.ok(forgetAt >= 0, `${kind}: forget was called (${after.join(', ')})`)
+      assert.ok(askAt > forgetAt, `${kind}: the cell asked ${ask} after forget (${after.join(', ')})`)
+      assert.equal(be.forgets(id), 1, `${kind}: forget once`)
+      assert.equal(actionOf(scene, id), null, `${kind}: no slot once shown`)
+    } finally { scene.unmount(); be.api.dispose() }
+  }
+})
+
+test('X7 race: a status answer sent before the click was answered (the backend still says idle) never takes the cell back to 下載原檔', async () => {
+  const id = 'i:race-click'
+  const be = x7Backend()
+  let release = null
+  be.hooks.request = (msgId) => new Promise((resolve) => { release = () => { be.set(msgId, 'queued'); resolve({ msgId, state: 'queued' }) } })
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, [x7Msg(id, 1)], X7_TIMING))
+  try {
+    await until(() => actionText(scene, id) === '下載原檔', { ...X7_WAIT, message: '下載原檔' })
+    clickIn(actionOf(scene, id), '下載原檔')
+    await until(() => actionText(scene, id) === '排隊中…取消', { ...X7_WAIT, message: 'the click is rendered as queued' })
+    const before = be.calls.status.length
+    const seen = new Set()
+    await until(() => { seen.add(actionText(scene, id)); return be.calls.status.length >= before + 3 && release }, { ...X7_WAIT, message: 'three polls while the click is still unanswered' })
+    for (let i = 0; i < 20; i += 1) { seen.add(actionText(scene, id)); await sleep(5) }
+    assert.deepEqual([...seen], ['排隊中…取消'], 'the cell stayed queued while the stale answers (idle) came back')
+    assert.deepEqual(buttonsIn(actionOf(scene, id)), ['取消(disabled)'], 'its cancel waits for the click to be answered')
+    release()
+    await until(() => buttonsIn(actionOf(scene, id)).join() === '取消', { ...X7_WAIT, message: 'answered: queued with cancel' })
+    be.set(id, 'running')
+    await until(() => actionText(scene, id).startsWith('下載中…'), { ...X7_WAIT, message: 'running' })
+    be.land(id)
+    await until(() => shownImage(scene, id), { ...X7_WAIT, message: 'the picture' })
+  } finally { release?.(); scene.unmount(); be.api.dispose() }
+})
+
+test('X7 race: a status already on its way when the click answered done (it still says running) does not undo done; forget runs once, before the cell asks again, and polling stops', async () => {
+  const id = 'i:race-done'
+  const be = x7Backend()
+  let releaseRequest = null
+  let releaseStatus = null
+  let hold = false
+  be.hooks.request = (msgId) => new Promise((resolve) => { releaseRequest = () => { be.land(msgId); resolve({ msgId, state: 'done' }) } })
+  be.hooks.status = (ids) => (hold && ids.includes(id) && !releaseStatus
+    ? new Promise((resolve) => { releaseStatus = () => resolve({ items: ids.map((msgId) => ({ msgId, state: 'running' })), batch: null, paused: null }) })
+    : null)
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, [x7Msg(id, 1)], X7_TIMING))
+  try {
+    await until(() => actionText(scene, id) === '下載原檔', { ...X7_WAIT, message: '下載原檔' })
+    hold = true
+    clickIn(actionOf(scene, id), '下載原檔')
+    await until(() => releaseStatus && releaseRequest, { ...X7_WAIT, message: 'a poll on its way while the click is unanswered' })
+    releaseRequest()
+    await until(() => shownImage(scene, id), { ...X7_WAIT, message: 'the picture after done' })
+    const polls = be.calls.status.length
+    releaseStatus()
+    await sleep(X7_TIMING.pollMs * 6)
+    assert.ok(shownImage(scene, id), 'the picture stays')
+    assert.equal(actionOf(scene, id), null, 'no slot came back')
+    assert.equal(be.forgets(id), 1, 'forget once')
+    const forgetAt = be.log.indexOf(`forget ${id}`)
+    assert.ok(be.log.lastIndexOf(`prepare ${id}`) > forgetAt, 'the cell asked again after forget')
+    assert.equal(be.calls.status.length, polls, 'nothing active: no further status call')
+  } finally { releaseRequest?.(); releaseStatus?.(); scene.unmount(); be.api.dispose() }
+})
+
+test('X7 race: forget + retry while the backend index has not caught up — the cell says 已下載，正在顯示… (never 下載原檔) and forgets + asks again until the picture shows', async () => {
+  const id = 'i:race-lag'
+  const be = x7Backend()
+  let lagging = 0
+  be.hooks.prepare = (msgId) => { if (msgId === id && be.landed.has(id) && lagging < 2) { lagging += 1; throw NOT_DOWNLOADED() } }
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, [x7Msg(id, 1)], X7_TIMING))
+  try {
+    await until(() => actionText(scene, id) === '下載原檔', { ...X7_WAIT, message: '下載原檔' })
+    clickIn(actionOf(scene, id), '下載原檔')
+    await until(() => actionText(scene, id).startsWith('排隊中…'), { ...X7_WAIT, message: 'queued' })
+    const mark = be.log.length
+    be.land(id)
+    const seen = []
+    await until(() => { seen.push(cellOf(scene, id)?.textContent ?? ''); return shownImage(scene, id) }, { ...X7_WAIT, message: 'the picture after the index caught up' })
+    assert.ok(seen.some((t) => t.includes('已下載，正在顯示…')), 'the cell said 已下載，正在顯示… while the index lagged')
+    assert.deepEqual(seen.filter((t) => t.includes('下載原檔')), [], 'the cell never went back to 下載原檔')
+    const after = be.log.slice(mark)
+    assert.equal(after.filter((e) => e === `forget ${id}`).length, 3, 'forget on done and before each of the two re-asks')
+    assert.equal(after.filter((e) => e === `prepare ${id}`).length, 3, 'asked three times: two misses, then the picture')
+    const css = readFileSync(resolve(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
+    assert.match(css, /\.sm-media-missing:has\(> \.original-action\[data-original-state="done"\]\)\s*\{[^}]*font-size:\s*0/, 'in the done state the cell\'s own 尚未下載 text is hidden; only 已下載，正在顯示… shows')
+  } finally { scene.unmount(); be.api.dispose() }
+})
+
+test('X7 done but the picture never shows: after recheckMax tries the cell offers 重新顯示 (never 下載原檔); 重新顯示 forgets and asks again', async () => {
+  const id = 'i:race-stuck'
+  const be = x7Backend()
+  let allow = false
+  be.hooks.prepare = (msgId) => { if (msgId === id && be.landed.has(id) && !allow) throw NOT_DOWNLOADED() }
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, [x7Msg(id, 1)], X7_TIMING))
+  try {
+    await until(() => actionText(scene, id) === '下載原檔', { ...X7_WAIT, message: '下載原檔' })
+    clickIn(actionOf(scene, id), '下載原檔')
+    await until(() => actionText(scene, id).startsWith('排隊中…'), { ...X7_WAIT, message: 'queued' })
+    be.land(id)
+    await until(() => actionText(scene, id) === '已下載重新顯示', { ...X7_WAIT, message: '重新顯示 after the automatic tries' })
+    assert.equal(be.forgets(id), 1 + X7_TIMING.recheckMax, 'forget on done and before each automatic re-ask')
+    allow = true
+    clickIn(actionOf(scene, id), '重新顯示')
+    await until(() => shownImage(scene, id), { ...X7_WAIT, message: 'the picture after 重新顯示' })
+    assert.equal(be.forgets(id), 2 + X7_TIMING.recheckMax, '重新顯示 forgot once more')
+  } finally { scene.unmount(); be.api.dispose() }
+})
+
+test('X7 polling: original.status is asked every pollMs only while a cell is queued, running or paused (only those msgIds); with nothing active no timer is left and nothing more is asked', async () => {
+  const t = trackedTimers()
+  const be = x7Backend()
+  be.set('i:poll-c', 'expired')
+  const ids = ['i:poll-a', 'i:poll-b', 'i:poll-c']
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, ids.map((id) => x7Msg(id, 1)), { ...X7_TIMING, timers: t.timers }))
+  try {
+    await until(() => actionText(scene, 'i:poll-a') === '下載原檔' && actionText(scene, 'i:poll-b') === '下載原檔' && actionText(scene, 'i:poll-c') === '已過期，無法下載', { ...X7_WAIT, message: 'first look' })
+    await sleep(X7_TIMING.pollMs * 6)
+    assert.deepEqual(be.calls.status.flat().sort(), [...ids].sort(), 'one first look for the three cells, nothing else')
+    assert.equal(t.live.size, 0, 'nothing active: no timer')
+    clickIn(actionOf(scene, 'i:poll-a'), '下載原檔')
+    const first = be.calls.status.length
+    await until(() => be.calls.status.length >= first + 3, { ...X7_WAIT, message: 'polls while a cell is queued' })
+    assert.deepEqual([...new Set(be.calls.status.slice(first).map((call) => call.join()))], ['i:poll-a'], 'only the active cell is polled')
+    be.set('i:poll-a', 'paused', { code: 'rate_limited' })
+    await until(() => actionText(scene, 'i:poll-a').startsWith('已暫停'), { ...X7_WAIT, message: 'paused' })
+    const pausedAt = be.calls.status.length
+    await until(() => be.calls.status.length >= pausedAt + 2, { ...X7_WAIT, message: 'paused is still polled' })
+    be.land('i:poll-a')
+    await until(() => shownImage(scene, 'i:poll-a'), { ...X7_WAIT, message: 'done' })
+    await sleep(X7_TIMING.pollMs * 2)
+    const settled = be.calls.status.length
+    await sleep(X7_TIMING.pollMs * 6)
+    assert.equal(be.calls.status.length, settled, 'nothing active: polling stopped')
+    assert.equal(t.live.size, 0, 'nothing active: the poll timer is gone')
+  } finally { scene.unmount(); be.api.dispose() }
+  assert.equal(t.live.size, 0, 'unmounted: no timer left')
+})
+
+test('X7 polling (store): a status call never carries more than 200 msgIds; 230 active cells are covered by rotating calls; batchStart never gets more than 50', async () => {
+  const statusCalls = []
+  const batchCalls = []
+  const t = trackedTimers()
+  const store = new ui.OriginalsStore({
+    control: {
+      status: async (msgIds) => { statusCalls.push(msgIds); return { items: msgIds.map((msgId) => ({ msgId, state: 'queued' })), batch: null, paused: null } },
+      request: async (msgId) => ({ msgId, state: 'queued' }),
+      cancel: async (msgId) => ({ msgId, state: 'idle' }),
+      batchStart: async (chatId, msgIds) => { batchCalls.push(msgIds); return { batchId: 'b', accepted: msgIds, skipped: [], truncated: 0 } },
+      batchCancel: async () => ({ cancelled: 0 })
+    },
+    forget: () => undefined, timers: t.timers, pollMs: 20
+  })
+  store.start()
+  const ids = Array.from({ length: 230 }, (_, i) => `i:many-${i}`)
+  const off = ids.map((id) => store.register(id, 'image', { current: () => undefined }))
+  try {
+    await until(() => statusCalls.length >= 5, { ...X7_WAIT, message: 'first look and polls' })
+    assert.deepEqual(statusCalls.slice(0, 2).map((c) => c.length), [200, 30], 'the first look is split at 200')
+    assert.ok(statusCalls.every((c) => c.length <= 200), `every call ≤ 200 (${statusCalls.map((c) => c.length).join(',')})`)
+    const polled = new Set(statusCalls.slice(2).flat())
+    await until(() => { for (const c of statusCalls.slice(2)) for (const id of c) polled.add(id); return polled.size === 230 }, { ...X7_WAIT, message: 'rotating polls cover all 230' })
+
+    const store2 = new ui.OriginalsStore({ control: { ...store.control, status: async (msgIds) => ({ items: msgIds.map((msgId) => ({ msgId, state: 'idle' })), batch: null, paused: null }), batchStart: async (chatId, msgIds) => { batchCalls.push(msgIds); return { batchId: 'b', accepted: msgIds, skipped: [], truncated: 0 } } }, forget: () => undefined, timers: t.timers, pollMs: 20 })
+    store2.start()
+    const sixty = Array.from({ length: 60 }, (_, i) => `i:sixty-${i}`)
+    const off2 = sixty.map((id) => store2.register(id, 'image', { current: () => undefined }))
+    await until(() => sixty.every((id) => store2.cell(id)?.state === 'idle'), { ...X7_WAIT, message: 'sixty idle' })
+    store2.startBatch('c1', sixty)
+    await until(() => batchCalls.length === 1, { ...X7_WAIT, message: 'batchStart' })
+    assert.equal(batchCalls[0].length, 50, 'the store sends at most 50')
+    for (const f of off2) f()
+    store2.dispose()
+  } finally { for (const f of off) f(); store.dispose() }
+  assert.equal(t.live.size, 0, 'disposed: no timer left')
+})
+
+test('X7 polling stops when the chat is switched away (and when the provider unmounts): no timer is left behind; coming back resumes it', async () => {
+  const t = trackedTimers()
+  const chatA = x7Chat('cA', '有照片的聊天室')
+  const chatB = x7Chat('cB', '純文字聊天室')
+  const be = x7Backend({ handlers: x7StreamHandlers([chatA, chatB], { cA: [x7Row('cA', 1, 1)], cB: [x7Row('cB', 1, 0)] }) })
+  be.set('i:cA-1', 'queued')
+  const scene = ui.mount(ui.originalsStreamScene(be.api, { ...X7_TIMING, timers: t.timers }))
+  const click = (el) => reactProps(el).onClick({ currentTarget: el })
+  const queuedShown = () => actionsIn(scene.container).some((el) => el.textContent.startsWith('排隊中…'))
+  try {
+    await until(() => chatButtonIn(scene, chatA.name) && chatButtonIn(scene, chatB.name), { ...X7_WAIT, message: 'both chats listed' })
+    click(chatButtonIn(scene, chatA.name))
+    await until(queuedShown, { ...X7_WAIT, message: 'the queued photo cell in chat A' })
+    const first = be.calls.status.length
+    await until(() => be.calls.status.length >= first + 3, { ...X7_WAIT, message: 'polling in chat A' })
+    click(chatButtonIn(scene, chatB.name))
+    await until(() => scene.container.textContent.includes('文字 1') && !queuedShown(), { ...X7_WAIT, message: 'chat B shown' })
+    await sleep(X7_TIMING.pollMs * 2)
+    const away = be.calls.status.length
+    await sleep(X7_TIMING.pollMs * 6)
+    assert.equal(be.calls.status.length, away, 'chat switched away: no more status calls')
+    assert.equal(t.live.size, 0, 'chat switched away: the poll timer was cleared')
+    click(chatButtonIn(scene, chatA.name))
+    await until(() => queuedShown() && be.calls.status.length >= away + 2, { ...X7_WAIT, message: 'back in chat A: polling resumes' })
+  } finally { scene.unmount(); be.api.dispose() }
+  assert.equal(t.live.size, 0, 'provider unmounted: no timer left')
+  const final = be.calls.status.length
+  await sleep(X7_TIMING.pollMs * 4)
+  assert.equal(be.calls.status.length, final, 'provider unmounted: nothing more is asked')
+})
+
+test('X7 batch: 30 missing photo, video and file cells → 補抓本頁原檔 sends one batchStart with all 30; progress reads 補抓中 7/30｜2 個已過期; 取消 returns the queued cells to 尚未下載 and the summary goes away after summaryMs', async () => {
+  const t = trackedTimers()
+  const chat = x7Chat('cA', '補抓聊天室')
+  const rows = Array.from({ length: 30 }, (_, i) => x7Row('cA', i + 1, i < 26 ? 1 : i < 28 ? 2 : 14))
+  const be = x7Backend({ handlers: x7StreamHandlers([chat], { cA: rows }) })
+  const scene = ui.mount(ui.originalsStreamScene(be.api, { ...X7_TIMING, timers: t.timers }))
+  const idle = () => actionsIn(scene.container).filter((el) => el.getAttribute('data-original-state') === 'idle')
+  try {
+    await until(() => chatButtonIn(scene, chat.name), { ...X7_WAIT, message: 'chat listed' })
+    reactProps(chatButtonIn(scene, chat.name)).onClick({ currentTarget: chatButtonIn(scene, chat.name) })
+    await until(() => barText(scene) === '本頁有 30 個舊檔尚未下載補抓本頁原檔', { ...X7_WAIT, message: 'the batch bar offers 30' })
+    assert.equal(idle().length, 30)
+    clickIn(barOf(scene), '補抓本頁原檔')
+    await until(() => be.calls.batchStart.length === 1, { ...X7_WAIT, message: 'batchStart' })
+    assert.equal(be.calls.batchStart[0].chatId, 'cA')
+    assert.deepEqual([...be.calls.batchStart[0].msgIds].sort(), rows.map((r) => r.msgId).sort(), 'all 30, photos, videos and files')
+    assert.ok(be.calls.batchStart[0].msgIds.includes('i:cA-27') && be.calls.batchStart[0].msgIds.includes('i:cA-30'), 'videos and files are in the batch')
+    await until(() => barText(scene) === '補抓中 0/30取消', { ...X7_WAIT, message: 'progress 0/30' })
+    for (let n = 1; n <= 5; n += 1) be.land(`i:cA-${n}`)
+    be.set('i:cA-6', 'expired', { code: 'EXPIRED' })
+    be.set('i:cA-7', 'expired', { code: 'EXPIRED' })
+    await until(() => barText(scene) === '補抓中 7/30｜2 個已過期取消', { ...X7_WAIT, message: 'progress 7/30 with 2 expired' })
+    assert.equal(idle().length, 0, 'no cell offers 下載原檔 while the batch has it')
+    clickIn(barOf(scene), '取消')
+    await until(() => be.calls.batchCancel.length === 1, { ...X7_WAIT, message: 'batchCancel' })
+    assert.deepEqual(be.calls.batchCancel, ['b1'])
+    await until(() => barText(scene) === '已取消補抓（已下載 5 個）', { ...X7_WAIT, message: 'cancelled summary' })
+    await until(() => idle().length === 23, { ...X7_WAIT, message: 'the 23 queued cells are back to 尚未下載 / 下載原檔' })
+    await until(() => barText(scene) === '本頁有 23 個舊檔尚未下載補抓本頁原檔', { ...X7_WAIT, message: 'the summary went away; the bar offers the 23 again' })
+  } finally { scene.unmount(); be.api.dispose() }
+  assert.equal(t.live.size, 0, 'unmounted: no timer left')
+})
+
+test('X7 batch cap: with 60 missing cells the bar offers the newest 50 (一次最多 50 個); a click on an older cell while the batch runs is sent at once (the backend gives it priority; no queue in the view)', async () => {
+  const chat = x7Chat('cA', '很多照片')
+  const rows = Array.from({ length: 60 }, (_, i) => x7Row('cA', i + 1, 1))
+  const be = x7Backend({ handlers: x7StreamHandlers([chat], { cA: rows }) })
+  const scene = ui.mount(ui.originalsStreamScene(be.api, X7_TIMING))
+  const idle = () => actionsIn(scene.container).filter((el) => el.getAttribute('data-original-state') === 'idle')
+  try {
+    await until(() => chatButtonIn(scene, chat.name), { ...X7_WAIT, message: 'chat listed' })
+    reactProps(chatButtonIn(scene, chat.name)).onClick({ currentTarget: chatButtonIn(scene, chat.name) })
+    await until(() => barText(scene) === '本頁有 60 個舊檔尚未下載，一次最多 50 個補抓最新 50 個', { ...X7_WAIT, message: 'the bar offers the newest 50' })
+    clickIn(barOf(scene), '補抓最新 50 個')
+    await until(() => be.calls.batchStart.length === 1, { ...X7_WAIT, message: 'batchStart' })
+    assert.deepEqual(be.calls.batchStart[0].msgIds, rows.slice(10).map((r) => r.msgId), 'exactly the newest 50, in order')
+    await until(() => barText(scene).startsWith('補抓中 0/50') && idle().length === 10, { ...X7_WAIT, message: 'batch running; the 10 older cells still offer 下載原檔' })
+    clickIn(idle()[0], '下載原檔')
+    await until(() => be.calls.request.length === 1, { ...X7_WAIT, message: 'the single-cell request' })
+    assert.ok(rows.slice(0, 10).some((r) => r.msgId === be.calls.request[0]), 'one of the older cells was requested directly')
+    assert.ok(barText(scene).startsWith('補抓中'), 'while the batch is still running')
+  } finally { scene.unmount(); be.api.dispose() }
+})
+
+test('X7 batch cancelled elsewhere (X5, review-x67 Info): the bar says 已取消補抓, never 補抓完成 — both when a poll reports the service batch as cancelled and when batchStart answers BATCH_CANCELLED (cancelled during the admission); no batchCancel is sent from here', async () => {
+  const chat = x7Chat('cA', '別處取消')
+  const rows = [x7Row('cA', 1, 1), x7Row('cA', 2, 1), x7Row('cA', 3, 2)]
+  const be = x7Backend({ handlers: x7StreamHandlers([chat], { cA: rows }) })
+  let serviceBatch = null
+  be.hooks.status = (msgIds) => ({ items: msgIds.map((id) => ({ msgId: id, ...(be.states.get(id) ?? { state: 'idle' }) })), batch: serviceBatch, paused: null })
+  const scene = ui.mount(ui.originalsStreamScene(be.api, X7_TIMING))
+  const seen = new Set()
+  const watch = setInterval(() => seen.add(barText(scene)), 5)
+  try {
+    await until(() => chatButtonIn(scene, chat.name), { ...X7_WAIT, message: 'chat listed' })
+    reactProps(chatButtonIn(scene, chat.name)).onClick({ currentTarget: chatButtonIn(scene, chat.name) })
+    await until(() => barText(scene).startsWith('本頁有 3 個'), { ...X7_WAIT, message: 'bar offers 3' })
+    clickIn(barOf(scene), '補抓本頁原檔')
+    await until(() => barText(scene) === '補抓中 0/3取消', { ...X7_WAIT, message: 'running' })
+    // another window cancels the batch: one photo had landed, the rest go back to idle; the service batch is cancelled
+    be.land('i:cA-1')
+    be.set('i:cA-2', 'idle')
+    be.set('i:cA-3', 'idle')
+    serviceBatch = { batchId: 'b1', chatId: 'cA', total: 3, done: 1, failed: 0, expired: 0, remaining: 0, state: 'cancelled' }
+    await until(() => barText(scene) === '已取消補抓（已下載 1 個）', { ...X7_WAIT, message: 'cancelled elsewhere shows 已取消' })
+    assert.equal([...seen].some((text) => text.startsWith('補抓完成')), false, `never 補抓完成: ${JSON.stringify([...seen])}`)
+    assert.equal(be.calls.batchCancel.length, 0, 'nothing was cancelled from this window')
+    await until(() => barText(scene).startsWith('本頁有 2 個'), { ...X7_WAIT, message: 'the summary goes away; the two idle cells are offered again' })
+    // cancelled while the backend was still admitting: batchStart answers BATCH_CANCELLED for what it had not admitted
+    serviceBatch = null
+    seen.clear()
+    be.hooks.batchStart = (chatId, msgIds) => ({ batchId: 'b2', accepted: [], skipped: msgIds.map((msgId) => ({ msgId, state: 'idle', code: 'BATCH_CANCELLED' })), truncated: 0 })
+    clickIn(barOf(scene), '補抓本頁原檔')
+    await until(() => barText(scene) === '已取消補抓（已下載 0 個）', { ...X7_WAIT, message: 'BATCH_CANCELLED at start shows 已取消' })
+    assert.equal([...seen].some((text) => text.startsWith('補抓完成')), false, `never 補抓完成: ${JSON.stringify([...seen])}`)
+    assert.equal(be.calls.batchCancel.length, 0)
+    assert.equal(actionsIn(scene.container).filter((el) => el.getAttribute('data-original-state') === 'idle').length, 2, 'the cells offer 下載原檔 again')
+  } finally { clearInterval(watch); scene.unmount(); be.api.dispose() }
+})
+
+test('X7 batch: another batch already running (batch_active) says so in the bar and the cells offer 下載原檔 again', async () => {
+  const chat = x7Chat('cA', '另一個批次')
+  const rows = [x7Row('cA', 1, 1), x7Row('cA', 2, 2)]
+  const be = x7Backend({ handlers: x7StreamHandlers([chat], { cA: rows }) })
+  be.hooks.batchStart = () => { throw Object.assign(new Error('batch active'), { code: 'batch_active' }) }
+  const scene = ui.mount(ui.originalsStreamScene(be.api, X7_TIMING))
+  try {
+    await until(() => chatButtonIn(scene, chat.name), { ...X7_WAIT, message: 'chat listed' })
+    reactProps(chatButtonIn(scene, chat.name)).onClick({ currentTarget: chatButtonIn(scene, chat.name) })
+    await until(() => barText(scene).startsWith('本頁有 2 個'), { ...X7_WAIT, message: 'bar' })
+    clickIn(barOf(scene), '補抓本頁原檔')
+    await until(() => barText(scene) === '另一個聊天室正在補抓，完成後再試', { ...X7_WAIT, message: 'batch_active text' })
+    assert.equal(actionsIn(scene.container).filter((el) => el.getAttribute('data-original-state') === 'idle').length, 2, 'the cells offer 下載原檔 again')
+    await until(() => barText(scene).startsWith('本頁有 2 個'), { ...X7_WAIT, message: 'the message goes away after summaryMs' })
+  } finally { scene.unmount(); be.api.dispose() }
+})
+
+// review-x5（X5-fix）F-1：backend 的帳號暫停期間（暫時讀不到電腦版 LINE 的帳號）回 account_mismatch／ACCOUNT_UNVERIFIED——不是「帳號不同」
+const X7_UNVERIFIED_TEXT = '暫時讀不到電腦版 LINE 的帳號，請確認電腦版已登入後再試'
+
+test('X7 account unverified (X5-fix, review-x5 F-1 / RX5-P3): a click answered account_mismatch / ACCOUNT_UNVERIFIED says 暫時讀不到電腦版 LINE 的帳號… with 重試 (never 帳號與電腦版不同, never a dead end); 重試 sends the request again and the cell goes on; a real ACCOUNT_MISMATCH still has no button', async () => {
+  const id = 'i:unverified-1'
+  const other = 'i:mismatch-1'
+  const be = x7Backend()
+  be.set(other, 'account_mismatch', { code: 'ACCOUNT_MISMATCH' })
+  let readable = false
+  be.hooks.request = (msgId) => {
+    if (!readable) return { msgId, state: 'account_mismatch', code: 'ACCOUNT_UNVERIFIED' }
+    be.set(msgId, 'queued')
+    return { msgId, state: 'queued' }
+  }
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, [x7Msg(id, 1), x7Msg(other, 1)], X7_TIMING))
+  try {
+    await until(() => actionText(scene, id) === '下載原檔' && actionOf(scene, other), { ...X7_WAIT, message: 'both cells' })
+    clickIn(actionOf(scene, id), '下載原檔')
+    await until(() => actionText(scene, id) === `${X7_UNVERIFIED_TEXT}重試`, { ...X7_WAIT, message: `the cell explains and offers 重試 (now: ${actionText(scene, id)})` })
+    assert.deepEqual(buttonsIn(actionOf(scene, id)), ['重試'])
+    assert.equal(actionText(scene, id).includes('帳號與電腦版不同'), false)
+    readable = true
+    clickIn(actionOf(scene, id), '重試')
+    await until(() => actionText(scene, id).startsWith('排隊中…'), { ...X7_WAIT, message: '重試 → queued' })
+    assert.deepEqual(be.calls.request, [id, id], '重試 sent the request again')
+    assert.equal(actionText(scene, other), '登入的 LINE 帳號與電腦版不同，無法下載')
+    assert.deepEqual(buttonsIn(actionOf(scene, other)), [], 'a proven mismatch has no button')
+  } finally { scene.unmount(); be.api.dispose() }
+})
+
+test('X7 batch inside the account hold (X5-fix, review-x5 F-1 / RX5-P2): batchStart accepts nothing and skips every cell as ACCOUNT_UNVERIFIED → the bar says 暫時讀不到電腦版 LINE 的帳號，補抓沒有開始…, never 補抓完成; the cells say why and offer 重試; after the message the bar offers them again and a second 補抓 runs', async () => {
+  const chat = x7Chat('cA', '帳號暫停')
+  const rows = [x7Row('cA', 1, 1), x7Row('cA', 2, 2)]
+  const be = x7Backend({ handlers: x7StreamHandlers([chat], { cA: rows }) })
+  be.hooks.batchStart = (chatId, msgIds) => ({ batchId: 'b1', accepted: [], skipped: msgIds.map((msgId) => ({ msgId, state: 'account_mismatch', code: 'ACCOUNT_UNVERIFIED' })), truncated: 0 })
+  const scene = ui.mount(ui.originalsStreamScene(be.api, X7_TIMING))
+  const seen = new Set()
+  const watch = setInterval(() => seen.add(barText(scene)), 5)
+  try {
+    await until(() => chatButtonIn(scene, chat.name), { ...X7_WAIT, message: 'chat listed' })
+    reactProps(chatButtonIn(scene, chat.name)).onClick({ currentTarget: chatButtonIn(scene, chat.name) })
+    await until(() => barText(scene).startsWith('本頁有 2 個'), { ...X7_WAIT, message: 'bar offers 2' })
+    clickIn(barOf(scene), '補抓本頁原檔')
+    await until(() => barText(scene) === '暫時讀不到電腦版 LINE 的帳號，補抓沒有開始；請確認電腦版已登入後再試', { ...X7_WAIT, message: `the bar explains (now: ${barText(scene)})` })
+    assert.deepEqual(actionsIn(scene.container).map((el) => el.textContent), [`${X7_UNVERIFIED_TEXT}重試`, `${X7_UNVERIFIED_TEXT}重試`], 'each cell says why and offers 重試')
+    assert.equal([...seen].some((text) => text.startsWith('補抓完成')), false, `never 補抓完成: ${JSON.stringify([...seen])}`)
+    assert.equal(be.calls.batchCancel.length, 0, 'the service batch already ended with nothing in it')
+    await until(() => barText(scene).startsWith('本頁有 2 個'), { ...X7_WAIT, message: 'after summaryMs the bar offers the two cells again' })
+    be.hooks.batchStart = null
+    clickIn(barOf(scene), '補抓本頁原檔')
+    await until(() => barText(scene) === '補抓中 0/2取消', { ...X7_WAIT, message: 'the second 補抓 runs' })
+    assert.deepEqual(be.calls.batchStart.map((c) => c.msgIds), [rows.map((r) => r.msgId), rows.map((r) => r.msgId)])
+  } finally { clearInterval(watch); scene.unmount(); be.api.dispose() }
+})
+
+test('X7 batch (X5-fix, review-x5 F-7 / RM4): a cancelled service batch with ANOTHER batchId (an older batch, e.g. in a status answer from before this batch started) does not end this window\'s running batch — no 已取消補抓; it finishes as 補抓完成', async () => {
+  const chat = x7Chat('cA', '兩個批次')
+  const rows = [x7Row('cA', 1, 1), x7Row('cA', 2, 1)]
+  const be = x7Backend({ handlers: x7StreamHandlers([chat], { cA: rows }) })
+  const older = { batchId: 'b0-older', chatId: 'cA', total: 2, done: 0, failed: 0, expired: 0, remaining: 0, state: 'cancelled' }
+  be.hooks.status = (msgIds) => ({ items: msgIds.map((id) => ({ msgId: id, ...(be.states.get(id) ?? { state: 'idle' }) })), batch: older, paused: null })
+  const scene = ui.mount(ui.originalsStreamScene(be.api, X7_TIMING))
+  const seen = new Set()
+  const watch = setInterval(() => seen.add(barText(scene)), 5)
+  try {
+    await until(() => chatButtonIn(scene, chat.name), { ...X7_WAIT, message: 'chat listed' })
+    reactProps(chatButtonIn(scene, chat.name)).onClick({ currentTarget: chatButtonIn(scene, chat.name) })
+    await until(() => barText(scene).startsWith('本頁有 2 個'), { ...X7_WAIT, message: 'bar offers 2' })
+    clickIn(barOf(scene), '補抓本頁原檔')
+    await until(() => barText(scene) === '補抓中 0/2取消', { ...X7_WAIT, message: 'running (batch b1)' })
+    const polls = be.calls.status.length
+    await until(() => be.calls.status.length >= polls + 3, { ...X7_WAIT, message: 'several polls report the older batch as cancelled' })
+    assert.equal(barText(scene), '補抓中 0/2取消', 'batch b1 is still running')
+    be.land('i:cA-1')
+    be.land('i:cA-2')
+    await until(() => barText(scene) === '補抓完成：2 個已下載', { ...X7_WAIT, message: 'b1 finishes normally' })
+    assert.equal([...seen].some((text) => text.startsWith('已取消')), false, `never 已取消: ${JSON.stringify([...seen])}`)
+  } finally { clearInterval(watch); scene.unmount(); be.api.dispose() }
+})
+
+test('X7 Pro only: without api.linejsMedia.original the real App shows no 下載原檔 / 補抓 anywhere and never calls original.*; with it the same chat offers both', async () => {
+  dom.document.documentElement.dataset ??= {}
+  const chat = x7Chat('cA', '媒體聊天室')
+  const rows = [x7Row('cA', 1, 1), x7Row('cA', 2, 2), x7Row('cA', 3, 14)]
+  for (const withOriginal of [false, true]) {
+    const be = x7Backend({ handlers: { ...x7StreamHandlers([chat], { cA: rows }), 'db.todos.list': () => [], 'groupTopics.overview': () => [] } })
+    if (!withOriginal) be.api.linejsMedia = { ...be.api.linejsMedia, original: undefined }
+    const view = ui.mount(ui.appScene(be.api))
+    const tab = (label) => walk(view.container).find((el) => el.localName === 'button' && el.textContent === label)
+    try {
+      await until(() => tab('聊天'), { ...X7_WAIT, message: 'chat tab' })
+      reactProps(tab('聊天')).onClick()
+      await until(() => chatButtonIn(view, chat.name), { ...X7_WAIT, message: 'chat listed' })
+      reactProps(chatButtonIn(view, chat.name)).onClick({ currentTarget: chatButtonIn(view, chat.name) })
+      await until(() => view.container.textContent.includes('影片尚未下載') && view.container.textContent.includes('檔案3.pdf') && be.log.includes('savedFile i:cA-3'), { ...X7_WAIT, message: 'the missing cells' })
+      if (!withOriginal) {
+        await sleep(200)
+        assert.equal(view.container.textContent.includes('下載原檔'), false, 'no 下載原檔')
+        assert.equal(view.container.textContent.includes('補抓'), false, 'no 補抓')
+        assert.equal(actionsIn(view.container).length, 0, 'no slot content')
+        assert.equal(barOf(view), null, 'no batch bar')
+        assert.deepEqual([be.calls.status.length, be.calls.request.length, be.calls.batchStart.length], [0, 0, 0], 'original.* never called')
+      } else {
+        await until(() => actionsIn(view.container).length === 3 && barText(view).includes('補抓本頁原檔'), { ...X7_WAIT, message: 'Pro: three cells and the bar' })
+        assert.equal(view.container.textContent.includes('下載原檔'), true)
+      }
+    } finally { view.unmount(); be.api.dispose() }
+  }
+})
+
+test('X7 master switch: ORIGINALS_DOWNLOAD_ENABLED is on by default (pending P0b, one constant); enabled=false renders exactly like no provider and asks nothing', async () => {
+  assert.equal(ui.ORIGINALS_DOWNLOAD_ENABLED, true, 'default on until P0b decides')
+  const source = readFileSync(resolve(ROOT, 'src', 'renderer', 'features', 'originalDownload', 'useOriginals.ts'), 'utf8')
+  assert.match(source, /待 P0b 結果決定預設/, 'the constant says the default waits for P0b')
+  assert.equal(ui.ORIGINALS_TIMING.pollMs, 1500, 'production polls every 1.5 s')
+  const be = x7Backend()
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, [x7Msg('i:off-1', 1), x7Msg('i:off-2', 2), x7Msg('i:off-3', 14)], X7_TIMING, false))
+  try {
+    await until(() => cellOf(scene, 'i:off-1')?.textContent === '尚未下載' && cellOf(scene, 'i:off-2')?.textContent === '影片尚未下載' && be.log.includes('savedFile i:off-3'), { ...X7_WAIT, message: 'missing cells' })
+    await sleep(100)
+    assert.equal(actionsIn(scene.container).length, 0, 'no slot content')
+    assert.equal(be.calls.status.length, 0, 'nothing asked')
+  } finally { scene.unmount(); be.api.dispose() }
+})
+
+test('X7 recalled: a recalled photo, video or file has no button and is left out of the batch even when status says idle; the backend\'s UNSENT (unsupported) shows nothing either', async () => {
+  const chat = x7Chat('cA', '有收回的聊天室')
+  const rows = [x7Row('cA', 1, 1), x7Row('cA', 2, 1, { unsent: true }), x7Row('cA', 3, 2, { unsent: true }), x7Row('cA', 4, 14, { unsent: true })]
+  const be = x7Backend({ handlers: x7StreamHandlers([chat], { cA: rows }) })
+  const scene = ui.mount(ui.originalsStreamScene(be.api, X7_TIMING))
+  try {
+    await until(() => chatButtonIn(scene, chat.name), { ...X7_WAIT, message: 'chat listed' })
+    reactProps(chatButtonIn(scene, chat.name)).onClick({ currentTarget: chatButtonIn(scene, chat.name) })
+    await until(() => barText(scene) === '本頁有 1 個舊檔尚未下載補抓本頁原檔' && actionsIn(scene.container).length === 1, { ...X7_WAIT, message: 'one offer' })
+    await until(() => be.log.includes('savedFile i:cA-4') && be.calls.status.flat().length >= 1, { ...X7_WAIT, message: 'every cell settled' })
+    await sleep(100)
+    assert.equal(actionsIn(scene.container).length, 1, 'only the normal photo has a button')
+    assert.equal((scene.container.textContent.match(/下載原檔/g) ?? []).length, 1)
+  } finally { scene.unmount(); be.api.dispose() }
+  const be2 = x7Backend()
+  be2.set('i:unsent', 'unsupported', { code: 'UNSENT' })
+  const scene2 = ui.mount(ui.originalsMessagesScene(be2.api, [x7Msg('i:unsent', 1)], X7_TIMING))
+  try {
+    await until(() => be2.calls.status.length === 1, { ...X7_WAIT, message: 'first look' })
+    await sleep(100)
+    assert.equal(actionOf(scene2, 'i:unsent'), null, 'the backend says unsupported (UNSENT): no button')
+  } finally { scene2.unmount(); be2.api.dispose() }
+})
+
+test('X7 needs login: 登入 LINE opens the chat\'s existing LineLoginDialog; once LINE says authenticated the dialog closes, the cells are asked again and offer 下載原檔', async () => {
+  let authed = false
+  const loginCalls = []
+  const be = x7Backend({ handlers: {
+    'linejsMedia.startLogin': () => { loginCalls.push('start'); return { status: 'pending' } },
+    'linejsMedia.status': () => ({ available: true, login: { status: authed ? 'authenticated' : 'pending' } }),
+    'linejsMedia.cancelLogin': () => { loginCalls.push('cancel'); return {} }
+  } })
+  const id = 'i:login-1'
+  be.set(id, 'needs_login', { code: 'SESSION_NOT_READY' })
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, [x7Msg(id, 1)], X7_TIMING))
+  const dialog = () => byAttr(scene.container, 'data-testid', 'chat-login-dialog')
+  try {
+    await until(() => actionText(scene, id) === '需先登入 LINE登入 LINE', { ...X7_WAIT, message: 'needs login' })
+    assert.equal(dialog(), null)
+    clickIn(actionOf(scene, id), '登入 LINE')
+    await until(() => dialog() && loginCalls.includes('start'), { ...X7_WAIT, message: 'the existing login dialog opened and started the login' })
+    be.set(id, 'idle')
+    authed = true
+    await until(() => !dialog() && actionText(scene, id) === '下載原檔', { ...X7_WAIT, message: 'logged in: dialog closed, cell offers 下載原檔' })
+    assert.equal(loginCalls.includes('cancel'), false, 'a completed login is not cancelled')
+  } finally { scene.unmount(); be.api.dispose() }
+})
+
+test('X7 request errors: no download service (linejs_originals_unavailable) hides the button; after another failure the cell is asked again and shows what the backend reports', async () => {
+  const be = x7Backend()
+  be.hooks.request = (msgId) => {
+    if (msgId === 'i:err-off') throw Object.assign(new Error('off'), { code: 'linejs_originals_unavailable' })
+    throw Object.assign(new Error('boom'), { code: 'linejs_originals_error' })
+  }
+  let reportQueued = false
+  be.hooks.status = (ids) => (reportQueued ? { items: ids.map((msgId) => ({ msgId, state: msgId === 'i:err-other' ? 'queued' : 'idle' })), batch: null, paused: null } : null)
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, [x7Msg('i:err-off', 1), x7Msg('i:err-other', 1)], X7_TIMING))
+  try {
+    await until(() => actionText(scene, 'i:err-off') === '下載原檔' && actionText(scene, 'i:err-other') === '下載原檔', { ...X7_WAIT, message: 'both offer 下載原檔' })
+    clickIn(actionOf(scene, 'i:err-off'), '下載原檔')
+    await until(() => actionOf(scene, 'i:err-off') === null, { ...X7_WAIT, message: 'unavailable: the button goes away' })
+    clickIn(actionOf(scene, 'i:err-other'), '下載原檔')
+    reportQueued = true
+    await until(() => actionText(scene, 'i:err-other').startsWith('排隊中…'), { ...X7_WAIT, message: 'after the failed send the backend state is shown (the job was queued)' })
+  } finally { scene.unmount(); be.api.dispose() }
+})
+
+// ───────────── X67 補合（review-x7 F-1／F-3／F-4／F-5／F-6、StrictMode）─────────────
+// store 層的時序測試（審查者 probes/store-probes.mjs 的 P1、P3、P4、P12、P13 移植）：計時器全部手動（測試決定哪一個何時觸發），
+// 每個 backend 回覆都是測試按自己要的順序 resolve 的 deferred。
+
+const x7Flush = async (n = 8) => { for (let i = 0; i < n; i += 1) await new Promise((resolve) => setImmediate(resolve)) }
+function x7ManualTimers() {
+  let seq = 0
+  const live = new Map()
+  return {
+    live,
+    timers: { set: (fn, ms) => { const handle = ++seq; live.set(handle, { fn, ms }); return handle }, clear: (handle) => { live.delete(handle) } },
+    /** fire every live timer whose delay is ms (all of them when ms is undefined), once */
+    async fire(ms) {
+      for (const [handle, timer] of [...live]) if (ms === undefined || timer.ms === ms) { live.delete(handle); timer.fn() }
+      await x7Flush()
+    },
+    count: (ms) => [...live.values()].filter((timer) => ms === undefined || timer.ms === ms).length
+  }
+}
+/** a control whose every call is a deferred: calls[kind] = [{ args, resolve, reject }] */
+function x7DeferredControl() {
+  const calls = { request: [], status: [], cancel: [], batchStart: [], batchCancel: [] }
+  const make = (kind) => (...args) => new Promise((resolve, reject) => { calls[kind].push({ args, resolve, reject }) })
+  return { calls, control: { request: make('request'), status: make('status'), cancel: make('cancel'), batchStart: make('batchStart'), batchCancel: make('batchCancel') } }
+}
+const x7Items = (ids, state, extra = {}) => ({ items: ids.map((msgId) => ({ msgId, state, ...extra })), batch: null, paused: null })
+function x7StoreSetup() {
+  const t = x7ManualTimers()
+  const c = x7DeferredControl()
+  const log = []
+  const store = new ui.OriginalsStore({ control: c.control, forget: (id) => log.push(`forget ${id}`), timers: t.timers, pollMs: 1500, recheckMs: 1500, recheckMax: 3, summaryMs: 5000 })
+  store.start()
+  const slot = (id, kind = 'image') => store.register(id, kind, { current: () => log.push(`retry ${id}`) })
+  return { t, c, log, store, slot }
+}
+
+test('X7 store (review P1, F-1): a later poll says done, an older hydrate that still says idle arrives afterwards → the cell stays done; forget comes before retry, once', async () => {
+  const { t, c, log, store, slot } = x7StoreSetup()
+  slot('i:a')
+  await t.fire(0)
+  c.calls.status[0].resolve(x7Items(['i:a'], 'running'))
+  await x7Flush()
+  assert.equal(store.cell('i:a').state, 'running')
+  await t.fire(1500) // the poll is on its way
+  assert.equal(c.calls.status.length, 2)
+  store.refreshAll() // a hydrate queued (same epoch)
+  await t.fire(0)
+  assert.equal(c.calls.status.length, 3, 'the hydrate is sent while the poll is still on its way')
+  c.calls.status[1].resolve(x7Items(['i:a'], 'done'))
+  await x7Flush()
+  assert.equal(store.cell('i:a').state, 'done')
+  c.calls.status[2].resolve(x7Items(['i:a'], 'idle')) // stale
+  await x7Flush()
+  assert.equal(store.cell('i:a').state, 'done', 'a stale idle never takes done back')
+  assert.deepEqual(log, ['forget i:a', 'retry i:a'], 'forget, then retry, once')
+})
+
+test('X7 store (review P3, F-1): done → forget + retry; the cell comes back still missing (index lag) → recheck timer → forget + retry; never idle; after recheckMax nothing is left armed', async () => {
+  const { t, c, log, store, slot } = x7StoreSetup()
+  let off = slot('i:c')
+  await t.fire(0)
+  c.calls.status[0].resolve(x7Items(['i:c'], 'queued'))
+  await x7Flush()
+  await t.fire(1500)
+  c.calls.status[1].resolve(x7Items(['i:c'], 'done'))
+  await x7Flush()
+  assert.deepEqual(log, ['forget i:c', 'retry i:c'])
+  for (let i = 0; i < 5; i += 1) {
+    off() // retry → the M4 cell goes to loading (the slot unmounts) …
+    off = slot('i:c') // … and comes back missing (the index has not seen the file yet)
+    assert.equal(store.cell('i:c').state, 'done', `round ${i}: still done`)
+    await t.fire(1500)
+  }
+  assert.equal(log.filter((e) => e === 'forget i:c').length, 1 + 3, 'done + recheckMax automatic re-asks')
+  assert.equal(store.cell('i:c').rechecks, 3)
+  for (let i = 0; i < log.length; i += 2) { assert.match(log[i], /^forget /); assert.match(log[i + 1], /^retry /) }
+  assert.equal(t.count(), 0, 'no timer left once the tries are used up')
+  off()
+})
+
+test('X7 store (review P4, F-1): cancelBatch while a poll is on its way — the late running answer of a poll sent before the cancel is not applied', async () => {
+  const { t, c, store, slot } = x7StoreSetup()
+  const offW = store.watchBatch('c1')
+  slot('i:d1'); slot('i:d2')
+  await t.fire(0)
+  c.calls.status[0].resolve(x7Items(['i:d1', 'i:d2'], 'idle'))
+  await x7Flush()
+  store.startBatch('c1', ['i:d1', 'i:d2'])
+  c.calls.batchStart[0].resolve({ batchId: 'b1', accepted: ['i:d1', 'i:d2'], skipped: [], truncated: 0 })
+  await x7Flush()
+  await t.fire(1500) // poll on its way
+  store.cancelBatch('c1')
+  c.calls.batchCancel[0].resolve({ cancelled: 2 })
+  await x7Flush()
+  assert.equal(store.cell('i:d1').state, 'idle')
+  c.calls.status[1].resolve(x7Items(['i:d1', 'i:d2'], 'running'))
+  await x7Flush()
+  assert.equal(store.cell('i:d1').state, 'idle', 'a poll sent before the cancel does not bring running back')
+  assert.equal(store.batchFor('c1').phase, 'cancelled')
+  offW()
+})
+
+test('X7 store (review P12, F-6): the batch summary timer is cleared when the bar unmounts (chat switch) before it fires', async () => {
+  const { t, c, store, slot } = x7StoreSetup()
+  const offW = store.watchBatch('c1')
+  slot('i:p1')
+  await t.fire(0)
+  c.calls.status[0].resolve(x7Items(['i:p1'], 'idle'))
+  await x7Flush()
+  store.startBatch('c1', ['i:p1'])
+  c.calls.batchStart[0].resolve({ batchId: 'b1', accepted: [], skipped: [{ msgId: 'i:p1', state: 'expired', code: 'EXPIRED' }], truncated: 0 })
+  await x7Flush()
+  assert.equal(store.batchFor('c1').phase, 'finished')
+  assert.equal(t.count(5000), 1, 'summary timer armed')
+  offW()
+  assert.equal(t.count(5000), 0, 'bar unmounted: summary timer cleared')
+})
+
+test('X7 store (review P13, F-6): a pending recheck timer is cleared when the cell unmounts', async () => {
+  const { t, c, store, slot } = x7StoreSetup()
+  let off = slot('i:q1')
+  await t.fire(0)
+  c.calls.status[0].resolve(x7Items(['i:q1'], 'done'))
+  await x7Flush()
+  off()
+  off = slot('i:q1') // index lag: the cell comes back missing → recheck armed
+  assert.equal(t.count(1500), 1, 'recheck armed')
+  off()
+  assert.equal(t.count(1500), 0, 'cell unmounted: recheck cleared')
+})
+
+test('X7 store (review-x67 S2, mutation K9): a cell that unmounts before its first look and mounts again (scroll back) is asked about and offers 下載原檔 (never stuck at unknown)', async () => {
+  const { t, c, store, slot } = x7StoreSetup()
+  slot('i:s2')() // mounted and gone before the first-look timer fires
+  await t.fire(0)
+  assert.equal(c.calls.status.length, 0, 'not asked while gone')
+  assert.equal(store.cell('i:s2').state, 'unknown')
+  const off = slot('i:s2') // back on screen
+  await t.fire(0)
+  assert.deepEqual(c.calls.status.map((call) => call.args[0]), [['i:s2']], 'the remounted cell is asked about')
+  c.calls.status[0].resolve(x7Items(['i:s2'], 'idle'))
+  await x7Flush()
+  assert.equal(store.cell('i:s2').state, 'idle', 'else it stays unknown and shows nothing')
+  off()
+})
+
+test('X7 store F-3: 取消 while the batch is starting (batchStart on its way) is remembered; batchCancel goes out with the batchId as soon as batchStart answers; a batch that ends at start, or fails to start, sends no cancel', async () => {
+  const { t, c, store, slot } = x7StoreSetup()
+  const offW = store.watchBatch('c1')
+  for (const id of ['i:f3a', 'i:f3b', 'i:f3c', 'i:f3d']) slot(id)
+  await t.fire(0)
+  c.calls.status[0].resolve(x7Items(['i:f3a', 'i:f3b', 'i:f3c', 'i:f3d'], 'idle'))
+  await x7Flush()
+  store.startBatch('c1', ['i:f3a', 'i:f3b'])
+  assert.equal(store.batchFor('c1').phase, 'starting')
+  store.cancelBatch('c1')
+  assert.deepEqual([store.batchFor('c1').cancelRequested, store.batchFor('c1').cancelling], [true, true], 'remembered; the button is disabled meanwhile')
+  assert.equal(c.calls.batchCancel.length, 0, 'no batchId yet: nothing can be sent')
+  store.cancelBatch('c1') // a second click adds nothing
+  c.calls.batchStart[0].resolve({ batchId: 'b1', accepted: ['i:f3a', 'i:f3b'], skipped: [], truncated: 0 })
+  await x7Flush()
+  assert.deepEqual(c.calls.batchCancel.map((call) => call.args[0]), ['b1'], 'batchCancel right after batchStart answered')
+  c.calls.batchCancel[0].resolve({ cancelled: 2 })
+  await x7Flush()
+  assert.equal(store.batchFor('c1').phase, 'cancelled')
+  assert.deepEqual([store.cell('i:f3a').state, store.cell('i:f3b').state], ['idle', 'idle'])
+  // everything skipped at start (the batch is already over): no cancel is sent
+  await t.fire(5000) // the cancelled summary goes away
+  store.startBatch('c1', ['i:f3c'])
+  store.cancelBatch('c1')
+  c.calls.batchStart[1].resolve({ batchId: 'b2', accepted: [], skipped: [{ msgId: 'i:f3c', state: 'expired', code: 'EXPIRED' }], truncated: 0 })
+  await x7Flush()
+  assert.equal(store.batchFor('c1').phase, 'finished')
+  assert.equal(store.batchFor('c1').cancelling, false)
+  assert.equal(c.calls.batchCancel.length, 1, 'nothing to cancel')
+  // batchStart fails: the request is dropped with it
+  await t.fire(5000)
+  store.startBatch('c1', ['i:f3d'])
+  store.cancelBatch('c1')
+  c.calls.batchStart[2].reject(Object.assign(new Error('x'), { code: 'internal' }))
+  await x7Flush()
+  assert.deepEqual([store.batchFor('c1').phase, store.batchFor('c1').cancelling, store.batchFor('c1').cancelRequested], ['error', false, false])
+  assert.equal(c.calls.batchCancel.length, 1)
+  offW()
+})
+
+test('X7 store F-4: entries stay at 2000 (oldest unused first, a remounted cell moves to the end; on screen, busy, active and running-batch cells are kept), recalled stays at 5000, the poll index holds only active cells, a cell gone before its first look is not asked about', async () => {
+  assert.deepEqual({ ...ui.ORIGINALS_STORE_LIMITS }, { entriesMax: 2000, recalledMax: 5000 })
+  const { t, c, store, slot } = x7StoreSetup()
+  const offW = store.watchBatch('c1')
+  // a cell that leaves before its first look is not asked about; when it comes back it is
+  slot('i:gone')()
+  slot('i:lru')()
+  await t.fire(0)
+  assert.equal(c.calls.status.length, 0, 'nothing asked for cells that left before their first look')
+  const keepers = ['i:keep-slot', 'i:keep-busy', 'i:keep-active', 'i:keep-batch-run', 'i:keep-batch-failed']
+  const offs = Object.fromEntries(keepers.map((id) => [id, slot(id)]))
+  await t.fire(0)
+  assert.deepEqual([...c.calls.status[0].args[0]].sort(), [...keepers].sort())
+  c.calls.status[0].resolve({ items: keepers.map((msgId) => ({ msgId, state: msgId === 'i:keep-active' ? 'running' : 'idle' })), batch: null, paused: null })
+  await x7Flush()
+  store.request('i:keep-busy') // never answered: stays busy
+  store.startBatch('c1', ['i:keep-batch-run', 'i:keep-batch-failed'])
+  c.calls.batchStart[0].resolve({ batchId: 'b1', accepted: ['i:keep-batch-run', 'i:keep-batch-failed'], skipped: [], truncated: 0 })
+  await x7Flush()
+  await t.fire(1500)
+  const poll = c.calls.status.at(-1)
+  poll.resolve({ items: poll.args[0].map((msgId) => ({ msgId, state: msgId === 'i:keep-batch-failed' ? 'failed' : 'running' })), batch: null, paused: null })
+  await x7Flush()
+  assert.deepEqual([store.batchFor('c1').phase, store.cell('i:keep-batch-failed').state], ['running', 'failed'], 'a failed cell inside a running batch')
+  assert.equal(store.sizes().active, 3, 'the poll index: keep-busy (queued), keep-active and keep-batch-run (running)')
+  for (const id of keepers) if (id !== 'i:keep-slot') offs[id]()
+  // 2500 cells come and go; i:lru is mounted again half way (LRU: it moves to the end)
+  for (let i = 0; i < 2500; i += 1) {
+    slot(`i:mem${i}`)()
+    if (i === 999) slot('i:lru')()
+  }
+  assert.equal(store.sizes().entries, ui.ORIGINALS_STORE_LIMITS.entriesMax, 'entries are held at entriesMax')
+  for (const id of keepers) assert.ok(store.cell(id), `${id} kept`)
+  assert.equal(store.cell('i:gone'), null, 'the oldest unused entry went first')
+  assert.equal(store.cell('i:mem0'), null)
+  assert.ok(store.cell('i:lru'), 'a remounted cell moved to the end and stays')
+  assert.ok(store.cell('i:mem2499'), 'the newest stays')
+  assert.equal(store.sizes().active, 3, 'eviction never touches active cells')
+  // only the active cells the screen (or the watched batch) still has are polled: keep-batch-run through the running batch
+  await t.fire(1500)
+  assert.deepEqual(c.calls.status.at(-1).args[0], ['i:keep-batch-run'])
+  // recalled keeps the newest recalledMax
+  store.noteMessages(Array.from({ length: 6000 }, (_, i) => ({ msgId: `i:rc${i}`, unsent: true })))
+  assert.equal(store.sizes().recalled, ui.ORIGINALS_STORE_LIMITS.recalledMax)
+  const offRecent = slot('i:rc5999')
+  const offOld = slot('i:rc0')
+  assert.equal(store.cell('i:rc5999'), null, 'a recently recalled message has no button')
+  assert.ok(store.cell('i:rc0'), 'the oldest recalled id was dropped from the set')
+  offRecent(); offOld(); offs['i:keep-slot'](); offW()
+})
+
+const ariaButtonsIn = (root) => (root ? walk(root).filter((el) => el.localName === 'button').map((el) => `${el.textContent}=${el.getAttribute('aria-label')}`) : [])
+
+test('X7 F-5 / F-3 (DOM): every cell and bar button has a distinct accessible name (下載原檔, 取消下載, 重試下載, 登入 LINE 以下載原檔, 補抓本頁原檔, 取消補抓); the bar offers 取消 while the batch is starting and sends batchCancel once batchStart answers', async () => {
+  const be = x7Backend()
+  be.set('i:a-idle', 'idle')
+  be.set('i:a-queued', 'queued')
+  be.set('i:a-running', 'running')
+  be.set('i:a-failed', 'failed', { code: 'TRANSIENT', retryAt: Date.now() - 1000 })
+  be.set('i:a-login', 'needs_login', { code: 'SESSION_NOT_READY' })
+  const ids = ['i:a-idle', 'i:a-queued', 'i:a-running', 'i:a-failed', 'i:a-login']
+  const scene = ui.mount(ui.originalsMessagesScene(be.api, ids.map((id) => x7Msg(id, 1)), X7_TIMING))
+  try {
+    await until(() => ids.every((id) => actionOf(scene, id)), { ...X7_WAIT, message: 'every cell shows its state' })
+    assert.deepEqual(ids.map((id) => ariaButtonsIn(actionOf(scene, id))), [['下載原檔=下載原檔'], ['取消=取消下載'], ['取消=取消下載'], ['重試=重試下載'], ['登入 LINE=登入 LINE 以下載原檔']])
+  } finally { scene.unmount(); be.api.dispose() }
+
+  const chat = x7Chat('cA', '補抓聊天室')
+  const rows = [x7Row('cA', 1, 1), x7Row('cA', 2, 2)]
+  const be2 = x7Backend({ handlers: x7StreamHandlers([chat], { cA: rows }) })
+  let releaseStart
+  be2.hooks.batchStart = (chatId, msgIds) => new Promise((resolve) => { releaseStart = () => { for (const id of msgIds) be2.set(id, 'queued'); resolve({ batchId: 'b9', accepted: [...msgIds], skipped: [], truncated: 0 }) } })
+  const scene2 = ui.mount(ui.originalsStreamScene(be2.api, X7_TIMING))
+  try {
+    await until(() => chatButtonIn(scene2, chat.name), { ...X7_WAIT, message: 'chat listed' })
+    reactProps(chatButtonIn(scene2, chat.name)).onClick({ currentTarget: chatButtonIn(scene2, chat.name) })
+    await until(() => barText(scene2) === '本頁有 2 個舊檔尚未下載補抓本頁原檔', { ...X7_WAIT, message: 'the bar offers 2' })
+    assert.deepEqual(ariaButtonsIn(barOf(scene2)), ['補抓本頁原檔=補抓本頁原檔'])
+    clickIn(barOf(scene2), '補抓本頁原檔')
+    await until(() => barText(scene2) === '準備補抓…取消', { ...X7_WAIT, message: 'starting, with 取消' })
+    assert.deepEqual(ariaButtonsIn(barOf(scene2)), ['取消=取消補抓'])
+    clickIn(barOf(scene2), '取消')
+    await until(() => barText(scene2) === '準備補抓…｜取消中取消', { ...X7_WAIT, message: 'the cancel is remembered' })
+    assert.deepEqual(buttonsIn(barOf(scene2)), ['取消(disabled)'])
+    assert.equal(be2.calls.batchCancel.length, 0)
+    releaseStart()
+    await until(() => be2.calls.batchCancel.length === 1, { ...X7_WAIT, message: 'batchCancel once batchStart answered' })
+    assert.deepEqual(be2.calls.batchCancel, ['b9'])
+    await until(() => barText(scene2) === '已取消補抓（已下載 0 個）', { ...X7_WAIT, message: 'cancelled summary' })
+  } finally { scene2.unmount(); be2.api.dispose() }
+})
+
+test('X7 StrictMode (React development build): a photo cell that is missing in the very first commit registers together with the provider; after the double mount it is still asked about once and offers 下載原檔', async () => {
+  const devOut = join(work, 'ui-effects-dev.mjs')
+  await build({
+    entryPoints: [resolve(ROOT, 'scripts', 'plugin', 'fixtures', 'ui-effects-entry.tsx')],
+    outfile: devOut, bundle: true, format: 'esm', platform: 'node', target: 'node24', jsx: 'automatic',
+    define: { 'process.env.NODE_ENV': '"development"' }, loader: { '.css': 'empty' }, logLevel: 'error', absWorkingDir: ROOT,
+    banner: { js: "import { createRequire as __r } from 'node:module'; const require = __r(import.meta.url);" },
+  })
+  const uiDev = await import(pathToFileURL(devOut).href)
+  const log = []
+  // a host without assetLookup / assetUrl: MediaImage shows 尚未下載 (and mounts the slot) in its first commit
+  const api = {
+    media: { forget: (id) => log.push(`forget ${id}`) },
+    linejsMedia: {
+      status: async () => ({ state: 'idle' }), startLogin: async () => ({}), cancelLogin: async () => ({}), logout: async () => ({}),
+      original: {
+        status: async (msgIds) => { log.push(`status ${msgIds.join(',')}`); return { items: msgIds.map((msgId) => ({ msgId, state: 'idle' })), batch: null, paused: null } },
+        request: async (msgId) => ({ msgId, state: 'queued' }), cancel: async (msgId) => ({ msgId, state: 'idle' }),
+        batchStart: async () => ({ batchId: 'b', accepted: [], skipped: [], truncated: 0 }), batchCancel: async () => ({ cancelled: 0 })
+      }
+    }
+  }
+  const scene = uiDev.mount(uiDev.strictOriginalsImagesScene(api, ['i:strict-1'], { pollMs: 40, recheckMs: 40 }))
+  const buttons = () => walk(scene.container).filter((el) => el.localName === 'button').map((el) => el.textContent)
+  try {
+    await until(() => buttons().includes('下載原檔'), { timeout: 5000, message: `the cell offers 下載原檔 after the StrictMode double mount (status calls: ${log.filter((l) => l.startsWith('status')).length})` })
+    assert.deepEqual(buttons(), ['下載原檔'])
+    assert.deepEqual(log.filter((l) => l.startsWith('status')), ['status i:strict-1'], 'asked about once')
+  } finally { scene.unmount() }
 })

@@ -13,7 +13,7 @@ npm 目前會將額外的 --tool 等旗標解析成 npm config。用環境變數
 ~~~~powershell
 $env:TUQ_PLUGIN_TOOL_184 = "C:\Users\david\AppData\Local\Programs\TeamUQ\resources\plugin-authoring\kit\bin\tuq-plugin-tool.mjs"
 # 若已安裝 Line Todo，指定其 manifest；first-install 時省略此行且官方 installed plugin-id 目錄必須不存在。
-$env:LINE_TODO_INSTALLED_MANIFEST = "$env:USERPROFILE\.teamuq\plugins\installed\tuqdev.line-todo\0.2.13\manifest.json"
+$env:LINE_TODO_INSTALLED_MANIFEST = "$env:USERPROFILE\.teamuq\plugins\installed\tuqdev.line-todo.pro\0.2.13\manifest.json"
 npm run import:local:dry-run
 ~~~~
 

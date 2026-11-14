@@ -23,7 +23,7 @@ export const RESIDENT_TOGGLE_TITLE = '關閉畫面後繼續在背景執行'
 /** 打開外掛後顯示本外掛設定 view 的分頁名稱。 */
 export const PLUGIN_SETTINGS_TAB_LABEL = '設定'
 /** 看板 view 在 TeamUQ 側邊欄的標籤＝manifest `contributes.views[board].title`（scripts/plugin/lib/manifest.mjs；測試核對兩者相同）。 */
-export const BOARD_VIEW_TITLE = 'LINE 待辦'
+export const BOARD_VIEW_TITLE = 'LINE 待辦 Pro'
 
 /** 本外掛的設定 view 在 TeamUQ 裡的位置（只用在看板自己沒有「設定」分頁的宿主；外掛版 `capabilities.settingsTab` 是 true，看板有自己的「設定」分頁）。 */
 export const PLUGIN_SETTINGS_PLACE = `${PLUGIN_PAGE_PLACE}打開這個外掛後的「${PLUGIN_SETTINGS_TAB_LABEL}」分頁`

@@ -9,7 +9,7 @@
 
 | 項目 | 值 |
 |---|---|
-| 檔案 | `<dataDir>\logs\invoke-trace.log`（本機：`C:\Users\<使用者>\.teamuq\plugins\data\tuqdev.line-todo\logs\invoke-trace.log`） |
+| 檔案 | `<dataDir>\logs\invoke-trace.log`（本機：`C:\Users\<使用者>\.teamuq\plugins\data\tuqdev.line-todo.pro\logs\invoke-trace.log`） |
 | 輪替檔 | `invoke-trace.log.1`（只留一代） |
 | 上限 | 每個檔 1 MiB（`TRACE_DEFAULTS.maxBytes`），合計最多約 2 MiB |
 | 容量（實測） | 一筆約 130 位元組（73 條已知路徑 × 3 種參數大小的平均 131.5，單筆最大 160；`test-invoke-trace.mjs` 的「record sizes match…」測試守住這個範圍）；2 MiB 約 1.6 萬筆，一次呼叫寫 `start`＋`end` 兩筆，約 8,000 次呼叫。`inflight`、`carry`、`loop_stall` 較長（數百位元組），但只在有慢呼叫或輪替時才寫。 |

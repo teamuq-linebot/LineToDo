@@ -2,7 +2,7 @@
  * teamuqTask.ts — 外掛 AI 對話要掛在哪個 TeamUQ Task 上（0.2.1）。
  *
  * TeamUQ 每一輪 `host.ai.complete` 都會開一個 Session。沒帶 `taskId` 時，Core 會臨時建一個「系統對話 · host.ai」Task，用完就刪掉，
- * 留下的 Session 在 TeamUQ 的對話看板上變成「Task 關聯待確認」。所以外掛自己建一般的 Project「LINE 待辦」與 Task「AI 整理 LINE 訊息」
+ * 留下的 Session 在 TeamUQ 的對話看板上變成「Task 關聯待確認」。所以外掛自己建一般的 Project「LINE 待辦 Pro」與 Task「AI 整理 LINE 訊息」
  * （Program API `data.projects.create`／`data.tasks.create`，manifest 宣告 `program:data:projects:write`、`program:data:tasks:write`），
  * 每一輪都帶這個 `taskId`；對話就照一般途徑歸在這個 Task 底下。
  *
@@ -17,9 +17,9 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import type { PluginProgramApiV1 } from '@teamuq/plugin-sdk'
 
-export const TEAMUQ_PROJECT_NAME = 'LINE 待辦'
+export const TEAMUQ_PROJECT_NAME = 'LINE 待辦 Pro'
 export const TEAMUQ_TASK_NAME = 'AI 整理 LINE 訊息'
-export const TEAMUQ_TASK_DESCRIPTION = 'LINE 待辦外掛在背景用 TeamUQ 的 AI 整理 LINE 訊息（抽取待辦、草擬回覆、分析）；每一輪 AI 對話都歸在這個 Task。'
+export const TEAMUQ_TASK_DESCRIPTION = 'LINE 待辦 Pro 外掛在背景用 TeamUQ 的 AI 整理 LINE 訊息（抽取待辦、草擬回覆、分析）；每一輪 AI 對話都歸在這個 Task。'
 
 export interface TeamuqTaskBinding {
   /** 這一輪要帶的 `taskId`；null＝建不起來，這一輪不帶。 */

@@ -68,6 +68,46 @@ test('manifest: composed full-trust, ai:chat, both native modules, delete-on-uni
   for (const phrase of ['LINE.exe 的記憶體', 'TeamUQ 已登入的 AI', '模型與推理強度', '填入 LINE', 'CLI provider', '自訂 AI 端點', '看板不需要開著', 'TeamUQ 的 AI 歷史']) assert.ok(DESCRIPTION.includes(phrase), phrase)
 })
 
+// X5（implementation-plan-v2.md §2 X5）：描述快照。改描述時這裡一起改，並重新確認兩種說法都 ≤512 字元、媒體保存的六點都在、權限與 backendMethods 不變。
+const X5_DESCRIPTION_HEAD =
+  '把 LINE 桌面版的新訊息整理成待辦看板。完全信任級外掛：讀取 LINE 的本機資料與執行中 LINE.exe 的記憶體取得解密金鑰（只讀不改 LINE 本機資料），在本機保存解密後的訊息與圖片。' +
+  '媒體保存需另行 QR 登入並開啟接收：依 LINE 電腦版收到的訊息，自動保存新收到與自己傳出的照片、影片、檔案，也可依你的操作下載舊訊息的原檔；每小時有上限，遇到 LINE 限流會自動暫停。' +
+  '全部存在本外掛資料夾，解除安裝時一併刪除。' +
+  '同一連線也可在聊天室手動傳送文字、單張圖片或單一檔案，只在按下傳送時送出。' +
+  '整理待辦時，訊息內容會交給 TeamUQ 已登入的 AI；可在設定選擇供應者、模型與推理強度。AI 由外掛背景程式執行，看板不需要開著'
+const X5_DESCRIPTION_TAIL = '。AI 整理過的對話會記錄在 TeamUQ 的 AI 歷史。不提供「填入 LINE」，也不直接啟動 CLI provider 或使用自訂 AI 端點。'
+const X5_DESCRIPTION = `${X5_DESCRIPTION_HEAD}（TeamUQ 在外掛閒置一段時間後會停止背景程式，之後開啟看板會補整理；每分鐘與每小時有輪數限制）${X5_DESCRIPTION_TAIL}`
+const X5_RESIDENT_DESCRIPTION = `${X5_DESCRIPTION_HEAD}。在 TeamUQ 的「它可以做的事」打開「關閉畫面後繼續在背景執行」後（預設是關閉的），TeamUQ 開著時背景程式不因閒置停止，看板沒開也會整理；沒打開時，閒置一段時間後會停止，之後開啟看板會補整理。每分鐘與每小時有輪數限制${X5_DESCRIPTION_TAIL}`
+// 0.2.21 的權限與 backendMethods（X5 不得變動）
+const X5_PERMISSIONS = ['ui:view', 'backend:invoke', 'native:addons', 'ai:chat', 'assets:plugin-data', 'program:data:projects:write', 'program:data:tasks:write']
+const X5_BACKEND_METHODS = ['ping', 'messages', 'line', 'db.messages', 'db.chats', 'db.todos', 'groupTopics', 'pipeline', 'settings', 'app', 'media', 'linejsMedia', 'linejsOutbound', 'backend', 'review', 'tasks', 'events', 'extract', 'ai', 'result', 'job']
+
+test('X5 manifest description snapshot: media saving (separate QR login, desktop-based auto save of received and sent photos / videos / files, old originals on request, all in the plugin folder and deleted on uninstall, hourly cap and automatic pause on LINE rate limits, read-only toward LINE data); outbound, AI and background wording kept; both variants <= 512; permissions and backendMethods unchanged', () => {
+  assert.equal(DESCRIPTION, X5_DESCRIPTION)
+  assert.equal(RESIDENT_DESCRIPTION, X5_RESIDENT_DESCRIPTION)
+  const media = ['需另行 QR 登入', '依 LINE 電腦版收到的訊息', '自動保存新收到與自己傳出的照片、影片、檔案', '依你的操作下載舊訊息的原檔', '全部存在本外掛資料夾，解除安裝時一併刪除', '每小時有上限', '遇到 LINE 限流會自動暫停', '只讀不改 LINE 本機資料']
+  const kept = ['手動傳送文字、單張圖片或單一檔案', '只在按下傳送時送出', 'TeamUQ 已登入的 AI', '模型與推理強度', '看板不需要開著', 'TeamUQ 的 AI 歷史', '填入 LINE', 'CLI provider', '自訂 AI 端點']
+  for (const text of [DESCRIPTION, RESIDENT_DESCRIPTION]) {
+    assert.ok(text.length <= 512, `description is ${text.length} chars`)
+    for (const phrase of [...media, ...kept]) assert.ok(text.includes(phrase), phrase)
+    // the old wording promised only new pictures and files after the login: gone
+    assert.equal(text.includes('只下載登入後的新圖片與檔案訊息'), false)
+    // review-x5 F-5: outbound and the QR device login do change LINE (the account side); only LINE's local data is read-only
+    assert.equal(text.includes('只讀不改 LINE 資料'), false)
+  }
+  assert.ok(DESCRIPTION.includes('閒置一段時間後會停止背景程式'))
+  assert.ok(RESIDENT_DESCRIPTION.includes('關閉畫面後繼續在背景執行') && RESIDENT_DESCRIPTION.includes('預設是關閉') && RESIDENT_DESCRIPTION.includes('看板沒開也會整理'))
+  assert.deepEqual([...PERMISSIONS], X5_PERMISSIONS)
+  assert.deepEqual(permissionsFor(), [...X5_PERMISSIONS, RESIDENT_PERMISSION])
+  assert.deepEqual([...BACKEND_METHODS], X5_BACKEND_METHODS)
+  for (const resident of [undefined, { enabled: false }]) {
+    const m = buildManifest({ version: VERSION, ...(resident ? { resident } : {}) })
+    assert.deepEqual(m.backendMethods, X5_BACKEND_METHODS)
+    assert.deepEqual(m.permissions, resident ? X5_PERMISSIONS : [...X5_PERMISSIONS, RESIDENT_PERMISSION])
+    assert.deepEqual(m.data, { uninstall: 'delete' }, 'what the description promises on uninstall')
+  }
+})
+
 test('the current author tool validates the stage and refuses an older Core and a manifest that breaks the contract', async () => {
   const tool = assertToolIntact()
   assert.equal(tool.sha256, TOOL_RECORD.sha256)
@@ -106,7 +146,7 @@ test('the build is deterministic: two builds from different work / output direct
   assert.ok(a.zip.equals(b.zip))
   assert.equal(a.report.signer, 'unsigned')
   assert.equal(a.manifest.version, VERSION)
-  assert.equal(a.outName, `tuqdev.line-todo-${VERSION}-win.tuqplugin`)
+  assert.equal(a.outName, `tuqdev.line-todo.pro-${VERSION}-win.tuqplugin`)
   // the overrides only restate kinds that differ from the tool's default (the two natives with their platform; html / css / wasm as code)
   assert.deepEqual(kindOverrides(a.files), a.report.overrides)
   for (const o of a.report.overrides) assert.ok(o.kind !== defaultKind(o.path) || o.platform !== undefined, o.path)
@@ -140,6 +180,16 @@ test('the package bytes depend on the commit, not on the checkout: authored text
       assert.ok(readFileSync(join(dir, 'lf.out')).equals(readFileSync(join(dir, 'crlf.out'))), entry)
     }
   } finally { rmQuiet(dir) }
+})
+
+test('pngjs decoder dependency is present in the backend package with its upstream MIT license and notice', async () => {
+  const { a } = await getBuilt()
+  const license = a.files.find((file) => file.path === 'LICENSES/pngjs-LICENSE.txt')
+  assert.ok(license)
+  assert.equal(license.data.toString('utf8'), readFileSync(join(ROOT, 'node_modules', 'pngjs', 'LICENSE'), 'utf8'))
+  const notices = a.files.find((file) => file.path === 'LICENSES/THIRD_PARTY_NOTICES.md')?.data.toString('utf8') ?? ''
+  assert.match(notices, /pngjs \| 7\.0\.0 \| MIT \| bundled into `backend\/index\.mjs`/)
+  assert.match(license.data.toString('utf8'), /Permission is hereby granted, free of charge/)
 })
 
 test('the tool\'s review (verify, same reviewArtifact as Core) for TeamUQ 1.8.10: unsigned, all integrity / manifest / native / icon checks pass; tampering, Core 1.7.0, Core 1.7.12 and another platform are refused', async () => {
@@ -201,11 +251,24 @@ test('the content audit really flags forbidden content (guard is not vacuous)', 
     { path: 'backend/native/win32-x64/other.node', data: Buffer.from('y') },
     { path: 'notes.txt', data: Buffer.from('uses better-sqlite3-multiple-ciphers') },
     { path: 'keys/dev-key.json', data: Buffer.from('{"privatePkcs8":"AAAA"}') },
-    { path: 'a.txt', data: Buffer.from('-----BEGIN PRIVATE KEY-----') },
     { path: 'node_modules/x/index.js', data: Buffer.from('z') },
   ], { allowedNative, secretNeedles: [] })
   const joined = bad.problems.join('\n')
-  for (const needle of ['PowerShell', 'not on the allow-list', 'better-sqlite3-multiple-ciphers', 'looks like a key file', 'private-key marker', 'node_modules']) assert.ok(joined.includes(needle), needle)
+  for (const needle of ['PowerShell', 'not on the allow-list', 'better-sqlite3-multiple-ciphers', 'looks like a key file', 'node_modules']) assert.ok(joined.includes(needle), needle)
+  const safeCode = Buffer.from('console.error("Invalid RSA private key"); const pemPattern = /-----BEGIN (?:RSA )?PRIVATE KEY-----/; const fieldName = "privatePkcs8";')
+  const safeEntries = [ok[0], { path: 'backend/index.mjs', data: safeCode }]
+  const safeAudit = auditPackage(safeEntries, { allowedNative })
+  assert.equal(safeAudit.ok, true, `SDK diagnostics and a PEM detector regex are not key material: ${safeAudit.problems.join('; ')}`)
+  const fakeKeyBody = 'c3ludGhldGljLWZha2Uta2V5LWRhdGEtZm9yLXRlc3Rpbmc='
+  for (const encoded of [
+    `-----BEGIN PRIVATE KEY-----\n${fakeKeyBody}\n-----END PRIVATE KEY-----`,
+    `const key = "-----BEGIN PRIVATE KEY-----\\n${fakeKeyBody}\\n-----END PRIVATE KEY-----";`,
+    `const key = "\\u002d\\u002d\\u002d\\u002d\\u002dBEGIN PRIVATE KEY-----\\n${fakeKeyBody}\\n-----END PRIVATE KEY\\u002d\\u002d\\u002d\\u002d\\u002d";`,
+  ]) {
+    const finding = auditPackage([ok[0], { path: 'backend/index.mjs', data: Buffer.from(encoded) }], { allowedNative })
+    assert.equal(finding.ok, false, 'synthetic PEM private-key material must be rejected')
+    assert.ok(finding.problems.some((problem) => problem.includes('private-key material')))
+  }
   const secret = Buffer.from('0123456789abcdef0123456789abcdef')
   assert.equal(auditPackage([...ok, { path: 'x.bin', data: Buffer.concat([Buffer.from('aa'), secret]) }], { allowedNative, secretNeedles: [secret] }).ok, false)
   const eleven = Buffer.from('eleven')

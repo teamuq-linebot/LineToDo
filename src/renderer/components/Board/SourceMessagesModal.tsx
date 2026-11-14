@@ -1,9 +1,10 @@
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLineTodoApi } from '../../platform/LineTodoApi'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { MessageDTO } from '../../types/api'
 import { formatCallRecord } from '../../lib/callRecord'
-import { MediaFileActions, MediaImage } from '../MediaView'
+import { MediaFileActions, MediaImage, MediaVideo, SavedFileInfo } from '../MediaView'
+import { ZoomableAvatar } from '../MessageStream'
 
 /**
  * SourceMessagesModal — 來源訊息彈窗。
@@ -40,6 +41,20 @@ function fmtTime(m: MessageDTO): string {
   const d = new Date(m.ts)
   const p = (n: number): string => String(n).padStart(2, '0')
   return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+function dayKey(m: MessageDTO): string {
+  const date = new Date(m.ts)
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+}
+
+function fmtDay(m: MessageDTO): string {
+  const date = new Date(m.ts)
+  const today = new Date()
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1)
+  if (date.toDateString() === today.toDateString()) return '今天'
+  if (date.toDateString() === yesterday.toDateString()) return '昨天'
+  return new Intl.DateTimeFormat('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
 }
 
 /** bytes → 「NN.N KB」/「NN.N MB」（< 1 KB 顯示 B）；null 回空字串。 */
@@ -80,8 +95,24 @@ export function SourceMessagesModal({
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null)
   // 媒體：檔案開啟/另存失敗的輕量提示（msgId → 訊息）。
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
+  const [messageAvatarUrls, setMessageAvatarUrls] = useState<Record<string, string>>({})
 
   const sourceSet = useMemo(() => new Set(sourceMsgIds), [sourceMsgIds])
+
+  useEffect(() => {
+    const prepare = api.media?.messageAvatarUrls
+    const ids = messages.filter((message) => message.direction !== 'out' && message.msgId.startsWith('i:')).map((message) => message.msgId)
+    if (!prepare || ids.length === 0) {
+      setMessageAvatarUrls({})
+      return
+    }
+    let active = true
+    const controller = new AbortController()
+    void prepare(chatId, ids, { signal: controller.signal }).then((batch) => {
+      if (active) setMessageAvatarUrls((current) => ({ ...current, ...batch.urls }))
+    }).catch(() => { /* avatar failure follows the chat renderer's text fallback */ })
+    return () => { active = false; controller.abort() }
+  }, [api, chatId, messages])
 
   // 開窗載入過去 24 小時（舊→新）；request identity 隔離關閉/重試後晚到的回應。
   const loadInitial = useCallback(async (): Promise<void> => {
@@ -214,11 +245,14 @@ export function SourceMessagesModal({
     if (el && el.scrollTop < 40) void loadEarlier()
   }
 
-  // 依 contentType 渲染訊息內容：1=圖片縮圖（點開 lightbox）、14=檔案卡、其餘=純文字。
+  // 依 contentType 渲染訊息內容：1=圖片縮圖（點開 lightbox）、2=影片格、14=檔案卡（含已保存資訊）、其餘=純文字。
   function renderContent(m: MessageDTO): JSX.Element {
     if (m.contentType === 1) {
       // 圖片網址由宿主決定（standalone：linemedia://；外掛：assets.url，見 MediaView）。
       return <MediaImage msgId={m.msgId} as="div" onOpenLightbox={setLightboxSrc} />
+    }
+    if (m.contentType === 2) {
+      return <MediaVideo msgId={m.msgId} as="div" />
     }
     if (m.contentType === 14) {
       const err = fileErrors[m.msgId]
@@ -230,6 +264,7 @@ export function SourceMessagesModal({
             <span className="sm-file-size">{formatSize(m.fileSize)}</span>
             <MediaFileActions msgId={m.msgId} onError={(message) => setFileErrors((e) => ({ ...e, [m.msgId]: message }))} />
           </div>
+          <SavedFileInfo msgId={m.msgId} />
           {err && (
             <div style={{ marginTop: 4, fontSize: 11, color: 'var(--red, #f26d6d)' }}>{err}</div>
           )}
@@ -301,22 +336,32 @@ export function SourceMessagesModal({
                   {loadingEarlier ? '載入中…' : '↑ 載入更早 100 筆'}
                 </button>
               )}
-              {messages.map((m) => {
+              {messages.map((m, index) => {
                 const isOut = m.direction === 'out'
                 const isSource = sourceSet.has(m.msgId)
+                const previous = messages[index - 1]
+                const sender = m.sender ?? chatName ?? '對方'
                 return (
-                  <div
-                    key={m.msgId}
-                    className={`sm-msg ${isOut ? 'self' : 'other'}${isSource ? ' source' : ''}`}
-                  >
-                    {!isOut && <div className="sm-who">{m.sender ?? '對方'}</div>}
-                    <div className="sm-bubble">
-                      {isSource && <span className="sm-src-tag">來源</span>}
-                      {m.unsent && <span className="unsent-badge">🚫 已收回</span>}
-                      {renderContent(m)}
+                  <Fragment key={m.msgId}>
+                    {(!previous || dayKey(previous) !== dayKey(m)) && <div className="chat-date-divider">{fmtDay(m)}</div>}
+                    <div
+                      key={m.msgId}
+                      className={`chat-message ${isOut ? 'outgoing' : 'incoming'} sm-msg ${isOut ? 'self' : 'other'}${isSource ? ' source' : ''}`}
+                    >
+                      {!isOut && <ZoomableAvatar url={messageAvatarUrls[m.msgId]} label={sender} name={sender} isGroup={false} className="chat-message-avatar" title={sender} />}
+                      <div className="chat-message-content">
+                        {!isOut && <span className="chat-message-sender">{sender}</span>}
+                        <div className="chat-message-bottom-row">
+                          <div className={`chat-message-bubble sm-bubble${isSource ? ' source' : ''}`}>
+                            {isSource && <span className="sm-src-tag">來源</span>}
+                            {m.unsent && <span className="unsent-badge">🚫 已收回</span>}
+                            <div className="chat-message-body">{renderContent(m)}</div>
+                          </div>
+                          <time className="chat-message-time sm-time">{fmtTime(m)}</time>
+                        </div>
+                      </div>
                     </div>
-                    <div className="sm-time">{fmtTime(m)}</div>
-                  </div>
+                  </Fragment>
                 )
               })}
             </>

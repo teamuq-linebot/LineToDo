@@ -1,6 +1,6 @@
 // The development link folder (dist/dev-link): the same plugin content as the packaged stage (lib/manifest.mjs + collectPackageFiles of build-plugin.mjs),
 // written in place so that TeamUQ「從資料夾連結」can point at one fixed folder and pick up every rebuild.
-// The manifest is the package manifest unchanged (id tuqdev.line-todo), so the folder matches the packaged stage byte for byte.
+// The manifest is the package manifest unchanged (id tuqdev.line-todo.pro), so the folder matches the packaged stage byte for byte.
 // No integrity.json / signature.json is written (the link is not a package).
 // Pure file logic here; the build itself lives in build-dev-link.mjs.
 import fs from 'node:fs'

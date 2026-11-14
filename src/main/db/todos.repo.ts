@@ -25,6 +25,7 @@ interface TodoRow {
   created_at: string
   updated_at: string
   resolved_at: string | null
+  source_triggered_at?: number | null
 }
 
 function rowToDTO(r: TodoRow): TodoDTO {
@@ -45,6 +46,7 @@ function rowToDTO(r: TodoRow): TodoDTO {
     priority: r.priority,
     dueAt: r.due_at,
     sourceMsgIds,
+    ...(Object.hasOwn(r, 'source_triggered_at') ? { sourceTriggeredAt: r.source_triggered_at ?? null } : {}),
     confidence: r.confidence,
     completionEvidence: r.completion_evidence,
     createdAt: r.created_at,
@@ -159,8 +161,20 @@ export function listTodos(
 
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
   const orderBy = buildListTodosOrderBy(query)
+  // Source timestamps are resolved only through each todo's explicit IDs. The
+  // first 100 references cap work per card; the messages primary-key lookup
+  // avoids scanning chat history. MIN gives multi-source todos a stable first
+  // trigger time, while missing/deleted source rows remain null.
   const rows = db
-    .prepare(`SELECT * FROM todos ${where} ${orderBy}`)
+    .prepare(`SELECT todos.*,
+      CASE WHEN json_valid(todos.source_msg_ids) THEN (
+        SELECT MIN(messages.ts)
+        FROM (
+          SELECT key, value FROM json_each(todos.source_msg_ids) ORDER BY key LIMIT 100
+        ) AS source
+        JOIN messages ON messages.msg_id = source.value AND messages.chat_id = todos.chat_id
+      ) ELSE NULL END AS source_triggered_at
+      FROM todos ${where} ${orderBy}`)
     .all(...params) as TodoRow[]
   return rows.map(rowToDTO)
 }

@@ -63,7 +63,7 @@ export interface ResidencyText {
   detail: string
 }
 
-const RESIDENT_NOW = '背景執行中：關閉看板後，LINE 待辦仍會在背景整理新訊息（只要 TeamUQ 還開著）'
+const RESIDENT_NOW = '背景執行中：關閉看板後，LINE 待辦 Pro 仍會在背景整理新訊息（只要 TeamUQ 還開著）'
 
 /** 已知原因的白話文字（不含「該去哪個開關」的後半句，由 `describeResidency` 補）。 */
 const REASON_TEXT: Readonly<Record<(typeof KNOWN_RESIDENCY_REASONS)[number], { tone: ResidencyTone; bar: string; steps: string }>> = {

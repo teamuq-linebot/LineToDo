@@ -80,7 +80,7 @@ export function validateTopicAnalysis(value: unknown, input: TopicMessageInput[]
     if (typeof t.ref !== 'string' || !/^[a-z0-9_-]{1,40}$/i.test(t.ref)) invalid('$.topics[*].ref', 'invalid_value')
     if (refs.has(t.ref)) invalid('$.topics[*].ref', 'duplicate_ref')
     if (typeof t.title !== 'string' || !t.title.trim() || t.title.length > 120) invalid('$.topics[*].title', 'invalid_value')
-    if (typeof t.summary !== 'string' || !t.summary.trim() || t.summary.length > 500) invalid('$.topics[*].summary', 'invalid_value')
+    if (typeof t.summary !== 'string' || !t.summary.trim() || t.summary.length > 2000) invalid('$.topics[*].summary', 'invalid_value')
     refs.add(t.ref)
     return { ref: t.ref, title: t.title.trim(), summary: t.summary.trim() }
   })

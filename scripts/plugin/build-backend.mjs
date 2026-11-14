@@ -93,6 +93,90 @@ const KOFFI_PATCHES = [
   },
 ]
 
+export const LINEJS_EXPECTED_VERSION = '3.6.4'
+
+export function assertLineJsPackageVersion(pkg) {
+  if (pkg?.name !== '@evex-dev/linejs' || pkg.version !== LINEJS_EXPECTED_VERSION) {
+    throw new Error(`LINEJS ${pkg?.version ?? 'unknown'} found; only ${LINEJS_EXPECTED_VERSION} has reviewed client needles`)
+  }
+}
+
+export function patchLineJsTransport(source) {
+  const start = 'function createNodeFetch(allowH2) {'
+  const end = '// base/obs/mime.ts'
+  const a = source.indexOf(start)
+  const b = source.indexOf(end, a)
+  if (a < 0 || b < 0) throw new Error(`LINEJS ${LINEJS_EXPECTED_VERSION} transport factory needle missing`)
+  const factory = 'function createNodeFetch(_allowH2) { return async () => async () => { throw new Error("LINEJS custom fetch required") }; }\n'
+  let out = source.slice(0, a) + factory + source.slice(b)
+  const fetchNeedle = 'fetch = async (info, init) => {\n\t\tconst req = new Request(info, init);\n\t\treturn await (this.#customFetch ?? await this.#nodeFetch(this.config.timeout) ?? globalThis.fetch)(req);\n\t};'
+  const fetchReplacement = 'fetch = async (info, init) => {\n\t\tif (!this.#customFetch) throw new Error("LINEJS custom fetch required");\n\t\treturn await this.#customFetch(new Request(info, init));\n\t};'
+  const pushNeedle = 'fetchPush = async (info, init) => {\n\t\tif (this.#customFetch) return this.fetch(info, init);\n\t\treturn (await this.#nodePushFetch(this.config.timeout) ?? this.fetch)(info, init);\n\t};'
+  const pushReplacement = 'fetchPush = async (info, init) => {\n\t\tif (!this.#customFetch) throw new Error("LINEJS custom fetch required");\n\t\treturn this.fetch(info, init);\n\t};'
+  for (const [needle, replacement] of [[fetchNeedle, fetchReplacement], [pushNeedle, pushReplacement]]) {
+    if (!out.includes(needle)) throw new Error(`LINEJS ${LINEJS_EXPECTED_VERSION} client fetch needle missing`)
+    out = out.replace(needle, () => replacement)
+  }
+  if (/import\(["']undici["']\)|globalThis\.fetch/.test(out)) throw new Error('LINEJS transport patch left a default network fallback')
+  return out
+}
+
+function lineJsTransportPlugin() {
+  return {
+    name: 'line-todo-linejs-custom-fetch-only',
+    setup(b) {
+      b.onLoad({ filter: /[\\/]@evex-dev[\\/]linejs[\\/]dist[\\/]client[\\/]mod\.mjs$/ }, (args) => {
+        const pkg = JSON.parse(readFileSync(join(dirname(args.path), '..', '..', 'package.json'), 'utf8'))
+        assertLineJsPackageVersion(pkg)
+        let source = readFileSync(args.path, 'utf8')
+        const needles = [
+          ['import { i as parseIncomingCall, r as parseCancelCall, t as createCallClient } from "../call-D6xh0QTw.mjs";\n', ''],
+          ['\tget call() {\n\t\tif (!this.#call) this.#call = createCallClient(this);\n\t\treturn this.#call;\n\t}\n', '\tget call() {\n\t\tthrow new Error("LINEJS call feature unavailable in line-todo");\n\t}\n'],
+        ]
+        for (const [from, to] of needles) {
+          if (!source.includes(from)) throw new Error(`LINEJS ${LINEJS_EXPECTED_VERSION} excluded-call patch needle missing: ${from.trim()}`)
+          source = source.replace(from, () => to)
+        }
+        return { contents: source, loader: 'js', resolveDir: dirname(args.path) }
+      })
+      b.onLoad({ filter: /[\\/]@evex-dev[\\/]linejs[\\/]dist[\\/]base-[^\\/]+\.mjs$/ }, (args) => {
+        const packagePath = join(dirname(args.path), '..', 'package.json')
+        const pkg = JSON.parse(readFileSync(packagePath, 'utf8'))
+        assertLineJsPackageVersion(pkg)
+        return { contents: patchLineJsTransport(readFileSync(args.path, 'utf8')), loader: 'js', resolveDir: dirname(args.path) }
+      })
+    },
+  }
+}
+
+function thriftClientOnlyPlugin() {
+  return {
+    name: 'line-todo-thrift-client-only',
+    setup(b) {
+      b.onLoad({ filter: /[\\/]thrift[\\/]lib[\\/]nodejs[\\/]lib[\\/]thrift[\\/]index\.js$/ }, (args) => {
+        const pkg = JSON.parse(readFileSync(join(dirname(args.path), '..', '..', '..', '..', 'package.json'), 'utf8'))
+        if (pkg.name !== 'thrift' || pkg.version !== '0.20.0') throw new Error(`thrift ${pkg.version} found; only 0.20.0 has reviewed client-only entry`)
+        const source = readFileSync(args.path, 'utf8')
+        for (const needle of ["var connection = require('./connection');", "var httpConnection = require('./http_connection');", "var server = require('./server');", "var web_server = require('./web_server');"]) {
+          if (!source.includes(needle)) throw new Error(`thrift 0.20.0 client-only patch needle missing: ${needle}`)
+        }
+        const contents = [
+          "exports.Thrift = require('./thrift');",
+          "exports.Int64 = require('node-int64');",
+          "exports.Q = require('q');",
+          "exports.TBufferedTransport = require('./buffered_transport');",
+          "exports.TFramedTransport = require('./framed_transport');",
+          "exports.TJSONProtocol = require('./json_protocol');",
+          "exports.TBinaryProtocol = require('./binary_protocol');",
+          "exports.TCompactProtocol = require('./compact_protocol');",
+          "exports.THeaderProtocol = require('./header_protocol');",
+        ].join('\n')
+        return { contents, loader: 'js', resolveDir: dirname(args.path) }
+      })
+    },
+  }
+}
+
 export function patchKoffiLoader(source, needles) {
   let out = source
   for (const [from, to] of needles) {
@@ -127,7 +211,7 @@ const INLINE_KOFFI_BANNER = [
 ].join('\n')
 
 /** Allowed external imports of the bundle: koffi (external mode only) + node built-ins that cannot spawn or open sockets (async_hooks: AsyncLocalStorage, used by the Phase 4 AI relay to tag which core method is asking the model). */
-const ALLOWED_NODE_BUILTINS = new Set(['fs', 'path', 'os', 'util', 'url', 'crypto', 'events', 'module', 'perf_hooks', 'buffer', 'assert', 'stream', 'string_decoder', 'timers', 'v8', 'zlib', 'tty', 'async_hooks'])
+const ALLOWED_NODE_BUILTINS = new Set(['fs', 'fs/promises', 'path', 'os', 'util', 'url', 'crypto', 'events', 'module', 'perf_hooks', 'buffer', 'assert', 'stream', 'string_decoder', 'timers', 'v8', 'zlib', 'tty', 'async_hooks'])
 
 /** Pure analysis (also used by the test with synthetic input). Returns { ok, problems, summary }. */
 export function analyzeBundle({ text, metafile, outfile, koffi = 'external' }) {
@@ -186,7 +270,7 @@ export async function buildBackendBundle({ outfile, koffi = 'external' }) {
     external: koffi === 'external' ? ['koffi'] : [],
     // The standalone build keeps better-sqlite3 11.x (Electron 31); the plugin backend must load 13.0.2 (N-API, Electron 44).
     alias: { 'better-sqlite3': 'better-sqlite3-plugin' },
-    plugins: koffi === 'inline' ? [stubPlugin(), koffiShimPlugin()] : [stubPlugin()],
+    plugins: koffi === 'inline' ? [stubPlugin(), koffiShimPlugin(), lineJsTransportPlugin(), thriftClientOnlyPlugin()] : [stubPlugin(), lineJsTransportPlugin(), thriftClientOnlyPlugin()],
     // CJS code inside the bundle (better-sqlite3's loader requires the .node addon by an absolute path) needs a real `require`.
     banner: { js: "import { createRequire as __lineTodoCreateRequire } from 'node:module';\nconst require = __lineTodoCreateRequire(import.meta.url);" + (koffi === 'inline' ? '\n' + INLINE_KOFFI_BANNER : '') },
     define: { __LINE_TODO_PLUGIN_VERSION__: JSON.stringify(version) },

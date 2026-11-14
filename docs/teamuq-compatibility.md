@@ -8,7 +8,7 @@ LINE 待辦 0.2.14 的 SDK、作者 CLI、離線測試宿主與預設打包驗�
 
 正式套件與 `dist/dev-link` 預設都宣告 `background:resident`。這只讓 TeamUQ 顯示授權開關，不會代替使用者授權。
 
-要讓看板關閉後繼續整理訊息，請在 TeamUQ 的「外掛」頁打開 LINE 待辦，在「它可以做的事」開啟「關閉畫面後繼續在背景執行」。未授權、超出宿主資源額度或宿主停止背景執行時，外掛依 `context.residency` 回報狀態；不會自行保活或繞過限制。
+要讓看板關閉後繼續整理訊息，請在 TeamUQ 的「外掛」頁打開 LINE 待辦 Pro，在「它可以做的事」開啟「關閉畫面後繼續在背景執行」。未授權、超出宿主資源額度或宿主停止背景執行時，外掛依 `context.residency` 回報狀態；不會自行保活或繞過限制。
 
 建置不宣告背景常駐能力的套件可使用 `npm run build:plugin -- --resident=false`，開發連結則使用 `npm run dev:plugin -- --resident=false`。也支援 `LINE_TODO_RESIDENT=0`。最低宿主版本仍為 1.8.10。
 
@@ -28,4 +28,4 @@ LINE 待辦 0.2.14 的 SDK、作者 CLI、離線測試宿主與預設打包驗�
 
 開發中使用 `npm run dev:plugin` 更新固定資料夾，再由 TeamUQ 的「從資料夾連結」載入。已經連結的宿主會依自身檔案監看機制重新載入。
 
-正式套件位於 `dist/plugin-package/tuqdev.line-todo-0.2.14-win.tuqplugin`。建置與驗證不代表已安裝；請使用 TeamUQ 的正常外掛安裝流程。
+正式套件位於 `dist/plugin-package/tuqdev.line-todo.pro-0.2.14-win.tuqplugin`。建置與驗證不代表已安裝；請使用 TeamUQ 的正常外掛安裝流程。

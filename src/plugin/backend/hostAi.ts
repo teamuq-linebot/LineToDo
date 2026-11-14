@@ -22,6 +22,7 @@ import { AiPortError } from '../../core/aiPort'
 import type { AiConversationScope, AiPort, AiPortRequest, AiPortResult, AiPriority } from '../../core/aiPort'
 import { EMPTY_AI_COUNTERS } from '../../shared/aiStatus'
 import type { AiCounters, AiStatus } from '../../shared/aiStatus'
+import { projectAiInputSafely } from '../../shared/aiInputSafety'
 import { normalizeHostAiSelection } from '../../shared/hostAi'
 import type { HostAiEffort } from '../../shared/hostAi'
 import { parseModelJson } from '../../shared/jsonReply'
@@ -792,7 +793,12 @@ export function createHostAiPort(opts: HostAiPortOptions): HostAiPort {
 
   // ── 一個工作 ──
   const run = async (job: Job): Promise<AiPortResult> => {
-    const req = job.req
+    const rawReq = job.req
+    const safeSystem = projectAiInputSafely(rawReq.system)
+    const safeUser = projectAiInputSafely(rawReq.user)
+    if (safeSystem.status === 'blocked' || safeUser.status === 'blocked' || !safeSystem.payload || !safeUser.payload) throw new AiPortError('payload_unavailable')
+    const req = { ...rawReq, system: safeSystem.payload, user: safeUser.payload,
+      ...(rawReq.onAdditionalUserPayload ? { onAdditionalUserPayload: (payload: string) => { const safe = projectAiInputSafely(payload); return safe.status !== 'blocked' && Boolean(safe.payload) && rawReq.onAdditionalUserPayload!(safe.payload!) } } : {}) }
     let hostRequestCount = 0
     const recordHostAttempt = (input: Parameters<PluginBackendAiApiV1['complete']>[0], session?: PluginBackendAiSessionV1): boolean => {
       hostRequestCount += 1

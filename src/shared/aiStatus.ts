@@ -61,9 +61,9 @@ export function describeStatus(status: Pick<AiStatus, 'state' | 'reason' | 'resu
     case 'revoked': return `已關閉此外掛的 AI 權限（ai:chat）；${AI_CHAT_ALLOW_STEPS}後，重新開啟看板`
     case 'unavailable':
       if (status.reason === 'loading_models') return '正在連接 TeamUQ 的 AI 模型…'
-      if (status.reason === 'model_unavailable') return '所選 AI 模型目前不可用，請到 LINE 待辦的設定重新選擇模型'
-      if (status.reason === 'effort_unavailable') return '所選推理強度不受這個模型支援，請到 LINE 待辦的設定重新選擇'
-      if (status.reason === 'provider_not_found') return '所選 AI 供應者目前不可用，請到 LINE 待辦的設定重新選擇'
+      if (status.reason === 'model_unavailable') return '所選 AI 模型目前不可用，請到 LINE 待辦 Pro 的設定重新選擇模型'
+      if (status.reason === 'effort_unavailable') return '所選推理強度不受這個模型支援，請到 LINE 待辦 Pro 的設定重新選擇'
+      if (status.reason === 'provider_not_found') return '所選 AI 供應者目前不可用，請到 LINE 待辦 Pro 的設定重新選擇'
       if (status.reason === 'host_unavailable') return 'TeamUQ 的 AI 暫時沒有回應，稍後會自動重試'
       return status.reason?.startsWith('provider_') ? (PROVIDER_STATE_TEXT[status.reason.slice('provider_'.length)] ?? 'AI 目前無法使用') : 'AI 目前無法使用（找不到可用的 AI 供應者）'
     case 'paused':

@@ -85,6 +85,16 @@ export async function collectPackageFiles({ workDir }) {
   add('LICENSES/better-sqlite3-LICENSE.txt', fs.readFileSync(nodeModule('better-sqlite3-plugin', 'LICENSE')), 'asset')
   add('LICENSES/zod-LICENSE.txt', fs.readFileSync(nodeModule('zod', 'LICENSE')), 'asset')
   add('LICENSES/react-LICENSE.txt', fs.readFileSync(nodeModule('react', 'LICENSE')), 'asset')
+  add('LICENSES/linejs-LICENSE.txt', fs.readFileSync(nodeModule('@evex-dev', 'linejs', 'LICENSE')), 'asset')
+  add('LICENSES/qrcode-LICENSE', fs.readFileSync(nodeModule('qrcode', 'LICENSE')), 'asset')
+  for (const [pkg, name] of [
+    ['@noble/ciphers', 'noble-ciphers'], ['crypto-js', 'crypto-js'], ['curve25519-js', 'curve25519-js'],
+    ['node-bignumber', 'node-bignumber'], ['node-int64', 'node-int64'], ['thrift', 'thrift'],
+    ['tweetnacl', 'tweetnacl'], ['q', 'q'],
+  ]) add(`LICENSES/${name}-LICENSE`, fs.readFileSync(nodeModule(...pkg.split('/'), 'LICENSE')), 'asset')
+  // pngjs is bundled twice: 7.x (direct dependency, media decoding) and 5.x (qrcode's own copy under qrcode/node_modules).
+  add('LICENSES/pngjs-LICENSE.txt', fs.readFileSync(nodeModule('pngjs', 'LICENSE')), 'asset')
+  add('LICENSES/pngjs-5-LICENSE', fs.readFileSync(nodeModule('qrcode', 'node_modules', 'pngjs', 'LICENSE')), 'asset')
 
   return {
     files,
@@ -185,7 +195,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const resident = resolveResidentOption({ args, env: process.env })
   let built
   try {
-    built = await buildPackage({ outDir, suffix: args.suffix ? `-${args.suffix}` : '', resident })
+    built = await buildPackage({ outDir, workDir: path.join(outDir, '.work'), suffix: args.suffix ? `-${args.suffix}` : '', resident })
   } catch (error) {
     if (error.report) console.error(JSON.stringify({ validate: error.report.validate, pack: error.report.pack }, null, 2))
     throw error

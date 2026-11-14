@@ -1,6 +1,6 @@
 {
   "name": "line-todo",
-  "version": "0.2.17",
+  "version": "0.2.22",
   "description": "LINE 新訊息語意抽取代辦看板（Electron + qwen）",
   "main": "out/main/index.js",
   "author": "",
@@ -33,7 +33,7 @@
     "test:wasm-contract": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/test-wasm-contract.mjs",
     "test:wasm-engine": "npm run test:wasm-vfs && npm run test:wasm-linedb && npm run test:wasm-contract",
     "build:plugin-backend": "node scripts/plugin/build-backend.mjs",
-    "test:plugin-backend-unit": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-backend-units.mjs scripts/plugin/test-backend-media-reconcile.mjs scripts/plugin/test-extract-throughput.mjs scripts/plugin/test-review-resume.mjs scripts/plugin/test-backend-startup.mjs scripts/plugin/test-invoke-trace.mjs scripts/plugin/test-line-snapshot.mjs scripts/plugin/test-avatar-store.mjs scripts/plugin/test-contact-sync.mjs && node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-media-index.mjs && node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-extract-window.mjs && node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-chat-scoped-refresh.mjs && node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-refresh-queue.mjs",
+    "test:plugin-backend-unit": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-backend-units.mjs scripts/plugin/test-backend-media-reconcile.mjs scripts/plugin/test-extract-throughput.mjs scripts/plugin/test-review-resume.mjs scripts/plugin/test-backend-startup.mjs scripts/plugin/test-invoke-trace.mjs scripts/plugin/test-line-snapshot.mjs scripts/plugin/test-avatar-store.mjs scripts/plugin/test-contact-sync.mjs && node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-media-index.mjs && node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-media-saved.mjs && node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-extract-window.mjs && node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-chat-scoped-refresh.mjs && node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-refresh-queue.mjs",
     "test:extract-window": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-extract-window.mjs",
     "test:chat-scoped-refresh": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-chat-scoped-refresh.mjs scripts/plugin/test-refresh-queue.mjs",
     "test:plugin-backend-contract": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/plugin/test-backend-contract.mjs",
@@ -41,6 +41,8 @@
     "build:plugin-ui": "node scripts/plugin/build-ui.mjs",
     "test:plugin-api-adapter": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/plugin/test-plugin-api-adapter.mjs",
     "test:result-expiry": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test scripts/plugin/test-result-expiry.mjs",
+    "test:linejs-outbound": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-linejs-outbound.mjs scripts/plugin/test-linejs-session-fencing.mjs",
+    "test:chat-composer-ui": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=120000 scripts/plugin/test-chat-composer-ui.mjs",
     "test:plugin-ui": "node --experimental-strip-types --test scripts/plugin/test-plugin-ui.mjs scripts/plugin/test-plugin-ui-effects.mjs scripts/plugin/test-plugin-zoom.mjs",
     "test:plugin-guide": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-plugin-guide.mjs",
     "test:ai-orchestrator": "node --experimental-strip-types --experimental-loader=./scripts/ts-test-loader.mjs --test --test-timeout=60000 scripts/plugin/test-ai-orchestrator.mjs",
@@ -83,16 +85,21 @@
     "probe:breaker": "electron scripts/probe-breaker.cjs"
   },
   "dependencies": {
+    "@evex-dev/linejs": "3.6.4",
     "better-sqlite3": "^11",
     "better-sqlite3-multiple-ciphers": "^11.10.0",
     "koffi": "^3.1.0",
     "openai": "^4",
+    "pngjs": "^7.0.0",
+    "qrcode": "1.5.4",
     "zod": "^3"
   },
   "devDependencies": {
     "@electron/rebuild": "^3",
     "@types/better-sqlite3": "^7",
     "@types/node": "^20",
+    "@types/pngjs": "^6.0.5",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@vitejs/plugin-react": "^4",

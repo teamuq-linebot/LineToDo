@@ -4,7 +4,9 @@ import type { ChatPromptControl, ChatPromptSummary, PromptControl, PromptState, 
 import type { ChatDTO } from '../../types/api'
 import { displayChatName } from '../../lib/displayChatName'
 import { PROMPT_EDITOR_DRAFT_MAX_AGE_MS, useUiState } from '../../lib/uiState'
+import { useLineTodoApi } from '../../platform/LineTodoApi'
 import { DEFAULT_PROMPT_GOAL, PROMPT_DRAFT_KEY, notifyPromptSuggestionSaved, onPromptSuggestionSaved, parsePromptDraft } from './promptDraft'
+import { ProfileMatrixSettings } from './ProfileMatrixSettings'
 
 function errorText(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error)
@@ -84,6 +86,7 @@ function ChatOverrides({ control, chats }: { control: ChatPromptControl; chats: 
 }
 
 export function PromptSettings({ control, chatControl, chats = [] }: { control: PromptControl; chatControl?: ChatPromptControl; chats?: ChatDTO[] }): JSX.Element {
+  const api = useLineTodoApi()
   const drafts = useUiState()
   const [state, setState] = useState<PromptState | null>(null)
   const [nameDraft, setNameDraft] = useState('')
@@ -220,6 +223,7 @@ export function PromptSettings({ control, chatControl, chats = [] }: { control: 
           <button className="btn" type="button" disabled={locked} onClick={() => { setSuggestion(null); setMessage(null) }}>捨棄建議</button>
         </div>}
       </>}
+      {api.hostAi?.profiles && <ProfileMatrixSettings control={api.hostAi.profiles} />}
       {chatControl && <ChatOverrides control={chatControl} chats={chats} />}
       <button className="btn" type="button" disabled={locked} onClick={() => void load(true)}>重新載入</button>
     </div>

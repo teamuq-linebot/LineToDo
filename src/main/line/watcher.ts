@@ -50,6 +50,13 @@ export interface LineWatcherOptions {
    */
   drainBacklog?: boolean
   /**
+   * drainBacklog 的「接著讀下一批」要不要先暫緩：回 true 時不立刻排下一批，每 DRAIN_DEFER_RECHECK_MS 再問一次，回 false 才繼續。
+   * 每一批的讀取（getLineImportBatch 的 LINE DB 查詢）是同步執行的，一批接一批時 backend 的事件迴圈幾乎沒有空檔，
+   * IPC 呼叫（view 的 status 輪詢）與 LINEJS 登入的網路回呼都得排在每一批後面。外掛 backend 在 LINE QR 登入進行中回 true。
+   * 只影響 backlog 的連續讀取；interval 的定期 poll 照常。省略＝不暫緩（standalone 現行行為）。
+   */
+  deferDrain?: () => boolean
+  /**
    * 給了就把 start() 的「立即跑一次」延後這麼多毫秒才開始（外掛 backend：`activate()` 要先回傳讓 host 收到 boot-ack，
    * 第一次金鑰擷取與首批匯入才開始；review F2）。省略＝像以前一樣在 start() 裡立刻開始（standalone）。
    */
@@ -59,6 +66,8 @@ export interface LineWatcherOptions {
 const DB_WATCH_DEBOUNCE_MS = 800
 // watchFile fallback 輪詢 stat 間隔（不需要很短，只是確保 fs.watch 退場後還能追到）
 const STAT_WATCHER_INTERVAL_MS = 2000
+/** deferDrain() 回 true 時，多久再問一次要不要接著讀 backlog。 */
+const DRAIN_DEFER_RECHECK_MS = 500
 
 export class LineWatcher extends EventEmitter {
   private opts: LineWatcherOptions
@@ -70,6 +79,7 @@ export class LineWatcher extends EventEmitter {
   private intervalTimer: NodeJS.Timeout | null = null
   private debounceTimer: NodeJS.Timeout | null = null
   private drainHandle: NodeJS.Immediate | null = null
+  private drainDeferTimer: NodeJS.Timeout | null = null
   private startupTimer: NodeJS.Timeout | null = null
   private current: Promise<void> | null = null
   private fsWatcher: FSWatcher | null = null
@@ -148,6 +158,10 @@ export class LineWatcher extends EventEmitter {
     if (this.drainHandle) {
       clearImmediate(this.drainHandle)
       this.drainHandle = null
+    }
+    if (this.drainDeferTimer) {
+      clearTimeout(this.drainDeferTimer)
+      this.drainDeferTimer = null
     }
     if (this.intervalTimer) {
       clearInterval(this.intervalTimer)
@@ -282,6 +296,27 @@ export class LineWatcher extends EventEmitter {
   }
 
   /**
+   * backlog 還有下一批：排在下一個 setImmediate 接著讀；`deferDrain()` 回 true 時改成每 DRAIN_DEFER_RECHECK_MS 再問一次，
+   * 等它回 false 才接著讀（已排好的不重複排；stop() 會清掉兩種排程）。
+   */
+  private scheduleDrain(): void {
+    if (this.stopped || this.drainHandle || this.drainDeferTimer) return
+    let defer = false
+    try { defer = this.opts.deferDrain?.() === true } catch { defer = false }
+    if (defer) {
+      this.drainDeferTimer = setTimeout(() => {
+        this.drainDeferTimer = null
+        this.scheduleDrain()
+      }, DRAIN_DEFER_RECHECK_MS)
+      return
+    }
+    this.drainHandle = setImmediate(() => {
+      this.drainHandle = null
+      void this.poll('drain')
+    })
+  }
+
+  /**
    * 取一次增量：呼叫 watchEngine.getNewMessagesOnce（自 checkpoint 取增量），
    * 逐則走 emitMessage 下游路徑；正常完成時若還 starting 就切 running。
    * 任何 throw → setState('error')。
@@ -301,12 +336,7 @@ export class LineWatcher extends EventEmitter {
       else await commitAndAcknowledgeLineImportBatch(batch, this.batchCommitter)
       if (this.stopped) return
       for (const item of batch.items) this.emitMessage(item.message)
-      if (batch.hasMore && this.opts.drainBacklog && !this.drainHandle) {
-        this.drainHandle = setImmediate(() => {
-          this.drainHandle = null
-          void this.poll('drain')
-        })
-      }
+      if (batch.hasMore && this.opts.drainBacklog) this.scheduleDrain()
       // 正常完成：若還沒切到 running（e.g. 沒有新訊息），至少設 running 消除 starting 狀態。
       if (this.status.state === 'starting') this.setState('running', null)
     } catch (err) {

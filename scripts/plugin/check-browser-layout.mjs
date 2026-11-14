@@ -65,9 +65,25 @@ async function makePage(workDir) {
     define: { 'process.env.NODE_ENV': '"production"', __LINE_TODO_PLUGIN_VERSION__: JSON.stringify(version) }, loader: { '.css': 'empty' }, logLevel: 'error', absWorkingDir: ROOT
   })
   const js = res.outputFiles[0].text.replace(/<\/script/g, '<\\/script')
-  const css = readFileSync(join(ROOT, 'src', 'renderer', 'styles', 'index.css'), 'utf8')
+  const cssPath = args.css === 'deployed' ? join(ROOT, 'dist', 'dev-link', 'ui', 'main.css') : join(ROOT, 'src', 'renderer', 'styles', 'index.css')
+  const css = readFileSync(cssPath, 'utf8')
   const html = join(workDir, 'page.html')
-  writeFileSync(html, `<!DOCTYPE html><html data-theme="light"><head><meta charset="utf-8"><style>${css}</style></head><body><div id="root"></div><script>${js}</script></body></html>`)
+  const photoFixture = args.scenes?.split(',').includes('stream-photo-cache') ? (() => {
+    const root = 'C:/Users/david/.teamuq/plugins/data/tuqdev.line-todo/media-cache'
+    const assets = [
+      ['i:actual-photo-a', '1a5912a72e9f4de8a306a4bf3adaf750.jpg', 149943, '2026-11-04T20:09:23.862+08:00'],
+      ['i:actual-photo-b', '81d4927ad49bdaaafa3e3a4ff2311274.jpg', 160696, '2026-11-04T20:09:22.717+08:00'],
+      ['i:actual-photo-c', 'ca2c5437b64b055948e785a6e60580cf.jpg', 142386, '2026-11-04T20:09:20.665+08:00']
+    ]
+    const urls = {}
+    const rows = assets.map(([msgId, filename, fileSize, timeIso]) => {
+      urls[msgId] = `data:image/jpeg;base64,${readFileSync(join(root, filename)).toString('base64')}`
+      return { msgId, chatId: 'c1', ts: Date.parse(timeIso), timeIso: timeIso.slice(0, 19), direction: 'in', sender: '潘奕奇', text: null, contentType: 1, processed: true, ingestedAt: timeIso, origFilename: null, fileSize, unsent: false }
+    })
+    return { rows, urls }
+  })() : null
+  const fixtureScript = photoFixture ? `<script>window.__actualPhotoFixture=${JSON.stringify(photoFixture).replace(/</g, '\\u003c')}</script>` : ''
+  writeFileSync(html, `<!DOCTYPE html><html data-theme="light"><head><meta charset="utf-8"><style>${css}</style></head><body><div id="root"></div>${fixtureScript}<script>${js}</script></body></html>`)
   return pathToFileURL(html).href
 }
 
@@ -239,6 +255,206 @@ async function runLazyBoard(h) {
   h.note = `batches ${seq.length - 1}, first ${seq[0]}, second ${seq[1]}, last ${last}`
 }
 
+async function runPhotoGeometry(h) {
+  await h.ev(`document.querySelector('.chat-list-item')?.click()`)
+  await sleep(600)
+  await h.ev(`(() => {
+    const list = document.querySelector('.chat-message-list')
+    const makeImage = (name, width, height) => {
+      const media = document.createElement('div'); media.className = 'sm-media'
+      const image = document.createElement('img'); image.className = 'sm-thumb'; image.alt = name
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '"><rect width="100%" height="100%" fill="#9ec2f5"/></svg>'
+      image.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg)
+      media.appendChild(image); return media
+    }
+    // Mock-api fixture shaped exactly like MessageStream's PhotoGroupRow / MediaImage DOM.
+    const incoming = document.createElement('li'); incoming.className = 'chat-message incoming chat-message-photo-group'; incoming.dataset.photoCount = '3'
+    const avatar = document.createElement('span'); avatar.className = 'chat-message-avatar'; avatar.textContent = '測'
+    const incomingContent = document.createElement('div'); incomingContent.className = 'chat-message-content'
+    const sender = document.createElement('span'); sender.className = 'chat-message-sender'; sender.textContent = '測試發話者'
+    const incomingBottom = document.createElement('div'); incomingBottom.className = 'chat-message-bottom-row'
+    const incomingBubble = document.createElement('div'); incomingBubble.className = 'chat-message-bubble attachment'
+    const grid = document.createElement('div'); grid.className = 'chat-message-photo-grid chat-message-photo-grid-three'
+    for (const [name, width, height] of [['group-1', 1600, 900], ['group-2', 1200, 900], ['group-3', 900, 1200]]) grid.appendChild(makeImage(name, width, height))
+    incomingBubble.appendChild(grid); const incomingTime = document.createElement('time'); incomingTime.className = 'chat-message-time'; incomingTime.textContent = '20:09'
+    incomingBottom.appendChild(incomingBubble); incomingBottom.appendChild(incomingTime); incomingContent.appendChild(sender); incomingContent.appendChild(incomingBottom)
+    incoming.appendChild(avatar); incoming.appendChild(incomingContent); list.appendChild(incoming)
+    const fixtures = [['landscape', 1600, 900], ['portrait', 900, 1600], ['small', 640, 480]]
+    for (const [name, width, height] of fixtures) {
+      const row = document.createElement('li')
+      row.className = 'chat-message outgoing chat-message-photo'
+      const content = document.createElement('div'); content.className = 'chat-message-content'
+      const bottom = document.createElement('div'); bottom.className = 'chat-message-bottom-row'
+      const time = document.createElement('time'); time.className = 'chat-message-time'; time.textContent = '15:51'
+      const bubble = document.createElement('div'); bubble.className = 'chat-message-bubble attachment photo-attachment'
+      const body = document.createElement('div'); body.className = 'chat-message-body'
+      body.appendChild(makeImage(name, width, height)); bubble.appendChild(body)
+      bottom.appendChild(time); bottom.appendChild(bubble); content.appendChild(bottom); row.appendChild(content); list.appendChild(row)
+    }
+    return true
+  })()`)
+  await h.ev(`Promise.all(Array.from(document.querySelectorAll('.chat-message-photo-group img.sm-thumb, .chat-message.outgoing.chat-message-photo img.sm-thumb'), (image) => image.decode().catch(() => undefined)))`)
+  await h.ev(`(() => { const log = document.querySelector('.chat-message-log'); log.scrollTop = log.scrollHeight; return true })()`)
+  await sleep(200)
+  const boxes = await h.ev(`Array.from(document.querySelectorAll('.chat-message.outgoing.chat-message-photo')).filter((row) => row.querySelector('.sm-thumb')).map((row) => {
+    const rect = (selector) => { const element = selector === '.chat-message' ? row : row.querySelector(selector); const r = element.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height } }
+    const image = row.querySelector('.sm-thumb')
+    return { nativeWidth: image.naturalWidth, nativeHeight: image.naturalHeight, row: rect('.chat-message'), content: rect('.chat-message-content'), wrapper: rect('.sm-media'), image: rect('.sm-thumb'), time: rect('.chat-message-time'), timeGap: rect('.sm-thumb').left - rect('.chat-message-time').right }
+  })`)
+  if (boxes.length !== 3) {
+    const diagnostic = await h.ev(`({ rows: document.querySelectorAll('.chat-message').length, photos: document.querySelectorAll('.chat-message-photo').length, images: document.querySelectorAll('.sm-thumb').length, ids: Array.from(document.querySelectorAll('.chat-message-photo')).map((row) => ({ cls: row.className, text: row.textContent?.slice(0, 80) })) })`)
+    throw new Error(`expected 3 outgoing realistic photo rows, got ${boxes.length}; ${JSON.stringify(diagnostic)}`)
+  }
+  const edges = boxes.map((box) => box.image.right)
+  if (Math.max(...edges) - Math.min(...edges) > 1) throw new Error(`outgoing image right edges differ: ${edges.join(', ')}`)
+  for (const [i, box] of boxes.entries()) {
+    if (box.nativeWidth === 0 || box.nativeHeight === 0) throw new Error(`photo ${i} native image did not load: ${JSON.stringify(box)}`)
+    if (box.time.right > box.image.left || box.image.left - box.time.right > 8) throw new Error(`photo ${i} time is not adjacent to its actual image: ${JSON.stringify(box)}`)
+    if (Math.abs(box.time.bottom - box.image.bottom) > 5) throw new Error(`photo ${i} time is not aligned with the image lower edge: ${JSON.stringify(box)}`)
+  }
+  const widths = boxes.map((box) => box.image.width)
+  if (new Set(widths.map((width) => Math.round(width))).size < 2) throw new Error(`fixture did not preserve varied intrinsic image widths: ${widths.join(', ')}`)
+  const incomingGroup = await h.ev(`(() => { const row = document.querySelector('.chat-message-photo-group'); return row ? { count: row.querySelectorAll('.chat-message-photo-grid img').length, header: row.querySelector('.chat-message-sender')?.textContent, time: row.querySelector('.chat-message-time')?.textContent, visible: row.getBoundingClientRect().width > 0 && row.querySelectorAll('.chat-message-photo-grid img').length === 3, native: Array.from(row.querySelectorAll('img')).map((image) => [image.naturalWidth, image.naturalHeight]) } : null })()`)
+  if (!incomingGroup?.visible || incomingGroup.native.some(([width, height]) => width === 0 || height === 0)) throw new Error(`same-minute incoming triple fixture failed: ${JSON.stringify(incomingGroup)}`)
+  h.photoBoxes = { incomingGroup, outgoingRows: boxes }
+  h.note = `photo img-right=${edges.map((edge) => edge.toFixed(1)).join('/')}; image-widths=${widths.map((width) => width.toFixed(1)).join('/')}; time-adjacent=true`
+}
+
+/** M2 影片格：清單第一個聊天室（置頂的 c1）的影片訊息（沒有保存檔）顯示「影片尚未下載」，格子要有可見的大小，且不超出視窗。 */
+async function runVideoCell(h) {
+  await h.ev(`document.querySelector('.chat-list-item')?.click()`)
+  // 等到「影片尚未下載」出現（同一個 class 也用於「載入中…」，只看 class 會過早通過）
+  await waitFor(`Array.from(document.querySelectorAll('.chat-message .sm-media-missing')).some((node) => (node.textContent || '').includes('影片尚未下載'))`, 20000)
+  const cell = await h.ev(`(() => {
+    const el = Array.from(document.querySelectorAll('.chat-message .sm-media-missing')).find((node) => (node.textContent || '').includes('影片尚未下載'))
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    const row = el.closest('.chat-message')?.getBoundingClientRect()
+    return { text: el.textContent, width: r.width, height: r.height, right: r.right, rowLeft: row ? row.left : null, rowRight: row ? row.right : null, viewportWidth: window.innerWidth, docWidth: document.documentElement.scrollWidth }
+  })()`)
+  if (!cell) throw new Error('the video placeholder 影片尚未下載 is not in the chat')
+  if (cell.width < 80 || cell.height < 16) throw new Error(`video placeholder too small: ${JSON.stringify(cell)}`)
+  if (cell.right > cell.viewportWidth + 1 || cell.docWidth > cell.viewportWidth + 1) throw new Error(`video placeholder overflows the window: ${JSON.stringify(cell)}`)
+  h.note = `video cell ${cell.width.toFixed(0)}x${cell.height.toFixed(0)} inside a ${cell.viewportWidth}px window`
+}
+
+async function runPhotoCache(h) {
+  await h.ev(`document.querySelector('.chat-list-item')?.click()`)
+  await sleep(700)
+  await h.ev(`Promise.all(Array.from(document.querySelectorAll('.chat-message-photo-group img.sm-thumb'), (image) => image.decode().catch(() => undefined)))`)
+  await h.ev(`(() => { const log = document.querySelector('.chat-message-log'); if (log) log.scrollTop = log.scrollHeight; return true })()`)
+  await sleep(500)
+  const facts = await h.ev(`(() => {
+    const row = document.querySelector('.chat-message-photo-group')
+    if (!row) return null
+    const grid = row.querySelector('.chat-message-photo-grid')
+    const images = Array.from(grid?.querySelectorAll('img.sm-thumb') ?? [])
+    const layers = [row, row.querySelector('.chat-message-bubble'), grid, ...images.flatMap((image) => [image.parentElement, image])].filter(Boolean)
+    return { count: images.length, mediaStates: Array.from(row.querySelectorAll('.sm-media-missing')).map((node) => node.textContent), sender: row.querySelector('.chat-message-sender')?.textContent, time: row.querySelector('.chat-message-time')?.textContent,
+      dataAvatarId: row.getAttribute('data-avatar-message-id'), uniqueSources: new Set(images.map((image) => image.currentSrc)).size,
+      images: images.map((image) => { const r = image.getBoundingClientRect(); return { natural: [image.naturalWidth, image.naturalHeight], box: [r.left, r.top, r.right, r.bottom] } }),
+      layers: layers.map((element) => { const style = getComputedStyle(element); const r = element.getBoundingClientRect(); return { tag: element.tagName, cls: element.className?.baseVal ?? element.className, opacity: style.opacity, filter: style.filter, transform: style.transform, viewTransitionName: style.viewTransitionName, box: [r.left, r.top, r.right, r.bottom], background: style.backgroundColor } }),
+      avatarRequested: Boolean(window.__actualPhotoAvatarRequests?.some((request) => Array.isArray(request.ids) && request.ids.includes('i:actual-photo-c')))
+    }
+  })()`)
+  if (!facts || facts.count !== 3 || facts.uniqueSources !== 3) {
+    const diagnostic = await h.ev(`({ mediaLookupCount: window.__actualPhotoMediaLookups?.length ?? 0, mediaProvidedCount: window.__actualPhotoMediaLookups?.filter((item) => item.supplied).length ?? 0, avatarRequestedGroup: Boolean(window.__actualPhotoAvatarRequests?.some((request) => Array.isArray(request.ids) && request.ids.includes('i:actual-photo-c'))), rows: document.querySelectorAll('.chat-message').length, groups: document.querySelectorAll('.chat-message-photo-group').length, images: document.querySelectorAll('.sm-thumb').length })`)
+    throw new Error(`actual media assets missing or duplicated in renderer: ${JSON.stringify(facts)}`)
+  }
+  if (facts.images.some(({ natural }) => natural[0] !== 1474 || natural[1] !== 1110)) throw new Error(`actual cache dimensions did not survive the production MediaImage branch: ${JSON.stringify(facts.images)}`)
+  const rects = facts.images.map(({ box }) => box)
+  const overlaps = []
+  for (let a = 0; a < rects.length; a += 1) for (let b = a + 1; b < rects.length; b += 1) {
+    if (Math.min(rects[a][2], rects[b][2]) > Math.max(rects[a][0], rects[b][0]) && Math.min(rects[a][3], rects[b][3]) > Math.max(rects[a][1], rects[b][1])) overlaps.push([a, b])
+  }
+  if (overlaps.length) throw new Error(`actual photo grid images geometrically overlap: ${JSON.stringify(overlaps)}`)
+  if (!facts.avatarRequested) throw new Error('real MessageStream group row did not request its first-message avatar through the visible-row observer')
+  const diagnosticsBeforeClick = await h.ev(`({ closed: !document.querySelector('.stream-diag')?.open, textareaCount: document.querySelectorAll('.stream-diag-photo-tools textarea').length })`)
+  if (!diagnosticsBeforeClick.closed || diagnosticsBeforeClick.textareaCount !== 0) throw new Error('photo diagnostics should remain opt-in while the existing panel is closed')
+  const photoDiagnostics = await h.ev(`(async () => {
+    const panel = document.querySelector('.stream-diag')
+    if (!panel) return { error: 'panel missing' }
+    panel.open = true
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    const button = Array.from(panel.querySelectorAll('button')).find((item) => item.textContent.includes('收集／複製圖片顯示資訊'))
+    if (!button) return { error: 'button missing' }
+    button.click()
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const textarea = panel.querySelector('textarea[aria-label="圖片顯示資訊，可手動複製"]')
+    return textarea ? { payload: textarea.value, status: panel.querySelector('[role="status"]')?.textContent ?? '' } : { error: 'fallback payload missing' }
+  })()`)
+  if (!photoDiagnostics.payload) throw new Error(`opt-in photo diagnostics failed: ${JSON.stringify(photoDiagnostics)}`)
+  const parsedDiagnostics = JSON.parse(photoDiagnostics.payload)
+  const diagText = photoDiagnostics.payload
+  if (parsedDiagnostics.imageCount !== 3 || parsedDiagnostics.distinctSourceCount !== 3 || parsedDiagnostics.groups[0]?.images[0]?.natural?.width !== 1474) throw new Error('photo diagnostics omitted the actual visible group rendering facts')
+  if (/actual-photo|data:image|tuqplugin:|https?:\/\/|msgId|chatId|潘奕奇|毛多多/i.test(diagText)) throw new Error('photo diagnostics leaked an identifier, message text, or raw URL')
+  const serializedLayers = JSON.stringify(parsedDiagnostics.groups.flatMap((group) => group.images.flatMap((image) => image.layers)))
+  if (/url\(|https?:\/\//i.test(serializedLayers) || parsedDiagnostics.groups.some((group) => group.images.some((image) => image.layers.some((layer) => typeof layer.hasBackgroundImage !== 'boolean')))) throw new Error('photo diagnostics emitted a background image URL or source value')
+  const zoom = await h.ev(`localStorage.getItem('lt-zoom') ?? '1'`)
+  if (shotDir && shotWidths.includes(1280)) await h.shot(join(shotDir, `actual-cache-preview__zoom${zoom}__eff1280.png`))
+  await h.ev(`document.querySelector('.chat-message-photo-grid img.sm-thumb')?.click()`)
+  await sleep(200)
+  const lightbox = await h.ev(`(() => { const image = document.querySelector('.sm-lightbox img'); return image ? { src: image.currentSrc, natural: [image.naturalWidth, image.naturalHeight], box: (() => { const r = image.getBoundingClientRect(); return [r.width, r.height] })() } : null })()`)
+  const previewSource = await h.ev(`document.querySelector('.chat-message-photo-grid img.sm-thumb')?.currentSrc ?? null`)
+  if (!lightbox || lightbox.src !== previewSource || lightbox.natural[0] !== 1474 || lightbox.natural[1] !== 1110) throw new Error('lightbox did not render the same original 1474x1110 URL as preview')
+  h.actualPhotoFacts = {
+    count: facts.count,
+    uniqueSources: facts.uniqueSources,
+    images: facts.images,
+    layers: facts.layers,
+    avatarRequested: facts.avatarRequested,
+    overlaps,
+    diagnostics: { imageCount: parsedDiagnostics.imageCount, distinctSourceCount: parsedDiagnostics.distinctSourceCount, hasSensitiveValues: false, manualCopyFallback: photoDiagnostics.status.includes('手動複製') }
+  }
+  h.actualLightboxFacts = { sameUrl: lightbox.src === previewSource, natural: lightbox.natural, box: lightbox.box }
+  h.note = `actual cache imgs=${facts.count}, natural=1474x1110 x3, distinct URLs=${facts.uniqueSources}, overlap=${overlaps.length}, avatar-request=true, lightbox-same-url=true, opt-in-diagnostics=3-without-identifiers`
+}
+
+/**
+ * X7 Pro 下載原檔：「尚未下載」的照片（單張與三張一組的窄格）、影片、檔案卡旁的狀態文字與按鈕，以及標題列的批次列。
+ * 每個動作都要在自己那則訊息與視窗內，按鈕要完整看得到；批次列在標題列裡自成一行、不壓到標題列的其他東西。
+ */
+async function runOriginals(h) {
+  await h.ev(`document.querySelector('.chat-list-item')?.click()`)
+  await waitFor(`document.querySelectorAll('.chat-message .original-action').length >= 6 && document.querySelector('.chat-pane-header .chat-originals-bar') !== null`, 20000)
+  const facts = await h.ev(`(() => {
+    const vw = window.innerWidth
+    const box = (r) => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height })
+    const actions = Array.from(document.querySelectorAll('.chat-message .original-action')).map((el) => {
+      const r = el.getBoundingClientRect()
+      const row = el.closest('.chat-message-bubble')?.getBoundingClientRect() ?? el.closest('.chat-message')?.getBoundingClientRect()
+      const cell = (el.closest('.sm-media-missing') ?? el.parentElement).getBoundingClientRect()
+      const buttons = Array.from(el.querySelectorAll('button')).map((b) => box(b.getBoundingClientRect()))
+      return { state: el.getAttribute('data-original-state'), text: el.textContent, box: box(r), row: row ? box(row) : null, cell: box(cell), buttons }
+    })
+    const header = document.querySelector('.chat-pane-header')
+    const bar = header?.querySelector('.chat-originals-bar')
+    const barBox = bar ? box(bar.getBoundingClientRect()) : null
+    const siblings = header ? Array.from(header.children).filter((c) => c !== bar && c.getBoundingClientRect().width > 0).map((c) => ({ cls: c.className, box: box(c.getBoundingClientRect()) })) : []
+    return { vw, docWidth: document.documentElement.scrollWidth, actions, bar: barBox, barText: bar?.textContent ?? '', headerBox: header ? box(header.getBoundingClientRect()) : null, siblings }
+  })()`)
+  const bad = []
+  const inside = (a, b, slack = 1) => a.left >= b.left - slack && a.right <= b.right + slack && a.top >= b.top - slack && a.bottom <= b.bottom + slack
+  const overlap = (a, b) => a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1
+  for (const a of facts.actions) {
+    if (a.box.right > facts.vw + 1 || a.box.left < -1) bad.push(`${a.state} action outside the window`)
+    if (a.row && !inside(a.box, a.row)) bad.push(`${a.state} action spills out of its message bubble`)
+    for (const b of a.buttons) {
+      if (b.width < 24 || b.height < 14) bad.push(`${a.state} button too small ${b.width.toFixed(0)}x${b.height.toFixed(0)}`)
+      if (!inside(b, a.cell)) bad.push(`${a.state} button cut by its cell`)
+    }
+  }
+  if (!facts.bar) bad.push('no batch bar in the chat header')
+  else {
+    if (facts.headerBox && !inside(facts.bar, facts.headerBox)) bad.push('the batch bar spills out of the chat header')
+    if (facts.bar.right > facts.vw + 1) bad.push('the batch bar is outside the window')
+    for (const s of facts.siblings) if (overlap(facts.bar, s.box)) bad.push(`the batch bar overlaps ${s.cls}`)
+  }
+  if (facts.docWidth > facts.vw + 1) bad.push(`page scrolls sideways (${facts.docWidth} > ${facts.vw})`)
+  if (bad.length) throw new Error(`originals layout: ${bad.join('; ')} ${JSON.stringify(facts).slice(0, 1500)}`)
+  h.note = `originals: ${facts.actions.length} cell actions (${facts.actions.map((a) => a.state).join(',')}), bar ${facts.bar.width.toFixed(0)}x${facts.bar.height.toFixed(0)} "${facts.barText}" inside a ${facts.vw}px window`
+}
+
 const textClick = (sel, text, n = 0) => `(() => { const l = Array.from(document.querySelectorAll(${JSON.stringify(sel)})).filter((e) => (e.textContent || '').includes(${JSON.stringify(text)})); return l[${n}] ? (l[${n}].click(), true) : false })()`
 const LIGHTBOX = `(() => { const d = document.createElement('div'); d.className = 'sm-lightbox'; d.innerHTML = '<img alt="x" src="data:image/svg+xml;utf8,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%272400%27 height=%271800%27%3E%3Crect width=%272400%27 height=%271800%27 fill=%27%239ec2f5%27/%3E%3C/svg%3E">'; document.querySelector('.chat-stream').appendChild(d) })()`
 
@@ -254,12 +470,18 @@ const SCENES = [
   { id: 'stream-list', tab: 'stream', cols: 'chat', expect: ['.chat-workspace', '.chat-list-row'] },
   { id: 'stream-listmenu', tab: 'stream', cols: 'chat', expect: ['[role=menu]'], run: async (h) => { const c = await h.center('.chat-list-row', 2); if (c) await h.click(c.x, c.y, 'right') } },
   { id: 'stream-chat', tab: 'stream', cols: 'chat', expect: ['.chat-message'], run: async (h) => { await h.ev(`document.querySelector('.chat-list-item')?.click()`); await sleep(500) } },
+  { id: 'stream-photo-geometry', tab: 'stream', height: 1100, widths: [1280], cols: 'chat', expect: ['.chat-message'], run: runPhotoGeometry },
+  { id: 'stream-photo-cache', tab: 'stream', height: 1100, widths: [1280], cols: 'chat', photoCache: true, expect: ['.chat-message-photo-group img.sm-thumb'], run: runPhotoCache },
+  { id: 'stream-video-cell', tab: 'stream', height: 1100, widths: [420, 1280], cols: 'chat', videoCell: true, expect: ['.chat-message .sm-media-missing'], run: runVideoCell },
+  { id: 'stream-originals', tab: 'stream', height: 1100, widths: [420, 1280], cols: 'chat', originals: true, expect: ['.chat-originals-bar', '.original-action-button'], run: runOriginals },
   { id: 'stream-topicsTodos', tab: 'stream', cols: 'chat', expect: ['.chat-topics-todos-content', '.group-topic-card', '.chat-todo-card'], run: async (h) => { await h.ev(`document.querySelector('.chat-list-item')?.click()`); await sleep(400); await h.ev(textClick('.chat-pane-view-toggle button', '議題與待辦')); await waitVisible(h, '.group-topic-card') } },
   { id: 'stream-aiSettings', tab: 'stream', cols: 'chat', expect: ['.chat-pane-view-toggle'], run: async (h) => { await h.ev(`document.querySelector('.chat-list-item')?.click()`); await sleep(400); await h.ev(textClick('.chat-pane-view-toggle button', 'AI')); await sleep(500) } },
   { id: 'stream-lightbox', tab: 'stream', cols: 'chat', expect: ['.sm-lightbox img'], run: async (h) => { await h.ev(LIGHTBOX); await sleep(300) } },
   { id: 'topics', tab: 'topics', expect: ['.group-topics-panel', '.topics-table', '.topics-row'], run: async (h) => { await waitVisible(h, '.topics-row') } },
   { id: 'settings', tab: 'settings', expect: ['.settings-wrap'], run: async () => { await sleep(400) } },
   { id: 'settings-view', tab: 'settings', mode: 'settings', expect: ['.settings-wrap'], run: async () => { await sleep(400) } },
+  { id: 'profile-matrix', tab: 'settings', mode: 'profile-matrix', widths: [420, 1280], expect: ['.profile-matrix-settings'], run: async (h) => { await h.clickSel('.profile-matrix-settings > summary', 0); await sleep(250) } },
+  { id: 'chat-profile-assist', tab: 'settings', mode: 'chat-profile-assist', widths: [420, 1280], expect: ['[data-testid="chat-profile-panel"]', '[data-testid="chat-profile-assist"]'] },
   // chat title bar: the bridge status line (dot, text, 重試, 重啟 N 次, 診斷) lives in the header; F5 of the chat-menu review
   { id: 'header-chat', tab: 'stream', phase: 'timeout', widths: [420, 640, 1280], cols: 'chat', expect: ['.stream-status', '.stream-retry', '.stream-diag'] },
   { id: 'header-diag', tab: 'stream', phase: 'timeout', widths: [420, 640, 1280], cols: 'chat', expect: ['.stream-diag[open]', '.stream-diag-body'], run: async (h) => { await h.clickSel('.stream-diag > summary', 0); await sleep(500) } }
@@ -351,8 +573,8 @@ async function restartBrowser() {
 }
 
 async function openScene(scene, z, eff) {
-  await h.send('Emulation.setDeviceMetricsOverride', { width: Math.round(eff * z), height: Math.round(EFF_H * z), deviceScaleFactor: 1, mobile: false })
-  const query = [scene.mode ? `mode=${scene.mode}` : '', scene.many ? 'many=1' : '', scene.phase ? `phase=${scene.phase}` : ''].filter(Boolean).join('&')
+  await h.send('Emulation.setDeviceMetricsOverride', { width: Math.round(eff * z), height: Math.round((scene.height ?? EFF_H) * z), deviceScaleFactor: 1, mobile: false })
+  const query = [scene.mode ? `mode=${scene.mode}` : '', scene.many ? 'many=1' : '', scene.phase ? `phase=${scene.phase}` : '', scene.photoCache ? 'photo-cache=1' : '', scene.videoCell ? 'video-cell=1' : '', scene.originals ? 'originals=1' : ''].filter(Boolean).join('&')
   await h.send('Page.navigate', { url: 'about:blank' })
   await h.send('Page.navigate', { url: url + (query ? `?${query}` : '') })
   await waitFor("document.readyState === 'complete' && location.protocol === 'file:'")
@@ -405,7 +627,7 @@ for (const { scene, z, eff, boundary } of runs) {
     }
   }
   const label = `${scene.id} zoom ${z} eff ${eff}${boundary ? ' (boundary)' : ''}`
-  results.push({ label, ok: bad.length === 0, bad, boardCols: m?.boardCols ?? null, wsCols: m?.wsCols ?? null })
+  results.push({ label, ok: bad.length === 0, bad, boardCols: m?.boardCols ?? null, wsCols: m?.wsCols ?? null, note: h.note, photoBoxes: h.photoBoxes ?? null, actualPhotoFacts: h.actualPhotoFacts ?? null, actualLightboxFacts: h.actualLightboxFacts ?? null })
   if (bad.length) { failures += 1; console.log(`FAIL ${label}\n     ${bad.join('\n     ')}`) } else console.log(`PASS ${label}${m?.boardCols ? ` board=${m.boardCols}col` : ''}${m?.wsCols ? ` chat=${m.wsCols}col` : ''}${h.note ? ` ${h.note}` : ''}`)
 }
 

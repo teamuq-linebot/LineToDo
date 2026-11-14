@@ -5,7 +5,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-export const PLUGIN_ID = 'tuqdev.line-todo'
+export const PLUGIN_ID = 'tuqdev.line-todo.pro'
 export const TASK_ID = 'line-todo-release-0.2.14-20261105'
 export const TARGET_CORE = '1.8.10'
 export const TARGET_PLATFORM = 'win32-x64'

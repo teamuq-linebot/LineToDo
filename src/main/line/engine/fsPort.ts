@@ -50,6 +50,16 @@ export interface LineFsPort {
   stat(path: string): LineFileStat
   exists(path: string): boolean
   readFile(path: string): Buffer
+  /**
+   * Sticker-only safe read: find an exact PNG basename in immediate version directories under a package directory,
+   * rejecting reparse points and returning bytes only for a unique match. Implementations must read from the same
+   * no-follow handle whose canonical path was checked beneath `root`; absence of this primitive means unavailable.
+   */
+  readUniqueChildDirectoryFile?(root: string, packageId: string, fileName: string, maxBytes: number): { matches: number; bytes?: Buffer }
+  /** Read one fixed app-owned cache file using a no-follow checked handle; null means absent. */
+  readAppOwnedFile?(root: string, directoryName: string, fileName: string, maxBytes: number): Buffer | null
+  /** Write a same-directory temporary file and atomically rename it relative to an opened app-owned directory handle. */
+  writeAppOwnedFileAtomic?(root: string, directoryName: string, fileName: string, bytes: Buffer): void
   /** 複製單檔（來源通常在 LINE 目錄，目的在引擎工作區）。 */
   copyFile(src: string, dst: string): void
   /**

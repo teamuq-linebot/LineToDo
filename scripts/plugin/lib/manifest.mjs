@@ -2,8 +2,9 @@
 // Pure data + one builder, shared by build-plugin.mjs and the packaging tests. The official author tool validates it (`tuq-plugin-tool validate`).
 import { BACKEND_METHOD_GROUPS } from '../../../src/shared/pluginWire.ts'
 
-export const PLUGIN_ID = 'tuqdev.line-todo'
-export const PLUGIN_NAME = 'LINE 待辦看板'
+// pro 版的獨立身分（與免費版 tuqdev.line-todo 並存；資料夾、localStorage 分區、tuqplugin:// 都由 host 依此 id 決定）。
+export const PLUGIN_ID = 'tuqdev.line-todo.pro'
+export const PLUGIN_NAME = 'LINE 待辦 Pro'
 export const PUBLISHER = 'tuqdev'
 export const PLATFORM_ID = 'win32-x64'
 export const ICON_PATH = 'ui/icon.png'
@@ -35,7 +36,7 @@ export const NATIVE_FILES = Object.freeze([
  *                      (already declared since 0.1.x for the view-side AI; 0.2.0 adds no permission — the view no longer calls window.tuqPlugin.ai)
  *   assets:plugin-data decrypted media from dataDir/media-cache via window.tuqPlugin.assets.url
  *   program:data:projects:write, program:data:tasks:write
- *                      (0.2.1) the backend creates its own Project「LINE 待辦」and Task「AI 整理 LINE 訊息」through context.host.program and sends every
+ *                      (0.2.1) the backend creates its own Project「LINE 待辦 Pro」(pro edition; the free edition uses「LINE 待辦」) and Task「AI 整理 LINE 訊息」through context.host.program and sends every
  *                      AI turn with that taskId, so TeamUQ files the conversations under a normal Task instead of a throwaway「系統對話」Task (teamuqTask.ts)
  */
 export const PERMISSIONS = Object.freeze(['ui:view', 'backend:invoke', 'native:addons', 'ai:chat', 'assets:plugin-data', 'program:data:projects:write', 'program:data:tasks:write'])
@@ -53,11 +54,17 @@ export const BACKEND_METHODS = Object.freeze([...BACKEND_METHOD_GROUPS])
  */
 export const RESOURCES = Object.freeze({ memoryMB: 1024, cpuThreads: 2, maxSessions: 4, idleUnloadSec: 300, bootTimeoutSec: 30 })
 
+// X5（implementation-plan-v2.md §2 X5）：媒體保存的說法——需另行 QR 登入；以 LINE 電腦版收到的訊息為準，自動保存新收到與自己傳出的照片、影片、檔案
+// （X2b、X3）；依使用者的操作下載舊訊息的原檔（X6、X7）；全部存在本外掛資料夾（data.uninstall: 'delete'）；每小時上限與 LINE 限流自動暫停
+// （ORIGINALS_LIMITS）；只讀不改 LINE 本機資料（review-x5 F-5：出站傳送與 QR 新增裝置會改 LINE 帳號端的資料）。兩種說法（預設、常駐）都要 ≤512 字元（test-plugin-package）。
 const DESCRIPTION_HEAD =
-  '把 LINE 桌面版的新訊息整理成待辦看板。完全信任級外掛：會讀取 LINE 的本機資料與執行中 LINE.exe 的記憶體來取得解密金鑰，並在本機保存解密後的訊息與圖片。' +
+  '把 LINE 桌面版的新訊息整理成待辦看板。完全信任級外掛：讀取 LINE 的本機資料與執行中 LINE.exe 的記憶體取得解密金鑰（只讀不改 LINE 本機資料），在本機保存解密後的訊息與圖片。' +
+  '媒體保存需另行 QR 登入並開啟接收：依 LINE 電腦版收到的訊息，自動保存新收到與自己傳出的照片、影片、檔案，也可依你的操作下載舊訊息的原檔；每小時有上限，遇到 LINE 限流會自動暫停。' +
+  '全部存在本外掛資料夾，解除安裝時一併刪除。' +
+  '同一連線也可在聊天室手動傳送文字、單張圖片或單一檔案，只在按下傳送時送出。' +
   '整理待辦時，訊息內容會交給 TeamUQ 已登入的 AI；可在設定選擇供應者、模型與推理強度。AI 由外掛背景程式執行，看板不需要開著'
 const DESCRIPTION_TAIL =
-  '。AI 整理過的對話會記錄在 TeamUQ 的 AI 歷史。外掛版不提供「填入 LINE」，也不直接啟動 CLI provider 或使用自訂 AI 端點。'
+  '。AI 整理過的對話會記錄在 TeamUQ 的 AI 歷史。不提供「填入 LINE」，也不直接啟動 CLI provider 或使用自訂 AI 端點。'
 
 export const DESCRIPTION = `${DESCRIPTION_HEAD}（TeamUQ 在外掛閒置一段時間後會停止背景程式，之後開啟看板會補整理；每分鐘與每小時有輪數限制）${DESCRIPTION_TAIL}`
 
@@ -69,7 +76,7 @@ export const RESIDENT_PERMISSION = 'background:resident'
 const RANGE_PATTERN = /^(?:\^|>=)?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/
 
 /** 常駐說法的描述：只換掉「閒置一段時間後會停止」那一段，其餘文字與預設完全相同。 */
-export const RESIDENT_DESCRIPTION = `${DESCRIPTION_HEAD}。在 TeamUQ 的「它可以做的事」打開「關閉畫面後繼續在背景執行」後（預設是關閉的），只要 TeamUQ 還開著，背景程式就不會因為閒置而停止，看板沒開也會持續整理新訊息；沒有打開時，TeamUQ 會在外掛閒置一段時間後停止背景程式，之後開啟看板會補整理。每分鐘與每小時有輪數限制${DESCRIPTION_TAIL}`
+export const RESIDENT_DESCRIPTION = `${DESCRIPTION_HEAD}。在 TeamUQ 的「它可以做的事」打開「關閉畫面後繼續在背景執行」後（預設是關閉的），TeamUQ 開著時背景程式不因閒置停止，看板沒開也會整理；沒打開時，閒置一段時間後會停止，之後開啟看板會補整理。每分鐘與每小時有輪數限制${DESCRIPTION_TAIL}`
 
 /**
  * 解析建置選項；預設使用已驗證的 1.8.10。保留明確停用與自訂版本範圍，命令列優先於環境變數。
@@ -113,9 +120,9 @@ export function buildManifest({ version, resident = resolveResidentOption({}) })
     permissions: permissionsFor(resident),
     contributes: {
       views: [
-        { id: 'board', title: 'LINE 待辦', icon: ICON_PATH, entry: 'ui/index.html', presentations: ['tab', 'fullpage'], defaultPresentation: 'tab', remote: true },
+        { id: 'board', title: 'LINE 待辦 Pro', icon: ICON_PATH, entry: 'ui/index.html', presentations: ['tab', 'fullpage'], defaultPresentation: 'tab', remote: true },
         // the settings view (not settingsSchema; the two are mutually exclusive — G-06 keeps the view)
-        { id: 'settings', title: 'LINE 待辦設定', entry: 'ui/settings.html', presentations: ['settings'], defaultPresentation: 'settings' },
+        { id: 'settings', title: 'LINE 待辦 Pro 設定', entry: 'ui/settings.html', presentations: ['settings'], defaultPresentation: 'settings' },
       ],
     },
     // The decrypted media cache and the plugin's own database live in the plugin's data folder: removing the plugin removes them (design decision).

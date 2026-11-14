@@ -18,7 +18,7 @@
  * 不依賴 React／DOM（node:test 以 mock `window.tuqPlugin` 驗證）。
  */
 import type {
-  AvatarRequestOptions, AvatarUrlBatchDTO, ChatRefreshQueueStatus, DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult
+  AvatarRequestOptions, AvatarUrlBatchDTO, ChatRefreshQueueStatus, DraftReplyResult, LineTodoApi, LongTaskStatusView, NotMineAnalysisResult, PipelineStatus, ProviderHealth, QwenTestResult, SavedFileInfoDTO
 } from '../../shared/api'
 import { PLUGIN_CAPABILITIES, type HostCapabilities } from './capabilities'
 import { normalizeHostAiSelection, type HostAiSelection } from '../../shared/hostAi'
@@ -26,6 +26,7 @@ import type { AiStatus } from '../../shared/aiStatus'
 import { parseResidencyView } from '../../shared/residency'
 import type { ResidencySnapshot } from '../../shared/residency'
 import type { ChatPromptSummary, PromptSuggestion } from '../../shared/promptSettings'
+import type { LateAnswerOptions } from '../../shared/linejsOutbound'
 import { PluginEventPump, type PluginEventPumpOptions, type PluginEventType } from './pluginEvents'
 import { PluginApiError, PluginTransport, PluginUnsupportedError, type BackendDiagnostics, type BackendLink, type BackendPhase, type BusyRetryOptions, type InvokeOptions, type TransportTimeouts, type TuqPluginHost } from './pluginTransport'
 
@@ -33,6 +34,15 @@ import { PluginApiError, PluginTransport, PluginUnsupportedError, type BackendDi
 const AVATAR_KNOWN_TTL_MS = 5 * 60_000
 const AVATAR_UNKNOWN_TTL_MS = 60_000
 const AVATAR_CACHE_MAX = 4000
+/**
+ * 影片與檔案的「尚未有檔」結果（免費版永遠如此；Pro 稍後可能寫入）：同一則訊息在這段時間內不再問 backend（泡泡每次掛載都會查），
+ * 過期後再問，所以 Pro 寫入新檔後最慢這麼久就會顯示。其他失敗（找不到訊息、資料庫未開、傳輸錯誤）不快取。
+ */
+const SAVED_MEDIA_MISS_TTL_MS = 60_000
+const SAVED_MEDIA_MISS_MAX = 4000
+const SAVED_MEDIA_MISS_CODES: ReadonlySet<string> = new Set(['not_cached', 'not_saved', 'saved_missing'])
+/** M4：media.forget 世代號紀錄的上限（比照上面兩個快取的 4000 筆）；超過就丟最舊的，見 forgetMedia。 */
+const MEDIA_FORGET_GEN_MAX = 4000
 
 export { ACCESS_HOST_CODES, PluginApiError, PluginBackendError, PluginUnsupportedError } from './pluginTransport'
 export type { BackendDiagnostics, BackendLink, BackendLinkState, BackendPhase, CallLane, TransportTimeouts, TuqPluginHost } from './pluginTransport'
@@ -55,6 +65,8 @@ export interface PluginApiOptions {
   timeouts?: TransportTimeouts
   /** ping 送出多久還沒有任何成功回應就判定為「後端啟動中」（預設 1,200 ms）。 */
   startingAfterMs?: number
+  /** 時鐘（預設 `Date.now`）：目前只給影片／檔案「尚未有檔」的短效快取用；測試用可控的時鐘覆寫。 */
+  now?: () => number
   events?: Pick<PluginEventPumpOptions, 'waitMs' | 'idleStopMs' | 'backoffBaseMs' | 'backoffMaxMs' | 'accessProbeMs' | 'minLoopMs' | 'onDiagnostic'> & {
     /** false＝不開事件長輪詢（`on*` 訂閱不會收到任何事件）。設定 view 用：它的畫面不依賴即時事件，每次動作後會自己重讀狀態。 */
     enabled?: boolean
@@ -144,6 +156,11 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
   }
 
   const call = <T>(path: string, ...args: unknown[]): Promise<T> => transport.invoke(path, args) as Promise<T>
+  /** 沒有副作用的狀態查詢：呼叫端可給 `onLate`，接收畫面端逾時之後才到的成功回覆（fix2；pluginTransport.ts `InvokeOptions.onLate`）。 */
+  const statusCall = <T>(path: string, args: unknown[], options?: LateAnswerOptions<T>): Promise<T> => {
+    const onLate = options?.onLate
+    return transport.invoke(path, args, onLate ? { onLate: (value) => onLate(value as T) } : undefined) as Promise<T>
+  }
 
   // ── 事件 ──
   const { enabled: eventsEnabled = true, ...pumpOptions } = options.events ?? {}
@@ -166,21 +183,105 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
   // ── 媒體 URL（成功的才快取；not_cached 之類之後可能成功）──
   // backend 的 not_cached 訊息帶 MEDIA_INDEX_BUILDING_TOKEN＝LINE Cache 索引還在建立（圖片可能已經在 Cache 裡，只是索引還沒看到）；沒帶＝LINE 還沒下載。
   const assetUrls = new Map<string, string>()
+  const stickerAssetUrls = new Map<string, string>()
+  // M4 世代號：查詢送出時記下這則訊息的世代號，回來時世代號變了（期間有人 media.forget 過它）就不寫回任何快取（正面的 URL、負面的「尚未有檔」都不寫），
+  // 免得 forget 之前送出的舊查詢在 forget 之後才回來，把舊結果寫回去、讓之後的 retry 又命中舊快取；舊結果仍照常回給原本的呼叫者。
+  // 值取自單調遞增的 forgetSeq；Map 依插入順序，超過 MEDIA_FORGET_GEN_MAX 就丟最舊的並把它的值記成 forgetGenFloor。沒有紀錄的訊息一律回
+  // forgetGenFloor，所以被淘汰的訊息世代號只會變大、不會退回舊值：淘汰最多讓進行中的查詢少寫一次快取，不會讓 forget 前的舊結果寫回。
+  let forgetSeq = 0
+  let forgetGenFloor = 0
+  const forgetGens = new Map<string, number>()
+  const mediaGen = (msgId: string): number => forgetGens.get(msgId) ?? forgetGenFloor
+  const genCurrent = (msgId: string, gen: number): boolean => mediaGen(msgId) === gen
   const assetLookup = async (msgId: string): Promise<{ url: string | null; indexing: boolean }> => {
     const known = assetUrls.get(msgId)
     if (known) return { url: known, indexing: false }
+    const gen = mediaGen(msgId)
     try {
       const prepared = (await call<{ path?: unknown }>('media.prepare', msgId))
       if (!prepared || typeof prepared.path !== 'string') return { url: null, indexing: false }
       const url = host.assets?.url(prepared.path)
       if (!url) return { url: null, indexing: false }
-      assetUrls.set(msgId, url)
+      if (genCurrent(msgId, gen)) assetUrls.set(msgId, url)
       return { url, indexing: false }
     } catch (error) {
       return { url: null, indexing: error instanceof PluginApiError && error.code === 'not_cached' && error.message.includes(MEDIA_INDEX_BUILDING_TOKEN) }
     }
   }
   const assetUrl = async (msgId: string): Promise<string | null> => (await assetLookup(msgId)).url
+  const stickerAssetUrl = async (msgId: string): Promise<string | null> => {
+    const known = stickerAssetUrls.get(msgId)
+    if (known) return known
+    try {
+      const prepared = await call<{ path?: unknown }>('media.prepareSticker', msgId)
+      if (!prepared || typeof prepared.path !== 'string') return null
+      const url = host.assets?.url(prepared.path)
+      if (!url) return null
+      stickerAssetUrls.set(msgId, url)
+      return url
+    } catch { return null }
+  }
+
+  // ── 影片與檔案（M2）：backend 沒有這些路徑時（免費版的舊 backend、standalone）呼叫會失敗 → 回 null，畫面退回「尚未下載」或原本的檔案卡 ──
+  // 「尚未有檔」（SAVED_MEDIA_MISS_CODES）記到期時間，期限內直接回 null、不打 backend；Map 依插入順序，超過上限就丟最舊的。
+  const clock = options.now ?? Date.now
+  const videoMisses = new Map<string, number>()
+  const savedFileMisses = new Map<string, number>()
+  const missFresh = (misses: Map<string, number>, msgId: string): boolean => {
+    const until = misses.get(msgId)
+    if (until === undefined) return false
+    if (clock() < until) return true
+    misses.delete(msgId)
+    return false
+  }
+  const noteMiss = (misses: Map<string, number>, msgId: string, gen: number, error: unknown): void => {
+    if (!(error instanceof PluginApiError) || !SAVED_MEDIA_MISS_CODES.has(error.code)) return
+    if (!genCurrent(msgId, gen)) return
+    misses.delete(msgId)
+    misses.set(msgId, clock() + SAVED_MEDIA_MISS_TTL_MS)
+    if (misses.size > SAVED_MEDIA_MISS_MAX) { const oldest = misses.keys().next().value; if (oldest !== undefined) misses.delete(oldest) }
+  }
+  const videoAssetUrls = new Map<string, string>()
+  const videoAssetUrl = async (msgId: string): Promise<string | null> => {
+    const known = videoAssetUrls.get(msgId)
+    if (known) return known
+    if (missFresh(videoMisses, msgId)) return null
+    const gen = mediaGen(msgId)
+    try {
+      const prepared = await call<{ path?: unknown }>('media.prepareVideo', msgId)
+      if (!prepared || typeof prepared.path !== 'string') return null
+      const url = host.assets?.url(prepared.path) ?? null
+      if (url && genCurrent(msgId, gen)) videoAssetUrls.set(msgId, url)
+      return url
+    } catch (error) { noteMiss(videoMisses, msgId, gen, error); return null }
+  }
+  const savedFile = async (msgId: string): Promise<SavedFileInfoDTO | null> => {
+    if (missFresh(savedFileMisses, msgId)) return null
+    const gen = mediaGen(msgId)
+    try {
+      const saved = await call<{ name?: unknown; bytes?: unknown; mime?: unknown; absPath?: unknown; previewPath?: unknown }>('media.savedFile', msgId)
+      if (!saved || typeof saved.name !== 'string' || typeof saved.bytes !== 'number' || typeof saved.mime !== 'string' || typeof saved.absPath !== 'string') return null
+      const previewUrl = typeof saved.previewPath === 'string' ? host.assets?.url(saved.previewPath) ?? undefined : undefined
+      return { name: saved.name, bytes: saved.bytes, mime: saved.mime, absPath: saved.absPath, ...(previewUrl ? { previewUrl } : {}) }
+    } catch (error) { noteMiss(savedFileMisses, msgId, gen, error); return null }
+  }
+  /**
+   * M4：忘掉一則訊息的媒體快取（URL 與「尚未有檔」負面快取），之後的查詢會再問 backend。插槽的 provider 在保存完成後呼叫。
+   * 同時把這則訊息的世代號推進：forget 時還在進行中的查詢回來後不寫回任何快取（見 mediaGen）。
+   */
+  const forgetMedia = (msgId: string): void => {
+    forgetSeq += 1
+    forgetGens.delete(msgId)
+    forgetGens.set(msgId, forgetSeq)
+    if (forgetGens.size > MEDIA_FORGET_GEN_MAX) {
+      const oldest = forgetGens.entries().next().value
+      if (oldest !== undefined) { forgetGens.delete(oldest[0]); forgetGenFloor = oldest[1] }
+    }
+    assetUrls.delete(msgId)
+    videoAssetUrls.delete(msgId)
+    videoMisses.delete(msgId)
+    savedFileMisses.delete(msgId)
+  }
 
   // ── 頭像（view 端把關：去重、已知結果快取、合併進行中的相同請求、不再需要時丟掉尚未送出的請求）──
   // 頭像在 backend 很貴（每次讀來源資料庫；實測 media.avatar.prepare* 平均 2.5 s），而 view 的 host 呼叫預算只有 3 格、先進先出：
@@ -400,9 +501,45 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
         reset: (chatId, expectedRevision) => call('settings.chatPrompt.reset', { chatId, expectedRevision }),
         list: async () => (await call<{ items: ChatPromptSummary[] }>('settings.chatPrompt.list')).items
       },
+      profiles: {
+        getConfig: () => call('settings.profiles.getConfig'),
+        saveConfig: (config, expectedRevision) => call('settings.profiles.saveConfig', { config, expectedRevision }),
+        getChat: (chatId) => call('settings.profiles.getChat', { chatId }),
+        saveChat: (chatId, value, expectedRevision) => call('settings.profiles.saveChat', { chatId, value, expectedRevision }),
+        resolve: (chatId) => call('settings.profiles.resolve', { chatId }),
+        suggestRule: (chatId, kind, goal, expectedProfileRevision, options) => call('settings.profiles.suggestRule', { chatId, kind, goal, expectedProfileRevision, ...(options ?? {}) })
+      },
       getOptions: () => call('ai.options'),
       getSelection: async () => normalizeHostAiSelection((await call<{ pluginAi?: HostAiSelection }>('settings.get')).pluginAi),
       setSelection: async (selection) => normalizeHostAiSelection((await call<{ pluginAi?: HostAiSelection }>('settings.update', { pluginAi: normalizeHostAiSelection(selection) })).pluginAi)
+    },
+    // 聊天室手動送出：每個方法一次 backend 呼叫（core 通道）；都不是 replay-safe（送出、分塊、確認都有副作用）。
+    linejsOutbound: {
+      // onLate（fix2）：逾時之後才到的 status 回覆交給輸入列（只採用「已有 session」的回覆，見 outboundFlow.ts）
+      status: (query, options) => statusCall('linejsOutbound.status', [query ?? {}], options),
+      begin: (request) => call('linejsOutbound.begin', request),
+      stageChunk: (request) => call('linejsOutbound.stageChunk', request),
+      send: (request) => call('linejsOutbound.send', request),
+      job: (request) => call('linejsOutbound.job', request),
+      discard: (request) => call('linejsOutbound.discard', request),
+      acknowledge: (request) => call('linejsOutbound.acknowledge', request)
+    },
+    // 聊天室「登入 LINE」：沿用設定頁同一組 linejsMedia 後端方法（loginCommitting 防競態在後端，view 不另判斷）。
+    linejsMedia: {
+      // login 通道（pluginTransport.ts `LOGIN_STATUS_PATHS`）；onLate（fix2）：逾時之後才到的登入狀態交給彈窗
+      status: (options) => statusCall('linejsMedia.status', [], options),
+      startLogin: () => call('linejsMedia.startLogin'),
+      cancelLogin: () => call('linejsMedia.cancelLogin'),
+      logout: () => call('linejsMedia.logout'),
+      // Pro 舊訊息下載原檔（X6 backend；X7 畫面）：參數一律是單一 plain object（dispatcher 的 originalArgs 逐欄驗證，多餘欄位 → invalid_args）。
+      // 都走 core 通道；status 只讀本地，畫面只在有進行中的格子時才每 1.5 s 輪詢。失敗照常 reject（PluginApiError，例如 linejs_originals_unavailable、batch_active）。
+      original: {
+        request: (msgId) => call('linejsMedia.original.request', { msgId }),
+        status: (msgIds) => call('linejsMedia.original.status', { msgIds }),
+        cancel: (msgId) => call('linejsMedia.original.cancel', { msgId }),
+        batchStart: (chatId, msgIds) => call('linejsMedia.original.batchStart', { chatId, msgIds }),
+        batchCancel: (batchId) => call('linejsMedia.original.batchCancel', { batchId })
+      }
     },
     settings: {
       get: () => call('settings.get'),
@@ -417,6 +554,10 @@ export function createPluginLineTodoApi(options: PluginApiOptions): PluginLineTo
       saveAs: (msgId) => orUnsupported(() => call('media.saveAs', msgId), (e) => ({ ok: false, error: unsupportedText(e) })),
       assetUrl,
       assetLookup,
+      stickerAssetUrl,
+      videoAssetUrl,
+      savedFile,
+      forget: forgetMedia,
       avatarUrls: (chatIds, options) => avatarUrlBatch('media.avatar.prepareChats', [], 'chat', chatIds, options),
       messageAvatarUrls: (chatId, msgIds, options) => avatarUrlBatch('media.avatar.prepareMessages', [chatId], `message:${chatId}`, msgIds, options)
     },
